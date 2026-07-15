@@ -127,6 +127,77 @@ fn is_multi_agent_v2_usage_hint_message(item: &ResponseItem, usage_hint_texts: &
 }
 
 impl AgentControl {
+    /// Restore persisted V2 agent identities without reopening their runtimes.
+    pub(crate) async fn restore_v2_agent_metadata(
+        &self,
+        config: &Config,
+        root_thread_id: ThreadId,
+    ) {
+        self.state.register_root_thread(root_thread_id);
+
+        let Ok(state) = self.upgrade() else {
+            return;
+        };
+        let Some(agent_graph_store) = state.agent_graph_store() else {
+            return;
+        };
+        let descendant_ids = match agent_graph_store
+            .list_thread_spawn_descendants(
+                root_thread_id,
+                Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
+            )
+            .await
+        {
+            Ok(descendant_ids) => descendant_ids,
+            Err(err) => {
+                warn!("failed to restore persisted V2 agent metadata for {root_thread_id}: {err}");
+                return;
+            }
+        };
+
+        for thread_id in descendant_ids {
+            if self.state.agent_metadata_for_thread(thread_id).is_some() {
+                continue;
+            }
+            let restore_result = async {
+                let stored_thread = state
+                    .read_stored_thread(ReadThreadParams {
+                        thread_id,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await?;
+                let stored_agent_path = stored_thread
+                    .agent_path
+                    .as_deref()
+                    .map(AgentPath::try_from)
+                    .transpose()
+                    .map_err(|err| {
+                        CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
+                    })?;
+                let mut reservation = self.state.reserve_spawn_slot(/*max_threads*/ None)?;
+                let mut metadata = self.prepare_agent_metadata(
+                    &mut reservation,
+                    config,
+                    stored_agent_path.or_else(|| stored_thread.source.get_agent_path()),
+                    stored_thread
+                        .agent_role
+                        .or_else(|| stored_thread.source.get_agent_role()),
+                    stored_thread
+                        .agent_nickname
+                        .or_else(|| stored_thread.source.get_nickname()),
+                )?;
+                metadata.agent_id = Some(thread_id);
+                reservation.commit(metadata);
+                Ok::<(), CodexErr>(())
+            }
+            .await;
+            if let Err(err) = restore_result {
+                warn!("failed to restore V2 agent metadata for {thread_id}: {err}");
+            }
+        }
+    }
+
     /// Spawn a new agent thread and submit the initial prompt.
     #[cfg(test)]
     pub(crate) async fn spawn_agent(
@@ -379,13 +450,7 @@ impl AgentControl {
         )) = notification_source.as_ref()
         {
             let client_metadata = match state.get_thread(*parent_thread_id).await {
-                Ok(parent_thread) => {
-                    parent_thread
-                        .codex
-                        .session
-                        .app_server_client_metadata()
-                        .await
-                }
+                Ok(parent_thread) => parent_thread.session.app_server_client_metadata().await,
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
@@ -398,17 +463,12 @@ impl AgentControl {
                     }
                 }
             };
-            let thread_config = new_thread.thread.codex.thread_config_snapshot().await;
+            let thread_config = new_thread.thread.config_snapshot().await;
             let parent_thread_id = thread_config.parent_thread_id;
             emit_subagent_session_started(
-                &new_thread
-                    .thread
-                    .codex
-                    .session
-                    .services
-                    .analytics_events_client,
+                &new_thread.thread.session.services.analytics_events_client,
                 client_metadata,
-                new_thread.thread.codex.session.session_id(),
+                new_thread.thread.session.session_id(),
                 new_thread.thread_id,
                 parent_thread_id,
                 thread_config,
@@ -537,7 +597,7 @@ impl AgentControl {
         let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
             if let Some(parent_thread) = parent_thread.as_ref() {
                 if multi_agent_version == MultiAgentVersion::V2 {
-                    let parent_config = parent_thread.codex.session.get_config().await;
+                    let parent_config = parent_thread.session.get_config().await;
                     [
                         parent_config
                             .multi_agent_v2

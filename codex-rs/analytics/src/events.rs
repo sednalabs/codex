@@ -95,6 +95,15 @@ impl TrackEventRequest {
     pub(crate) fn should_send_in_isolated_request(&self) -> bool {
         matches!(self, Self::AcceptedLineFingerprints(_))
     }
+
+    pub(crate) fn can_send_with_api_key_auth(&self) -> bool {
+        match self {
+            Self::PluginUsed(event) => event.event_params.plugin.plugin_id.is_some(),
+            Self::SkillInvocation(event) => event.event_params.plugin_id.is_some(),
+            Self::McpToolCall(event) => event.event_params.plugin_id.is_some(),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -518,6 +527,7 @@ pub(crate) enum ToolItemFailureKind {
 #[derive(Serialize)]
 pub(crate) struct CodexToolItemEventBase {
     pub(crate) thread_id: String,
+    pub(crate) session_id: String,
     pub(crate) turn_id: String,
     /// App-server ThreadItem.id. For tool-originated items this generally
     /// corresponds to the originating core call_id.
@@ -674,6 +684,7 @@ pub(crate) struct CodexMcpToolCallEventParams {
     pub(crate) mcp_tool_name: String,
     pub(crate) mcp_error_present: bool,
     pub(crate) plugin_id: Option<String>,
+    pub(crate) connector_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -993,6 +1004,7 @@ pub(crate) struct CodexPluginInstallFailedMetadata {
     pub(crate) plugin: CodexPluginMetadata,
     pub(crate) source: crate::facts::PluginInstallSource,
     pub(crate) error_type: String,
+    pub(crate) sub_error_type: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1026,6 +1038,7 @@ pub(crate) struct CodexOnboardingExternalAgentImportFailureMetadata {
     pub(crate) item_type: String,
     pub(crate) failure_stage: String,
     pub(crate) error_type: String,
+    pub(crate) sub_error_type: Option<String>,
     pub(crate) product_client_id: Option<String>,
 }
 

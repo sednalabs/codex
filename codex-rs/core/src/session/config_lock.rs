@@ -14,7 +14,6 @@ use codex_features::TokenBudgetConfigToml;
 use codex_protocol::ThreadId;
 
 use crate::config::Config;
-use crate::config::template_interpolation::materialized_config_toml;
 use crate::config_lock::ConfigLockReplayOptions;
 use crate::config_lock::clear_config_lock_debug_controls;
 use crate::config_lock::config_lockfile;
@@ -86,7 +85,11 @@ fn session_configuration_to_lock_config_toml(
     sc: &SessionConfiguration,
 ) -> anyhow::Result<ConfigToml> {
     let config = sc.original_config_do_not_use.as_ref();
-    let mut lock_config = materialized_config_toml(config)?;
+    let mut lock_config: ConfigToml = config
+        .config_layer_stack
+        .effective_config()
+        .try_into()
+        .context("failed to deserialize effective config for config lock")?;
     save_config_resolved_fields(config, &mut lock_config)?;
 
     if config.config_lock_save_fields_resolved_from_model_catalog {
@@ -245,6 +248,8 @@ mod tests {
             reminder_threshold_tokens: Some(16_000),
             reminder_message_template: "Locked reminder: {n_remaining} tokens.".to_string(),
             guidance_message: Some("Locked context-window guidance.".to_string()),
+            auto_compact_fallback_prompt: Some("Write notes before rollover.".to_string()),
+            auto_compact_fallback_buffer_tokens: Some(8_000),
         });
         config
             .features
@@ -338,6 +343,8 @@ mod tests {
                     "Locked reminder: {n_remaining} tokens.".to_string()
                 ),
                 guidance_message: Some("Locked context-window guidance.".to_string()),
+                auto_compact_fallback_prompt: Some("Write notes before rollover.".to_string()),
+                auto_compact_fallback_buffer_tokens: Some(8_000),
             }))
         );
 

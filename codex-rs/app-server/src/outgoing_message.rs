@@ -11,6 +11,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::Result;
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ServerResponse;
@@ -600,7 +601,7 @@ impl OutgoingMessageSender {
             targeted_connections = connection_ids.len(),
             "app-server event: {notification}"
         );
-        let outgoing_message = OutgoingMessage::AppServerNotification(notification.clone());
+        let outgoing_message = timestamped_server_notification(notification);
         if connection_ids.is_empty() {
             if let Err(err) = self
                 .sender
@@ -654,7 +655,7 @@ impl OutgoingMessageSender {
         notification: ServerNotification,
     ) {
         tracing::trace!("app-server event: {notification}");
-        let outgoing_message = OutgoingMessage::AppServerNotification(notification.clone());
+        let outgoing_message = timestamped_server_notification(notification);
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
         if let Err(err) = self
             .sender
@@ -748,6 +749,13 @@ fn now_unix_timestamp_ms() -> u64 {
         .unwrap_or_default()
 }
 
+fn timestamped_server_notification(notification: ServerNotification) -> OutgoingMessage {
+    OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+        notification,
+        emitted_at_ms: Some(now_unix_timestamp_ms().try_into().unwrap_or_default()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -790,7 +798,11 @@ mod tests {
                 error: None,
             });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
+        let jsonrpc_notification =
+            OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                notification,
+                emitted_at_ms: Some(1_234),
+            });
         assert_eq!(
             json!({
                 "method": "account/login/completed",
@@ -799,6 +811,7 @@ mod tests {
                     "success": true,
                     "error": null,
                 },
+                "emittedAtMs": 1_234,
             }),
             serde_json::to_value(jsonrpc_notification)
                 .expect("ensure the strum macros serialize the method field correctly"),
@@ -815,7 +828,6 @@ mod tests {
                 error: None,
             });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "account/login/completed",
@@ -825,7 +837,7 @@ mod tests {
                     "error": null,
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -846,12 +858,12 @@ mod tests {
                     secondary: None,
                     credits: None,
                     individual_limit: None,
+                    spend_control_reached: None,
                     plan_type: Some(PlanType::Plus),
                     rate_limit_reached_type: None,
                 },
             });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "account/rateLimits/updated",
@@ -867,12 +879,13 @@ mod tests {
                         "secondary": null,
                         "credits": null,
                         "individualLimit": null,
+                        "spendControlReached": null,
                         "planType": "plus",
                         "rateLimitReachedType": null
                     }
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -885,7 +898,6 @@ mod tests {
             plan_type: None,
         });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "account/updated",
@@ -894,7 +906,7 @@ mod tests {
                     "planType": null
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -909,7 +921,6 @@ mod tests {
             range: None,
         });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!( {
                 "method": "configWarning",
@@ -918,7 +929,7 @@ mod tests {
                     "details": "error loading config: bad config",
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -931,7 +942,6 @@ mod tests {
             message: "Automatic approval review denied the requested action.".to_string(),
         });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "guardianWarning",
@@ -940,7 +950,7 @@ mod tests {
                     "message": "Automatic approval review denied the requested action.",
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -956,7 +966,6 @@ mod tests {
             reason: ModelRerouteReason::HighRiskCyberActivity,
         });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "model/rerouted",
@@ -968,7 +977,7 @@ mod tests {
                     "reason": "highRiskCyberActivity",
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -982,7 +991,6 @@ mod tests {
             verifications: vec![ModelVerification::TrustedAccessForCyber],
         });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "model/verification",
@@ -992,7 +1000,7 @@ mod tests {
                     "verifications": ["trustedAccessForCyber"],
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -1007,7 +1015,6 @@ mod tests {
                 metadata: json!({"presentation": "inline"}),
             });
 
-        let jsonrpc_notification = OutgoingMessage::AppServerNotification(notification);
         assert_eq!(
             json!({
                 "method": "turn/moderationMetadata",
@@ -1017,7 +1024,7 @@ mod tests {
                     "metadata": {"presentation": "inline"},
                 },
             }),
-            serde_json::to_value(jsonrpc_notification)
+            serde_json::to_value(notification)
                 .expect("ensure the notification serializes correctly"),
             "ensure the notification serializes correctly"
         );
@@ -1173,6 +1180,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_server_notification_to_connections_reuses_timestamp() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+
+        outgoing
+            .send_server_notification_to_connections(
+                &[ConnectionId(1), ConnectionId(2)],
+                ServerNotification::ConfigWarning(ConfigWarningNotification {
+                    summary: "test".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                }),
+            )
+            .await;
+
+        let timestamps = [
+            rx.recv()
+                .await
+                .expect("first connection should receive notification"),
+            rx.recv()
+                .await
+                .expect("second connection should receive notification"),
+        ]
+        .map(|envelope| match envelope {
+            OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::AppServerNotification(envelope),
+                ..
+            } => envelope.emitted_at_ms,
+            _ => panic!("expected targeted server notification"),
+        });
+
+        assert_eq!(timestamps[0], timestamps[1]);
+    }
+
+    #[tokio::test]
     async fn send_server_notification_to_connection_and_wait_tracks_write_completion() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
         let outgoing =
@@ -1205,7 +1249,14 @@ mod tests {
             panic!("expected targeted server notification envelope");
         };
         assert_eq!(connection_id, ConnectionId(42));
-        assert!(matches!(message, OutgoingMessage::AppServerNotification(_)));
+        let OutgoingMessage::AppServerNotification(envelope) = message else {
+            panic!("expected app-server notification");
+        };
+        assert!(
+            envelope
+                .emitted_at_ms
+                .is_some_and(|emitted_at_ms| emitted_at_ms > 0)
+        );
         write_complete_tx
             .expect("write completion sender should be attached")
             .send(())

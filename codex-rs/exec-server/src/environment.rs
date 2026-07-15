@@ -62,12 +62,36 @@ pub struct EnvironmentManager {
     local_runtime_paths: Option<ExecServerRuntimePaths>,
 }
 
-/// The one-shot capability to complete a pending environment registration.
-#[must_use = "the pending environment cannot connect until registration is completed"]
-pub struct PendingEnvironmentRegistration(oneshot::Sender<Result<String, String>>);
+/// The one-shot capability to complete a deferred environment registration.
+#[must_use = "the deferred environment cannot connect until registration is completed"]
+pub struct DeferredEnvironmentRegistration(oneshot::Sender<Result<(), String>>);
 
 pub const LOCAL_ENVIRONMENT_ID: &str = "local";
 pub const REMOTE_ENVIRONMENT_ID: &str = "remote";
+
+/// Non-mutating connection status observed by an environment owner.
+///
+/// Computing this status never starts, waits for, or reconnects an exec-server
+/// transport. Already-ready remote environments may receive a fail-fast probe
+/// over their existing connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvironmentObservedStatus {
+    /// A local environment, or a remote environment whose existing connection answered a probe.
+    Ready,
+    /// The configured environment has no ready connection and no observed connection failure.
+    ///
+    /// This includes lazy transports that have never been started and initial startup that has
+    /// not finished. Computing status does not start the environment or wait for startup.
+    Pending,
+    /// A connection attempt, prior connection, or fail-fast status probe observed a failure.
+    ///
+    /// This does not promise that the failure is terminal: later normal environment use may
+    /// recover the connection. Computing status itself does not trigger recovery.
+    Disconnected {
+        /// Human-readable reason recorded by the failed connection attempt or probe.
+        error: String,
+    },
+}
 
 impl EnvironmentManager {
     /// Builds a test-only manager without configured sandbox helper paths.
@@ -293,6 +317,15 @@ impl EnvironmentManager {
             .cloned()
     }
 
+    /// Returns the current status of one named environment when it is configured.
+    pub async fn get_environment_status(
+        &self,
+        environment_id: &str,
+    ) -> Option<EnvironmentObservedStatus> {
+        let environment = self.get_environment(environment_id)?;
+        Some(environment.status().await)
+    }
+
     /// Adds or replaces a named remote environment without changing the
     /// manager's default environment selection. Uses the default WebSocket
     /// connection timeout when none is provided.
@@ -319,15 +352,20 @@ impl EnvironmentManager {
         Ok(())
     }
 
-    /// Adds or replaces a remote environment whose stable URL will be supplied later.
-    pub fn register_pending_environment(
+    /// Adds or replaces a Noise rendezvous environment that will become ready later.
+    pub fn register_deferred_noise_environment(
         &self,
         environment_id: String,
-    ) -> Result<PendingEnvironmentRegistration, ExecServerError> {
+        provider: Arc<dyn NoiseRendezvousConnectProvider>,
+    ) -> Result<DeferredEnvironmentRegistration, ExecServerError> {
         validate_environment_id(&environment_id)?;
-        let (completion, websocket_url) = oneshot::channel();
+        let identity = noise_channel_identity()?;
+        let (completion, readiness) = oneshot::channel();
         let environment = Arc::new(Environment::remote_with_transport(
-            ExecServerTransportParams::PendingWebSocketUrl(websocket_url.shared()),
+            ExecServerTransportParams::Deferred(Box::new(crate::client_api::Deferred {
+                readiness: readiness.shared(),
+                transport: ExecServerTransportParams::NoiseRendezvous { provider, identity },
+            })),
             self.local_runtime_paths.clone(),
         ));
         environment.start_connecting();
@@ -335,7 +373,7 @@ impl EnvironmentManager {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(environment_id, environment);
-        Ok(PendingEnvironmentRegistration(completion))
+        Ok(DeferredEnvironmentRegistration(completion))
     }
 
     /// Adds or replaces a named remote environment that connects through an
@@ -349,11 +387,7 @@ impl EnvironmentManager {
         provider: Arc<dyn NoiseRendezvousConnectProvider>,
     ) -> Result<(), ExecServerError> {
         validate_environment_id(&environment_id)?;
-        let identity = NoiseChannelIdentity::generate().map_err(|error| {
-            ExecServerError::Protocol(format!(
-                "failed to generate Noise harness identity: {error}"
-            ))
-        })?;
+        let identity = noise_channel_identity()?;
         let environment = Arc::new(Environment::remote_with_transport(
             ExecServerTransportParams::NoiseRendezvous { provider, identity },
             self.local_runtime_paths.clone(),
@@ -367,23 +401,21 @@ impl EnvironmentManager {
     }
 }
 
-impl PendingEnvironmentRegistration {
-    /// Completes provisioning with the stable URL or a terminal error message.
-    pub fn complete(self, result: Result<String, String>) -> Result<(), ExecServerError> {
-        let result = match result {
-            Ok(exec_server_url) => match validate_remote_exec_server_url(exec_server_url) {
-                Ok(exec_server_url) => Ok(exec_server_url),
-                Err(error) => {
-                    let _ = self.0.send(Err(error.to_string()));
-                    return Err(error);
-                }
-            },
-            Err(message) => Err(message),
-        };
+impl DeferredEnvironmentRegistration {
+    /// Completes provisioning with readiness or a terminal error message.
+    pub fn complete(self, result: Result<(), String>) -> Result<(), ExecServerError> {
         self.0.send(result).map_err(|_| {
-            ExecServerError::Disconnected("pending environment registration is inactive".into())
+            ExecServerError::Disconnected("deferred environment registration is inactive".into())
         })
     }
+}
+
+fn noise_channel_identity() -> Result<NoiseChannelIdentity, ExecServerError> {
+    NoiseChannelIdentity::generate().map_err(|error| {
+        ExecServerError::Protocol(format!(
+            "failed to generate Noise harness identity: {error}"
+        ))
+    })
 }
 
 fn validate_environment_id(environment_id: &str) -> Result<(), ExecServerError> {
@@ -645,6 +677,19 @@ impl Environment {
         }
     }
 
+    /// Returns the environment's status without starting or recovering it.
+    ///
+    /// Local environments are always ready. Remote environments with an
+    /// already-ready cached connection receive a fail-fast `environment/status`
+    /// probe; other remote states are returned from cached connection state
+    /// without waiting for startup or recovery.
+    pub async fn status(&self) -> EnvironmentObservedStatus {
+        match &self.remote_client {
+            Some(client) => client.status().await,
+            None => EnvironmentObservedStatus::Ready,
+        }
+    }
+
     pub fn get_exec_backend(&self) -> Arc<dyn ExecBackend> {
         Arc::clone(&self.exec_backend)
     }
@@ -674,6 +719,7 @@ mod tests {
 
     use super::Environment;
     use super::EnvironmentManager;
+    use super::EnvironmentObservedStatus;
     use super::LOCAL_ENVIRONMENT_ID;
     use super::REMOTE_ENVIRONMENT_ID;
     use super::noise_environment_config_from_values;
@@ -1092,6 +1138,28 @@ mod tests {
             .await
             .expect("environment should start connecting when registered")
             .expect("accept connection");
+    }
+
+    #[tokio::test]
+    async fn environment_status_keeps_stdio_environment_pending() {
+        let environment = Environment::remote_with_transport(
+            ExecServerTransportParams::StdioCommand {
+                command: StdioExecServerCommand {
+                    program: "codex-missing-exec-server-for-test".to_string(),
+                    args: Vec::new(),
+                    env: HashMap::new(),
+                    cwd: None,
+                },
+                initialize_timeout: Duration::from_secs(1),
+            },
+            /*local_runtime_paths*/ None,
+        );
+
+        assert_eq!(
+            environment.status().await,
+            EnvironmentObservedStatus::Pending
+        );
+        assert!(!environment.startup_finished());
     }
 
     #[tokio::test]

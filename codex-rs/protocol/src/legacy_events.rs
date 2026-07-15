@@ -415,6 +415,7 @@ impl WebSearchItem {
             call_id: self.id.clone(),
             query: self.query.clone(),
             action: self.action.clone(),
+            results: self.results.clone(),
         })
     }
 }
@@ -519,7 +520,6 @@ impl TurnItem {
                     path: item.path.clone(),
                 })]
             }
-            TurnItem::Sleep(_) => Vec::new(),
             TurnItem::Extension(_) => Vec::new(),
             TurnItem::ImageGeneration(item) => vec![item.as_legacy_event()],
             TurnItem::EnteredReviewMode(_) | TurnItem::ExitedReviewMode(_) => Vec::new(),

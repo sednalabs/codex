@@ -260,8 +260,11 @@ fn thread_items_list_round_trips() {
         })
     );
     let response = ThreadItemsListResponse {
-        data: vec![ThreadItem::ContextCompaction {
-            id: "item_1".to_string(),
+        data: vec![ThreadItemEntry {
+            turn_id: "turn_456".to_string(),
+            item: ThreadItem::ContextCompaction {
+                id: "item_1".to_string(),
+            },
         }],
         next_cursor: None,
         backwards_cursor: Some("cursor_0".to_string()),
@@ -270,7 +273,10 @@ fn thread_items_list_round_trips() {
     assert_eq!(
         serde_json::to_value(&response).expect("serialize response"),
         json!({
-            "data": [{"type": "contextCompaction", "id": "item_1"}],
+            "data": [{
+                "turnId": "turn_456",
+                "item": {"type": "contextCompaction", "id": "item_1"},
+            }],
             "nextCursor": null,
             "backwardsCursor": "cursor_0",
         })
@@ -2791,6 +2797,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             query: Some("docs".to_string()),
             queries: None,
         },
+        results: Some(vec![serde_json::json!({
+            "type": "text_result",
+            "ref_id": "turn0search0",
+            "url": "https://example.com/docs",
+        })]),
     });
 
     let expected_search_item = WebSearchItem {
@@ -2800,6 +2811,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             query: Some("docs".to_string()),
             queries: None,
         }),
+        results: Some(vec![serde_json::json!({
+            "type": "text_result",
+            "ref_id": "turn0search0",
+            "url": "https://example.com/docs",
+        })]),
     };
 
     assert_eq!(
@@ -4232,13 +4248,15 @@ fn turn_start_params_round_trip_environments() {
     let raw_cwd = r"C:\workspace";
     let cwd: LegacyAppPathString =
         serde_json::from_value(json!(raw_cwd)).expect("API path should deserialize");
+    let workspace_root = cwd.clone();
     let params: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread_123",
         "input": [],
         "environments": [
             {
                 "environmentId": "local",
-                "cwd": cwd
+                "cwd": cwd,
+                "runtimeWorkspaceRoots": [workspace_root]
             }
         ],
     }))
@@ -4249,6 +4267,7 @@ fn turn_start_params_round_trip_environments() {
         Some(vec![TurnEnvironmentParams {
             environment_id: "local".to_string(),
             cwd: cwd.clone(),
+            runtime_workspace_roots: Some(vec![workspace_root.clone()]),
         }])
     );
     assert_eq!(
@@ -4262,7 +4281,8 @@ fn turn_start_params_round_trip_environments() {
         Some(&json!([
             {
                 "environmentId": "local",
-                "cwd": cwd
+                "cwd": cwd,
+                "runtimeWorkspaceRoots": [workspace_root]
             }
         ]))
     );

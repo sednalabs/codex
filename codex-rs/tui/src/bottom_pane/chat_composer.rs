@@ -33,6 +33,10 @@
 //! Whitespace and atomic-element edges delimit occurrences, while nested sigils do not. This
 //! preserves dismissal across offset-only edits without suppressing a later identical token.
 //!
+//! Slash-command dismissal is tracked separately. Pressing `Esc` while the command popup is active
+//! records the first-line `/name` token and keeps the popup closed while that token is unchanged.
+//! Editing the command token clears the dismissal and allows the popup to reopen.
+//!
 //! # History Navigation (↑/↓)
 //!
 //! The Up/Down history path is managed by [`ChatComposerHistory`]. It merges:
@@ -270,6 +274,7 @@ use codex_file_search::FileMatch;
 #[cfg(test)]
 use codex_plugin::AppConnectorId;
 use codex_plugin::PluginCapabilitySummary;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -410,6 +415,13 @@ pub(crate) struct ChatComposer {
     history_search_next_keys: Vec<KeyBinding>,
     editor_keymap: EditorKeymap,
     vim_normal_keymap: VimNormalKeymap,
+}
+
+/// A resolved legacy `$` target plus any catalog built while disambiguating shell syntax.
+struct MentionCompletionTarget {
+    range: Range<usize>,
+    query: String,
+    prebuilt_mentions: Option<Vec<MentionItem>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1906,9 +1918,12 @@ impl ChatComposer {
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                if let Some((range, query)) = self.current_mention_token_range() {
-                    self.popups.dismissed_mention_token =
-                        Some(DismissedToken::new(&self.draft.textarea, range, query));
+                if let Some(target) = self.current_mention_target() {
+                    self.popups.dismissed_mention_token = Some(DismissedToken::new(
+                        &self.draft.textarea,
+                        target.range,
+                        target.query,
+                    ));
                 }
                 self.popups.active = ActivePopup::None;
                 (InputResult::None, true)
@@ -1932,9 +1947,9 @@ impl ChatComposer {
 
         if close_popup {
             if let Some((insert_text, path)) = selected_mention
-                && let Some((token_range, _)) = self.current_mention_token_range()
+                && let Some(target) = self.current_mention_target()
             {
-                self.insert_selected_mention(token_range, &insert_text, path.as_deref());
+                self.insert_selected_mention(target.range, &insert_text, path.as_deref());
             }
             self.popups.active = ActivePopup::None;
         }
@@ -2373,14 +2388,71 @@ impl ChatComposer {
             .map(|(_, token)| token)
     }
 
-    fn current_mention_token_range(&self) -> Option<(Range<usize>, String)> {
+    /// Resolves the active legacy `$` target without eagerly cloning the mention catalog.
+    ///
+    /// Definite shell syntax is rejected. Ambiguous shell-like queries are accepted only when a
+    /// bindable mention matches. The query-independent catalog built during that check is carried
+    /// forward only when the selected target is also ambiguous.
+    fn current_mention_target(&self) -> Option<MentionCompletionTarget> {
         if !self.mentions_enabled() {
             return None;
         }
-        let (range, token) =
-            self.current_editable_prefixed_token_range('$', /*allow_empty*/ true)?;
+        let mentions: OnceCell<Vec<MentionItem>> = OnceCell::new();
+        let (range, query) = {
+            let dollar_query_is_completable =
+                |query: &str| match completion_target::dollar_query_kind(query) {
+                    completion_target::DollarQueryKind::Completable => true,
+                    completion_target::DollarQueryKind::AmbiguousShellParameter => mentions
+                        .get_or_init(|| {
+                            self.mention_items()
+                                .into_iter()
+                                .filter(|mention| {
+                                    mention.path.is_some()
+                                        && Self::mention_token_from_insert_text(
+                                            &mention.insert_text,
+                                        )
+                                        .is_some()
+                                })
+                                .collect()
+                        })
+                        .iter()
+                        .any(|mention| mention.fuzzy_match_query(query).is_some()),
+                    completion_target::DollarQueryKind::ShellVariable
+                    | completion_target::DollarQueryKind::DefiniteShellParameter
+                    | completion_target::DollarQueryKind::Invalid => false,
+                };
+            let (range, query) =
+                completion_target::current_prefixed_token_range_with_dollar_predicate(
+                    &self.draft.textarea,
+                    '$',
+                    /*allow_empty*/ true,
+                    dollar_query_is_completable,
+                )?;
+            if !completion_target::prefixed_token_range_is_editable(
+                &self.draft.textarea,
+                '$',
+                &range,
+                &query,
+            ) || !dollar_query_is_completable(&query)
+            {
+                return None;
+            }
+            (range, query)
+        };
+        let prebuilt_mentions = if matches!(
+            completion_target::dollar_query_kind(&query),
+            completion_target::DollarQueryKind::AmbiguousShellParameter
+        ) {
+            mentions.into_inner()
+        } else {
+            None
+        };
 
-        completion_target::dollar_query_is_completable(&token).then_some((range, token))
+        Some(MentionCompletionTarget {
+            range,
+            query,
+            prebuilt_mentions,
+        })
     }
 
     /// Replace the active `@token` (the one under the cursor) with `path`.
@@ -3479,17 +3551,17 @@ impl ChatComposer {
             self.popups.active = ActivePopup::None;
             return;
         }
-        let mut mention_token = self.current_mention_token_range();
+        let mut mention_target = self.current_mention_target();
         let at_token_start = mentions_v2_token
             .as_ref()
             .or(file_token.as_ref())
             .map(|(range, _)| range.start);
-        let mention_token_start = mention_token.as_ref().map(|(range, _)| range.start);
+        let mention_token_start = mention_target.as_ref().map(|target| target.range.start);
         if let (Some(at_token_start), Some(mention_token_start)) =
             (at_token_start, mention_token_start)
         {
             if at_token_start > mention_token_start {
-                mention_token = None;
+                mention_target = None;
             } else if mention_token_start > at_token_start {
                 mentions_v2_token = None;
                 file_token = None;
@@ -3500,7 +3572,7 @@ impl ChatComposer {
             && !self.draft.is_bash_mode
             && file_token.is_none()
             && mentions_v2_token.is_none()
-            && mention_token.is_none();
+            && mention_target.is_none();
         self.sync_command_popup(allow_command_popup);
 
         if matches!(self.popups.active, ActivePopup::Command(_)) {
@@ -3519,13 +3591,13 @@ impl ChatComposer {
             return;
         }
 
-        if let Some((range, token)) = mention_token {
+        if let Some(target) = mention_target {
             if self.popups.current_file_query.is_some() {
                 self.app_event_tx
                     .send(AppEvent::StartFileSearch(String::new()));
                 self.popups.current_file_query = None;
             }
-            self.sync_mention_popup(range, token);
+            self.sync_mention_popup(target);
             return;
         }
         self.popups.dismissed_mention_token = None;
@@ -3553,6 +3625,18 @@ impl ChatComposer {
     /// textarea. This must be called after every modification that can change
     /// the text so the popup is shown/updated/hidden as appropriate.
     fn sync_command_popup(&mut self, allow: bool) {
+        let text = self.draft.textarea.text();
+        let first_line_end = text.find('\n').unwrap_or(text.len());
+        let first_line = &text[..first_line_end];
+        // Keep an explicitly dismissed popup closed until the command token changes.
+        let command_token = slash_input::command_popup_filter_text(first_line, /*cursor*/ 0);
+        if let Some(command_token) = command_token.as_deref()
+            && self.popups.dismissed_command_token.as_deref() == Some(command_token)
+        {
+            return;
+        }
+        self.popups.dismissed_command_token = None;
+
         if !allow {
             if matches!(self.popups.active, ActivePopup::Command(_)) {
                 self.popups.active = ActivePopup::None;
@@ -3560,9 +3644,6 @@ impl ChatComposer {
             return;
         }
         // Determine whether the caret is inside the initial '/name' token on the first line.
-        let text = self.draft.textarea.text();
-        let first_line_end = text.find('\n').unwrap_or(text.len());
-        let first_line = &text[..first_line_end];
         let cursor = self.draft.textarea.cursor();
         let caret_on_first_line = cursor <= first_line_end;
 
@@ -3650,7 +3731,12 @@ impl ChatComposer {
         self.popups.dismissed_file_token = None;
     }
 
-    fn sync_mention_popup(&mut self, range: Range<usize>, query: String) {
+    fn sync_mention_popup(&mut self, target: MentionCompletionTarget) {
+        let MentionCompletionTarget {
+            range,
+            query,
+            prebuilt_mentions,
+        } = target;
         if self
             .popups
             .dismissed_mention_token
@@ -3660,7 +3746,7 @@ impl ChatComposer {
             return;
         }
 
-        let mentions = self.mention_items();
+        let mentions = prebuilt_mentions.unwrap_or_else(|| self.mention_items());
         if mentions.is_empty() {
             self.popups.active = ActivePopup::None;
             return;
@@ -3979,6 +4065,12 @@ fn ends_plaintext_at_mention(bytes: &[u8], index: usize) -> bool {
     })
 }
 
+fn ends_plaintext_at_dollar_mention(bytes: &[u8], index: usize) -> bool {
+    bytes
+        .get(index)
+        .is_none_or(|byte| !is_mention_name_char(*byte))
+}
+
 fn starts_plaintext_at_mention(text: &str, index: usize) -> bool {
     if index == 0 {
         return true;
@@ -4029,9 +4121,7 @@ fn find_next_mention_token_range(text: &str, token: &str, from: usize) -> Option
         let ends_plaintext_mention = if sigil == b'@' {
             ends_plaintext_at_mention(bytes, end)
         } else {
-            bytes
-                .get(end)
-                .is_none_or(|byte| !is_mention_name_char(*byte))
+            ends_plaintext_at_dollar_mention(bytes, end)
         };
 
         if starts_plaintext_mention && ends_plaintext_mention {
@@ -6441,6 +6531,25 @@ mod tests {
     }
 
     #[test]
+    fn skill_popup_falls_back_from_bound_skill_with_path_suffix_snapshot() {
+        snapshot_composer_state(
+            "skill_popup_falls_back_from_bound_skill_with_path_suffix",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("left")]));
+                composer.set_text_content_with_mention_bindings(
+                    "$left  $bound/path".to_string(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![test_skill_binding("bound")],
+                );
+                composer.draft.textarea.set_cursor("$left  ".len());
+                composer.sync_popups();
+            },
+        );
+    }
+
+    #[test]
     fn skill_popup_closes_after_trailing_space_snapshot() {
         snapshot_composer_state(
             "skill_popup_closes_after_trailing_space",
@@ -6524,6 +6633,195 @@ mod tests {
                 .expect("expected rustdoc selection")
                 .insert_text,
             "$rustdoc"
+        );
+    }
+
+    #[test]
+    fn file_popup_ignores_shell_positional_parameter_snapshot() {
+        snapshot_composer_state(
+            "file_popup_ignores_shell_positional_parameter",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("available")]));
+                composer.set_text_content("@src  $1_suffix".to_string(), Vec::new(), Vec::new());
+                composer.draft.textarea.set_cursor("@src ".len());
+                composer.sync_popups();
+
+                assert!(matches!(composer.popups.active, ActivePopup::File(_)));
+            },
+        );
+    }
+
+    #[test]
+    fn file_popup_ignores_bare_shell_parameter_with_matching_skill_snapshot() {
+        snapshot_composer_state(
+            "file_popup_ignores_bare_shell_parameter_with_matching_skill",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("_tool")]));
+                composer.set_text_content("@src  $_".to_string(), Vec::new(), Vec::new());
+                composer.draft.textarea.set_cursor("@src ".len());
+                composer.sync_popups();
+
+                assert!(matches!(composer.popups.active, ActivePopup::File(_)));
+            },
+        );
+    }
+
+    #[test]
+    fn file_popup_ignores_definite_shell_parameters_with_matching_skills() {
+        for (query, skill_name) in [("12", "12factor"), ("-", "-tool")] {
+            let (mut composer, _rx) = new_test_composer();
+            composer.set_skill_mentions(Some(vec![test_skill_metadata(skill_name)]));
+            composer.set_text_content(format!("@src  ${query}"), Vec::new(), Vec::new());
+            composer.draft.textarea.set_cursor("@src ".len());
+            composer.sync_popups();
+
+            assert!(matches!(composer.popups.active, ActivePopup::File(_)));
+        }
+    }
+
+    #[test]
+    fn skill_popup_accepts_loaded_hyphen_leading_skill_name() {
+        let (mut composer, _rx) = new_test_composer();
+        composer.set_skill_mentions(Some(vec![test_skill_metadata("-tool")]));
+        composer.set_text_content("$-t".to_string(), Vec::new(), Vec::new());
+        composer.draft.textarea.set_cursor("$-t".len());
+        composer.sync_popups();
+
+        let ActivePopup::Skill(popup) = &composer.popups.active else {
+            panic!("expected skill popup for -tool");
+        };
+        assert_eq!(
+            popup
+                .selected_mention()
+                .expect("expected -tool selection")
+                .insert_text,
+            "$-tool"
+        );
+    }
+
+    #[test]
+    fn file_popup_ignores_unbindable_qualified_skill_snapshot() {
+        snapshot_composer_state(
+            "file_popup_ignores_unbindable_qualified_skill",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("1plugin:deploy")]));
+                composer.set_text_content("@src  $1plugin:d".to_string(), Vec::new(), Vec::new());
+                composer.draft.textarea.set_cursor("@src ".len());
+                composer.sync_popups();
+
+                assert!(matches!(composer.popups.active, ActivePopup::File(_)));
+            },
+        );
+    }
+
+    #[test]
+    fn skill_popup_preserves_normal_target_after_ambiguous_probe_snapshot() {
+        snapshot_composer_state(
+            "skill_popup_preserves_normal_target_after_ambiguous_probe",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("plugin:deploy")]));
+                composer.set_text_content("$1x  $plugin:d".to_string(), Vec::new(), Vec::new());
+                composer.draft.textarea.set_cursor("$1x ".len());
+                composer.sync_popups();
+
+                let ActivePopup::Skill(popup) = &composer.popups.active else {
+                    panic!("expected the right qualified skill popup");
+                };
+                assert_eq!(
+                    popup
+                        .selected_mention()
+                        .expect("expected qualified skill selection")
+                        .insert_text,
+                    "$plugin:deploy"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn mention_target_prebuilds_catalog_only_for_ambiguous_query() {
+        let (mut composer, _rx) = new_test_composer();
+        composer.set_skill_mentions(Some(vec![test_skill_metadata("1password")]));
+
+        composer.set_text_content("$normal".to_string(), Vec::new(), Vec::new());
+        composer.draft.textarea.set_cursor("$normal".len());
+        let normal_target = composer
+            .current_mention_target()
+            .expect("expected normal mention target");
+        assert!(normal_target.prebuilt_mentions.is_none());
+
+        composer.set_text_content("$1p".to_string(), Vec::new(), Vec::new());
+        composer.draft.textarea.set_cursor("$1p".len());
+        let ambiguous_target = composer
+            .current_mention_target()
+            .expect("expected ambiguous mention target");
+        assert_eq!(
+            ambiguous_target.prebuilt_mentions.map(|mentions| {
+                mentions
+                    .into_iter()
+                    .map(|mention| mention.display_name)
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec!["1password".to_string()])
+        );
+    }
+
+    #[test]
+    fn skill_popup_accepts_digit_leading_skill_snapshot() {
+        snapshot_composer_state(
+            "skill_popup_accepts_digit_leading_skill",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("1password")]));
+                composer.set_text_content("$1p".to_string(), Vec::new(), Vec::new());
+                composer.draft.textarea.set_cursor("$1p".len());
+                composer.sync_popups();
+
+                assert!(matches!(composer.popups.active, ActivePopup::Skill(_)));
+            },
+        );
+    }
+
+    #[test]
+    fn skill_popup_does_not_fuzzy_match_shell_variable_snapshot() {
+        snapshot_composer_state(
+            "skill_popup_does_not_fuzzy_match_shell_variable",
+            /*enhanced_keys_supported*/ false,
+            |composer| {
+                composer.set_skill_mentions(Some(vec![test_skill_metadata("home")]));
+                composer.set_text_content("$HOME".to_string(), Vec::new(), Vec::new());
+                composer.draft.textarea.set_cursor("$HOME".len());
+                composer.sync_popups();
+
+                assert!(matches!(composer.popups.active, ActivePopup::None));
+            },
+        );
+    }
+
+    #[test]
+    fn skill_popup_preserves_loaded_shell_like_skill_at_separator() {
+        let (mut composer, _rx) = new_test_composer();
+        composer.set_skill_mentions(Some(vec![
+            test_skill_metadata("1password"),
+            test_skill_metadata("rustdoc"),
+        ]));
+        composer.set_text_content("$1p  $rustdoc".to_string(), Vec::new(), Vec::new());
+        composer.draft.textarea.set_cursor("$1p ".len());
+        composer.sync_popups();
+
+        let ActivePopup::Skill(popup) = &composer.popups.active else {
+            panic!("expected the left shell-like skill popup");
+        };
+        assert_eq!(
+            popup
+                .selected_mention()
+                .expect("expected 1password selection")
+                .insert_text,
+            "$1password"
         );
     }
 

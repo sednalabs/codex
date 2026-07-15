@@ -31,6 +31,7 @@ use crate::provider::ProviderCapabilities;
 use auth::resolve_provider_auth;
 pub(crate) use catalog::static_model_catalog;
 use catalog::with_default_only_service_tier;
+pub use mantle::is_supported_amazon_bedrock_region;
 use mantle::runtime_base_url;
 
 /// Runtime provider for Amazon Bedrock's OpenAI-compatible Mantle endpoint.
@@ -165,6 +166,16 @@ impl ModelProvider for AmazonBedrockModelProvider {
     fn models_manager(
         &self,
         _codex_home: PathBuf,
+        config_model_catalog: Option<ModelsResponse>,
+    ) -> SharedModelsManager {
+        Arc::new(StaticModelsManager::new(
+            /*auth_manager*/ None,
+            config_model_catalog.map_or_else(static_model_catalog, with_default_only_service_tier),
+        ))
+    }
+
+    fn models_manager_without_cache(
+        &self,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
         Arc::new(StaticModelsManager::new(

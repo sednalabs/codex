@@ -111,6 +111,7 @@ impl Session {
         clippy::await_holding_invalid_type,
         reason = "MCP runtime comparison and publication must remain serialized"
     )]
+    #[tracing::instrument(name = "mcp.runtime.resolve_for_step", skip_all)]
     pub(crate) async fn mcp_runtime_for_step(
         self: &Arc<Self>,
         turn_context: &TurnContext,
@@ -321,6 +322,7 @@ impl Session {
             .await
     }
 
+    #[tracing::instrument(name = "mcp.runtime.refresh", skip_all)]
     async fn refresh_mcp_servers_inner(
         &self,
         turn_context: &TurnContext,
@@ -349,14 +351,6 @@ impl Session {
                 turn_context.cwd.to_path_buf()
             });
         let mcp_runtime_context = McpRuntimeContext::new(environment_manager, cwd);
-        let auth_statuses = compute_auth_statuses(
-            mcp_servers.iter(),
-            mcp_config.mcp_oauth_credentials_store_mode,
-            mcp_config.auth_keyring_backend_kind,
-            auth.as_ref(),
-            &mcp_runtime_context,
-        )
-        .await;
         let mcp_startup_cancellation_token = {
             let mut guard = self.services.mcp_startup_cancellation_token.lock().await;
             // The previous runtime owns the old token and may still be serving an in-flight step.
@@ -373,7 +367,6 @@ impl Session {
             &mcp_servers,
             mcp_config.mcp_oauth_credentials_store_mode,
             mcp_config.auth_keyring_backend_kind,
-            auth_statuses,
             &turn_context.approval_policy,
             turn_context.sub_id.clone(),
             self.get_tx_event(),
@@ -382,7 +375,8 @@ impl Session {
             mcp_runtime_context.clone(),
             mcp_config.codex_home.clone(),
             self.services.mcp_manager.codex_apps_tools_cache(),
-            codex_apps_tools_cache_key(auth.as_ref()),
+            self.services.mcp_manager.tool_catalog_cache(),
+            connector_runtime_context_key(auth.as_ref()),
             mcp_config.prefix_mcp_tool_names,
             mcp_config.client_elicitation_capability.clone(),
             self.services

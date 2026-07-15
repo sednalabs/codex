@@ -213,11 +213,14 @@
       "surface": [
         "spawn overrides",
         "agent inventory",
-        "blocking waits"
+        "blocking waits",
+        "agents tool namespace"
       ],
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/core/src/agent/control.rs",
         "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/config/mod.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
@@ -227,7 +230,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides, the configurable agents tool namespace, and task-message-free descendant diagnostics while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -237,7 +240,7 @@
       "tests": [
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
-        "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
+        "multi_agent_v2_list_agents_returns_completed_status",
         "multi_agent_v2_list_agents_filters_by_relative_path_prefix",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
         "completion_rule_distinguishes_any_from_all",
@@ -247,10 +250,12 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/config/mod.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
@@ -310,7 +315,7 @@
         "codex-rs/core/src/session/turn_context.rs",
         "codex-rs/core/src/thread_manager.rs"
       ],
-      "behavior": "Session environment updates validate unknown or duplicate ids before mutating state, retarget sticky cwd selections when the legacy fallback cwd changes, refresh runtime turn-environment selections for default turns, keep steered user input ahead of mailbox deferral, and preserve implicit active-turn tails from legacy user-event-only history.",
+      "behavior": "Session environment updates validate unknown or duplicate ids before mutating state, retain upstream explicit selected-environment cwd and workspace-root semantics, refresh runtime turn-environment selections for default turns, keep steered user input ahead of mailbox deferral, and preserve implicit active-turn tails from legacy user-event-only history.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -326,7 +331,7 @@
         "legacy_user_event_only_tail_is_mid_turn"
       ],
       "owner": "downstream",
-      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, and legacy replay/fork boundaries.",
+      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, and legacy replay/fork boundaries. The 2026-07-15 sync adopted upstream sticky explicit-environment cwd behavior and workspace roots rather than retaining the superseded fallback-cwd rewrite implementation shape.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "session-runtime-state",
       "hotspot_files": [
@@ -671,7 +676,8 @@
         "thread session continuity",
         "queued turn handling",
         "status indicator lifecycle labels",
-        "usage summaries"
+        "usage summaries",
+        "selected-turn clipboard feedback"
       ],
       "files": [
         "codex-rs/Cargo.lock",
@@ -681,13 +687,15 @@
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
         "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/interaction.rs",
         "codex-rs/tui/src/chatwidget/protocol.rs",
         "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
         "codex-rs/tui/src/status/card.rs",
         "codex-rs/tui/src/status/rate_limits.rs"
       ],
-      "behavior": "Per-thread session state, queued interaction semantics, and active-turn status labels stay stable across the TUI surfaces, including showing \"Compacting context\" while a context compaction item is running.",
+      "behavior": "Per-thread session state, queued interaction semantics, active-turn status labels, and selected-turn clipboard success or failure feedback stay stable across the TUI surfaces, including showing \"Compacting context\" while a context compaction item is running.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -696,10 +704,12 @@
       "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
       "tests": [
         "live_app_server_context_compaction_start_updates_status_header",
-        "status_snapshot_distinguishes_session_and_thread_token_usage"
+        "status_snapshot_distinguishes_session_and_thread_token_usage",
+        "transcript_turn_copy_includes_user_prompt_and_agent_markdown",
+        "transcript_overlay_footer_status_snapshot"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, and the carried non-Linux realtime voice platform split aligned. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The voice split includes the target-specific TUI cpal dependency and Cargo lock graph required by hosted macOS/Windows builds.",
+      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, selected-turn CopyStatus feedback, and the carried non-Linux realtime voice platform split aligned. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The voice split includes the target-specific TUI cpal dependency and Cargo lock graph required by hosted macOS/Windows builds.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tui-contributor-slot",
       "hotspot_files": [
@@ -711,8 +721,10 @@
         "codex-rs/tui/src/audio_device.rs",
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/interaction.rs",
         "codex-rs/tui/src/chatwidget/protocol.rs",
         "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
         "codex-rs/tui/src/voice.rs"
       ],
       "extraction_target": "TUI status/session contributor slots"
@@ -1774,11 +1786,18 @@
       "title": "Complete MCP tool catalogue collection and refresh",
       "status": "live",
       "category": "tool-catalog",
-      "surface": ["paginated tools/list", "notifications/tools/list_changed"],
+      "surface": [
+        "paginated tools/list",
+        "notifications/tools/list_changed",
+        "connector and regular MCP catalogue caches"
+      ],
       "files": [
         "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/connectors/src/connector_runtime/mod.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
         "codex-rs/codex-mcp/src/rmcp_client.rs",
         "codex-rs/codex-mcp/src/rmcp_client_tests.rs",
+        "codex-rs/codex-mcp/src/tool_catalog_cache.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
@@ -1792,7 +1811,7 @@
           "streamable_http_discovers_and_calls_later_page_tool"
         ]
       },
-      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure.",
+      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-test-progressive",
@@ -1802,12 +1821,14 @@
         "complete_tool_walk_rejects_cursor_cycles"
       ],
       "owner": "downstream",
-      "notes": "Preserve until upstream issue #26094 is closed by behavior equivalent to this bounded complete-snapshot contract; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. Preserve until upstream issue #26094 is closed by behavior equivalent to this bounded complete-snapshot and list_changed contract; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [
         "codex-rs/rmcp-client/src/rmcp_client.rs",
-        "codex-rs/codex-mcp/src/rmcp_client.rs"
+        "codex-rs/connectors/src/connector_runtime/mod.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/tool_catalog_cache.rs"
       ],
       "extraction_target": "upstream MCP complete-catalogue collection and refresh"
     },
