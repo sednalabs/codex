@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-12`
-- downstream branch `main` code tree: `a86d2c53a68eabb436bb641d1553db49c44f527f`
+- Audited on: `2026-07-15`
+- downstream branch `main` code tree: `e8f9d7600e6cb80cc50300f6af287b3843a6f9b1`
 - comparison basis: `mirror`
-- mirror branch `upstream-main` (`origin/upstream-main`): `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- `upstream/main`: `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- downstream branch vs `upstream/main`: `1665` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `38b064c31b1f7464b281006316ec878ed23fea77`
+- `upstream/main`: `38b064c31b1f7464b281006316ec878ed23fea77`
+- downstream branch vs `upstream/main`: `1712` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1461` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1496` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -979,6 +979,39 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/external-agent-migration/src/sessions/records.rs`
   - `.github/validation-lanes.json`
   - `justfile`
+
+### External-Agent Repository Import Containment
+
+- Repository-scoped external-agent detection and import canonicalize the
+  project selected by the trusted local app-server client before deriving
+  migration paths. Static source and destination components under that root
+  must not be symlinks, including settings leaves, MCP configuration leaves,
+  hook scripts, and dangling target leaves.
+- This fail-closed check applies to configuration, MCP settings, subagents,
+  hooks, commands, skills, and instruction-file imports. Home-scoped imports
+  retain their separate source-root behavior, while shared target-leaf checks
+  avoid overwriting symlink entries in either scope. It does not claim
+  handle-relative protection against concurrent replacement of an already
+  checked repository path.
+- Recursive copy helpers skip symlink entries and refuse symlinked target
+  directories. Empty-text target checks use `symlink_metadata`, so an empty or
+  dangling symlink is protected rather than treated as an overwritable file.
+- Upstream's closed draft containment change covered an empty leaf target but
+  did not cover exact repository settings/MCP leaves, source roots, or
+  destination-ancestor symlinks. Keep this carry until upstream has equivalent
+  detection-and-import containment.
+- Primary files:
+  - `.github/validation-lanes.json`
+  - `codex-rs/app-server/src/external_agent_migration/service.rs`
+  - `codex-rs/app-server/src/external_agent_migration/service/utils.rs`
+  - `codex-rs/app-server/src/external_agent_migration/service_tests.rs`
+  - `codex-rs/external-agent-migration/src/lib.rs`
+  - `codex-rs/external-agent-migration/src/lib_tests.rs`
+  - `justfile`
+- Hosted guardrails:
+  - `codex.external-agent-migration-containment-targeted`
+  - `rust-ci-full`
+  - `CodeQL Advanced`
 
 ## Not Counted As Standalone Live Divergences
 

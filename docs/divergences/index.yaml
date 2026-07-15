@@ -1458,6 +1458,57 @@
       "extraction_target": "domain-specific runtime capability adapters"
     },
     {
+      "id": "external-agent-migration-repository-containment",
+      "title": "Repository-contained external-agent migration",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "repository-scoped external-agent import",
+        "migration target symlink handling"
+      ],
+      "files": [
+        ".github/validation-lanes.json",
+        "codex-rs/app-server/src/external_agent_migration/service.rs",
+        "codex-rs/app-server/src/external_agent_migration/service/utils.rs",
+        "codex-rs/app-server/src/external_agent_migration/service_tests.rs",
+        "codex-rs/external-agent-migration/src/lib.rs",
+        "codex-rs/external-agent-migration/src/lib_tests.rs",
+        "justfile"
+      ],
+      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped migration remains separate.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "c61390d3acc273e711b0e90feaa9dadd43b5a792",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.external-agent-migration-containment-targeted; rust-ci-full; CodeQL Advanced",
+      "tests": [
+        "detect_repo_canonicalizes_relative_cwd",
+        "detect_repo_canonicalizes_symlinked_nested_cwd_before_containment_checks",
+        "detect_repo_rejects_symlinked_local_settings",
+        "detect_repo_rejects_symlinked_mcp_source",
+        "import_repo_config_rejects_symlinked_local_settings",
+        "import_repo_mcp_rejects_symlinked_source_files",
+        "import_repo_hooks_rejects_symlinked_local_settings",
+        "import_repo_hooks_rejects_symlinked_script_root",
+        "import_repo_skills_rejects_symlinked_source_root",
+        "import_repo_skills_rejects_symlinked_destination_root",
+        "import_repo_hooks_rejects_symlinked_target_file",
+        "import_repo_hooks_rejects_symlinked_target_parent",
+        "subagent_import_skips_dangling_symlink_target"
+      ],
+      "owner": "downstream",
+      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. It protects against static redirected repository paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, and dangling target leaves with equivalent regression coverage.",
+      "upstreamability_tier": "upstream-candidate",
+      "boundary_type": "filesystem-containment",
+      "hotspot_files": [
+        "codex-rs/app-server/src/external_agent_migration/service.rs",
+        "codex-rs/external-agent-migration/src/lib.rs"
+      ],
+      "extraction_target": "upstream external-agent migration containment"
+    },
+    {
       "id": "shell-tool-mcp-project",
       "title": "Shell tool MCP helper project",
       "status": "live",
@@ -1560,6 +1611,7 @@
         "scripts/stage_npm_packages.py",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "codex-rs/exec-server/tests/http_client.rs",
         "scripts/list-bazel-clippy-targets.sh",
         "defs.bzl",
         "patches/",
@@ -1582,13 +1634,13 @@
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for the 16 MiB exec-server byte-budget stress sequence, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted",
+      "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted; blocking-ci macOS Bazel tests",
       "tests": [
         "bash -n scripts/install/install.sh",
         "test_custom_repository_and_tag_prefix_drive_latest_urls",
@@ -1598,13 +1650,14 @@
         "codex.sdk-python-targeted",
         "test_stage_runtime_release_rejects_archive_path_traversal",
         "test_stage_runtime_release_rejects_archive_links",
+        "http_response_body_stream_enforces_queued_byte_budget",
         "system_proxy_cache_key_preserves_url_specific_pac_decisions",
         "managed_ca_certificate_path_uses_matching_content_hash",
         "environment_id_fallback_has_cwd_prefix",
         "returns thread events"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction. The exec-server stress-test timeout is test-only and may be dropped when upstream uses a readiness-based completion condition or an equivalent cold-run-safe bound.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [
