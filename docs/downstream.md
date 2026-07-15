@@ -138,6 +138,25 @@ User-visible behavior:
 - This pairs cleanly with other blocking coordination primitives such as `wait_agent` and helper-backed `*_and_wait` flows, so agents can wait on real state transitions instead of spinning on repeated status polls.
 - This downstream blocking MCP tool pattern predates fully operational task support and exists specifically so the tool layer, not the transcript, absorbs the wait.
 
+### Core: source-owned unified-exec final transcript
+
+Why:
+
+- Keep final command output and omission accounting independent of the
+  best-effort live delta channel, which may lag under sustained output.
+
+User-visible behavior:
+
+- `ExecCommandEnd.aggregated_output` comes from a bounded, non-draining process
+  transcript recorded before the response buffer and output-delta broadcast.
+- Normal completion waits up to the established exec I/O drain bound for
+  stdout/stderr or exec-server source closure, then orders already-published
+  deltas before the final command event. Chunks recorded before that bound are
+  retained; output produced only after the deadline is outside the completed
+  transcript.
+- Large output still intentionally retains only its head and tail, with an
+  explicit marker for omitted middle bytes.
+
 ### Core + app-server: native computer-use adapter bridge
 
 Why:

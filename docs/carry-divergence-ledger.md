@@ -499,6 +499,34 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
+### Source-Owned Unified-Exec Final Transcript
+
+- Unified exec records each source output chunk in a bounded, non-draining
+  final transcript before offering it to the drainable response buffer or the
+  best-effort delta broadcast.
+- Normal command completion waits for the local stdout/stderr sources or the
+  exec-server event source to close, then drains already-published delta
+  messages before emitting `ExecCommandEnd`.
+- Source draining is bounded by the established exec I/O drain timeout so a
+  daemonized descendant or broken backend cannot suppress the final event.
+  Chunks recorded before that deadline remain authoritative; output produced
+  only after the deadline is intentionally outside the completed transcript.
+- The bounded transcript intentionally retains a head and tail and represents
+  discarded middle bytes with an omission marker; this carry prevents delta
+  lag from silently losing final output or corrupting that accounting.
+- Drop this direct upstream fix when upstream provides equivalent source-owned
+  bounded final aggregation, bounded source-close ordering, and regression
+  coverage.
+- Primary files:
+  - `codex-rs/core/src/unified_exec/process.rs`
+  - `codex-rs/core/src/unified_exec/async_watcher.rs`
+  - `codex-rs/core/src/unified_exec/process_manager.rs`
+  - `codex-rs/core/src/unified_exec/process_manager_tests.rs`
+  - `codex-rs/core/src/unified_exec/process_output_tests.rs`
+  - `codex-rs/core/tests/suite/unified_exec.rs`
+  - `justfile`
+  - `.github/validation-lanes.json`
+
 ### App-Server Remote Control Account Wake
 
 - Remote-control enrollment waits must wake when cached ChatGPT auth changes
