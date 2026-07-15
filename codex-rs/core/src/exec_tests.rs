@@ -804,6 +804,15 @@ fn windows_workspace_defaults_do_not_hide_explicit_metadata_carveouts() {
     let cwd = temp_dir.path().canonicalize().expect("canonical cwd").abs();
 
     let default_profile = PermissionProfile::workspace_write();
+    let restricted_token_overrides = resolve_windows_restricted_token_filesystem_overrides(
+        SandboxType::WindowsRestrictedToken,
+        &default_profile,
+        &cwd,
+        WindowsSandboxLevel::RestrictedToken,
+    )
+    .expect("resolve restricted-token workspace defaults");
+    assert_eq!(restricted_token_overrides, None);
+
     let default_overrides = resolve_windows_elevated_filesystem_overrides(
         SandboxType::WindowsRestrictedToken,
         &default_profile,

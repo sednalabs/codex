@@ -197,7 +197,7 @@ async fn windows_restricted_token_rejects_exact_and_glob_deny_read_policy() -> a
     Ok(())
 }
 
-async fn assert_windows_sandbox_does_not_allow_missing_workspace_metadata(
+async fn assert_windows_sandbox_does_not_create_missing_workspace_metadata(
     windows_sandbox_level: WindowsSandboxLevel,
     fixture_name: &str,
     backend_name: &str,
@@ -216,8 +216,7 @@ async fn assert_windows_sandbox_does_not_allow_missing_workspace_metadata(
                 "cmd.exe".to_string(),
                 "/D".to_string(),
                 "/C".to_string(),
-                "for %D in (.git .agents .codex) do @mkdir %D 2>NUL & echo sandbox-ok"
-                    .to_string(),
+                "echo sandbox-ok".to_string(),
             ],
             cwd: cwd.clone(),
             expiration: 10_000.into(),
@@ -245,7 +244,7 @@ async fn assert_windows_sandbox_does_not_allow_missing_workspace_metadata(
         let path = cwd.join(name);
         assert!(
             !path.exists(),
-            "{backend_name} sandbox should not allow missing workspace metadata: {}",
+            "{backend_name} sandbox setup should not create missing workspace metadata: {}",
             path.display()
         );
     }
@@ -254,8 +253,8 @@ async fn assert_windows_sandbox_does_not_allow_missing_workspace_metadata(
 
 #[tokio::test]
 #[serial(codex_home)]
-async fn windows_elevated_does_not_allow_missing_workspace_metadata() -> anyhow::Result<()> {
-    assert_windows_sandbox_does_not_allow_missing_workspace_metadata(
+async fn windows_elevated_does_not_create_missing_workspace_metadata() -> anyhow::Result<()> {
+    assert_windows_sandbox_does_not_create_missing_workspace_metadata(
         WindowsSandboxLevel::Elevated,
         "windows-elevated-missing-metadata-codex-home",
         "elevated",
@@ -265,9 +264,9 @@ async fn windows_elevated_does_not_allow_missing_workspace_metadata() -> anyhow:
 
 #[tokio::test]
 #[serial(codex_home)]
-async fn windows_restricted_token_does_not_allow_missing_workspace_metadata() -> anyhow::Result<()>
-{
-    assert_windows_sandbox_does_not_allow_missing_workspace_metadata(
+async fn windows_restricted_token_does_not_create_missing_workspace_metadata()
+-> anyhow::Result<()> {
+    assert_windows_sandbox_does_not_create_missing_workspace_metadata(
         WindowsSandboxLevel::RestrictedToken,
         "windows-restricted-token-missing-metadata-codex-home",
         "restricted-token",

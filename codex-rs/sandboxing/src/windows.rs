@@ -84,6 +84,11 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
     let (mut file_system_sandbox_policy, network_sandbox_policy) =
         permission_profile.to_runtime_permissions();
 
+    // Windows protects built-in metadata defaults through the legacy writable
+    // root projection when those paths exist. Do not turn missing generated
+    // defaults into explicit deny-write sentinels.
+    file_system_sandbox_policy.remove_generated_defaults();
+
     let needs_direct_runtime_enforcement = file_system_sandbox_policy
         .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd);
 
@@ -100,11 +105,6 @@ pub fn resolve_windows_restricted_token_filesystem_overrides(
             file_system_sandbox_policy.kind,
         ));
     }
-
-    // Windows protects built-in metadata defaults through the legacy writable
-    // root projection when those paths exist. Do not turn missing generated
-    // defaults into explicit deny-write sentinels.
-    file_system_sandbox_policy.remove_generated_defaults();
 
     // The restricted-token backend can still enforce split write restrictions,
     // but its WRITE_RESTRICTED token does not make capability SID deny-read ACEs
