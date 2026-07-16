@@ -327,13 +327,15 @@ provider metadata on resume.
 ### Rollout Mutation Authority Quiescence
 
 - Guardrail: GitHub `blocking-ci` unit tests for `codex-rollout`.
-- Primary check:
-  `revoke_waits_for_every_custody_and_wakes_every_waiter`.
-- The check synchronizes two parked custody tokens with two independently
-  polled revokers. It proves one-way admission closure, exact two-token
-  quiescence, wakeup of both revokers after the final release, and retained
-  notification when release occurs between polls. Diagnostic deadlines are
-  fail-safes only; ordering comes from channels and direct future polling.
+- Primary checks:
+  `revoke_waits_for_every_custody_and_wakes_every_waiter` and
+  `close_counts_every_admission_and_retains_the_final_release`.
+- The first check proves that two independently polled revoker tasks both
+  reach pending and wake after parked custody releases. The second admits two
+  custody tokens, proves the first release is insufficient, and proves that a
+  retained final release completes one-way revocation even when it occurs
+  between polls. Diagnostic deadlines are fail-safes only; ordering comes
+  from channels and direct future polling.
 - This foundation lane does not cover recorder integration, compression,
   append-open or recovery, writer actor behavior, or public API exposure.
 
