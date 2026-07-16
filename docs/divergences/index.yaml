@@ -1541,6 +1541,126 @@
       "extraction_target": "upstream restricted-token policy normalization"
     },
     {
+      "id": "windows-proxy-effective-backend-selection",
+      "title": "Proxy-aware Windows sandbox backend selection",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "Windows managed-network enforcement",
+        "unified-exec Windows process launch",
+        "Windows PowerShell launch policy"
+      ],
+      "files": [
+        "codex-rs/windows-sandbox-rs/src/lib.rs",
+        "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/src/sandbox_tags.rs",
+        "codex-rs/core/src/sandbox_tags_tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/tools/runtimes/mod.rs",
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs",
+        "codex-rs/core/src/tools/runtimes/shell.rs",
+        "codex-rs/core/src/tools/runtimes/unified_exec.rs",
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        "codex-rs/core/tests/suite/windows_sandbox.rs"
+      ],
+      "required_markers": {
+        "codex-rs/windows-sandbox-rs/src/lib.rs": [
+          "pub fn windows_sandbox_uses_elevated_backend"
+        ],
+        "codex-rs/sandboxing/src/windows.rs": [
+          "pub fn resolve_windows_sandbox_filesystem_overrides"
+        ],
+        "codex-rs/core/src/unified_exec/process_manager.rs": [
+          "spawn_windows_sandbox_session_for_level"
+        ],
+        "codex-rs/core/src/sandbox_tags_tests.rs": [
+          "proxy_enforced_restricted_token_uses_windows_elevated_tag"
+        ],
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs": [
+          "proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides"
+        ],
+        "codex-rs/core/tests/suite/unified_exec.rs": [
+          "unified_exec_proxy_blocks_direct_loopback_bypass_on_windows"
+        ]
+      },
+      "behavior": "A managed network proxy selects the elevated Windows sandbox backend even when the configured mode is unelevated. Direct and unified-exec launch paths share the same selector and filesystem-override resolver, PowerShell startup, failure metrics, tool telemetry, and turn metadata use the effective backend, and the elevated firewall prevents direct loopback connections outside the proxy ports.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "4bc2c723efc6445ea833e2ffd1b11e48298fb8f4"
+      },
+      "guardrail_lane": "GitHub-hosted core unit tests and Bazel Windows tests",
+      "tests": [
+        "windows_proxy_enforcement_uses_elevated_backend",
+        "windows_spawn_failure_metric_uses_effective_backend",
+        "proxy_enforced_restricted_token_uses_windows_elevated_tag",
+        "proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides",
+        "inserts_no_profile_for_proxy_selected_elevated_windows_sandbox",
+        "unified_exec_proxy_blocks_direct_loopback_bypass_on_windows"
+      ],
+      "owner": "downstream",
+      "notes": "Upstream commit 4bc2c723ef selected the elevated backend for proxy-enforced direct exec, but unified exec, override preparation, PowerShell startup, and metric attribution still followed the configured level. Preserve the shared effective-backend decision until upstream carries the complete launch contract.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "windows-sandbox-policy-adapter",
+      "hotspot_files": [
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs"
+      ],
+      "extraction_target": "upstream proxy-aware Windows launch contract"
+    },
+    {
+      "id": "app-server-command-cwd-windows-sandbox-mode",
+      "title": "Command-cwd Windows sandbox mode",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "app-server command/exec permission profiles",
+        "trusted project-local Windows sandbox configuration"
+      ],
+      "files": [
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/command_exec.rs",
+        "codex-rs/app-server/README.md"
+      ],
+      "required_markers": {
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs": [
+          "WindowsSandboxLevel::from_config(&config)"
+        ],
+        "codex-rs/app-server/tests/suite/v2/command_exec.rs": [
+          "command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode"
+        ]
+      },
+      "behavior": "When command/exec selects a permissionProfile, the trusted project resolved from the command cwd supplies the Windows sandbox level together with its permission profile, workspace roots, and network policy instead of inheriting the app-server process's global Windows mode.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "8e8fd94c602a1c6c59171fe1f16982710bc476c3"
+      },
+      "guardrail_lane": "GitHub blocking-ci Bazel tests on Unix and Windows",
+      "tests": [
+        "command_exec_permission_profile_project_roots_use_command_cwd",
+        "command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode"
+      ],
+      "owner": "downstream",
+      "notes": "This restores the upstream command-cwd reload behavior introduced by 8e8fd94c60 and regressed by 4bc2c723ef. Without it, a project that explicitly selects the unelevated sandbox can be executed with the app-server's unrelated global mode, including disabled sandboxing.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs"
+      ],
+      "extraction_target": "restore upstream command-cwd Windows sandbox selection"
+    },
+    {
       "id": "external-agent-migration-repository-containment",
       "title": "External-agent migration path containment",
       "status": "live",

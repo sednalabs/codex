@@ -1101,6 +1101,7 @@ Notes:
 
 - Empty `command` arrays are rejected.
 - Prefer `permissionProfile` for command permission overrides. It selects an active profile by id (for example `:read-only`, `:workspace`, or a user-defined `[permissions.<id>]` profile) rather than accepting low-level filesystem/network permissions. The legacy `sandboxPolicy` field accepts the same shape used by `turn/start` (e.g., `dangerFullAccess`, `readOnly`, `workspaceWrite` with flags, `externalSandbox` with `networkAccess` `restricted|enabled`), but cannot be combined with `permissionProfile`.
+- When `permissionProfile` is supplied, the command `cwd` resolves trusted project-local permission settings, workspace roots, network policy, and Windows sandbox mode.
 - `env` merges into the environment produced by the server's shell environment policy. Matching names are overridden; unspecified variables are left intact.
 - When omitted, `timeoutMs` falls back to the server default.
 - When omitted, `outputBytesCap` falls back to the server default of 1 MiB per stream.

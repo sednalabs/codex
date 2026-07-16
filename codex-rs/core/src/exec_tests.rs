@@ -397,13 +397,56 @@ fn windows_restricted_token_supports_read_only_profiles() {
 }
 
 #[test]
-fn windows_backend_selection_uses_configured_sandbox_level() {
+fn windows_proxy_enforcement_uses_elevated_backend() {
     assert!(!windows_sandbox_uses_elevated_backend(
         WindowsSandboxLevel::RestrictedToken,
+        /*proxy_enforced*/ false,
+    ));
+    assert!(windows_sandbox_uses_elevated_backend(
+        WindowsSandboxLevel::RestrictedToken,
+        /*proxy_enforced*/ true,
     ));
     assert!(windows_sandbox_uses_elevated_backend(
         WindowsSandboxLevel::Elevated,
+        /*proxy_enforced*/ false,
     ));
+    assert!(windows_sandbox_uses_elevated_backend(
+        WindowsSandboxLevel::Elevated,
+        /*proxy_enforced*/ true,
+    ));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_spawn_failure_metric_uses_effective_backend() {
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::RestrictedToken,
+            /*proxy_enforced*/ false,
+        ),
+        "legacy"
+    );
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::RestrictedToken,
+            /*proxy_enforced*/ true,
+        ),
+        "elevated"
+    );
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::Elevated,
+            /*proxy_enforced*/ false,
+        ),
+        "elevated"
+    );
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::Elevated,
+            /*proxy_enforced*/ true,
+        ),
+        "elevated"
+    );
 }
 
 #[test]

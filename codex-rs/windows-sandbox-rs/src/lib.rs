@@ -44,6 +44,17 @@ pub enum WindowsSandboxProxySettingsMode {
     Preserve,
 }
 
+pub fn windows_sandbox_uses_elevated_backend(
+    sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
+    proxy_enforced: bool,
+) -> bool {
+    proxy_enforced
+        || matches!(
+            sandbox_level,
+            codex_protocol::config_types::WindowsSandboxLevel::Elevated
+        )
+}
+
 #[cfg(target_os = "windows")]
 mod acl;
 #[cfg(target_os = "windows")]
