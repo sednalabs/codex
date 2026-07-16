@@ -66,6 +66,7 @@ pub(super) async fn delete_thread(
     }
 
     let found_rollout_path = !rollout_paths.is_empty();
+    let _retirement = store.begin_recorder_retirement(thread_id)?;
     for rollout_path in rollout_paths {
         delete_rollout_file(store, rollout_path.as_path(), thread_id)?;
     }
@@ -78,9 +79,6 @@ pub(super) async fn delete_thread(
     if !found_rollout_path {
         return Err(ThreadStoreError::ThreadNotFound { thread_id });
     }
-
-    store.live_recorders.lock().await.remove(&thread_id);
-
     Ok(())
 }
 

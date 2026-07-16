@@ -12,6 +12,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
+use std::sync::RwLockReadGuard;
 
 use chrono::SecondsFormat;
 use codex_protocol::SessionId;
@@ -80,10 +82,82 @@ use codex_utils_path as path_utils;
 /// $ jq -C . ~/.codex/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
 /// $ fx ~/.codex/sessions/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl
 /// ```
+#[derive(Clone, Debug, Default)]
+pub struct RolloutWriteAuthority {
+    generation: Option<Arc<RwLock<bool>>>,
+}
+
+impl RolloutWriteAuthority {
+    pub fn new_revocable() -> Self {
+        Self {
+            generation: Some(Arc::new(RwLock::new(true))),
+        }
+    }
+
+    pub fn revoke(&self) {
+        if let Some(generation) = self.generation.as_ref() {
+            *generation
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        }
+    }
+
+    pub fn same_generation(&self, other: &Self) -> bool {
+        match (&self.generation, &other.generation) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    fn ensure_current(&self) -> std::io::Result<()> {
+        match self.generation.as_ref() {
+            None => Ok(()),
+            Some(generation) => {
+                let current = generation
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *current {
+                    Ok(())
+                } else {
+                    Err(IoError::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "rollout write authority was revoked",
+                    ))
+                }
+            }
+        }
+    }
+
+    fn open_permit(&self) -> std::io::Result<RolloutOpenPermit<'_>> {
+        match self.generation.as_ref() {
+            None => Ok(RolloutOpenPermit::Unrestricted),
+            Some(generation) => {
+                let current = generation
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !*current {
+                    return Err(IoError::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "rollout write authority was revoked",
+                    ));
+                }
+                Ok(RolloutOpenPermit::Generation { _guard: current })
+            }
+        }
+    }
+}
+
+enum RolloutOpenPermit<'a> {
+    Unrestricted,
+    Generation { _guard: RwLockReadGuard<'a, bool> },
+}
+
 #[derive(Clone)]
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
     writer_task: Arc<RolloutWriterTask>,
+    write_authority: RolloutWriteAuthority,
     pub(crate) rollout_path: PathBuf,
 }
 
@@ -757,6 +831,14 @@ impl RolloutRecorder {
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
     ) -> std::io::Result<Self> {
+        Self::new_with_write_authority(config, params, RolloutWriteAuthority::default()).await
+    }
+
+    pub async fn new_with_write_authority(
+        config: &impl RolloutConfigView,
+        params: RolloutRecorderParams,
+        write_authority: RolloutWriteAuthority,
+    ) -> std::io::Result<Self> {
         // Clone the cwd for the spawned task to collect git info asynchronously.
         let cwd = config.cwd().to_path_buf();
         let state = match params {
@@ -826,10 +908,13 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    write_authority: write_authority.clone(),
                 }
             }
             RolloutRecorderParams::Resume { path } => {
-                let (path, file, ordinal_state) = open_rollout_for_append(path.as_path()).await?;
+                let (path, file, ordinal_state) =
+                    open_rollout_for_append_with_authority(path.as_path(), write_authority.clone())
+                        .await?;
                 RolloutWriterState {
                     writer: Some(JsonlWriter { file }),
                     deferred_log_file_info: None,
@@ -839,6 +924,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    write_authority: write_authority.clone(),
                 }
             }
         };
@@ -873,6 +959,7 @@ impl RolloutRecorder {
         Ok(Self {
             tx,
             writer_task,
+            write_authority,
             rollout_path,
         })
     }
@@ -885,6 +972,7 @@ impl RolloutRecorder {
         if items.is_empty() {
             return Ok(());
         }
+        self.write_authority.ensure_current()?;
         self.tx
             .send(RolloutCmd::AddItems(items.to_vec()))
             .await
@@ -900,6 +988,7 @@ impl RolloutRecorder {
     /// This is idempotent. If materialization fails, the recorder keeps all pending items in memory
     /// and a later `persist()` or `flush()` can retry opening and writing the rollout file.
     pub async fn persist(&self) -> std::io::Result<()> {
+        self.write_authority.ensure_current()?;
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(RolloutCmd::Persist { ack: tx })
@@ -921,6 +1010,7 @@ impl RolloutRecorder {
     /// If the first writer attempt fails, the writer drops and reopens the file handle before
     /// retrying. This returns an error only when that retry also fails or the writer task is gone.
     pub async fn flush(&self) -> std::io::Result<()> {
+        self.write_authority.ensure_current()?;
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(RolloutCmd::Flush { ack: tx })
@@ -1570,6 +1660,7 @@ struct RolloutWriterState {
     rollout_path: PathBuf,
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
+    write_authority: RolloutWriteAuthority,
 }
 
 impl RolloutWriterState {
@@ -1612,6 +1703,9 @@ impl RolloutWriterState {
             }
             Err(first_err) => {
                 self.enter_recovery_mode(&first_err);
+                if first_err.kind() == std::io::ErrorKind::PermissionDenied {
+                    return Err(first_err);
+                }
                 warn!("failed to {operation} rollout writer; reopening and retrying: {first_err}");
                 match self.write_pending_once().await {
                     Ok(()) => {
@@ -1655,6 +1749,8 @@ impl RolloutWriterState {
             return Ok(());
         }
 
+        let write_authority = self.write_authority.clone();
+        let _open_permit = write_authority.open_permit()?;
         let path = self
             .deferred_log_file_info
             .as_ref()
@@ -1684,11 +1780,14 @@ impl RolloutWriterState {
     }
 
     async fn write_pending_once(&mut self) -> std::io::Result<()> {
+        self.write_authority.ensure_current()?;
         self.ensure_writer_open().await?;
+        self.write_authority.ensure_current()?;
         self.write_session_meta_if_needed().await?;
 
         self.write_pending_items_once().await?;
 
+        self.write_authority.ensure_current()?;
         if let Some(writer) = self.writer.as_mut() {
             writer.file.flush().await?;
         }
@@ -1703,6 +1802,10 @@ impl RolloutWriterState {
         let mut written_count = 0usize;
         let mut write_result = Ok(());
         for item in &self.pending_items {
+            if let Err(err) = self.write_authority.ensure_current() {
+                write_result = Err(err);
+                break;
+            }
             match self.ordinal_state.current() {
                 Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
                     Ok(()) => self.ordinal_state.advance(),
@@ -1816,6 +1919,27 @@ async fn open_rollout_for_append(
         ensure_rollout_is_newline_terminated(&mut file)?;
         let ordinal_state = ordinal_state_for_rollout(&mut file, path_for_open.as_path())?;
         Ok::<_, std::io::Error>((file, ordinal_state))
+    })
+    .await
+    .map_err(IoError::other)??;
+    Ok((path, tokio::fs::File::from_std(file), ordinal_state))
+}
+
+async fn open_rollout_for_append_with_authority(
+    path: &Path,
+    write_authority: RolloutWriteAuthority,
+) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)> {
+    let path = path.to_path_buf();
+    let (path, file, ordinal_state) = tokio::task::spawn_blocking(move || {
+        let _open_permit = write_authority.open_permit()?;
+        let path = compression::materialize_rollout_for_append_blocking(path.as_path())?;
+        let mut file = File::options()
+            .read(true)
+            .append(true)
+            .open(path.as_path())?;
+        ensure_rollout_is_newline_terminated(&mut file)?;
+        let ordinal_state = ordinal_state_for_rollout(&mut file, path.as_path())?;
+        Ok::<_, std::io::Error>((path, file, ordinal_state))
     })
     .await
     .map_err(IoError::other)??;

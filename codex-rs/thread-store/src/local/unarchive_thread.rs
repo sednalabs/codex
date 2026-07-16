@@ -64,6 +64,7 @@ pub(super) async fn unarchive_thread(
         message: format!("failed to unarchive thread: {err}"),
     })?;
     let restored_path = dest_dir.join(&file_name);
+    let _retirement = store.begin_recorder_retirement(thread_id)?;
     std::fs::rename(&canonical_archived_path, &restored_path).map_err(|err| {
         ThreadStoreError::Internal {
             message: format!("failed to unarchive thread: {err}"),

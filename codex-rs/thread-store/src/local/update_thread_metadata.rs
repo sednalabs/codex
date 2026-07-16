@@ -427,12 +427,7 @@ async fn canonical_history_mode(
             if codex_rollout::existing_rollout_path(rollout_path)
                 .await
                 .is_none()
-                && let Some(history_mode) = store
-                    .live_recorders
-                    .lock()
-                    .await
-                    .get(&thread_id)
-                    .map(|entry| entry.history_mode)
+                && let Some(history_mode) = store.live_history_mode(thread_id)
             {
                 // The live writer retains the canonical mode selected before its deferred
                 // SessionMeta reaches JSONL.

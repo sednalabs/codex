@@ -46,6 +46,7 @@ pub(super) async fn archive_thread(
         message: format!("failed to archive thread: {err}"),
     })?;
     let archived_path = archive_folder.join(&file_name);
+    let _retirement = store.begin_recorder_retirement(thread_id)?;
     std::fs::rename(&canonical_rollout_path, &archived_path).map_err(|err| {
         ThreadStoreError::Internal {
             message: format!("failed to archive thread: {err}"),

@@ -15,12 +15,13 @@ mod test_support;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutRecorder;
+use codex_rollout::RolloutWriteAuthority;
 use codex_rollout::StateDbHandle;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
+use tokio::sync::watch;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -58,16 +59,164 @@ use crate::UpdateThreadMetadataParams;
 #[derive(Clone)]
 pub struct LocalThreadStore {
     pub(super) config: LocalThreadStoreConfig,
-    live_recorders: Arc<Mutex<HashMap<ThreadId, LiveRecorderEntry>>>,
+    live_recorders: Arc<Mutex<LiveRecorderRegistry>>,
     state_db: Option<StateDbHandle>,
 }
 
-struct LiveRecorderEntry {
+#[derive(Default)]
+struct LiveRecorderRegistry {
+    states: HashMap<ThreadId, LiveRecorderState>,
+}
+
+enum LiveRecorderState {
+    Starting {
+        write_authority: RolloutWriteAuthority,
+    },
+    Active(LiveRecorderEntry),
+    Closing {
+        entry: LiveRecorderEntry,
+        completion: ShutdownCompletion,
+    },
+    Retiring {
+        token: Arc<()>,
+    },
+}
+
+#[derive(Clone)]
+pub(super) struct LiveRecorderEntry {
     recorder: RolloutRecorder,
     // Local rollout files are materialized lazily, but metadata updates can arrive before the
     // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened
     // so missing SQLite rows can still be seeded.
     history_mode: ThreadHistoryMode,
+    write_authority: RolloutWriteAuthority,
+}
+
+pub(super) struct LiveRecorderRegistration {
+    store: LocalThreadStore,
+    thread_id: ThreadId,
+    write_authority: RolloutWriteAuthority,
+    committed: bool,
+}
+
+impl LiveRecorderRegistration {
+    pub(super) fn write_authority(&self) -> RolloutWriteAuthority {
+        self.write_authority.clone()
+    }
+
+    pub(super) fn commit(
+        mut self,
+        recorder: RolloutRecorder,
+        history_mode: ThreadHistoryMode,
+    ) -> ThreadStoreResult<()> {
+        let mut registry = self.store.lock_live_recorders();
+        match registry.states.get(&self.thread_id) {
+            Some(LiveRecorderState::Starting { write_authority })
+                if write_authority.same_generation(&self.write_authority) => {}
+            _ => {
+                return Err(ThreadStoreError::InvalidRequest {
+                    message: format!(
+                        "thread {} local writer registration was superseded",
+                        self.thread_id
+                    ),
+                });
+            }
+        }
+        registry.states.insert(
+            self.thread_id,
+            LiveRecorderState::Active(LiveRecorderEntry {
+                recorder,
+                history_mode,
+                write_authority: self.write_authority.clone(),
+            }),
+        );
+        drop(registry);
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for LiveRecorderRegistration {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let mut registry = self.store.lock_live_recorders();
+        let was_starting = matches!(
+            registry.states.get(&self.thread_id),
+            Some(LiveRecorderState::Starting { write_authority })
+                if write_authority.same_generation(&self.write_authority)
+        );
+        if was_starting {
+            registry.states.remove(&self.thread_id);
+        }
+        drop(registry);
+        if was_starting {
+            self.write_authority.revoke();
+        }
+    }
+}
+
+pub(super) struct LiveRecorderRetirement {
+    store: LocalThreadStore,
+    thread_id: ThreadId,
+    token: Arc<()>,
+}
+
+impl Drop for LiveRecorderRetirement {
+    fn drop(&mut self) {
+        let mut registry = self.store.lock_live_recorders();
+        if matches!(
+            registry.states.get(&self.thread_id),
+            Some(LiveRecorderState::Retiring { token }) if Arc::ptr_eq(token, &self.token)
+        ) {
+            registry.states.remove(&self.thread_id);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ShutdownCompletion {
+    receiver: watch::Receiver<Option<ShutdownOutcome>>,
+}
+
+#[derive(Clone)]
+pub(super) enum ShutdownOutcome {
+    Complete,
+    Failed(String),
+}
+
+impl ShutdownCompletion {
+    fn new() -> (Self, watch::Sender<Option<ShutdownOutcome>>) {
+        let (sender, receiver) = watch::channel(None);
+        (Self { receiver }, sender)
+    }
+
+    pub(super) async fn wait(mut self) -> ThreadStoreResult<()> {
+        loop {
+            if let Some(outcome) = self.receiver.borrow().clone() {
+                return match outcome {
+                    ShutdownOutcome::Complete => Ok(()),
+                    ShutdownOutcome::Failed(message) => Err(ThreadStoreError::Internal { message }),
+                };
+            }
+            self.receiver
+                .changed()
+                .await
+                .map_err(|err| ThreadStoreError::Internal {
+                    message: format!("local writer shutdown completion was lost: {err}"),
+                })?;
+        }
+    }
+}
+
+pub(super) enum ShutdownStart {
+    Spawn {
+        entry: LiveRecorderEntry,
+        completion: ShutdownCompletion,
+        sender: watch::Sender<Option<ShutdownOutcome>>,
+    },
+    Observe(ShutdownCompletion),
 }
 
 /// Process-scoped configuration for local thread storage.
@@ -105,7 +254,7 @@ impl LocalThreadStore {
     pub fn new(config: LocalThreadStoreConfig, state_db: Option<StateDbHandle>) -> Self {
         Self {
             config,
-            live_recorders: Arc::new(Mutex::new(HashMap::new())),
+            live_recorders: Arc::new(Mutex::new(LiveRecorderRegistry::default())),
             state_db,
         }
     }
@@ -136,47 +285,161 @@ impl LocalThreadStore {
         live_writer::rollout_path(self, thread_id).await
     }
 
-    pub(super) async fn live_recorder(
-        &self,
-        thread_id: ThreadId,
-    ) -> ThreadStoreResult<RolloutRecorder> {
+    fn lock_live_recorders(&self) -> std::sync::MutexGuard<'_, LiveRecorderRegistry> {
         self.live_recorders
             .lock()
-            .await
-            .get(&thread_id)
-            .map(|entry| entry.recorder.clone())
-            .ok_or(ThreadStoreError::ThreadNotFound { thread_id })
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(super) async fn ensure_live_recorder_absent(
+    pub(super) fn live_recorder_entry(
         &self,
         thread_id: ThreadId,
-    ) -> ThreadStoreResult<()> {
-        if self.live_recorders.lock().await.contains_key(&thread_id) {
+    ) -> ThreadStoreResult<LiveRecorderEntry> {
+        match self.lock_live_recorders().states.get(&thread_id) {
+            Some(LiveRecorderState::Active(entry)) => Ok(entry.clone()),
+            _ => Err(ThreadStoreError::ThreadNotFound { thread_id }),
+        }
+    }
+
+    pub(super) fn reserve_live_recorder(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreResult<LiveRecorderRegistration> {
+        let mut registry = self.lock_live_recorders();
+        if registry.states.contains_key(&thread_id) {
             return Err(ThreadStoreError::InvalidRequest {
                 message: format!("thread {thread_id} already has a live local writer"),
             });
         }
+        let write_authority = RolloutWriteAuthority::new_revocable();
+        registry.states.insert(
+            thread_id,
+            LiveRecorderState::Starting {
+                write_authority: write_authority.clone(),
+            },
+        );
+        drop(registry);
+        Ok(LiveRecorderRegistration {
+            store: self.clone(),
+            thread_id,
+            write_authority,
+            committed: false,
+        })
+    }
+
+    pub(super) fn begin_recorder_retirement(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreResult<LiveRecorderRetirement> {
+        let mut registry = self.lock_live_recorders();
+        if matches!(
+            registry.states.get(&thread_id),
+            Some(LiveRecorderState::Retiring { .. })
+        ) {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: format!("thread {thread_id} lifecycle transition is already in progress"),
+            });
+        }
+        let previous = registry.states.remove(&thread_id);
+        let write_authority = match previous.as_ref() {
+            Some(LiveRecorderState::Starting { write_authority }) => Some(write_authority.clone()),
+            Some(LiveRecorderState::Active(entry))
+            | Some(LiveRecorderState::Closing { entry, .. }) => Some(entry.write_authority.clone()),
+            Some(LiveRecorderState::Retiring { .. }) => unreachable!("checked above"),
+            None => None,
+        };
+        let token = Arc::new(());
+        registry.states.insert(
+            thread_id,
+            LiveRecorderState::Retiring {
+                token: Arc::clone(&token),
+            },
+        );
+        drop(registry);
+        if let Some(write_authority) = write_authority {
+            write_authority.revoke();
+        }
+        Ok(LiveRecorderRetirement {
+            store: self.clone(),
+            thread_id,
+            token,
+        })
+    }
+
+    pub(super) fn begin_shutdown(&self, thread_id: ThreadId) -> ThreadStoreResult<ShutdownStart> {
+        let mut registry = self.lock_live_recorders();
+        match registry.states.get(&thread_id) {
+            Some(LiveRecorderState::Active(entry)) => {
+                let entry = entry.clone();
+                let (completion, sender) = ShutdownCompletion::new();
+                registry.states.insert(
+                    thread_id,
+                    LiveRecorderState::Closing {
+                        entry: entry.clone(),
+                        completion: completion.clone(),
+                    },
+                );
+                Ok(ShutdownStart::Spawn {
+                    entry,
+                    completion,
+                    sender,
+                })
+            }
+            Some(LiveRecorderState::Closing { completion, .. }) => {
+                Ok(ShutdownStart::Observe(completion.clone()))
+            }
+            _ => Err(ThreadStoreError::ThreadNotFound { thread_id }),
+        }
+    }
+
+    pub(super) fn finish_shutdown(
+        &self,
+        thread_id: ThreadId,
+        entry: LiveRecorderEntry,
+        writer_closed: bool,
+    ) {
+        let mut registry = self.lock_live_recorders();
+        let still_closing = matches!(
+            registry.states.get(&thread_id),
+            Some(LiveRecorderState::Closing { entry: current, .. })
+                if current.write_authority.same_generation(&entry.write_authority)
+        );
+        if !still_closing {
+            return;
+        }
+        if writer_closed {
+            registry.states.remove(&thread_id);
+        } else {
+            registry
+                .states
+                .insert(thread_id, LiveRecorderState::Active(entry));
+        }
+    }
+
+    pub(super) fn discard_live_recorder(&self, thread_id: ThreadId) -> ThreadStoreResult<()> {
+        let mut registry = self.lock_live_recorders();
+        let Some(state) = registry.states.remove(&thread_id) else {
+            return Err(ThreadStoreError::ThreadNotFound { thread_id });
+        };
+        let write_authority = match state {
+            LiveRecorderState::Starting { write_authority } => Some(write_authority),
+            LiveRecorderState::Active(entry) | LiveRecorderState::Closing { entry, .. } => {
+                Some(entry.write_authority)
+            }
+            LiveRecorderState::Retiring { .. } => None,
+        };
+        drop(registry);
+        if let Some(write_authority) = write_authority {
+            write_authority.revoke();
+        }
         Ok(())
     }
 
-    pub(super) async fn insert_live_recorder(
-        &self,
-        thread_id: ThreadId,
-        recorder: RolloutRecorder,
-        history_mode: ThreadHistoryMode,
-    ) -> ThreadStoreResult<()> {
-        match self.live_recorders.lock().await.entry(thread_id) {
-            Entry::Occupied(entry) => Err(ThreadStoreError::InvalidRequest {
-                message: format!("thread {} already has a live local writer", entry.key()),
-            }),
-            Entry::Vacant(entry) => {
-                entry.insert(LiveRecorderEntry {
-                    recorder,
-                    history_mode,
-                });
-                Ok(())
-            }
+    pub(super) fn live_history_mode(&self, thread_id: ThreadId) -> Option<ThreadHistoryMode> {
+        match self.lock_live_recorders().states.get(&thread_id) {
+            Some(LiveRecorderState::Active(entry))
+            | Some(LiveRecorderState::Closing { entry, .. }) => Some(entry.history_mode),
+            _ => None,
         }
     }
 
@@ -399,6 +662,84 @@ mod tests {
         assert!(
             matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_old_shutdown_cannot_remove_or_write_through_replacement() {
+        struct NoopWake;
+
+        impl std::task::Wake for NoopWake {
+            fn wake(self: Arc<Self>) {}
+        }
+
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let thread_id = ThreadId::default();
+        store
+            .create_thread(create_thread_params(thread_id))
+            .await
+            .expect("create old generation");
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id,
+                items: vec![user_message_item("pending old generation")],
+            })
+            .await
+            .expect("queue old generation item");
+
+        let mut old_shutdown = Box::pin(live_writer::shutdown_thread(&store, thread_id));
+        let waker = std::task::Waker::from(Arc::new(NoopWake));
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(
+            std::future::Future::poll(old_shutdown.as_mut(), &mut context).is_pending(),
+            "shutdown should publish closing state before waiting"
+        );
+        let old_completion = match store.begin_shutdown(thread_id).expect("observe shutdown") {
+            ShutdownStart::Observe(completion) => completion,
+            ShutdownStart::Spawn { .. } => panic!("shutdown should already be independently owned"),
+        };
+        drop(old_shutdown);
+
+        let retirement = store
+            .begin_recorder_retirement(thread_id)
+            .expect("revoke old generation");
+        drop(retirement);
+        store
+            .create_thread(create_thread_params(thread_id))
+            .await
+            .expect("install replacement generation");
+        let replacement = store
+            .live_recorder_entry(thread_id)
+            .expect("replacement should be live");
+
+        old_completion
+            .wait()
+            .await
+            .expect_err("revoked old shutdown should fail closed");
+        let current = store
+            .live_recorder_entry(thread_id)
+            .expect("old cleanup must preserve replacement");
+        assert!(
+            current
+                .write_authority
+                .same_generation(&replacement.write_authority)
+        );
+
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id,
+                items: vec![user_message_item("replacement write")],
+            })
+            .await
+            .expect("replacement append");
+        store
+            .flush_thread(thread_id)
+            .await
+            .expect("replacement flush");
+        store
+            .shutdown_thread(thread_id)
+            .await
+            .expect("replacement shutdown");
     }
 
     #[tokio::test]

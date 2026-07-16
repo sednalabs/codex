@@ -589,6 +589,70 @@ async fn recorder_materializes_on_flush_with_pending_items() -> std::io::Result<
 }
 
 #[tokio::test]
+async fn revoked_deferred_generation_cannot_materialize_during_shutdown() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let write_authority = RolloutWriteAuthority::new_revocable();
+    let recorder = RolloutRecorder::new_with_write_authority(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+        write_authority.clone(),
+    )
+    .await?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    recorder
+        .record_canonical_items(&[agent_message_item("pending-before-revocation")])
+        .await?;
+
+    write_authority.revoke();
+    let err = recorder
+        .shutdown()
+        .await
+        .expect_err("revoked generation must not materialize pending data");
+
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!rollout_path.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_generation_cannot_open_resumed_rollout() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let thread_id = ThreadId::new();
+    let rollout_path = write_session_file(
+        home.path(),
+        "2025-01-03T12-00-00",
+        Uuid::parse_str(&thread_id.to_string()).expect("thread UUID"),
+    )?;
+    let write_authority = RolloutWriteAuthority::new_revocable();
+    write_authority.revoke();
+
+    let err = match RolloutRecorder::new_with_write_authority(
+        &config,
+        RolloutRecorderParams::resume(rollout_path),
+        write_authority,
+    )
+    .await
+    {
+        Ok(_) => panic!("revoked generation must be rejected before resume open"),
+        Err(err) => err,
+    };
+
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    Ok(())
+}
+
+#[tokio::test]
 async fn recorder_omits_ordinals_from_legacy_rollouts() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());
@@ -717,6 +781,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        write_authority: RolloutWriteAuthority::default(),
     };
     state.add_items(vec![RolloutItem::EventMsg(EventMsg::AgentMessage(
         AgentMessageEvent {
