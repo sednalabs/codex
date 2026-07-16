@@ -60,17 +60,6 @@ fn request_has_input_type(request: &wiremock::Request, input_type: &str) -> bool
         })
 }
 
-fn request_has_thread_id(request: &wiremock::Request, thread_id: &str) -> bool {
-    decoded_body(request)
-        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
-        .and_then(|body| {
-            body.pointer("/client_metadata/thread_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .is_some_and(|actual| actual == thread_id)
-}
-
 fn configure_multi_agent_v2(config: &mut codex_core::config::Config) {
     config
         .features
@@ -204,13 +193,11 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
         ]),
     )
     .await;
-    let worker_thread_id_for_match = worker_thread_id.to_string();
     let followup_child_request = mount_sse_once_match(
         &server,
-        move |request: &wiremock::Request| {
+        |request: &wiremock::Request| {
             request_has_input_type(request, "agent_message")
                 && body_contains(request, FOLLOWUP_TASK)
-                && request_has_thread_id(request, &worker_thread_id_for_match)
         },
         sse(vec![
             ev_response_created("resp-worker-2"),
@@ -256,22 +243,25 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
         .expect("follow-up tool should return a model-visible result");
     let worker_thread_id_string = worker_thread_id.to_string();
     let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if followup_child_request.requests().iter().any(|request| {
-            request.body_contains_text(FOLLOWUP_TASK)
-                && request
-                    .body_json()
-                    .pointer("/client_metadata/thread_id")
-                    .and_then(Value::as_str)
-                    == Some(worker_thread_id_string.as_str())
+    let followup_request = loop {
+        if let Some(request) = followup_child_request.requests().into_iter().find(|request| {
+            !request.inputs_of_type("agent_message").is_empty()
+                && request.body_contains_text(FOLLOWUP_TASK)
         }) {
-            break;
+            break request;
         }
         if Instant::now() >= deadline {
             anyhow::bail!("timed out waiting for child follow-up; tool result: {followup_output}");
         }
         sleep(Duration::from_millis(10)).await;
-    }
+    };
+    assert_eq!(
+        followup_request
+            .body_json()
+            .pointer("/client_metadata/thread_id")
+            .and_then(Value::as_str),
+        Some(worker_thread_id_string.as_str())
+    );
     let followup_result: Value = serde_json::from_str(&followup_output)?;
     assert_eq!(followup_result["task_name"], "/root/worker");
     assert_eq!(followup_result["effective_model"], WORKER_MODEL);
