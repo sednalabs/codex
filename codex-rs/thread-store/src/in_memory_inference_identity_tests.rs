@@ -233,10 +233,10 @@ async fn identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect() {
 #[tokio::test]
 async fn identity_sidecar_read_composes_with_thread_read_shapes() {
     let store = InMemoryThreadStore::default();
-    let thread_id = thread_id(/*suffix*/ 5);
+    let primary_thread_id = thread_id(/*suffix*/ 5);
     let second_thread_id = thread_id(/*suffix*/ 6);
     let rollout_path = std::path::PathBuf::from("/tmp/in-memory-identity-sidecar.jsonl");
-    ThreadStore::create_thread(&store, create_thread_params(thread_id))
+    ThreadStore::create_thread(&store, create_thread_params(primary_thread_id))
         .await
         .expect("thread should be created");
     ThreadStore::create_thread(&store, create_thread_params(second_thread_id))
@@ -245,7 +245,7 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
     ThreadStore::resume_thread(
         &store,
         ResumeThreadParams {
-            thread_id,
+            thread_id: primary_thread_id,
             rollout_path: Some(rollout_path.clone()),
             history: None,
             include_archived: false,
@@ -268,7 +268,7 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
     state
         .inference_identity
         .sidecars
-        .insert(thread_id, expected.clone());
+        .insert(primary_thread_id, expected.clone());
     state
         .inference_identity
         .sidecars
@@ -278,7 +278,7 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
     let direct = ThreadStore::read_thread(
         &store,
         ReadThreadParams {
-            thread_id,
+            thread_id: primary_thread_id,
             include_archived: false,
             include_history: false,
         },
@@ -300,7 +300,7 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
         .expect("list should find thread")
         .items
         .into_iter()
-        .find(|item| item.thread_id == thread_id)
+        .find(|item| item.thread_id == primary_thread_id)
         .expect("listed thread");
 
     for observed_thread_id in [direct.thread_id, by_path.thread_id, listed.thread_id] {
@@ -318,9 +318,10 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
         );
     }
 
-    for (observed_thread_id, expected_sidecar) in
-        [(thread_id, expected), (second_thread_id, second_expected)]
-    {
+    for (observed_thread_id, expected_sidecar) in [
+        (primary_thread_id, expected),
+        (second_thread_id, second_expected),
+    ] {
         assert_eq!(
             ThreadStore::read_thread_inference_identity_sidecar(
                 &store,
@@ -339,7 +340,7 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
 #[tokio::test]
 async fn identity_sidecar_read_rejects_missing_and_deleted_threads() {
     let store = InMemoryThreadStore::default();
-    let thread_id = thread_id(/*suffix*/ 6);
+    let deleted_thread_id = thread_id(/*suffix*/ 6);
     let missing_thread_id = thread_id(/*suffix*/ 7);
     assert!(matches!(
         ThreadStore::read_thread_inference_identity_sidecar(
@@ -353,23 +354,27 @@ async fn identity_sidecar_read_rejects_missing_and_deleted_threads() {
         Err(ThreadStoreError::ThreadNotFound { thread_id }) if thread_id == missing_thread_id
     ));
 
-    ThreadStore::create_thread(&store, create_thread_params(thread_id))
+    ThreadStore::create_thread(&store, create_thread_params(deleted_thread_id))
         .await
         .expect("thread should be created");
-    ThreadStore::delete_thread(&store, DeleteThreadParams { thread_id })
-        .await
-        .expect("thread should delete");
+    ThreadStore::delete_thread(
+        &store,
+        DeleteThreadParams {
+            thread_id: deleted_thread_id,
+        },
+    )
+    .await
+    .expect("thread should delete");
     assert!(matches!(
         ThreadStore::read_thread_inference_identity_sidecar(
             &store,
             ReadThreadInferenceIdentitySidecarParams {
-                thread_id,
+                thread_id: deleted_thread_id,
                 include_archived: true,
             },
         )
         .await,
-        Err(ThreadStoreError::ThreadNotFound { thread_id: deleted_thread_id })
-            if deleted_thread_id == thread_id
+        Err(ThreadStoreError::ThreadNotFound { thread_id }) if thread_id == deleted_thread_id
     ));
 }
 
