@@ -90,6 +90,7 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
         "task_name": "worker",
         "model": WORKER_MODEL,
         "reasoning_effort": WORKER_REASONING_EFFORT,
+        "fork_turns": "none",
     }))?;
     mount_sse_once_match(
         &server,
