@@ -3910,6 +3910,44 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(summary["sccache_restore_mode"], "restore-key-or-miss")
         self.assertNotIn("run_command", summary)
 
+    def test_lane_summary_does_not_treat_panic_crate_names_as_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log = root / "lane.log"
+            output = root / "summary.json"
+            log.write_text(
+                "\n".join(
+                    [
+                        "Checking sentry-panic v0.46.2",
+                        "error[E0277]: a real compiler failure",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.example",
+                    "--summary-title",
+                    "example",
+                    "--outcome",
+                    "failure",
+                    "--log-file",
+                    str(log),
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["error_lines"], ["error[E0277]: a real compiler failure"])
+        self.assertEqual(summary["primary_signal"], "error[E0277]: a real compiler failure")
+
     def test_lane_summary_records_script_metadata_and_cache_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "summary.json"
