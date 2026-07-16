@@ -352,6 +352,7 @@ docs-only refresh commit that records this snapshot.
 - Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
 - Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
 - A validated identity and strict versioned storage wire distinguish legacy absence, valid data, deliberate clears, and exact malformed diagnostics through a source-compatible optional store sidecar.
+- Local sidecar reads treat the rollout or live recorder as logical authority rather than trusting the SQLite projection. An async lifecycle permit serializes the eligibility decision and authority query with archive, unarchive, and deletion so a surviving projection row cannot revive a deleted or ineligible thread.
 - Dedicated protocol, codec, sidecar, and populated-0044 upgrade checks independently guard the strict wire through exact selectors in the model-pinning lane.
 - `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
 - The live tool-contract schema in
@@ -386,6 +387,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/inference_identity.rs`
   - `codex-rs/state/migrations/0045_threads_inference_identity_authority.sql`
   - `codex-rs/thread-store/src/inference_identity.rs`
+  - `codex-rs/thread-store/src/local/read_thread_inference_identity.rs`
+  - `codex-rs/thread-store/src/local/delete_thread.rs`
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
