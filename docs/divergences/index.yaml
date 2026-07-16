@@ -222,6 +222,8 @@
         "codex-rs/state/migrations/0045_threads_inference_identity_authority.sql",
         "codex-rs/state/src/inference_identity.rs",
         "codex-rs/thread-store/src/inference_identity.rs",
+        "codex-rs/thread-store/src/local/read_thread_inference_identity.rs",
+        "codex-rs/thread-store/src/local/delete_thread.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
@@ -232,7 +234,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire and optional store sidecar while richer inventory and wait behavior remain capability-declared.",
+      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire and optional store sidecar. Local sidecar reads share lifecycle custody with archive and deletion, so stale projection rows cannot outlive logical rollout eligibility. Richer inventory and wait behavior remain capability-declared.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -244,6 +246,10 @@
         "authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",
         "inference_identity_authority_migration_preserves_populated_0044_row",
         "inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing",
+        "sidecar_read_distinguishes_capability_eligibility_and_authority",
+        "sidecar_read_rejects_stale_projection_after_rollout_deletion",
+        "sidecar_read_queued_after_delete_observes_logical_deletion",
+        "sidecar_read_maps_state_query_failure_to_internal",
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",

@@ -5,6 +5,7 @@ mod helpers;
 mod list_threads;
 mod live_writer;
 mod read_thread;
+mod read_thread_inference_identity;
 mod search_threads;
 mod unarchive_thread;
 mod update_thread_metadata;
@@ -20,7 +21,10 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Weak;
 use tokio::sync::Mutex;
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -29,11 +33,13 @@ use crate::DeleteThreadParams;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::SearchThreadsParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
 use crate::ThreadStore;
@@ -58,6 +64,7 @@ use crate::UpdateThreadMetadataParams;
 #[derive(Clone)]
 pub struct LocalThreadStore {
     pub(super) config: LocalThreadStoreConfig,
+    lifecycle_custody: Arc<Mutex<HashMap<ThreadId, Weak<Semaphore>>>>,
     live_recorders: Arc<Mutex<HashMap<ThreadId, LiveRecorderEntry>>>,
     state_db: Option<StateDbHandle>,
 }
@@ -105,6 +112,7 @@ impl LocalThreadStore {
     pub fn new(config: LocalThreadStoreConfig, state_db: Option<StateDbHandle>) -> Self {
         Self {
             config,
+            lifecycle_custody: Arc::new(Mutex::new(HashMap::new())),
             live_recorders: Arc::new(Mutex::new(HashMap::new())),
             state_db,
         }
@@ -113,6 +121,34 @@ impl LocalThreadStore {
     /// Return the state DB handle used by local rollout writers.
     pub async fn state_db(&self) -> Option<StateDbHandle> {
         self.state_db.clone()
+    }
+
+    /// Serializes lifecycle-sensitive authority reads with destructive Local transitions for one
+    /// thread without blocking unrelated thread ids.
+    ///
+    /// The async semaphore permit is intentionally held across filesystem and SQLite awaits.
+    /// Callers must acquire it before `live_recorders` or state-database custody.
+    pub(super) async fn acquire_lifecycle_custody(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreResult<OwnedSemaphorePermit> {
+        let semaphore = {
+            let mut custody = self.lifecycle_custody.lock().await;
+            custody.retain(|_, semaphore| semaphore.strong_count() > 0);
+            if let Some(semaphore) = custody.get(&thread_id).and_then(Weak::upgrade) {
+                semaphore
+            } else {
+                let semaphore = Arc::new(Semaphore::new(1));
+                custody.insert(thread_id, Arc::downgrade(&semaphore));
+                semaphore
+            }
+        };
+        semaphore
+            .acquire_owned()
+            .await
+            .map_err(|_| ThreadStoreError::Internal {
+                message: "local thread lifecycle custody is closed".to_string(),
+            })
     }
 
     /// Read a local rollout-backed thread by path.
@@ -288,6 +324,16 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(LocalThreadStore::read_thread_by_rollout_path_params(
             self, params,
         ))
+    }
+
+    fn read_thread_inference_identity_sidecar(
+        &self,
+        params: ReadThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ThreadInferenceIdentitySidecar> {
+        Box::pin(async move {
+            read_thread_inference_identity::read_thread_inference_identity_sidecar(self, params)
+                .await
+        })
     }
 
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage> {
