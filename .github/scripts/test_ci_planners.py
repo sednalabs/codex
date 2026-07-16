@@ -1589,6 +1589,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ]
         )
         self.assertEqual(recipe.count("cargo nextest run"), 5)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 5)
         self.assertEqual(recipe.count("--no-tests=fail"), 5)
         self.assertIn(
             "tools::handlers::multi_agents_spec::tests::"
