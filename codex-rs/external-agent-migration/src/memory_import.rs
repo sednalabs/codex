@@ -207,10 +207,14 @@ fn owned_project_keys(codex_home: &Path) -> io::Result<BTreeSet<String>> {
     let mut project_keys = BTreeSet::new();
     for entry in entries {
         let entry = entry?;
+        let entry_path = entry.path();
+        ensure_migration_path(codex_home, &entry_path)?;
         if !entry.file_type()?.is_dir() {
             continue;
         }
-        match fs::symlink_metadata(entry.path().join(PROJECT_SCOPE_FILE)) {
+        let scope_path = entry_path.join(PROJECT_SCOPE_FILE);
+        ensure_migration_path(codex_home, &scope_path)?;
+        match fs::symlink_metadata(&scope_path) {
             Ok(metadata) if metadata.file_type().is_file() => {}
             Ok(_) => continue,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,

@@ -374,6 +374,35 @@ fn uses_scope_file_to_identify_owned_projects() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn projects_needing_import_rejects_symlinked_stale_project_scope() {
+    let root = TempDir::new().expect("create tempdir");
+    let codex_home = root.path().join(".codex");
+    let stale_project = resources_root(&codex_home).join("stale-project");
+    let scope_path = stale_project.join(PROJECT_SCOPE_FILE);
+    let outside_scope = root.path().join("outside-scope.json");
+    fs::create_dir_all(&stale_project).expect("create stale project directory");
+    fs::write(&outside_scope, b"{}\n").expect("write outside scope");
+    std::os::unix::fs::symlink(&outside_scope, &scope_path)
+        .expect("create stale scope symlink");
+
+    let error = projects_needing_import(&codex_home, &[])
+        .expect_err("reject symlinked stale project scope during detection");
+
+    assert!(error.to_string().contains("symlink"));
+    assert_eq!(
+        fs::read(&outside_scope).expect("read outside scope"),
+        b"{}\n".to_vec()
+    );
+    assert!(
+        fs::symlink_metadata(&scope_path)
+            .expect("read stale scope symlink")
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[test]
 fn project_rename_removes_the_old_target_and_imports_the_new_target() {
     let root = TempDir::new().expect("create tempdir");

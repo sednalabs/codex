@@ -46,6 +46,10 @@ through repository symlinks; they are not a handle-relative authorization
 boundary against a checkout being replaced concurrently. Shared target-leaf
 checks also avoid overwriting symlink entries during home-scoped migration,
 without applying the repository-root preflight to home sources.
+Home-scoped imported-memory ownership is marker-based: only directories with a
+regular, non-symlink `scope.json` are managed. Ordinary metadata is ignored,
+while project-root and marker symlinks fail closed before detection. Existing
+unchanged imports are not silently backfilled by this sync.
 
 ## Validation policy
 
