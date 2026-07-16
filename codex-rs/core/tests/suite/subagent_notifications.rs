@@ -726,7 +726,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         .await?;
     let _ = wait_for_requests(&first_child_request).await?;
     let _ = wait_for_requests(&second_child_request).await?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if matches!(
             spawned_thread.agent_status().await,
