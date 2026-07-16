@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-16`
-- downstream integration code tree: `43814ad3119063602abcf04f8cdf9d205fff668f`
+- downstream integration code tree: `78dd12506c2879289d7c52cfa9c67100e0789b89`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
 - `upstream/main`: `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
-- downstream branch vs `upstream/main`: `1758` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1760` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1531` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1533` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -136,6 +136,9 @@ docs-only refresh commit that records this snapshot.
 - Windows hosted setup prefers a real Dev Drive but falls back to an existing
   secondary or system volume when the runner image lacks Dev Drive formatting,
   so validation does not fail before the requested command starts.
+- Windows Bazel shards serialize local test actions because sandbox identities,
+  ACLs, and firewall rules are host-global; concurrent policy tests can
+  otherwise invalidate one another and create false allow/deny results.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
