@@ -1,7 +1,7 @@
+use codex_utils_absolute_path::AbsolutePathBuf;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use codex_utils_absolute_path::AbsolutePathBuf;
 
 /// The filesystem boundary within which migration detection or import runs.
 #[derive(Debug, Clone, PartialEq, Eq)]

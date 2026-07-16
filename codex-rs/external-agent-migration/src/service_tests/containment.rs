@@ -41,16 +41,12 @@ fn cursor_repo_source_cases() -> Vec<(
         (
             PathBuf::from(CurSource::CONFIG_DIR).join(CurSource::MCP_CONFIG_FILE),
             ExternalAgentConfigMigrationItemType::McpServerConfig,
-            CursorRepoSourceFixture::File(
-                r#"{"mcpServers":{"outside":{"command":"outside"}}}"#,
-            ),
+            CursorRepoSourceFixture::File(r#"{"mcpServers":{"outside":{"command":"outside"}}}"#),
         ),
         (
             PathBuf::from(CurSource::CONFIG_DIR).join(CurSource::HOOKS_CONFIG_FILE),
             ExternalAgentConfigMigrationItemType::Hooks,
-            CursorRepoSourceFixture::File(
-                r#"{"hooks":{"stop":[{"command":"echo outside"}]}}"#,
-            ),
+            CursorRepoSourceFixture::File(r#"{"hooks":{"stop":[{"command":"echo outside"}]}}"#),
         ),
         (
             PathBuf::from(CurSource::CONFIG_DIR).join(CurSource::HOOKS_DIR),
@@ -95,8 +91,7 @@ async fn detect_repo_canonicalizes_symlinked_nested_cwd_before_containment_check
     let linked_cwd = root.path().join("linked-cwd");
     let external_settings = root.path().join("external-settings.json");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::create_dir_all(&nested).expect("create nested dir");
     fs::write(&external_settings, r#"{"sandbox":{"enabled":true}}"#)
         .expect("write external settings");
@@ -129,8 +124,7 @@ async fn detect_repo_rejects_symlinked_local_settings() {
     let repo_root = root.path().join("repo");
     let external_settings = root.path().join("external-settings.json");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::write(&external_settings, r#"{"sandbox":{"enabled":true}}"#)
         .expect("write external settings");
     let local_settings = repo_root
@@ -193,8 +187,7 @@ async fn detect_cursor_repo_rejects_symlinked_source_files() {
         let external_source = root.path().join("external-source");
         let source = repo_root.join(relative_source);
         fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-        fs::create_dir_all(source.parent().expect("source parent"))
-            .expect("create source parent");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create source parent");
         match source_fixture {
             CursorRepoSourceFixture::File(contents) => {
                 fs::write(&external_source, contents).expect("write external source");
@@ -228,8 +221,7 @@ async fn import_repo_config_rejects_symlinked_local_settings() {
     let repo_root = root.path().join("repo");
     let external_settings = root.path().join("external-settings.json");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::write(&external_settings, r#"{"sandbox":{"enabled":true}}"#)
         .expect("write external settings");
     let local_settings = repo_root
@@ -257,10 +249,7 @@ async fn import_repo_config_rejects_symlinked_local_settings() {
 
 #[tokio::test]
 async fn import_repo_mcp_rejects_symlinked_source_files() {
-    for source_name in [
-        ClaSource::MCP_CONFIG_FILE,
-        ClaSource::PROJECT_CONFIG_FILE,
-    ] {
+    for source_name in [ClaSource::MCP_CONFIG_FILE, ClaSource::PROJECT_CONFIG_FILE] {
         let root = TempDir::new().expect("create tempdir");
         let repo_root = root.path().join("repo");
         let external_mcp = root.path().join("external-mcp.json");
@@ -302,8 +291,7 @@ async fn import_cursor_repo_rejects_symlinked_source_files() {
         let external_source = root.path().join("external-source");
         let source = repo_root.join(relative_source);
         fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-        fs::create_dir_all(source.parent().expect("source parent"))
-            .expect("create source parent");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create source parent");
         match source_fixture {
             CursorRepoSourceFixture::File(contents) => {
                 fs::write(&external_source, contents).expect("write external source");
@@ -338,8 +326,7 @@ async fn import_repo_hooks_rejects_symlinked_local_settings() {
     let repo_root = root.path().join("repo");
     let external_settings = root.path().join("external-settings.json");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::write(
         &external_settings,
         r#"{"hooks":{"Stop":[{"hooks":[{"command":"echo outside"}]}]}}"#,
@@ -374,11 +361,9 @@ async fn import_repo_hooks_rejects_symlinked_script_root() {
     let repo_root = root.path().join("repo");
     let external_hooks = root.path().join("external-hooks");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::create_dir_all(&external_hooks).expect("create external hooks");
-    fs::write(external_hooks.join("outside.py"), "print('outside')")
-        .expect("write external hook");
+    fs::write(external_hooks.join("outside.py"), "print('outside')").expect("write external hook");
     fs::write(
         repo_root
             .join(ClaSource::CONFIG_DIR)
@@ -389,8 +374,7 @@ async fn import_repo_hooks_rejects_symlinked_script_root() {
     let hooks_source = repo_root
         .join(ClaSource::CONFIG_DIR)
         .join(ClaSource::HOOKS_DIR);
-    std::os::unix::fs::symlink(&external_hooks, &hooks_source)
-        .expect("create hooks symlink");
+    std::os::unix::fs::symlink(&external_hooks, &hooks_source).expect("create hooks symlink");
 
     let outcome = service_for_paths(
         root.path().join(ClaSource::CONFIG_DIR),
@@ -415,8 +399,7 @@ async fn import_repo_skills_rejects_symlinked_source_root() {
     let repo_root = root.path().join("repo");
     let external_source = root.path().join("external-source");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::create_dir_all(external_source.join("outside-skill")).expect("create external skill");
     fs::write(
         external_source.join("outside-skill").join("SKILL.md"),
@@ -498,8 +481,7 @@ async fn import_repo_hooks_rejects_symlinked_target_file() {
     let repo_root = root.path().join("repo");
     let linked_target = root.path().join("linked-hooks.json");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::create_dir_all(repo_root.join(".codex")).expect("create target config dir");
     fs::write(
         repo_root
@@ -538,8 +520,7 @@ async fn import_repo_hooks_rejects_symlinked_target_parent() {
     let repo_root = root.path().join("repo");
     let external_target = root.path().join("external-target");
     fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR))
-        .expect("create source config dir");
+    fs::create_dir_all(repo_root.join(ClaSource::CONFIG_DIR)).expect("create source config dir");
     fs::create_dir_all(&external_target).expect("create external target");
     fs::write(
         repo_root

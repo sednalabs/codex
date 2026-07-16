@@ -8,8 +8,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
@@ -728,7 +728,10 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     let _ = wait_for_requests(&second_child_request).await?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if matches!(spawned_thread.agent_status().await, AgentStatus::Completed(_)) {
+        if matches!(
+            spawned_thread.agent_status().await,
+            AgentStatus::Completed(_)
+        ) {
             break;
         }
         if Instant::now() >= deadline {

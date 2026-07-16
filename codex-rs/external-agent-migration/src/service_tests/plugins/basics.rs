@@ -318,8 +318,8 @@ enabled = true
             include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
-    .await
-    .expect("detect");
+        .await
+        .expect("detect");
 
     let repo_root = canonical_fixture_path(&repo_root);
     assert_eq!(
@@ -484,8 +484,8 @@ enabled = true
             include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
-    .await
-    .expect("detect");
+        .await
+        .expect("detect");
 
     let repo_root = canonical_fixture_path(&repo_root);
     assert_eq!(
@@ -672,8 +672,8 @@ source = "owner/debug-marketplace"
             include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
-    .await
-    .expect("detect");
+        .await
+        .expect("detect");
 
     let repo_root = canonical_fixture_path(&repo_root);
     assert_eq!(

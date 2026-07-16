@@ -585,8 +585,8 @@ async fn detect_repo_supports_project_relative_external_agent_plugin_marketplace
             include_memory: false,
             cwds: Some(vec![repo_root.clone()]),
         })
-    .await
-    .expect("detect");
+        .await
+        .expect("detect");
 
     let repo_root = canonical_fixture_path(&repo_root);
     assert_eq!(
