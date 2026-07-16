@@ -385,6 +385,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             Some(&req.shell_type),
             attempt.sandbox,
             attempt.windows_sandbox_level,
+            managed_network.is_some(),
         );
         let command = if matches!(req.shell_type, ShellType::PowerShell) {
             prefix_powershell_script_with_utf8(&command)

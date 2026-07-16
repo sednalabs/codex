@@ -499,3 +499,21 @@ Why:
 User-visible behavior:
 
 - No product behavior change; this divergence only makes downstream core tests more tolerant of completion/polling races.
+
+### Windows sandbox: proxy-aware launch and command-cwd policy
+
+Why:
+
+- Managed proxy enforcement requires the elevated Windows backend to apply its
+  firewall identity consistently across direct and unified exec.
+- App-server `command/exec` permission profiles are project-scoped and must not
+  lose the trusted command project's Windows sandbox mode.
+
+User-visible behavior:
+
+- Proxy-enforced Windows commands use one effective elevated-backend decision
+  for filesystem overrides, PowerShell startup, process spawning, and telemetry.
+- Unified exec cannot bypass the managed proxy with an unrelated direct
+  loopback connection.
+- App-server commands using `permissionProfile` resolve the Windows sandbox
+  mode from the command `cwd` alongside the rest of that project's policy.

@@ -192,6 +192,54 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/exec_tests.rs`
   - `codex-rs/core/tests/suite/windows_sandbox.rs`
 
+### Windows Proxy-Aware Backend Selection
+
+- A managed network proxy is an effective elevated-backend requirement on
+  Windows, regardless of whether the configured sandbox level is elevated or
+  restricted token.
+- Direct exec and unified exec share the same backend selector and filesystem
+  override resolver. The prepared deny-read/write and split-root overrides
+  must reach the canonical Windows session spawner unchanged.
+- PowerShell `-NoProfile` startup, spawn-failure metrics, tool telemetry, and
+  turn metadata follow the effective backend, not only the configured level.
+- Hosted guardrails:
+  `windows_proxy_enforcement_uses_elevated_backend`,
+  `windows_spawn_failure_metric_uses_effective_backend`,
+  `proxy_enforced_restricted_token_uses_windows_elevated_tag`,
+  `proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides`,
+  `inserts_no_profile_for_proxy_selected_elevated_windows_sandbox`, and
+  `unified_exec_proxy_blocks_direct_loopback_bypass_on_windows`.
+- Upstream provenance: `4bc2c723ef` introduced proxy-selected elevation for
+  direct exec. Preserve this completion carry until unified exec and adjacent
+  launch policy use the same effective-backend contract upstream.
+- Primary files:
+  - `codex-rs/windows-sandbox-rs/src/lib.rs`
+  - `codex-rs/sandboxing/src/windows.rs`
+  - `codex-rs/core/src/sandboxing/mod.rs`
+  - `codex-rs/core/src/exec.rs`
+  - `codex-rs/core/src/sandbox_tags.rs`
+  - `codex-rs/core/src/unified_exec/process_manager.rs`
+  - `codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs`
+
+### App-Server Command-Cwd Windows Sandbox Mode
+
+- `command/exec` with `permissionProfile` reloads the trusted project selected
+  by the command `cwd`; its Windows sandbox mode travels with its permission
+  profile, workspace roots, and network policy.
+- Do not replace that reloaded mode with the app-server process's global mode.
+  A global disabled mode must not silently disable a command project's explicit
+  unelevated sandbox.
+- Hosted guardrails:
+  `command_exec_permission_profile_project_roots_use_command_cwd` and
+  `command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode`.
+- Upstream provenance: `8e8fd94c60` introduced the command-cwd reload behavior;
+  `4bc2c723ef` accidentally dropped the selected level while changing proxy
+  handling. Keep the restoration until upstream restores it.
+- Primary files:
+  - `codex-rs/app-server/src/request_processors/command_exec_processor.rs`
+  - `codex-rs/app-server/tests/suite/v2/command_exec.rs`
+  - `codex-rs/app-server/README.md`
+
 ### Python Code Quality Corrections
 
 - Downstream carries three upstreamable Python maintenance corrections so

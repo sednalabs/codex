@@ -463,11 +463,13 @@ impl<'a> SandboxAttempt<'a> {
             .iter()
             .map(PathUri::to_abs_path)
             .collect::<std::io::Result<Vec<_>>>()?;
-        Ok(crate::sandboxing::ExecRequest::from_sandbox_exec_request(
+        let mut request = crate::sandboxing::ExecRequest::from_sandbox_exec_request(
             request,
             options,
             workspace_roots,
-        ))
+        );
+        request.prepare_windows_sandbox()?;
+        Ok(request)
     }
 
     pub fn env_for_exec_server(

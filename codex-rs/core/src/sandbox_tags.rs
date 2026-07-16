@@ -3,6 +3,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::get_platform_sandbox;
 use codex_sandboxing::policy_transforms::should_require_platform_sandbox;
+use codex_sandboxing::windows_sandbox_uses_elevated_backend;
 use std::path::Path;
 
 pub(crate) fn permission_profile_sandbox_tag(
@@ -27,7 +28,11 @@ pub(crate) fn permission_profile_sandbox_tag(
             }
         }
     }
-    if cfg!(target_os = "windows") && matches!(windows_sandbox_level, WindowsSandboxLevel::Elevated)
+    if cfg!(target_os = "windows")
+        && windows_sandbox_uses_elevated_backend(
+            windows_sandbox_level,
+            enforce_managed_network,
+        )
     {
         return "windows_elevated";
     }

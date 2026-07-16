@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
+#[cfg(target_os = "windows")]
+use codex_config::types::WindowsSandboxModeToml;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
@@ -23,7 +25,6 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
-use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
 use core_test_support::process::wait_for_pid_file;
 use core_test_support::process::wait_for_process_exit;
@@ -52,6 +53,8 @@ use pretty_assertions::assert_eq;
 use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
+#[cfg(target_os = "windows")]
+use serial_test::serial;
 use tokio::time::Duration;
 
 const UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -844,7 +847,8 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     );
 
     let server = start_mock_server().await;
-    let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
+    let (test, sandbox_policy) =
+        unified_exec_network_denial_test(&server, /*allow_local_binding*/ true).await?;
 
     let call_id = "uexec-network-denied";
     let args = json!({
@@ -892,7 +896,8 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     );
 
     let server = start_mock_server().await;
-    let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
+    let (test, sandbox_policy) =
+        unified_exec_network_denial_test(&server, /*allow_local_binding*/ true).await?;
 
     let call_id = "uexec-short-network-denied";
     let args = json!({
@@ -928,18 +933,96 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(codex_home)]
+async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
+
+    let server = start_mock_server().await;
+    let (test, permission_profile) =
+        unified_exec_network_denial_test(&server, /*allow_local_binding*/ false).await?;
+    let sandbox_codex_home =
+        super::windows_sandbox::codex_home_for_windows_sandbox_test(
+            "unified-exec-proxy-firewall-codex-home",
+        )?;
+    let _codex_home_guard = super::windows_sandbox::EnvVarGuard::set(
+        "CODEX_HOME",
+        sandbox_codex_home.path().as_os_str(),
+    );
+    super::windows_sandbox::stage_windows_sandbox_helpers()?;
+
+    let call_id = "uexec-windows-direct-loopback-bypass";
+    let port = server.address().port();
+    let command = format!(
+        "$client = [Net.Sockets.TcpClient]::new(); try {{ $task = $client.ConnectAsync('127.0.0.1', {port}); if ($task.Wait(3000) -and $client.Connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0 }} catch {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }} finally {{ $client.Dispose() }}"
+    );
+    let args = json!({
+        "cmd": command,
+        "shell": "powershell",
+        "login": false,
+        "yield_time_ms": 5_000,
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_assistant_message("msg-1", "finished"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn(
+        &test,
+        "exercise direct loopback bypass",
+        permission_profile,
+    )
+    .await?;
+
+    let output = wait_for_raw_unified_exec_output(&test, call_id).await?;
+    assert_eq!(output.exit_code, Some(0), "unexpected output: {output:?}");
+    assert!(
+        output.output.contains("DIRECT-BLOCKED"),
+        "elevated proxy firewall should block direct loopback access: {output:?}"
+    );
+    assert!(
+        !output.output.contains("DIRECT-CONNECTED"),
+        "sandboxed process bypassed the managed proxy: {output:?}"
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    Ok(())
+}
+
 #[allow(clippy::expect_used)]
 async fn unified_exec_network_denial_test(
     server: &wiremock::MockServer,
+    allow_local_binding: bool,
 ) -> Result<(TestCodex, PermissionProfile)> {
     use codex_config::Constrained;
+    use codex_config::test_support::CloudConfigBundleFixture;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     let home = Arc::new(TempDir::new()?);
     fs::write(
         home.path().join("config.toml"),
-        r#"default_permissions = "workspace"
+        format!(
+            r#"default_permissions = "workspace"
 
 [permissions.workspace.filesystem]
 ":minimal" = "read"
@@ -947,9 +1030,18 @@ async fn unified_exec_network_denial_test(
 [permissions.workspace.network]
 enabled = true
 mode = "limited"
-allow_local_binding = true
-"#,
+allow_local_binding = {allow_local_binding}
+"#
+        ),
     )?;
+    let managed_network_requirements =
+        CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
+            r#"
+[experimental_network]
+enabled = true
+allow_local_binding = {allow_local_binding}
+"#
+        ));
     let permission_profile_for_config = PermissionProfile::workspace_write_with(
         &[],
         NetworkSandboxPolicy::Enabled,
@@ -959,7 +1051,7 @@ allow_local_binding = true
     let permission_profile = permission_profile_for_config.clone();
     let mut builder = test_codex()
         .with_home(home)
-        .with_cloud_config_bundle(managed_network_requirements_loader())
+        .with_cloud_config_bundle(managed_network_requirements)
         .with_config(move |config| {
             config.use_experimental_unified_exec_tool = true;
             config
@@ -971,6 +1063,12 @@ allow_local_binding = true
                 .permissions
                 .set_permission_profile(permission_profile_for_config)
                 .expect("set permission profile");
+            #[cfg(target_os = "windows")]
+            {
+                config.permissions.windows_sandbox_mode =
+                    Some(WindowsSandboxModeToml::Unelevated);
+                config.permissions.windows_sandbox_private_desktop = false;
+            }
         });
     let test = builder.build_with_auto_env(server).await?;
     assert!(

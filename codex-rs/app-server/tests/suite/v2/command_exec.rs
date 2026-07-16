@@ -18,6 +18,10 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxPolicy;
 use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+#[cfg(target_os = "windows")]
+use codex_core::config::set_project_trust_level;
+#[cfg(target_os = "windows")]
+use codex_protocol::config_types::TrustLevel;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
@@ -421,6 +425,75 @@ async fn command_exec_permission_profile_project_roots_use_command_cwd() -> Resu
     assert!(
         !codex_home.path().join("parent.txt").exists(),
         "permissionProfile :workspace_roots write should not grant the server cwd when command cwd differs"
+    );
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    let command_dir = codex_home.path().join("command-cwd");
+    std::fs::create_dir_all(command_dir.join(".git"))?;
+    std::fs::create_dir_all(command_dir.join(".codex"))?;
+    std::fs::write(command_dir.join("secret.env"), "secret")?;
+    std::fs::write(
+        command_dir.join(".codex/config.toml"),
+        r#"
+[windows]
+sandbox = "unelevated"
+
+[permissions.command-cwd.filesystem]
+glob_scan_max_depth = 1
+":root" = "read"
+
+[permissions.command-cwd.filesystem.":workspace_roots"]
+"." = "write"
+"**/*.env" = "deny"
+"#,
+    )?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    set_project_trust_level(codex_home.path(), &command_dir, TrustLevel::Trusted)?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let command_request_id = mcp
+        .send_command_exec_request(CommandExecParams {
+            command: vec![
+                "cmd.exe".to_string(),
+                "/D".to_string(),
+                "/C".to_string(),
+                "exit /B 0".to_string(),
+            ],
+            process_id: None,
+            tty: false,
+            stream_stdin: false,
+            stream_stdout_stderr: false,
+            output_bytes_cap: None,
+            disable_output_cap: false,
+            disable_timeout: false,
+            timeout_ms: None,
+            cwd: Some(command_dir),
+            env: None,
+            size: None,
+            sandbox_policy: None,
+            permission_profile: Some("command-cwd".to_string()),
+        })
+        .await?;
+
+    let error = mcp
+        .read_stream_until_error_message(RequestId::Integer(command_request_id))
+        .await?;
+    assert_eq!(
+        error.error.message,
+        "exec failed: unsupported operation: windows unelevated restricted-token sandbox cannot enforce deny-read restrictions directly; refusing to run unsandboxed"
     );
 
     Ok(())
