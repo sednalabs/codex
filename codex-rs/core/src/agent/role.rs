@@ -158,7 +158,9 @@ mod reload {
         )
         .await?;
         if preserve_current_provider {
-            next_config.model_provider.clone_from(&config.model_provider);
+            next_config
+                .model_provider
+                .clone_from(&config.model_provider);
         }
         if preserve_current_reasoning_effort {
             next_config
@@ -171,7 +173,9 @@ mod reload {
                 .clone_from(&config.model_reasoning_summary);
         }
         if preserve_current_verbosity {
-            next_config.model_verbosity.clone_from(&config.model_verbosity);
+            next_config
+                .model_verbosity
+                .clone_from(&config.model_verbosity);
         }
         Ok(next_config)
     }

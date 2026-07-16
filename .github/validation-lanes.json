@@ -1940,6 +1940,7 @@
       "allowed_paths": [
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
+        "codex-rs/core/src/agent/builtins/terminal-babysitter.toml",
         "codex-rs/core/src/agent/control.rs",
         "codex-rs/core/src/agent/control/spawn.rs",
         "codex-rs/core/src/agent/control_tests.rs",
@@ -1947,8 +1948,10 @@
         "codex-rs/core/src/tools/handlers/spawn.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "codex-rs/core/src/agent/role_tests.rs",
         "codex-rs/core/tests/suite/multi_agent_resume.rs",
+        "codex-rs/core/tests/suite/subagent_notifications.rs",
         "codex-rs/state/src/extract.rs",
         "codex-rs/thread-store/src/local/read_thread.rs",
         "codex-rs/thread-store/src/thread_metadata_sync.rs",
@@ -1960,6 +1963,7 @@
         "justfile"
       ],
       "required_any_paths": [
+        "codex-rs/core/src/agent/builtins/terminal-babysitter.toml",
         "codex-rs/core/src/agent/control.rs",
         "codex-rs/core/src/agent/control/spawn.rs",
         "codex-rs/core/src/agent/control_tests.rs",
@@ -1967,8 +1971,10 @@
         "codex-rs/core/src/agent/role_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "codex-rs/core/src/tools/handlers/spawn.rs",
         "codex-rs/core/tests/suite/multi_agent_resume.rs",
+        "codex-rs/core/tests/suite/subagent_notifications.rs",
         "codex-rs/state/src/extract.rs",
         "codex-rs/thread-store/src/local/read_thread.rs",
         "codex-rs/thread-store/src/thread_metadata_sync.rs",
