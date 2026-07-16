@@ -39,9 +39,11 @@ impl ParkedMutation {
     }
 
     async fn wait_until_parked(&mut self) -> anyhow::Result<()> {
-        let entered = self.entered.take().context("parked mutation awaited once")?;
-        with_diagnostic_deadline("waiting for parked rollout mutation", entered)
-            .await??;
+        let entered = self
+            .entered
+            .take()
+            .context("parked mutation awaited once")?;
+        with_diagnostic_deadline("waiting for parked rollout mutation", entered).await??;
         Ok(())
     }
 
@@ -53,7 +55,11 @@ impl ParkedMutation {
         if let Some(release) = self.release.take() {
             let _ = release.send(());
         }
-        if self.worker.take().is_some_and(|worker| worker.join().is_err()) {
+        if self
+            .worker
+            .take()
+            .is_some_and(|worker| worker.join().is_err())
+        {
             anyhow::bail!("parked rollout mutation panicked");
         }
         Ok(())
@@ -83,10 +89,8 @@ async fn is_pending<F>(mut future: Pin<&mut F>) -> bool
 where
     F: Future<Output = ()> + ?Sized,
 {
-    poll_fn(move |context| {
-        Poll::Ready(matches!(future.as_mut().poll(context), Poll::Pending))
-    })
-    .await
+    poll_fn(move |context| Poll::Ready(matches!(future.as_mut().poll(context), Poll::Pending)))
+        .await
 }
 
 #[tokio::test]
