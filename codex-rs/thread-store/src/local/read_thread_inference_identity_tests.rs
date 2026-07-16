@@ -115,7 +115,43 @@ async fn sidecar_read_distinguishes_capability_eligibility_and_authority() {
         ThreadInferenceIdentitySidecar::default()
     );
 
+    ThreadStore::delete_thread(
+        &store,
+        crate::DeleteThreadParams {
+            thread_id: active_thread_id,
+        },
+    )
+    .await
+    .expect("active rollout should delete");
+    assert!(
+        runtime
+            .get_thread_inference_identity_authority(active_thread_id)
+            .await
+            .expect("projection lookup should still succeed")
+            .is_some(),
+        "local deletion intentionally precedes projection cleanup"
+    );
+    assert!(matches!(
+        ThreadStore::read_thread_inference_identity_sidecar(
+            &store,
+            read_params(active_thread_id, /*include_archived*/ false),
+        )
+        .await,
+        Err(ThreadStoreError::InvalidRequest { .. })
+    ));
+
     runtime.close().await;
+    let closed_db_error = ThreadStore::read_thread_inference_identity_sidecar(
+        &store,
+        read_params(legacy_thread_id, /*include_archived*/ false),
+    )
+    .await
+    .expect_err("authority query failure should not become legacy-missing");
+    assert!(matches!(
+        closed_db_error,
+        ThreadStoreError::Internal { message }
+            if message.contains("failed to read inference identity authority")
+    ));
 }
 
 fn read_params(
