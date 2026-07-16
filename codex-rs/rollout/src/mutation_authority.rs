@@ -108,11 +108,19 @@ impl AuthorityInner {
     }
 
     fn assert_count_synchronized(&self, state_in_flight: usize) {
-        assert_eq!(*self.in_flight.borrow(), state_in_flight, "count signal drift");
+        assert_eq!(
+            *self.in_flight.borrow(),
+            state_in_flight,
+            "count signal drift"
+        );
     }
 
     fn publish_count(&self, previous: usize, next: usize) {
-        assert_eq!(self.in_flight.send_replace(next), previous, "count publication drift");
+        assert_eq!(
+            self.in_flight.send_replace(next),
+            previous,
+            "count publication drift"
+        );
     }
 
     fn release_custody(&self) -> Result<(), MutationCountUnderflow> {
@@ -127,7 +135,10 @@ impl AuthorityInner {
 
 impl Drop for RolloutMutationCustody {
     fn drop(&mut self) {
-        assert!(self.authority.release_custody().is_ok(), "mutation custody underflow");
+        assert!(
+            self.authority.release_custody().is_ok(),
+            "mutation custody underflow"
+        );
     }
 }
 

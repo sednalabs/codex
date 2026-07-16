@@ -82,7 +82,10 @@ impl ParkedMutation {
 
     async fn release(mut self) -> anyhow::Result<()> {
         self.signal_release();
-        let cleanup = self.cleanup.take().context("parked mutation cleaned once")?;
+        let cleanup = self
+            .cleanup
+            .take()
+            .context("parked mutation cleaned once")?;
         await_worker_cleanup("joining completed rollout mutation", cleanup).await
     }
 
@@ -116,12 +119,8 @@ async fn with_diagnostic_deadline<T>(
     }
 }
 
-async fn await_worker_cleanup(
-    context: &'static str,
-    cleanup: WorkerCleanup,
-) -> anyhow::Result<()> {
-    let cleanup_task =
-        tokio::task::spawn_blocking(move || cleanup.wait_for_completion_and_join());
+async fn await_worker_cleanup(context: &'static str, cleanup: WorkerCleanup) -> anyhow::Result<()> {
+    let cleanup_task = tokio::task::spawn_blocking(move || cleanup.wait_for_completion_and_join());
     let cleanup_result = with_diagnostic_deadline(context, cleanup_task).await??;
     cleanup_result
 }
@@ -168,7 +167,10 @@ fn counter_boundaries_leave_state_and_wake_signal_unchanged() {
         state.in_flight = usize::MAX;
         assert_eq!(saturated.inner.in_flight.send_replace(usize::MAX), 0);
     }
-    assert!(matches!(saturated.admit(), Err(MutationAdmissionError::CounterOverflow)));
+    assert!(matches!(
+        saturated.admit(),
+        Err(MutationAdmissionError::CounterOverflow)
+    ));
     assert_authority_snapshot(
         &saturated,
         /*admission_closed*/ false,
@@ -177,7 +179,9 @@ fn counter_boundaries_leave_state_and_wake_signal_unchanged() {
 
     let empty = RolloutMutationAuthority::new();
     assert_eq!(empty.inner.release_custody(), Err(MutationCountUnderflow));
-    assert_authority_snapshot(&empty, /*admission_closed*/ false, /*in_flight*/ 0);
+    assert_authority_snapshot(
+        &empty, /*admission_closed*/ false, /*in_flight*/ 0,
+    );
 }
 
 #[tokio::test]
@@ -232,19 +236,30 @@ async fn revoke_waits_for_every_custody_and_wakes_every_waiter() -> anyhow::Resu
 async fn close_counts_every_admission_and_retains_the_final_release() -> anyhow::Result<()> {
     let authority = RolloutMutationAuthority::new();
     let first_custody = admit(&authority, "first rollout mutation should be admitted")?;
-    let second_custody = admit(&authority, "interleaved rollout mutation should be admitted")?;
+    let second_custody = admit(
+        &authority,
+        "interleaved rollout mutation should be admitted",
+    )?;
 
     let mut revoke = Box::pin(authority.revoke());
     assert!(is_pending(revoke.as_mut()).await);
-    assert!(matches!(authority.admit(), Err(MutationAdmissionError::AdmissionClosed)));
+    assert!(matches!(
+        authority.admit(),
+        Err(MutationAdmissionError::AdmissionClosed)
+    ));
     drop(first_custody);
     assert!(is_pending(revoke.as_mut()).await);
 
     drop(second_custody);
     with_diagnostic_deadline("observing the retained final release", revoke).await?;
-    assert_authority_snapshot(&authority, /*admission_closed*/ true, /*in_flight*/ 0);
+    assert_authority_snapshot(
+        &authority, /*admission_closed*/ true, /*in_flight*/ 0,
+    );
     with_diagnostic_deadline("repeating one-way revocation", authority.revoke()).await?;
-    assert!(matches!(authority.admit(), Err(MutationAdmissionError::AdmissionClosed)));
+    assert!(matches!(
+        authority.admit(),
+        Err(MutationAdmissionError::AdmissionClosed)
+    ));
     Ok(())
 }
 
@@ -262,8 +277,15 @@ async fn poisoned_mutex_recovers_when_custody_releases_during_unwind() -> anyhow
         };
         panic!("poison rollout mutation state");
     });
-    let poison_cleanup = WorkerCleanup { completed, worker: poisoner };
-    assert!(await_worker_cleanup("waiting for mutex poisoner", poison_cleanup).await.is_err());
+    let poison_cleanup = WorkerCleanup {
+        completed,
+        worker: poisoner,
+    };
+    assert!(
+        await_worker_cleanup("waiting for mutex poisoner", poison_cleanup)
+            .await
+            .is_err()
+    );
 
     let unwind = std::panic::catch_unwind(AssertUnwindSafe(move || {
         let _custody = custody;
@@ -272,7 +294,9 @@ async fn poisoned_mutex_recovers_when_custody_releases_during_unwind() -> anyhow
     assert!(unwind.is_err());
 
     with_diagnostic_deadline("revoking after poison recovery", authority.revoke()).await?;
-    assert_authority_snapshot(&authority, /*admission_closed*/ true, /*in_flight*/ 0);
+    assert_authority_snapshot(
+        &authority, /*admission_closed*/ true, /*in_flight*/ 0,
+    );
     Ok(())
 }
 
