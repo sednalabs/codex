@@ -1,5 +1,7 @@
 use crate::acl::add_allow_ace;
+use crate::acl::add_deny_write_ace;
 use crate::acl::allow_null_device;
+use crate::acl::ensure_allow_write_aces_recursively;
 use crate::allow::AllowDenyPaths;
 use crate::allow::compute_allow_paths_for_permissions;
 use crate::cap::load_or_create_cap_sids;
@@ -28,9 +30,6 @@ use crate::token::get_logon_sid_bytes;
 use crate::workspace_acl::is_command_cwd_root;
 use crate::workspace_acl::protect_workspace_agents_dir;
 use crate::workspace_acl::protect_workspace_codex_dir;
-use crate::write_acl_repair::WriteAclRepairMode;
-use crate::write_acl_repair::WriteAclRoot;
-use crate::write_acl_repair::repair_write_acl_policy;
 use anyhow::Context;
 use anyhow::Result;
 use codex_protocol::models::PermissionProfile;
@@ -39,9 +38,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::HANDLE;
 
@@ -82,87 +78,6 @@ pub(crate) struct LegacyAclSids<'a> {
     pub(crate) readonly_sid: Option<&'a LocalSid>,
     pub(crate) readonly_sid_str: Option<&'a str>,
     pub(crate) write_root_sids: &'a [RootCapabilitySid],
-}
-
-type LegacyWriteAclRepairKey = (Vec<(String, String)>, Vec<String>);
-
-#[derive(Default)]
-struct LegacyWriteAclRepairState {
-    complete: bool,
-    refreshes: u32,
-}
-
-const LEGACY_WRITE_ACL_REPAIR_CACHE_LIMIT: usize = 64;
-const LEGACY_WRITE_ACL_RESCAN_INTERVAL: u32 = 256;
-static LEGACY_WRITE_ACL_REPAIRS: OnceLock<
-    Mutex<HashMap<LegacyWriteAclRepairKey, Arc<Mutex<LegacyWriteAclRepairState>>>>,
-> = OnceLock::new();
-
-fn repair_legacy_write_acl_descendants(
-    deny_paths: &[PathBuf],
-    root_sids: &[RootCapabilitySid],
-) -> Result<()> {
-    let roots = root_sids
-        .iter()
-        .map(|root_sid| WriteAclRoot {
-            path: root_sid.root.clone(),
-            capability_sid: root_sid.sid_str.clone(),
-        })
-        .collect::<Vec<_>>();
-    if roots.is_empty() {
-        return Ok(());
-    }
-    let mut root_keys = roots
-        .iter()
-        .map(|root| (root.path.to_string_lossy().to_ascii_lowercase(), root.capability_sid.clone()))
-        .collect::<Vec<_>>();
-    root_keys.sort_unstable();
-    let mut deny_keys = deny_paths
-        .iter()
-        .map(|path| path.to_string_lossy().to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    deny_keys.sort_unstable();
-    let repair_key = (root_keys, deny_keys);
-    let repairs = LEGACY_WRITE_ACL_REPAIRS.get_or_init(|| Mutex::new(HashMap::new()));
-    let state = {
-        let mut repairs = repairs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if repairs.len() >= LEGACY_WRITE_ACL_REPAIR_CACHE_LIMIT
-            && !repairs.contains_key(&repair_key)
-        {
-            repairs.clear();
-        }
-        Arc::clone(
-            repairs
-                .entry(repair_key)
-                .or_insert_with(|| Arc::new(Mutex::new(LegacyWriteAclRepairState::default()))),
-        )
-    };
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mode = if !state.complete || state.refreshes >= LEGACY_WRITE_ACL_RESCAN_INTERVAL {
-        WriteAclRepairMode::FullMigration
-    } else {
-        WriteAclRepairMode::Refresh
-    };
-    let result = repair_write_acl_policy(&roots, deny_paths, None, mode);
-    match result {
-        Ok(()) => {
-            state.complete = true;
-            state.refreshes = if mode == WriteAclRepairMode::FullMigration {
-                0
-            } else {
-                state.refreshes.saturating_add(1)
-            };
-            Ok(())
-        }
-        Err(error) => {
-            state.complete = false;
-            Err(error)
-        }
-    }
 }
 
 fn prepare_spawn_context_common(
@@ -363,16 +278,30 @@ pub(crate) fn apply_legacy_session_acl_rules(
         compute_allow_paths_for_permissions(permissions, current_dir, env_map);
     unsafe {
         for path in additional_deny_write_paths {
+            // Explicit carveouts must exist before the command starts so the
+            // sandbox cannot create them under a writable parent first.
+            if !path.exists() {
+                std::fs::create_dir_all(path)
+                    .with_context(|| format!("create deny-write path {}", path.display()))?;
+            }
             deny.insert(path.clone());
         }
         if let Some(readonly_sid) = acl_sids.readonly_sid {
             for p in &allow {
-                add_allow_ace(p, readonly_sid.as_ptr())
-                    .with_context(|| format!("apply allow ACE to {}", p.display()))?;
+                let _ = add_allow_ace(p, readonly_sid.as_ptr());
             }
         } else {
-            let deny_paths = deny.iter().cloned().collect::<Vec<_>>();
-            repair_legacy_write_acl_descendants(&deny_paths, acl_sids.write_root_sids)?;
+            for p in &allow {
+                let Some(root_sid) = matching_root_capability(p, acl_sids.write_root_sids) else {
+                    continue;
+                };
+                let _ = ensure_allow_write_aces_recursively(p, &[root_sid.sid.as_ptr()]);
+            }
+        }
+        for p in &deny {
+            for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
+                let _ = add_deny_write_ace(p, root_sid.sid.as_ptr());
+            }
         }
         if !additional_deny_read_paths.is_empty() {
             if let Some(readonly_sid) = acl_sids.readonly_sid {
