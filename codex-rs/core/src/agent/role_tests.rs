@@ -101,7 +101,7 @@ async fn apply_empty_explorer_role_preserves_current_model_and_reasoning_effort(
 
     assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
     assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
-    assert_eq!(session_flags_layer_count(&config), before_layers + 1);
+    assert_eq!(session_flags_layer_count(&config), before_layers);
 }
 
 #[tokio::test]

@@ -456,8 +456,8 @@ mod tests {
     use super::selected_computer_use_environment_id;
     use super::unavailable_response;
     use crate::environment_selection::TurnEnvironmentState;
-    use crate::session::tests::make_session_and_context_with_rx;
     use crate::session::step_context::StepContext;
+    use crate::session::tests::make_session_and_context_with_rx;
     use crate::session::turn_context::TurnEnvironment;
     use crate::state::ActiveTurn;
     use crate::tools::registry::ToolExecutor;
@@ -740,7 +740,7 @@ mod tests {
         let response = request_computer_use(
             &session,
             &turn,
-            None,
+            /*environment_id*/ None,
             "call-no-env".to_string(),
             COMPUTER_USE_ADAPTER_ANDROID.to_string(),
             ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),

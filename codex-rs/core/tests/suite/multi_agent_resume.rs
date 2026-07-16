@@ -225,15 +225,19 @@ async fn assert_cold_root_resume_restores_agent_identity(scenario: ResumeScenari
         }
         sleep(Duration::from_millis(10)).await;
     }
-    assert!(initial_child_request
-        .requests()
-        .iter()
-        .any(|request| request.body_contains_text(INITIAL_TASK)));
-    if matches!(scenario, ResumeScenario::Role) {
-        assert!(initial_child_request
+    assert!(
+        initial_child_request
             .requests()
             .iter()
-            .any(|request| request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)));
+            .any(|request| request.body_contains_text(INITIAL_TASK))
+    );
+    if matches!(scenario, ResumeScenario::Role) {
+        assert!(
+            initial_child_request
+                .requests()
+                .iter()
+                .any(|request| request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS))
+        );
     }
     let initial_worker_config = worker_thread.config_snapshot().await;
     let initial_worker_role_config = (

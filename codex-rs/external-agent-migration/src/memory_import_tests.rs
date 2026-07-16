@@ -384,8 +384,7 @@ fn projects_needing_import_rejects_symlinked_stale_project_scope() {
     let outside_scope = root.path().join("outside-scope.json");
     fs::create_dir_all(&stale_project).expect("create stale project directory");
     fs::write(&outside_scope, b"{}\n").expect("write outside scope");
-    std::os::unix::fs::symlink(&outside_scope, &scope_path)
-        .expect("create stale scope symlink");
+    std::os::unix::fs::symlink(&outside_scope, &scope_path).expect("create stale scope symlink");
 
     let error = projects_needing_import(&codex_home, &[])
         .expect_err("reject symlinked stale project scope during detection");
