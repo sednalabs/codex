@@ -139,6 +139,14 @@ impl AgentControlHarness {
 
     async fn new_with_config(home: TempDir, config: Config) -> Self {
         let state_db = init_state_db(&config).await;
+        Self::new_with_config_and_state_db(home, config, state_db)
+    }
+
+    fn new_with_config_and_state_db(
+        home: TempDir,
+        config: Config,
+        state_db: Option<StateDbHandle>,
+    ) -> Self {
         let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
             CodexAuth::from_api_key("dummy"),
             config.model_provider.clone(),
@@ -357,9 +365,8 @@ async fn wait_for_live_thread_spawn_children(
 
 #[tokio::test]
 async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
-    let (home, mut config) = test_config().await;
-    config.features.disable(Feature::Sqlite);
-    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (home, config) = test_config().await;
+    let harness = AgentControlHarness::new_with_config_and_state_db(home, config, None);
     assert!(harness.state_db.is_none());
     let (root_thread_id, _root_thread) = harness.start_thread().await;
     harness
