@@ -79,19 +79,19 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-16`):
+Current downstream audit baseline (validated on `2026-07-17`):
 
 - downstream integration code tree:
-  `78dd12506c2879289d7c52cfa9c67100e0789b89`
-- comparison basis: `mirror`
+  `c4e2b7ff14345b39f13681280f666d21bfd61514`
+- comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
   `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
 - `upstream/main`:
-  `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
+  `315195492c80fdade38e917c18f9584efd599304`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1760` downstream ahead
-- mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
-  behind (`exact`)
+  `0` upstream ahead, `1780` downstream ahead
+- mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `22`
+  behind (`refresh pending`)
 
 These counts intentionally anchor to the audited code tree before the
 docs-only refresh commit that records this snapshot.
@@ -558,6 +558,9 @@ User-visible behavior:
 
 - The `/tmp` special permission root resolves only on Unix; Windows policy
   construction does not reinterpret it as a drive-root path.
+- The compatible restricted token excludes Everyone from its restricting SID
+  set while retaining Everyone on the default DACL needed for child-process
+  pipes and IPC.
 - Proxy-enforced Windows commands use one effective elevated-backend decision
   for filesystem overrides, PowerShell startup, process spawning, and telemetry.
 - Unified exec cannot bypass the managed proxy with an unrelated direct

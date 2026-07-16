@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-16`
-- downstream integration code tree: `0d5d0714b5651695813ecf183e8028c97b4d919f`
-- comparison basis: `mirror`
+- Audited on: `2026-07-17`
+- downstream integration code tree: `c4e2b7ff14345b39f13681280f666d21bfd61514`
+- comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`): `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
-- `upstream/main`: `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
-- downstream branch vs `upstream/main`: `1763` downstream ahead, `0` upstream ahead
-- Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1536` unique, `0` patch-equivalent
+- `upstream/main`: `315195492c80fdade38e917c18f9584efd599304`
+- downstream branch vs `upstream/main`: `1780` downstream ahead, `0` upstream ahead
+- Mirror vs `upstream/main`: `0` ahead, `22` behind (`refresh pending`)
+- Downstream-only non-merge commits at audit time: `1549` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -184,18 +184,25 @@ docs-only refresh commit that records this snapshot.
 - Explicit read-only carveouts and pre-existing protected metadata remain the
   enforceable boundary. Keep those assertions holistic rather than restoring
   removed setup-side-effect tests or persistent sentinel directories.
+- The compatible restricted token keeps the Everyone SID on its default DACL
+  for IPC compatibility, but excludes Everyone from the restricting SID set.
+  Adding Everyone to both sets makes the write restriction ineffective.
 - Hosted Windows guardrails:
   `slash_tmp_permission_path_is_unix_only`,
   `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
   `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
   `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
-  `legacy_workspace_write_delete_is_limited_to_writable_roots`.
+  `legacy_workspace_write_delete_is_limited_to_writable_roots`, plus
+  `restricted_sids_exclude_everyone` and
+  `default_dacl_keeps_everyone_for_ipc_compatibility`.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`
   - `codex-rs/sandboxing/src/policy_transforms.rs`
   - `codex-rs/sandboxing/src/policy_transforms_tests.rs`
   - `codex-rs/sandboxing/src/windows.rs`
   - `codex-rs/core/src/exec_tests.rs`
+  - `codex-rs/windows-sandbox-rs/src/token.rs`
+  - `codex-rs/windows-sandbox-rs/src/token_tests.rs`
   - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`
 
 ### Windows Proxy-Aware Backend Selection
