@@ -863,6 +863,28 @@
       },
       "type": "object"
     },
+    "AppToolSummary": {
+      "description": "EXPERIMENTAL - metadata returned by app/read.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "type": "object"
+    },
     "AppToolsConfig": {
       "additionalProperties": {
         "$ref": "#/definitions/AppToolConfig"
@@ -991,6 +1013,52 @@
         "data"
       ],
       "title": "AppsListResponse",
+      "type": "object"
+    },
+    "AppsReadParams": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "EXPERIMENTAL - read metadata for specific apps/connectors.",
+      "properties": {
+        "appIds": {
+          "description": "App ids to read. The server accepts at most 100 ids and deduplicates repeated ids while\npreserving their first-request order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "includeTools": {
+          "description": "When true, include display-only public tool summaries in the returned metadata.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "appIds"
+      ],
+      "title": "AppsReadParams",
+      "type": "object"
+    },
+    "AppsReadResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "EXPERIMENTAL - app/read response.",
+      "properties": {
+        "apps": {
+          "items": {
+            "$ref": "#/definitions/ConnectorMetadata"
+          },
+          "type": "array"
+        },
+        "missingAppIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "apps",
+        "missingAppIds"
+      ],
+      "title": "AppsReadResponse",
       "type": "object"
     },
     "AskForApproval": {
@@ -2002,6 +2070,28 @@
             "params"
           ],
           "title": "Plugin/share/deleteRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "const": "app/read",
+              "title": "App/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AppsReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "id",
+            "params"
+          ],
+          "title": "App/readRequest",
           "type": "object"
         },
         {
@@ -4692,6 +4782,43 @@
       },
       "required": [
         "hooks"
+      ],
+      "type": "object"
+    },
+    "ConnectorMetadata": {
+      "description": "EXPERIMENTAL - metadata returned by app/read.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iconUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "toolSummaries": {
+          "items": {
+            "$ref": "#/definitions/AppToolSummary"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
       ],
       "type": "object"
     },

@@ -1574,7 +1574,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex-rs/core/src/agent/control.rs",
                 "codex-rs/core/src/agent/control/spawn.rs",
                 "codex-rs/core/src/agent/control_tests.rs",
+                "codex-rs/core/src/agent/builtins/terminal-babysitter.toml",
+                "codex-rs/core/src/agent/role_tests.rs",
                 "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+                "codex-rs/core/tests/suite/subagent_notifications.rs",
                 "codex-rs/core/tests/suite/multi_agent_resume.rs",
                 "codex-rs/state/src/extract.rs",
                 "codex-rs/thread-store/src/local/read_thread.rs",
@@ -1607,12 +1612,76 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "core-subagent-model-pinning-targeted"
             ]
         )
-        self.assertEqual(recipe.count("cargo nextest run"), 5)
-        self.assertEqual(recipe.count("RUST_MIN_STACK="), 5)
-        self.assertEqual(recipe.count("--no-tests=fail"), 5)
+        self.assertEqual(recipe.count("cargo nextest run"), 6)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 6)
+        self.assertEqual(recipe.count("--no-tests=fail"), 6)
         self.assertIn(
             "tools::handlers::multi_agents_spec::tests::"
             "spawn_agent_tool_v2_requires_task_name_and_lists_visible_models",
+            recipe,
+        )
+        self.assertIn(
+            "agent::role::tests::apply_role_preserves_unspecified_keys",
+            recipe,
+        )
+        self.assertIn(
+            "agent::role::tests::"
+            "spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "spawn_agent_reasoning_effort_accepts_empty_support_metadata",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_accepts_child_model_without_backend_assignment",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_rejects_child_model_from_different_backend",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_uses_configured_subagent_defaults",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_preserves_configured_defaults_through_unrelated_role",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_rejects_reasoning_effort_unsupported_by_role_model",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawned_full_history_v2_child_uses_model_precedence_without_dropping_context",
             recipe,
         )
         self.assertIn(
@@ -1623,6 +1692,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn(
             "suite::multi_agent_resume::"
             "cold_root_resume_restores_agent_identity_and_reloads_target_on_followup",
+            recipe,
+        )
+        self.assertIn(
+            "suite::multi_agent_resume::"
+            "cold_root_resume_restores_agent_identity_and_role_on_followup",
             recipe,
         )
         self.assertEqual(recipe.count("--exact"), 5)

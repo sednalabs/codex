@@ -172,38 +172,31 @@ docs-only refresh commit that records this snapshot.
   - `docs/contributing.md`
   - `docs/downstream.md`
 
-### Windows Generated-Default Normalization
+### Windows Filesystem Boundary Compatibility
 
-- Windows workspace-write setup removes built-in protected-metadata defaults
-  before the restricted-token backend decides whether a direct split-policy
-  override is required. Ordinary workspace-write therefore remains
-  legacy-equivalent and neither backend creates absent `.git`, `.agents`, or
-  `.codex` paths during setup.
-- The generated `/tmp` special root resolves only on Unix. On Windows, treating
-  root-relative `/tmp` as a real drive path would create a split writable-root
-  set that the legacy restricted-token backend cannot enforce.
-- Pre-existing protected metadata and explicitly configured read-only carveouts
-  remain enforced. NTFS ACLs cannot reserve a nonexistent child name while
-  leaving its parent generally writable, so this carry does not claim that
-  opaque child processes cannot create an absent name.
-- Preserve this order until upstream performs the same normalization or supplies
-  side-effect-free filesystem interception, and preserve the focused platform
-  guard from dormant upstream commit `77fec98a2e` until it lands on upstream
-  `main`. Do not replace either with persistent sentinel directories or
-  command-text parsing.
+- The 2026-07-16 sync adopts upstream commit `5a85351dfe`, which retires the
+  `GeneratedDefault` provenance and its setup-time metadata normalization.
+  Downstream no longer claims that either Windows backend can reserve absent
+  `.git`, `.agents`, or `.codex` child names without filesystem interception.
+- The `/tmp` special root remains Unix-only. Treating root-relative `/tmp` as a
+  Windows drive path would create a split writable-root policy that the legacy
+  restricted-token backend cannot enforce.
+- Explicit read-only carveouts and pre-existing protected metadata remain the
+  enforceable boundary. Keep those assertions holistic rather than restoring
+  removed setup-side-effect tests or persistent sentinel directories.
 - Hosted Windows guardrails:
-  `windows_workspace_defaults_do_not_hide_explicit_metadata_carveouts`,
-  `windows_elevated_does_not_create_missing_workspace_metadata`, and
-  `windows_restricted_token_does_not_create_missing_workspace_metadata` for
-  side-effect-free setup; and
-  `windows_restricted_token_supports_full_read_split_write_read_carveouts` plus
-  `legacy_workspace_write_delete_is_limited_to_writable_roots` for explicit
-  carveout and pre-existing metadata boundaries.
+  `slash_tmp_permission_path_is_unix_only`,
+  `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
+  `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
+  `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
+  `legacy_workspace_write_delete_is_limited_to_writable_roots`.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`
+  - `codex-rs/sandboxing/src/policy_transforms.rs`
+  - `codex-rs/sandboxing/src/policy_transforms_tests.rs`
   - `codex-rs/sandboxing/src/windows.rs`
   - `codex-rs/core/src/exec_tests.rs`
-  - `codex-rs/core/tests/suite/windows_sandbox.rs`
+  - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`
 
 ### Windows Proxy-Aware Backend Selection
 
@@ -432,16 +425,18 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
 
-### Sub-agent orchestration override preservation, inventory metadata, and wait joins
+### Sub-agent selection compatibility, inventory metadata, and wait joins
 
-- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry divergence is preserving those requests across role reload unless the role explicitly locks the fields.
+- Upstream owns configured default and explicit
+  `spawn_agent(model=..., reasoning_effort=...)` child selection, applies role
+  settings after that selection, and validates the final effective model and
+  reasoning pair.
 - The 2026-07-16 sync adopts upstream's unified `[agents]` configuration,
   canonical `max_concurrent_threads_per_session` key, legacy `max_threads`
   normalization, flattened role declarations, and conditional `agent_type`
-  exposure when roles are configured. Upstream's default sub-agent model and
-  reasoning settings remain reserved and unapplied; downstream's live model
-  selection behavior continues to come from explicit per-spawn overrides and
-  the documented role/profile precedence below.
+  exposure when roles are configured. Configured default sub-agent model and
+  reasoning settings are now active upstream behavior rather than downstream
+  carry.
 - Downstream's Schemars 1.2 adapter intentionally leaves schema-only
   `deny_unknown_fields` off the flattened `AgentsToml` object so arbitrary
   `[agents.<role>]` keys remain validated as `AgentRoleToml`. A semantic schema
@@ -453,10 +448,20 @@ docs-only refresh commit that records this snapshot.
   exceptional. Downstream additionally keeps the guardrail that requests for
   depth, thoroughness, research, investigation, or detailed codebase analysis
   do not by themselves authorize spawning.
-- Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
-- Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
-- Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
-- `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
+- Keep downstream itineraries that explicitly request a child model/economy
+  aligned with the upstream selection and role precedence pipeline.
+- Roles remain authoritative when they set `model`, `model_provider`,
+  `model_reasoning_effort`, or `model_verbosity`.
+- The remaining role carry preserves the resolved runtime provider object plus
+  `model_reasoning_summary` and verbosity when a role does not replace them.
+  Downstream also treats an empty supported-reasoning list as unknown rather
+  than rejecting an otherwise selectable model.
+- Models whose MultiAgentV2 backend assignment is unspecified remain selectable;
+  a known, different backend still fails closed. The targeted role regression
+  proves the provider object, reasoning summary, and verbosity together rather
+  than checking only the selected model slug.
+- `core/src/agent/role.rs` stays on the upstream-native layered reload shape;
+  downstream no longer carries a duplicate model/reasoning selection pipeline.
 - The live tool-contract schema in
   `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` and
   `codex-rs/core/src/tools/spec_plan.rs`, plus the regression suite in
@@ -497,6 +502,9 @@ docs-only refresh commit that records this snapshot.
   outcome state. The v2 schema also permits omitting `targets` when the caller
   intentionally wants a current-turn input-activity wait, including mailbox
   delivery or user steering, or timeout.
+- Full-history forks preserve conversation and agent identity while accepting
+  configured or explicit child model/reasoning selection; only `agent_type`
+  remains invalid for that fork shape.
 - Cold V2 descendant reloads preserve the child's indexed agent path, model,
   provider, and reasoning effort rather than inheriting the resumed root's
   selection. Rollout previews may supply history and display context, but
@@ -504,13 +512,15 @@ docs-only refresh commit that records this snapshot.
   Legacy rows with no
   indexed model identity retain their rollout model and effort, while a
   populated indexed model makes an absent indexed effort an intentional clear.
-- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
+- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.4-mini` with low reasoning for bounded monitored-wait seams.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
+  - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
   - `codex-rs/core/src/agent/control.rs`
   - `codex-rs/core/src/agent/control/spawn.rs`
   - `codex-rs/core/src/agent/control_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
+  - `codex-rs/core/src/agent/role_tests.rs`
   - `codex-rs/config/src/config_toml.rs`
   - `codex-rs/core/config.schema.json`
   - `codex-rs/core/src/codex_delegate.rs`
@@ -518,15 +528,20 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/config/schema_tests.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_common.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
   - `codex-rs/core/tests/suite/spawn_agent_description.rs`
   - `codex-rs/core/tests/suite/multi_agent_resume.rs`
+  - `codex-rs/core/tests/suite/subagent_notifications.rs`
   - `codex-rs/thread-store/src/local/read_thread.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `justfile`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
 
@@ -697,6 +712,9 @@ docs-only refresh commit that records this snapshot.
   formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
+- Dispatch resolves the primary environment from the refreshed per-step
+  snapshot, not the frozen turn-start snapshot, so a provider that becomes
+  ready after turn creation is immediately available to native computer-use.
 - The active TUI session renders native computer-use items from live protocol
   events. Computer-use events are transient, so thread history and snapshots do
   not replay them after resume. The TUI provider registry handles Android and

@@ -1,5 +1,7 @@
 use super::residency::is_v2_resident_session_source;
 use super::*;
+use crate::agent::role::apply_role_to_config;
+use crate::config::PermissionProfileSnapshot;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
@@ -24,8 +26,8 @@ enum SpawnInitialInput {
 }
 
 /// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
-/// The caller's config is still the source of current runtime policy such as permissions and cwd,
-/// but it must not silently replace the child's model, provider, or reasoning effort.
+/// Role configuration is loaded first so role-local providers are available, while the caller's
+/// config remains the source of current runtime policy such as permissions and cwd.
 fn restore_persisted_agent_model_selection(
     config: &mut Config,
     model: Option<&str>,
@@ -307,13 +309,6 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
-        restore_persisted_agent_model_selection(
-            &mut config,
-            stored_thread.model.as_deref(),
-            &stored_thread.model_provider,
-            stored_thread.reasoning_effort.clone(),
-            thread_id,
-        )?;
         let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
@@ -325,13 +320,56 @@ impl AgentControl {
         if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
+        let (session_source, _) = initial_history
+            .get_resumed_session_sources()
+            .unwrap_or((stored_source, None));
+        if let Some(role_name) = session_source.get_agent_role() {
+            let runtime_approval_policy = config.permissions.approval_policy.value();
+            let runtime_approvals_reviewer = config.approvals_reviewer;
+            let runtime_cwd = config.cwd.clone();
+            let runtime_permission_profile = match config.permissions.active_permission_profile() {
+                Some(active_permission_profile) => {
+                    PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                        config.permissions.permission_profile().clone(),
+                        active_permission_profile,
+                        config.permissions.profile_workspace_roots().to_vec(),
+                    )
+                }
+                None => PermissionProfileSnapshot::legacy(
+                    config.permissions.permission_profile().clone(),
+                ),
+            };
+
+            apply_role_to_config(&mut config, Some(&role_name))
+                .await
+                .map_err(CodexErr::InvalidRequest)?;
+            config
+                .permissions
+                .approval_policy
+                .set(runtime_approval_policy)
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("approval_policy is invalid: {err}"))
+                })?;
+            config.approvals_reviewer = runtime_approvals_reviewer;
+            config.cwd = runtime_cwd;
+            config
+                .permissions
+                .set_permission_profile_from_session_snapshot(runtime_permission_profile)
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("permission_profile is invalid: {err}"))
+                })?;
+        }
+        restore_persisted_agent_model_selection(
+            &mut config,
+            stored_thread.model.as_deref(),
+            &stored_thread.model_provider,
+            stored_thread.reasoning_effort.clone(),
+            thread_id,
+        )?;
         let residency_slot = self
             .reserve_v2_residency_slot(&state, &config, Some(thread_id))
             .await?;
 
-        let (session_source, _) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or((stored_source, None));
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);

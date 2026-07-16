@@ -631,7 +631,7 @@ fn standalone_web_search_enabled(turn_context: &TurnContext) -> bool {
 }
 
 fn tool_environment_mode(step_context: &StepContext) -> ToolEnvironmentMode {
-    ToolEnvironmentMode::from_count(step_context.environments.turn_environments.len())
+    ToolEnvironmentMode::from_count(step_context.environments.turn_environments().count())
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -687,8 +687,7 @@ fn unified_exec_should_include_shell_parameter(
         UnifiedExecShellMode::ZshFork(_)
     ) || step_context
         .environments
-        .turn_environments
-        .iter()
+        .turn_environments()
         .any(|environment| environment.environment.is_remote())
 }
 

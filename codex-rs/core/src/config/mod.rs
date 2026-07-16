@@ -259,7 +259,7 @@ Payload:
 ```
 You may also see them addressed as to=/root/..., which indicates your identity is /root/...
 "#;
-const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
+const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) preserve the parent conversation and agent type, while still accepting configured or explicit model and reasoning-effort selection. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions.";
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "agents";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that agents tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.agents.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
@@ -882,10 +882,10 @@ pub struct Config {
     /// User-configured maximum number of spawned agent threads per session.
     pub agent_max_threads: Option<usize>,
 
-    /// Reserved default model for spawned subagents.
+    /// Default model for spawned subagents when the spawn call does not select one.
     pub agent_default_subagent_model: Option<String>,
 
-    /// Reserved default reasoning effort for spawned subagents.
+    /// Default reasoning effort for spawned subagents when the spawn call does not select one.
     pub agent_default_subagent_reasoning_effort: Option<ReasoningEffort>,
 
     /// Maximum runtime in seconds for agent job workers before they are failed.

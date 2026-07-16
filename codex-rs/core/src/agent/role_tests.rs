@@ -4,7 +4,9 @@ use crate::config::ConfigBuilder;
 use crate::skills_load_input_from_config;
 use codex_config::ConfigLayerStackOrdering;
 use codex_core_plugins::PluginsManager;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
@@ -183,8 +185,8 @@ async fn apply_role_preserves_unspecified_keys() {
     config.main_execve_wrapper_exe = Some(PathBuf::from("/tmp/codex-execve-wrapper"));
     let role_path = write_role_config(
         &home,
-        "effort-only.toml",
-        "developer_instructions = \"Stay focused\"\nmodel_reasoning_effort = \"high\"",
+        "instructions-only.toml",
+        "developer_instructions = \"Stay focused\"",
     )
     .await;
     config.agent_roles.insert(
@@ -196,12 +198,26 @@ async fn apply_role_preserves_unspecified_keys() {
         },
     );
 
+    config.model = Some("spawn-model".to_string());
+    config.model_reasoning_effort = Some(ReasoningEffort::Low);
+    config.model_provider.base_url = Some("https://runtime-provider.example/v1".to_string());
+    let expected_model_provider = config.model_provider.clone();
+    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+    config.model_verbosity = Some(Verbosity::Low);
+
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
 
-    assert_eq!(config.model.as_deref(), Some("base-model"));
-    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(
+        (config.model.as_deref(), config.model_reasoning_effort),
+        (Some("spawn-model"), Some(ReasoningEffort::Low)),
+    );
+    assert_eq!(config.model_provider, expected_model_provider);
+    assert_eq!(
+        (config.model_reasoning_summary, config.model_verbosity),
+        (Some(ReasoningSummary::Detailed), Some(Verbosity::Low)),
+    );
     assert_eq!(
         config.codex_linux_sandbox_exe,
         Some(PathBuf::from("/tmp/codex-linux-sandbox"))

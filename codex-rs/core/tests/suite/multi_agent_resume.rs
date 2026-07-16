@@ -1,5 +1,8 @@
 use anyhow::Result;
+use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -25,6 +28,10 @@ const WORKER_MODEL: &str = "gpt-5.4";
 const WORKER_REASONING_EFFORT: &str = "low";
 const FOLLOWUP_PROMPT: &str = "continue the durable worker";
 const FOLLOWUP_TASK: &str = "inspect the tests too";
+const ROLE_NAME: &str = "durable_worker";
+const ROLE_MODEL: &str = "gpt-5.4";
+const ROLE_MODEL_PROVIDER_ID: &str = "mock";
+const ROLE_DEVELOPER_INSTRUCTIONS: &str = "Keep the durable worker role configuration.";
 
 fn decoded_body(request: &wiremock::Request) -> Option<Vec<u8>> {
     let is_zstd = request
@@ -60,6 +67,28 @@ fn request_has_input_type(request: &wiremock::Request, input_type: &str) -> bool
         })
 }
 
+#[derive(Clone, Copy)]
+enum ResumeScenario {
+    ExplicitSelection,
+    Role,
+}
+
+impl ResumeScenario {
+    fn configure(self, config: &mut codex_core::config::Config, model_provider_base_url: &str) {
+        match self {
+            Self::ExplicitSelection => configure_multi_agent_v2(config),
+            Self::Role => configure_multi_agent_v2_with_role(config, model_provider_base_url),
+        }
+    }
+
+    fn effective_selection(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::ExplicitSelection => (WORKER_MODEL, "openai", WORKER_REASONING_EFFORT),
+            Self::Role => (ROLE_MODEL, ROLE_MODEL_PROVIDER_ID, "high"),
+        }
+    }
+}
+
 fn configure_multi_agent_v2(config: &mut codex_core::config::Config) {
     config
         .features
@@ -71,16 +100,46 @@ fn configure_multi_agent_v2(config: &mut codex_core::config::Config) {
         .expect("test config should allow feature update");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup() -> Result<()> {
+fn configure_multi_agent_v2_with_role(
+    config: &mut codex_core::config::Config,
+    model_provider_base_url: &str,
+) {
+    configure_multi_agent_v2(config);
+    let role_path = config.codex_home.join("durable-worker-role.toml");
+    std::fs::write(
+        &role_path,
+        format!(
+            "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"high\"\ndeveloper_instructions = \"{ROLE_DEVELOPER_INSTRUCTIONS}\"\nsandbox_mode = \"read-only\"\nmodel_provider = \"mock\"\n\n[model_providers.mock]\nname = \"mock\"\nbase_url = \"{model_provider_base_url}\"\nenv_key = \"PATH\"\nwire_api = \"responses\"\n"
+        ),
+    )
+    .expect("write durable worker role config");
+    config.agent_roles.insert(
+        ROLE_NAME.to_string(),
+        AgentRoleConfig {
+            description: Some("Durable worker role".to_string()),
+            config_file: Some(role_path.to_path_buf()),
+            nickname_candidates: None,
+        },
+    );
+}
+
+async fn assert_cold_root_resume_restores_agent_identity(scenario: ResumeScenario) -> Result<()> {
     let server = start_mock_server().await;
-    let spawn_args = serde_json::to_string(&json!({
-        "message": INITIAL_TASK,
-        "task_name": "worker",
-        "model": WORKER_MODEL,
-        "reasoning_effort": WORKER_REASONING_EFFORT,
-        "fork_turns": "none",
-    }))?;
+    let spawn_args = serde_json::to_string(&match scenario {
+        ResumeScenario::ExplicitSelection => json!({
+            "message": INITIAL_TASK,
+            "task_name": "worker",
+            "model": WORKER_MODEL,
+            "reasoning_effort": WORKER_REASONING_EFFORT,
+            "fork_turns": "none",
+        }),
+        ResumeScenario::Role => json!({
+            "message": INITIAL_TASK,
+            "task_name": "worker",
+            "agent_type": ROLE_NAME,
+            "fork_turns": "none",
+        }),
+    })?;
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| body_contains(request, INITIAL_PROMPT),
@@ -122,8 +181,11 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
     )
     .await;
 
-    let mut initial_builder = test_codex().with_config(configure_multi_agent_v2);
-    let initial = initial_builder.build(&server).await?;
+    let initial_model_provider_base_url = format!("{}/v1", server.uri());
+    let mut initial_builder = test_codex().with_config(move |config| {
+        scenario.configure(config, &initial_model_provider_base_url);
+    });
+    let initial = initial_builder.build_with_auto_env(&server).await?;
     let root_thread_id = initial.session_configured.thread_id;
     let home = initial.home.clone();
     let rollout_path = initial
@@ -163,12 +225,39 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
         }
         sleep(Duration::from_millis(10)).await;
     }
-    assert!(
-        initial_child_request
+    assert!(initial_child_request
+        .requests()
+        .iter()
+        .any(|request| request.body_contains_text(INITIAL_TASK)));
+    if matches!(scenario, ResumeScenario::Role) {
+        assert!(initial_child_request
             .requests()
             .iter()
-            .any(|request| request.body_contains_text(INITIAL_TASK))
+            .any(|request| request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS)));
+    }
+    let initial_worker_config = worker_thread.config_snapshot().await;
+    let initial_worker_role_config = (
+        initial_worker_config.model,
+        initial_worker_config.model_provider_id,
+        initial_worker_config.reasoning_effort,
+        initial_worker_config.permission_profile,
     );
+    match scenario {
+        ResumeScenario::ExplicitSelection => {
+            assert_eq!(initial_worker_role_config.0, WORKER_MODEL);
+            assert_eq!(initial_worker_role_config.1, "openai");
+            assert_eq!(initial_worker_role_config.2, Some(ReasoningEffort::Low));
+        }
+        ResumeScenario::Role => assert_eq!(
+            initial_worker_role_config,
+            (
+                ROLE_MODEL.to_string(),
+                ROLE_MODEL_PROVIDER_ID.to_string(),
+                Some(ReasoningEffort::High),
+                PermissionProfile::Disabled,
+            )
+        ),
+    }
     worker_thread.flush_rollout().await?;
     initial.codex.flush_rollout().await?;
     drop(worker_thread);
@@ -220,7 +309,10 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
     )
     .await;
 
-    let mut resume_builder = test_codex().with_config(configure_multi_agent_v2);
+    let resumed_model_provider_base_url = format!("{}/v1", server.uri());
+    let mut resume_builder = test_codex().with_config(move |config| {
+        scenario.configure(config, &resumed_model_provider_base_url);
+    });
     let resumed = resume_builder.resume(&server, home, rollout_path).await?;
     assert_eq!(
         resumed.thread_manager.list_thread_ids().await,
@@ -303,17 +395,43 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
     );
     let followup_result: Value = serde_json::from_str(&followup_output)?;
     assert_eq!(followup_result["task_name"], "/root/worker");
-    assert_eq!(followup_result["effective_model"], WORKER_MODEL);
-    assert_eq!(followup_result["effective_model_provider_id"], "openai");
+    let (expected_model, expected_provider, expected_reasoning_effort) =
+        scenario.effective_selection();
+    assert_eq!(followup_result["effective_model"], expected_model);
+    assert_eq!(
+        followup_result["effective_model_provider_id"],
+        expected_provider
+    );
     assert_eq!(
         followup_result["effective_reasoning_effort"],
-        WORKER_REASONING_EFFORT
+        expected_reasoning_effort
     );
-    resumed
+    if matches!(scenario, ResumeScenario::Role) {
+        assert!(followup_request.body_contains_text(ROLE_DEVELOPER_INSTRUCTIONS));
+    }
+    let reloaded_worker = resumed
         .thread_manager
         .get_thread(worker_thread_id)
         .await
         .expect("follow-up should lazily reload the original worker");
+    let reloaded_worker_config = reloaded_worker.config_snapshot().await;
+    let reloaded_worker_role_config = (
+        reloaded_worker_config.model,
+        reloaded_worker_config.model_provider_id,
+        reloaded_worker_config.reasoning_effort,
+        reloaded_worker_config.permission_profile,
+    );
+    assert_eq!(reloaded_worker_role_config, initial_worker_role_config);
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup() -> Result<()> {
+    assert_cold_root_resume_restores_agent_identity(ResumeScenario::ExplicitSelection).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Result<()> {
+    assert_cold_root_resume_restores_agent_identity(ResumeScenario::Role).await
 }

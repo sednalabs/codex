@@ -2,6 +2,8 @@ use super::effective_file_system_sandbox_policy;
 use super::intersect_permission_profiles;
 use super::merge_file_system_policy_with_additional_permissions;
 use super::normalize_additional_permissions;
+#[cfg(not(unix))]
+use super::resolve_permission_path;
 use super::should_require_platform_sandbox;
 use codex_protocol::models::AdditionalPermissionProfile as PermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
@@ -18,6 +20,17 @@ use pretty_assertions::assert_eq;
 #[cfg(unix)]
 use std::path::Path;
 use tempfile::TempDir;
+
+#[cfg(not(unix))]
+#[test]
+fn slash_tmp_permission_path_is_unix_only() {
+    let cwd = std::env::current_dir().expect("current directory");
+    let slash_tmp = FileSystemPath::Special {
+        value: FileSystemSpecialPath::SlashTmp,
+    };
+
+    assert_eq!(resolve_permission_path(&slash_tmp, &cwd), None);
+}
 
 #[cfg(unix)]
 fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
