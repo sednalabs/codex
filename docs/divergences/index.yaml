@@ -1563,6 +1563,8 @@
         "codex-rs/sandboxing/src/policy_transforms_tests.rs",
         "codex-rs/sandboxing/src/windows.rs",
         "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/token.rs",
+        "codex-rs/windows-sandbox-rs/src/token_tests.rs",
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs"
       ],
       "required_markers": {
@@ -1577,11 +1579,19 @@
         "codex-rs/core/src/exec_tests.rs": [
           "windows_restricted_token_supports_full_read_split_write_read_carveouts"
         ],
+        "codex-rs/windows-sandbox-rs/src/token.rs": [
+          "build_restricted_sid_entries",
+          "build_default_dacl_sids"
+        ],
+        "codex-rs/windows-sandbox-rs/src/token_tests.rs": [
+          "restricted_sids_exclude_everyone",
+          "default_dacl_keeps_everyone_for_ipc_compatibility"
+        ],
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs": [
           "legacy_workspace_write_delete_is_limited_to_writable_roots"
         ]
       },
-      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
+      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible restricted token excludes Everyone from the restricting SID set while retaining it on the default DACL for IPC. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1593,15 +1603,18 @@
         "missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement",
         "slash_tmp_permission_path_is_unix_only",
         "windows_restricted_token_supports_full_read_split_write_read_carveouts",
+        "restricted_sids_exclude_everyone",
+        "default_dacl_keeps_everyone_for_ipc_compatibility",
         "legacy_workspace_write_delete_is_limited_to_writable_roots"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
+      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "windows-sandbox-policy-adapter",
       "hotspot_files": [
         "codex-rs/protocol/src/permissions.rs",
-        "codex-rs/sandboxing/src/windows.rs"
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/token.rs"
       ],
       "extraction_target": "upstream protected-metadata and special-path boundary equivalence"
     },
