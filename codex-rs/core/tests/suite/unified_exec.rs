@@ -981,6 +981,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
         "shell": "powershell",
         "login": false,
         "yield_time_ms": 5_000,
+        "wait_until_terminal": true,
     });
     let responses = vec![
         sse(vec![
