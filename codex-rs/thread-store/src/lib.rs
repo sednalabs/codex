@@ -17,6 +17,7 @@ pub use error::ThreadStoreError;
 pub use error::ThreadStoreResult;
 pub use in_memory::InMemoryThreadStore;
 pub use in_memory::InMemoryThreadStoreCalls;
+pub use inference_identity::ReadThreadInferenceIdentitySidecarParams;
 pub use inference_identity::ThreadInferenceIdentitySidecar;
 pub use inference_identity::ThreadInferenceIdentitySidecarPatch;
 pub use inference_identity::UpdateThreadInferenceIdentitySidecarParams;
