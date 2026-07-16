@@ -240,7 +240,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire, optional store sidecar, and lifecycle-aware Local custody while richer inventory and wait behavior remain capability-declared.",
+      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire, optional store sidecar, and lifecycle-aware Local custody with generation-safe recorder cleanup and fail-closed materialization tracking while richer inventory and wait behavior remain capability-declared.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -252,13 +252,7 @@
         "authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",
         "inference_identity_authority_migration_preserves_populated_0044_row",
         "inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing",
-        "classifies_missing_unmaterialized_materialized_and_archived_live_threads",
-        "archive_transition_completes_before_queued_classification",
-        "unarchive_transition_completes_before_queued_classification",
-        "custody_is_per_thread_and_prunes_idle_entries",
-        "rejects_simultaneous_active_and_archived_materialization",
-        "delete_transition_completes_before_queued_classification",
-        "discard_transition_completes_before_queued_classification",
+        "lifecycle_custody_regression_suite",
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",

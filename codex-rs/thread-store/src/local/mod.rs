@@ -72,6 +72,15 @@ struct LiveRecorderEntry {
     // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened
     // so missing SQLite rows can still be seeded.
     history_mode: ThreadHistoryMode,
+    token: Arc<()>,
+    materialized: bool,
+}
+
+#[derive(Clone)]
+struct LiveRecorderSnapshot {
+    recorder: RolloutRecorder,
+    history_mode: ThreadHistoryMode,
+    token: Arc<()>,
 }
 
 /// Process-scoped configuration for local thread storage.
@@ -141,15 +150,19 @@ impl LocalThreadStore {
         live_writer::rollout_path(self, thread_id).await
     }
 
-    pub(super) async fn live_recorder(
+    async fn live_recorder(
         &self,
         thread_id: ThreadId,
-    ) -> ThreadStoreResult<RolloutRecorder> {
+    ) -> ThreadStoreResult<LiveRecorderSnapshot> {
         self.live_recorders
             .lock()
             .await
             .get(&thread_id)
-            .map(|entry| entry.recorder.clone())
+            .map(|entry| LiveRecorderSnapshot {
+                recorder: entry.recorder.clone(),
+                history_mode: entry.history_mode,
+                token: Arc::clone(&entry.token),
+            })
             .ok_or(ThreadStoreError::ThreadNotFound { thread_id })
     }
 
@@ -170,6 +183,7 @@ impl LocalThreadStore {
         thread_id: ThreadId,
         recorder: RolloutRecorder,
         history_mode: ThreadHistoryMode,
+        materialized: bool,
     ) -> ThreadStoreResult<()> {
         match self.live_recorders.lock().await.entry(thread_id) {
             Entry::Occupied(entry) => Err(ThreadStoreError::InvalidRequest {
@@ -179,9 +193,32 @@ impl LocalThreadStore {
                 entry.insert(LiveRecorderEntry {
                     recorder,
                     history_mode,
+                    token: Arc::new(()),
+                    materialized,
                 });
                 Ok(())
             }
+        }
+    }
+
+    async fn mark_live_recorder_materialized(&self, thread_id: ThreadId, token: &Arc<()>) -> bool {
+        let mut recorders = self.live_recorders.lock().await;
+        if let Some(entry) = recorders.get_mut(&thread_id)
+            && Arc::ptr_eq(&entry.token, token)
+        {
+            entry.materialized = true;
+            return true;
+        }
+        false
+    }
+
+    async fn remove_live_recorder_if_current(&self, thread_id: ThreadId, token: &Arc<()>) {
+        let mut recorders = self.live_recorders.lock().await;
+        if recorders
+            .get(&thread_id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.token, token))
+        {
+            recorders.remove(&thread_id);
         }
     }
 
