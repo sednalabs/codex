@@ -58,9 +58,10 @@ docs-only refresh commit that records this snapshot.
   and the non-sandbox V8 release artifact; explicit sandbox coverage remains in
   `v8-canary`. The `remote_tests` replay job keeps a 45-minute hosted budget so
   long archive download and remote-environment setup time does not masquerade
-  as a product failure. Remote replay skips host-only compact/resume and hook
-  fixtures, while Guardian's local proxy fixtures use a host-native cwd. The
-  large-output summary remains host-only until exec-server replay preserves
+  as a product failure. Remote replay skips host-only compact/resume, hook, and
+  forced-`rm` shell-safety/approval fixtures, while Guardian's local proxy
+  fixtures use a host-native cwd. The large-output summary remains host-only
+  until exec-server replay preserves
   bounded head, tail, and omission metadata before core subscribes. The
   `codex.skill-loader-fixture-hermeticity-targeted` lane pins the two
   skill-loader fixture assertions that suppress or ignore ambient parent
