@@ -11,9 +11,11 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use super::*;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadInferenceIdentitySidecarParams;
+use crate::SortDirection;
 use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadInferenceIdentitySidecarPatch;
 use crate::ThreadPersistenceMetadata;
+use crate::ThreadSortKey;
 
 #[tokio::test]
 async fn identity_patch_preserves_omitted_state_and_thread_isolation() {
