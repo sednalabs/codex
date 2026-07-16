@@ -6,10 +6,12 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
+use codex_rollout::RolloutWriteAuthority;
 
 pub(super) async fn create_thread(
     store: &LocalThreadStore,
     params: CreateThreadParams,
+    write_authority: RolloutWriteAuthority,
 ) -> ThreadStoreResult<RolloutRecorder> {
     let cwd = params
         .metadata
@@ -25,7 +27,7 @@ pub(super) async fn create_thread(
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
     };
-    RolloutRecorder::new(
+    RolloutRecorder::new_with_write_authority(
         &config,
         RolloutRecorderParams::new(
             params.thread_id,
@@ -42,6 +44,7 @@ pub(super) async fn create_thread(
         .with_multi_agent_version(params.multi_agent_version)
         .with_history_mode(params.history_mode)
         .with_initial_window_id(params.initial_window_id),
+        write_authority,
     )
     .await
     .map_err(|err| ThreadStoreError::Internal {
