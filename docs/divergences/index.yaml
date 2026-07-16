@@ -215,6 +215,7 @@
         "spawn overrides",
         "agent inventory",
         "blocking waits",
+        "agents role schema",
         "agents tool namespace"
       ],
       "files": [
@@ -223,7 +224,11 @@
         "codex-rs/core/src/agent/control/spawn.rs",
         "codex-rs/core/src/agent/control_tests.rs",
         "codex-rs/core/src/agent/role.rs",
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/codex_delegate.rs",
         "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/config/schema_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
@@ -233,10 +238,11 @@
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
         "codex-rs/core/tests/suite/multi_agent_resume.rs",
         "codex-rs/thread-store/src/local/read_thread.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides, the configurable agents tool namespace, task-message-free descendant diagnostics, and complete indexed agent-path/model/provider/reasoning identity across cold V2 descendant reloads. A populated indexed model makes an absent indexed effort an intentional clear, while legacy rows with no indexed model identity retain rollout model and effort. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides, flattened named-role schema support under Schemars 1.2, the configurable agents tool namespace, pre-cancelled delegate launch semantics, task-message-free descendant diagnostics, and complete indexed agent-path/model/provider/reasoning identity across cold V2 descendant reloads. A populated indexed model makes an absent indexed effort an intentional clear, while legacy rows with no indexed model identity retain rollout model and effort. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -255,12 +261,16 @@
         "inspect_agent_tree_without_state_db_points_to_subagent_tail",
         "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
+        "config_schema_matches_fixture",
+        "config_schema_allows_named_agent_roles",
+        "configured_agent_roles_control_spawn_agent_type",
+        "run_codex_thread_interactive_respects_pre_cancelled_spawn",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. The Schemars 1.2 adapter keeps flattened named roles schema-valid, V2 description tests follow the effective configured namespace, and pre-cancelled delegates abort before session spawn. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [

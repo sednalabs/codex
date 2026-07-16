@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-16`
-- downstream integration code tree: `78dd12506c2879289d7c52cfa9c67100e0789b89`
+- downstream integration code tree: `0d5d0714b5651695813ecf183e8028c97b4d919f`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`): `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
 - `upstream/main`: `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
-- downstream branch vs `upstream/main`: `1760` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1763` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1533` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1536` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -138,7 +138,10 @@ docs-only refresh commit that records this snapshot.
   so validation does not fail before the requested command starts.
 - Windows Bazel shards serialize local test actions because sandbox identities,
   ACLs, and firewall rules are host-global; concurrent policy tests can
-  otherwise invalidate one another and create false allow/deny results.
+  otherwise invalidate one another and create false allow/deny results. The
+  Bazel CI wrapper applies its selected rc config before explicit caller flags,
+  so the workflow's `--local_test_jobs=1` limit cannot be silently reset by the
+  Windows cross-build config.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -439,6 +442,11 @@ docs-only refresh commit that records this snapshot.
   reasoning settings remain reserved and unapplied; downstream's live model
   selection behavior continues to come from explicit per-spawn overrides and
   the documented role/profile precedence below.
+- Downstream's Schemars 1.2 adapter intentionally leaves schema-only
+  `deny_unknown_fields` off the flattened `AgentsToml` object so arbitrary
+  `[agents.<role>]` keys remain validated as `AgentRoleToml`. A semantic schema
+  regression locks that role-valued `additionalProperties` contract instead of
+  relying only on generated-fixture equality.
 - Spawn-agent tool guidance should follow upstream's authorization wording that
   a user request or applicable `AGENTS.md`/skill instruction can authorize
   delegation, and should keep upstream's warning that `model` overrides are
@@ -461,7 +469,13 @@ docs-only refresh commit that records this snapshot.
 - MultiAgentV2 keeps the configurable `agents` namespace and the shared usage
   hint that distinguishes direct agent tool calls from `functions.exec` tools.
   This is intentional downstream routing behavior, not a reason to retain old
-  handler implementations.
+  handler implementations. Description tests derive the effective namespace
+  from configuration rather than hard-coding either upstream or downstream
+  defaults.
+- A delegate whose cancellation token is already cancelled returns
+  `TurnAborted` before allocating channels or spawning a child session; the
+  subsequent cancellation-aware spawn remains responsible for races after
+  that initial boundary.
 - The 2026-07-15 sync adopts upstream's removal of `last_task_message` and
   `last_task_message_preview` from `list_agents` and `inspect_agent_tree`.
   Descendant counts, status, role, nickname, and live/stale structure remain,
@@ -497,7 +511,11 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/agent/control/spawn.rs`
   - `codex-rs/core/src/agent/control_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
+  - `codex-rs/config/src/config_toml.rs`
+  - `codex-rs/core/config.schema.json`
+  - `codex-rs/core/src/codex_delegate.rs`
   - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/config/schema_tests.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
@@ -506,6 +524,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
+  - `codex-rs/core/tests/suite/spawn_agent_description.rs`
   - `codex-rs/core/tests/suite/multi_agent_resume.rs`
   - `codex-rs/thread-store/src/local/read_thread.rs`
   - `docs/config.md`
