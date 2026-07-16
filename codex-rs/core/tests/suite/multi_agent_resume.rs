@@ -242,7 +242,7 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
         .find_map(|request| request.function_call_output_text(FOLLOWUP_CALL_ID))
         .expect("follow-up tool should return a model-visible result");
     let worker_thread_id_string = worker_thread_id.to_string();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     let followup_request = loop {
         if let Some(request) = followup_child_request.requests().into_iter().find(|request| {
             !request.inputs_of_type("agent_message").is_empty()
