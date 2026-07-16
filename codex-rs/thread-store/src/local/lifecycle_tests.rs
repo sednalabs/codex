@@ -395,14 +395,14 @@ async fn close_live_writer_without_removal(store: &LocalThreadStore, thread_id: 
         .expect("close writer without removing recorder entry");
 }
 
-async fn assert_custodied_transition<F>(
+async fn assert_custodied_transition<F, T>(
     store: &LocalThreadStore,
     thread_id: ThreadId,
     transition: F,
     operation: &str,
     expected: LocalThreadLifecycle,
 ) where
-    F: Future<Output = crate::ThreadStoreResult<()>>,
+    F: Future<Output = crate::ThreadStoreResult<T>>,
 {
     let initial_guard = store
         .acquire_lifecycle_custody(thread_id)
