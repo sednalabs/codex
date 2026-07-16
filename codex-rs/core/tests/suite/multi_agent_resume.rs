@@ -249,20 +249,23 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
 
     resumed.submit_turn(FOLLOWUP_PROMPT).await?;
 
-    let worker_thread_id_string = worker_thread_id.to_string();
-    assert!(followup_child_request.requests().iter().any(|request| {
-        request.body_contains_text(FOLLOWUP_TASK)
-            && request
-                .body_json()
-                .pointer("/client_metadata/thread_id")
-                .and_then(Value::as_str)
-                == Some(worker_thread_id_string.as_str())
-    }));
     let followup_output = followup_root_request
         .requests()
         .iter()
         .find_map(|request| request.function_call_output_text(FOLLOWUP_CALL_ID))
         .expect("follow-up tool should return a model-visible result");
+    let worker_thread_id_string = worker_thread_id.to_string();
+    assert!(
+        followup_child_request.requests().iter().any(|request| {
+            request.body_contains_text(FOLLOWUP_TASK)
+                && request
+                    .body_json()
+                    .pointer("/client_metadata/thread_id")
+                    .and_then(Value::as_str)
+                    == Some(worker_thread_id_string.as_str())
+        }),
+        "follow-up tool result: {followup_output}"
+    );
     let followup_result: Value = serde_json::from_str(&followup_output)?;
     assert_eq!(followup_result["task_name"], "/root/worker");
     assert_eq!(followup_result["effective_model"], WORKER_MODEL);
