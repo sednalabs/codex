@@ -7,6 +7,7 @@ use codex_protocol::models::ThreadInferenceIdentityAuthority;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::ReadThreadByRolloutPathParams;
@@ -233,10 +234,14 @@ async fn identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect() {
 async fn identity_sidecar_read_composes_with_thread_read_shapes() {
     let store = InMemoryThreadStore::default();
     let thread_id = thread_id(/*suffix*/ 5);
+    let second_thread_id = thread_id(/*suffix*/ 6);
     let rollout_path = std::path::PathBuf::from("/tmp/in-memory-identity-sidecar.jsonl");
     ThreadStore::create_thread(&store, create_thread_params(thread_id))
         .await
         .expect("thread should be created");
+    ThreadStore::create_thread(&store, create_thread_params(second_thread_id))
+        .await
+        .expect("second thread should be created");
     ThreadStore::resume_thread(
         &store,
         ResumeThreadParams {
@@ -253,13 +258,22 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
         configured: ThreadInferenceIdentityAuthority::Valid(identity("configured")),
         latest_request: ThreadInferenceIdentityAuthority::cleared(),
     };
-    store
-        .state
-        .lock()
-        .await
+    let second_expected = ThreadInferenceIdentitySidecar {
+        configured: ThreadInferenceIdentityAuthority::Malformed {
+            raw: "{exact malformed second configured}".to_string(),
+        },
+        latest_request: ThreadInferenceIdentityAuthority::LegacyMissing,
+    };
+    let mut state = store.state.lock().await;
+    state
         .inference_identity
         .sidecars
         .insert(thread_id, expected.clone());
+    state
+        .inference_identity
+        .sidecars
+        .insert(second_thread_id, second_expected.clone());
+    drop(state);
 
     let direct = ThreadStore::read_thread(
         &store,
@@ -286,7 +300,7 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
         .expect("list should find thread")
         .items
         .into_iter()
-        .next()
+        .find(|item| item.thread_id == thread_id)
         .expect("listed thread");
 
     for observed_thread_id in [direct.thread_id, by_path.thread_id, listed.thread_id] {
@@ -301,6 +315,23 @@ async fn identity_sidecar_read_composes_with_thread_read_shapes() {
             .await
             .expect("sidecar read should compose with thread id"),
             expected
+        );
+    }
+
+    for (observed_thread_id, expected_sidecar) in
+        [(thread_id, expected), (second_thread_id, second_expected)]
+    {
+        assert_eq!(
+            ThreadStore::read_thread_inference_identity_sidecar(
+                &store,
+                ReadThreadInferenceIdentitySidecarParams {
+                    thread_id: observed_thread_id,
+                    include_archived: false,
+                },
+            )
+            .await
+            .expect("sidecar read should preserve thread isolation"),
+            expected_sidecar
         );
     }
 }
