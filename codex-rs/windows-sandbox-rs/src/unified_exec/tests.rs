@@ -481,21 +481,6 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         fs::write(&tmp_file, "tmp").expect("seed TMP file");
         fs::write(&outside_file, "outside").expect("seed outside file");
 
-        let script = workspace.join("delete-fixtures.cmd");
-        fs::write(
-            &script,
-            concat!(
-                "@echo off\r\n",
-                "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
-                "del /f /q \"%TEMP_DELETE%\"\r\n",
-                "del /f /q \"%TMP_DELETE%\"\r\n",
-                "del /f /q \"%OUTSIDE_DELETE%\"\r\n",
-                "rmdir \"%PROTECTED_GIT_DIR%\"\r\n",
-                "exit /b 0\r\n",
-            ),
-        )
-        .expect("write delete script");
-
         let env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
             ("TMP".to_string(), tmp_root.to_string_lossy().into_owned()),
@@ -527,10 +512,25 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             workspace_roots_for(workspace.as_path()).as_slice(),
             codex_home.path(),
             vec![
-                "C:\\Windows\\System32\\cmd.exe".to_string(),
-                "/d".to_string(),
-                "/c".to_string(),
-                script.display().to_string(),
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                concat!(
+                    "Remove-Item -LiteralPath $env:WORKSPACE_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:TEMP_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:TMP_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:OUTSIDE_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:PROTECTED_GIT_DIR -Recurse -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "exit 0",
+                )
+                .to_string(),
             ],
             workspace.as_path(),
             env_map,
