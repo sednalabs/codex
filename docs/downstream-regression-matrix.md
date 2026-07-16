@@ -324,7 +324,7 @@ provider metadata on resume.
 | Postgres ledger ingest + copied-history/source-row regressions                                                                                                                                                                                                                                                                                                                                                                | `downstream-ledger-seam`                                                                                                                                                                                                                                         | `ensure_schema.sh`; `ingest_codex_rollouts_to_postgres.sh`; `test_codex_copied_history_filter.sh`; `test_codex_source_row_identity.sh`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Python Code Quality corrections for timeout, exec, and dead-binding control flow                                                                                                                                                                                                                                                                                                                                              | GitHub Code Quality main evaluation; `codex.downstream-divergence-audit`                                                                                                                                                                                         | Findings `C277`, `C287`, `C288`, and `C331` close after the post-merge evaluation; downstream divergence audit remains green                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
-### Rollout Mutation Authority And Compressed Materialization Custody
+### Rollout Mutation Authority And Recorder Filesystem Custody
 
 - Guardrail: GitHub `blocking-ci` unit tests for `codex-rollout`.
 - Primary checks:
@@ -332,7 +332,9 @@ provider metadata on resume.
   `close_counts_every_admission_and_retains_the_final_release`; plus
   `compressed_materialization_custody_survives_caller_cancellation_through_success`
   and
-  `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`.
+  `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`; plus
+  `plain_resume_tail_repair_custody_survives_caller_cancellation`,
+  and `recovery_materialization_tail_repair_and_creation_are_guarded`.
 - The foundation pair proves that two independently polled revokers wake and
   that a retained final release completes one-way quiescence. The
   materialization pair cancels the outer async task, closes later admission,
@@ -342,9 +344,10 @@ provider metadata on resume.
   on success, and exact original compressed bytes with no plain or temporary
   sibling after corrupt-zstd cleanup. Diagnostic deadlines are fail-safes
   only; ordering comes from channels and direct future polling.
-- This lane does not cover recorder lifecycle integration, direct blocking
-  materialization, append-open or recovery, writer actor behavior, or public
-  API exposure.
+- The recorder trio applies the same proof to resume append-open, blocking
+  recovery materialization/tail repair, and missing-path creation. Recursive
+  snapshots prove the before, after-mutation, and post-revocation states.
+- This lane does not cover recorder lifecycle revocation, terminal writer actor behavior, command acknowledgement semantics, or public API exposure.
 
 The replay assertions that used to live under `tui_app_server` now ride on the
 cut-over `codex-tui` app tests. Keep the preset green with the parser test and

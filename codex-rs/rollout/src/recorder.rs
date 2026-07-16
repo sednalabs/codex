@@ -49,6 +49,7 @@ use super::list::get_threads_in_root;
 use super::list::parse_cursor;
 use super::list::parse_timestamp_uuid_from_filename;
 use super::metadata;
+use super::mutation_authority::RolloutMutationAuthority;
 use super::ordinal::RolloutOrdinalState;
 use super::ordinal::ordinal_state_for_rollout;
 use super::session_index::find_thread_names_by_ids;
@@ -757,6 +758,7 @@ impl RolloutRecorder {
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
     ) -> std::io::Result<Self> {
+        let mutation_authority = RolloutMutationAuthority::new();
         // Clone the cwd for the spawned task to collect git info asynchronously.
         let cwd = config.cwd().to_path_buf();
         let state = match params {
@@ -826,10 +828,15 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    mutation_authority,
                 }
             }
             RolloutRecorderParams::Resume { path } => {
-                let (path, file, ordinal_state) = open_rollout_for_append(path.as_path()).await?;
+                let (path, file, ordinal_state) = open_rollout_for_append_with_authority(
+                    path.as_path(),
+                    mutation_authority.clone(),
+                )
+                .await?;
                 RolloutWriterState {
                     writer: Some(JsonlWriter { file }),
                     deferred_log_file_info: None,
@@ -839,6 +846,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    mutation_authority,
                 }
             }
         };
@@ -1538,22 +1546,46 @@ fn precompute_log_file_info(
     })
 }
 
+#[cfg(test)]
 fn open_log_file(path: &Path) -> std::io::Result<File> {
-    let path = compression::materialize_rollout_for_append_blocking(path)?;
+    open_log_file_with_authority(path, RolloutMutationAuthority::new(), || {}, || {})
+}
+
+fn open_log_file_with_authority<BeforeMutation, AfterMutation>(
+    path: &Path,
+    authority: RolloutMutationAuthority,
+    before_mutation: BeforeMutation,
+    after_mutation_before_release: AfterMutation,
+) -> std::io::Result<File>
+where
+    BeforeMutation: FnOnce(),
+    AfterMutation: FnOnce(),
+{
+    let path = compression::plain_rollout_path(path);
     let Some(parent) = path.parent() else {
         return Err(IoError::other(format!(
             "rollout path has no parent: {}",
             path.display()
         )));
     };
-    fs::create_dir_all(parent)?;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(path)?;
-    ensure_rollout_is_newline_terminated(&mut file)?;
-    Ok(file)
+    let custody = authority.admit().map_err(|error| {
+        IoError::other(format!("rollout mutation admission failed: {error:?}"))
+    })?;
+    before_mutation();
+    let result = (|| {
+        let path = compression::materialize_rollout_for_append_blocking(path.as_path())?;
+        fs::create_dir_all(parent)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(path)?;
+        ensure_rollout_is_newline_terminated(&mut file)?;
+        Ok(file)
+    })();
+    after_mutation_before_release();
+    drop(custody);
+    result
 }
 
 /// Mutable state owned by the background rollout writer.
@@ -1570,6 +1602,7 @@ struct RolloutWriterState {
     rollout_path: PathBuf,
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
+    mutation_authority: RolloutMutationAuthority,
 }
 
 impl RolloutWriterState {
@@ -1658,9 +1691,19 @@ impl RolloutWriterState {
         let path = self
             .deferred_log_file_info
             .as_ref()
-            .map(|info| info.path.as_path())
-            .unwrap_or(self.rollout_path.as_path());
-        let file = open_log_file(path)?;
+            .map(|info| info.path.clone())
+            .unwrap_or_else(|| self.rollout_path.clone());
+        let mutation_authority = self.mutation_authority.clone();
+        let file = tokio::task::spawn_blocking(move || {
+            open_log_file_with_authority(
+                path.as_path(),
+                mutation_authority,
+                || {},
+                || {},
+            )
+        })
+        .await
+        .map_err(IoError::other)??;
         self.writer = Some(JsonlWriter {
             file: tokio::fs::File::from_std(file),
         });
@@ -1806,16 +1849,53 @@ pub async fn append_rollout_item_to_path(
 async fn open_rollout_for_append(
     path: &Path,
 ) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)> {
-    let path = compression::materialize_rollout_for_append(path).await?;
+    open_rollout_for_append_with_authority(path, RolloutMutationAuthority::new()).await
+}
+
+async fn open_rollout_for_append_with_authority(
+    path: &Path,
+    authority: RolloutMutationAuthority,
+) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)> {
+    open_rollout_for_append_with_authority_and_hooks(path, authority, || {}, || {}).await
+}
+
+async fn open_rollout_for_append_with_authority_and_hooks<BeforeMutation, AfterMutation>(
+    path: &Path,
+    authority: RolloutMutationAuthority,
+    before_mutation: BeforeMutation,
+    after_mutation_before_release: AfterMutation,
+) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)>
+where
+    BeforeMutation: FnOnce() + Send + 'static,
+    AfterMutation: FnOnce() + Send + 'static,
+{
+    let path = compression::materialize_rollout_for_append_with_authority(
+        path,
+        authority.clone(),
+        || {},
+        || {},
+    )
+    .await?;
     let path_for_open = path.clone();
     let (file, ordinal_state) = tokio::task::spawn_blocking(move || {
-        let mut file = File::options()
-            .read(true)
-            .append(true)
-            .open(path_for_open.as_path())?;
-        ensure_rollout_is_newline_terminated(&mut file)?;
-        let ordinal_state = ordinal_state_for_rollout(&mut file, path_for_open.as_path())?;
-        Ok::<_, std::io::Error>((file, ordinal_state))
+        let mut ordinal_file = File::open(path_for_open.as_path())?;
+        let ordinal_state =
+            ordinal_state_for_rollout(&mut ordinal_file, path_for_open.as_path())?;
+        let custody = authority.admit().map_err(|error| {
+            IoError::other(format!("rollout mutation admission failed: {error:?}"))
+        })?;
+        before_mutation();
+        let result = (|| {
+            let mut file = File::options()
+                .read(true)
+                .append(true)
+                .open(path_for_open.as_path())?;
+            ensure_rollout_is_newline_terminated(&mut file)?;
+            Ok::<_, std::io::Error>((file, ordinal_state))
+        })();
+        after_mutation_before_release();
+        drop(custody);
+        result
     })
     .await
     .map_err(IoError::other)??;
@@ -2022,3 +2102,7 @@ fn cwd_matches(session_cwd: &Path, cwd: &Path) -> bool {
 #[cfg(test)]
 #[path = "recorder_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "recorder_mutation_authority_tests.rs"]
+mod mutation_authority_tests;

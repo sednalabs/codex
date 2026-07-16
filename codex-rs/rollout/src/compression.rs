@@ -66,17 +66,7 @@ pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
 }
 
 /// Materializes a compressed rollout back to plain `.jsonl` for async append paths.
-pub(crate) async fn materialize_rollout_for_append(path: &Path) -> io::Result<PathBuf> {
-    materialize_rollout_for_append_with_authority(
-        path,
-        RolloutMutationAuthority::new(),
-        || {},
-        || {},
-    )
-    .await
-}
-
-async fn materialize_rollout_for_append_with_authority<BeforeMutation, AfterMutation>(
+pub(crate) async fn materialize_rollout_for_append_with_authority<BeforeMutation, AfterMutation>(
     path: &Path,
     authority: RolloutMutationAuthority,
     before_mutation: BeforeMutation,
