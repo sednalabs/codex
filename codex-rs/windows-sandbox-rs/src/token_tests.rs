@@ -2,15 +2,16 @@ use super::build_default_dacl_sids;
 use super::build_restricted_sid_entries;
 use std::ffi::c_void;
 
+fn fake_ptr(value: usize) -> *mut c_void {
+    value as *mut c_void
+}
+
 #[test]
 fn restricted_sids_exclude_everyone() {
-    let cap_a = 0x10usize as *mut c_void;
-    let cap_b = 0x20usize as *mut c_void;
-    let extra = 0x30usize as *mut c_void;
-    let logon = 0x40usize as *mut c_void;
-    let everyone = 0x50usize as *mut c_void;
-    let caps = [cap_a, cap_b];
-    let extras = [extra];
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let extras = [fake_ptr(0x30)];
+    let logon = fake_ptr(0x40);
+    let everyone = fake_ptr(0x50);
 
     let entries = build_restricted_sid_entries(&caps, &extras, logon);
     let restricted = entries.iter().map(|entry| entry.Sid).collect::<Vec<_>>();
@@ -21,11 +22,9 @@ fn restricted_sids_exclude_everyone() {
 
 #[test]
 fn default_dacl_keeps_everyone_for_ipc_compatibility() {
-    let cap_a = 0x10usize as *mut c_void;
-    let cap_b = 0x20usize as *mut c_void;
-    let logon = 0x30usize as *mut c_void;
-    let everyone = 0x40usize as *mut c_void;
-    let caps = [cap_a, cap_b];
+    let caps = [fake_ptr(0x10), fake_ptr(0x20)];
+    let logon = fake_ptr(0x30);
+    let everyone = fake_ptr(0x40);
 
     let dacl_sids = build_default_dacl_sids(&caps, logon, everyone);
 
