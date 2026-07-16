@@ -14,10 +14,10 @@ docs-only refresh commit that records this snapshot.
 - Audited on: `2026-07-17`
 - downstream integration code tree: `c4e2b7ff14345b39f13681280f666d21bfd61514`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
+- mirror branch `upstream-main` (`origin/upstream-main`): `315195492c80fdade38e917c18f9584efd599304`
 - `upstream/main`: `315195492c80fdade38e917c18f9584efd599304`
 - downstream branch vs `upstream/main`: `1780` downstream ahead, `0` upstream ahead
-- Mirror vs `upstream/main`: `0` ahead, `22` behind (`refresh pending`)
+- Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
 - Downstream-only non-merge commits at audit time: `1549` unique, `0` patch-equivalent
 
 ## Audit Rules
