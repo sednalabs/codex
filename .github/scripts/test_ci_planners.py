@@ -2006,7 +2006,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
@@ -2017,6 +2017,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["rust_integration_max_parallel"], "2")
         self.assertEqual(payload["release_max_parallel"], "1")
         self.assertEqual(payload["rust_batching_mode"], "auto")
+        self.assertIn(
+            "codex.core-multi-agent-orchestration-targeted",
+            payload["selected_lane_ids"],
+        )
 
     def test_heavy_plan_can_disable_rust_batching(self) -> None:
         payload = run_script(
@@ -4244,13 +4248,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
+        self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertEqual(payload["planned_job_count"], 39)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
@@ -4279,12 +4284,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
+        self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
         self.assertEqual(payload["planned_job_count"], 42)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 13)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["rust_minimal_max_parallel"], "25")
