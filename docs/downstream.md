@@ -77,15 +77,15 @@ branch.
 
 Current downstream audit baseline (validated on `2026-07-16`):
 
-- downstream branch `main` code tree:
-  `127725f80cf6440326ee0af50ea4652bfd96d8ff`
+- downstream integration code tree:
+  `43814ad3119063602abcf04f8cdf9d205fff668f`
 - comparison basis: `mirror`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `38b064c31b1f7464b281006316ec878ed23fea77`
+  `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
 - `upstream/main`:
-  `38b064c31b1f7464b281006316ec878ed23fea77`
+  `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1722` downstream ahead
+  `0` upstream ahead, `1758` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -265,6 +265,12 @@ User-visible behavior:
 Why:
 
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
+- Upstream now unifies multi-agent settings and role declarations under
+  `[agents]`, normalizes legacy `max_threads` to
+  `max_concurrent_threads_per_session`, and exposes `agent_type` only when roles
+  are configured. The reserved default sub-agent model and reasoning settings
+  are not yet applied by upstream; downstream selection remains explicit at
+  spawn time and subject to the role/profile precedence below.
 - Preserve those explicit child overrides at the spawn boundary, even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
 - Surface the effective resolved child settings directly in the tool layer so callers can see what actually launched.
 - Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
