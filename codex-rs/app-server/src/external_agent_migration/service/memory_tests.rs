@@ -195,8 +195,7 @@ fn rejects_symlinked_memory_destination_ancestors() {
         let codex_home = case_root.join(".codex");
         let target = codex_home.join(relative_target);
         let outside = case_root.join("outside");
-        fs::create_dir_all(target.parent().expect("target parent"))
-            .expect("create target parent");
+        fs::create_dir_all(target.parent().expect("target parent")).expect("create target parent");
         fs::create_dir_all(&outside).expect("create outside directory");
         fs::write(outside.join("sentinel"), b"outside").expect("write outside sentinel");
         std::os::unix::fs::symlink(&outside, &target).expect("create destination symlink");
@@ -231,8 +230,7 @@ fn detect_rejects_symlinked_stale_memory_project() {
     fs::create_dir_all(&source_home).expect("create source home");
     fs::create_dir_all(&outside).expect("create outside directory");
     fs::write(outside.join("sentinel"), b"outside").expect("write outside sentinel");
-    std::os::unix::fs::symlink(&outside, &stale_project)
-        .expect("create stale project symlink");
+    std::os::unix::fs::symlink(&outside, &stale_project).expect("create stale project symlink");
 
     let error = detect(&codex_home, &source_home)
         .expect_err("reject symlinked stale project during detection");
@@ -260,8 +258,7 @@ fn rejects_symlinked_memory_instructions_before_project_mutation() {
     fs::create_dir_all(instructions_path.parent().expect("instructions parent"))
         .expect("create instructions parent");
     fs::write(&outside, b"outside").expect("write outside instructions");
-    std::os::unix::fs::symlink(&outside, &instructions_path)
-        .expect("create instructions symlink");
+    std::os::unix::fs::symlink(&outside, &instructions_path).expect("create instructions symlink");
     let selected_memory = BTreeSet::from(["missing-project"]);
 
     let error = copy_resources(&codex_home, &[], &selected_memory)
@@ -302,8 +299,8 @@ fn rejects_symlinked_memory_resource_and_scope_leaves() {
         fs::create_dir_all(&target_root).expect("create target root");
         fs::write(&outside, b"outside").expect("write outside target");
         std::os::unix::fs::symlink(&outside, &target).expect("create target symlink");
-        let memory_files = discover_external_memory_files(&source_home)
-            .expect("discover project memory files");
+        let memory_files =
+            discover_external_memory_files(&source_home).expect("discover project memory files");
         let selected_memory = BTreeSet::from(["project-a"]);
 
         let error = copy_resources(&codex_home, &memory_files, &selected_memory)

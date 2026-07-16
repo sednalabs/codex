@@ -1276,11 +1276,7 @@ fn ensure_referenced_definitions_present(schema: &Value, label: &str) -> Result<
     ))
 }
 
-fn collect_missing_definitions(
-    value: &Value,
-    schema: &Value,
-    missing: &mut HashSet<String>,
-) {
+fn collect_missing_definitions(value: &Value, schema: &Value, missing: &mut HashSet<String>) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")

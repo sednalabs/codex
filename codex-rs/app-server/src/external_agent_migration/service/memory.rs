@@ -400,9 +400,7 @@ pub(super) fn resources_root(codex_home: &Path) -> PathBuf {
 fn validate_memory_project_keys(project_keys: &BTreeSet<&str>) -> io::Result<()> {
     for project_key in project_keys {
         let mut components = Path::new(project_key).components();
-        if !matches!(components.next(), Some(Component::Normal(_)))
-            || components.next().is_some()
-        {
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("memory project key is not a single path component: {project_key}"),

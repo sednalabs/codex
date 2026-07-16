@@ -17,9 +17,9 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxPolicy;
-use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
 #[cfg(target_os = "windows")]
 use codex_core::config::set_project_trust_level;
+use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;

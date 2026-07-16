@@ -1008,18 +1008,16 @@ impl UnifiedExecProcessManager {
                     "windows sandbox: failed to resolve codex_home: {err}"
                 ))
             })?;
-            let resolved_filesystem_overrides = if request
-                .windows_sandbox_filesystem_overrides
-                .is_none()
-            {
-                request
-                    .resolve_windows_sandbox_filesystem_overrides()
-                    .map_err(|err| {
-                        UnifiedExecError::create_process(format!("windows sandbox: {err}"))
-                    })?
-            } else {
-                None
-            };
+            let resolved_filesystem_overrides =
+                if request.windows_sandbox_filesystem_overrides.is_none() {
+                    request
+                        .resolve_windows_sandbox_filesystem_overrides()
+                        .map_err(|err| {
+                            UnifiedExecError::create_process(format!("windows sandbox: {err}"))
+                        })?
+                } else {
+                    None
+                };
             let filesystem_overrides = request
                 .windows_sandbox_filesystem_overrides
                 .as_ref()
@@ -1030,12 +1028,12 @@ impl UnifiedExecProcessManager {
             let additional_deny_read_paths = filesystem_overrides
                 .map(|overrides| overrides.additional_deny_read_paths.clone())
                 .unwrap_or_default();
-            let elevated_read_roots_override = filesystem_overrides
-                .and_then(|overrides| overrides.read_roots_override.clone());
+            let elevated_read_roots_override =
+                filesystem_overrides.and_then(|overrides| overrides.read_roots_override.clone());
             let elevated_read_roots_include_platform_defaults = filesystem_overrides
                 .is_some_and(|overrides| overrides.read_roots_include_platform_defaults);
-            let elevated_write_roots_override = filesystem_overrides
-                .and_then(|overrides| overrides.write_roots_override.clone());
+            let elevated_write_roots_override =
+                filesystem_overrides.and_then(|overrides| overrides.write_roots_override.clone());
             let spawned = codex_windows_sandbox::spawn_windows_sandbox_session_for_level(
                 codex_windows_sandbox::WindowsSandboxSessionRequest {
                     permission_profile: &request.permission_profile,

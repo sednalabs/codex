@@ -73,7 +73,8 @@ async fn test_network_proxy() -> anyhow::Result<NetworkProxy> {
     let state = codex_network_proxy::build_config_state(
         NetworkProxyConfig::default(),
         NetworkProxyConstraints::default(),
-    )?;
+    )
+    .expect("build sandbox command");
     NetworkProxy::builder()
         .state(Arc::new(NetworkProxyState::with_reloader(
             state,
@@ -101,8 +102,7 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
         &command_cwd,
         &exec_env_for_sandbox_permissions(&env, SandboxPermissions::RequireEscalated),
         /*additional_permissions*/ None,
-    )
-    .expect("build sandbox command");
+    )?;
     assert_eq!(command.cwd, PathUri::from_abs_path(&command_cwd));
     let sandbox_policy_cwd = PathUri::from_abs_path(&native_sandbox_policy_cwd);
     let options = ExecOptions {
@@ -207,7 +207,8 @@ async fn proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides()
         &command_cwd,
         &HashMap::new(),
         /*additional_permissions*/ None,
-    )?;
+    )
+    .expect("build sandbox command");
     let options = ExecOptions {
         expiration: ExecExpiration::DefaultTimeout,
         capture_policy: ExecCapturePolicy::ShellTool,

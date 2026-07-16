@@ -53,6 +53,7 @@ use codex_sandboxing::resolve_windows_elevated_filesystem_overrides;
 use codex_sandboxing::resolve_windows_restricted_token_filesystem_overrides;
 #[cfg(test)]
 use codex_sandboxing::unsupported_windows_restricted_token_sandbox_reason;
+#[cfg(target_os = "windows")]
 use codex_sandboxing::windows_sandbox_uses_elevated_backend;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
