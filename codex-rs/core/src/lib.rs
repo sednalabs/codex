@@ -65,8 +65,6 @@ mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
 mod network_policy_decision;
-#[allow(dead_code)]
-pub(crate) mod network_proxy_loader;
 mod original_image_detail;
 pub use codex_mcp::CodexAppsToolsCache;
 pub use codex_mcp::SandboxState;
