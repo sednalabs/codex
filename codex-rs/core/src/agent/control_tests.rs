@@ -366,11 +366,8 @@ async fn wait_for_live_thread_spawn_children(
 #[tokio::test]
 async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
     let (home, config) = test_config().await;
-    let harness = AgentControlHarness::new_with_config_and_state_db(
-        home,
-        config,
-        /*state_db*/ None,
-    );
+    let harness =
+        AgentControlHarness::new_with_config_and_state_db(home, config, /*state_db*/ None);
     assert!(harness.state_db.is_none());
     let (root_thread_id, _root_thread) = harness.start_thread().await;
     harness
@@ -793,7 +790,10 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         )
     );
     let reloaded_provider = reloaded_thread.session.provider().await;
-    assert_eq!(reloaded_provider.base_url, expected_runtime_provider.base_url);
+    assert_eq!(
+        reloaded_provider.base_url,
+        expected_runtime_provider.base_url
+    );
     assert_eq!(
         reloaded_provider.supports_websockets,
         expected_runtime_provider.supports_websockets

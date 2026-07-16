@@ -20,6 +20,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::skip_if_remote;
 use core_test_support::skip_if_target_windows;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
@@ -97,6 +98,10 @@ fn assert_no_matched_rules_invariant(output_item: &Value) {
 #[tokio::test]
 async fn granular_complex_forced_rm_denial_explains_why_the_command_was_rejected() -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
+    skip_if_remote!(
+        Ok(()),
+        "fixture exercises host-local shell safety and approval event wiring"
+    );
 
     let server = start_mock_server().await;
     let mut builder = test_codex();
@@ -161,6 +166,10 @@ async fn granular_complex_forced_rm_denial_explains_why_the_command_was_rejected
 #[tokio::test]
 async fn granular_complex_forced_rm_requests_approval_when_allowed() -> Result<()> {
     skip_if_target_windows!(Ok(()), "uses a POSIX shell command fixture");
+    skip_if_remote!(
+        Ok(()),
+        "fixture exercises host-local shell safety and approval event wiring"
+    );
 
     let server = start_mock_server().await;
     let mut builder = test_codex();

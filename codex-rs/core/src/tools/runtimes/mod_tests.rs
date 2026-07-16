@@ -73,8 +73,7 @@ async fn test_network_proxy() -> anyhow::Result<NetworkProxy> {
     let state = codex_network_proxy::build_config_state(
         NetworkProxyConfig::default(),
         NetworkProxyConstraints::default(),
-    )
-    .expect("build sandbox command");
+    )?;
     NetworkProxy::builder()
         .state(Arc::new(NetworkProxyState::with_reloader(
             state,
