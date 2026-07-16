@@ -15,6 +15,8 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use crate::mutation_authority::RolloutMutationAuthority;
+
 const COMPRESSED_SUFFIX: &str = ".zst";
 const MAX_NOT_FOUND_RETRIES: usize = 3;
 const OPEN_ROLLOUT_LINE_READER_RETRY_DELAY: Duration = Duration::from_millis(50);
@@ -65,10 +67,38 @@ pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
 
 /// Materializes a compressed rollout back to plain `.jsonl` for async append paths.
 pub(crate) async fn materialize_rollout_for_append(path: &Path) -> io::Result<PathBuf> {
+    materialize_rollout_for_append_with_authority(
+        path,
+        RolloutMutationAuthority::new(),
+        || {},
+        || {},
+    )
+    .await
+}
+
+async fn materialize_rollout_for_append_with_authority<BeforeMutation, AfterMutation>(
+    path: &Path,
+    authority: RolloutMutationAuthority,
+    before_mutation: BeforeMutation,
+    after_mutation_before_release: AfterMutation,
+) -> io::Result<PathBuf>
+where
+    BeforeMutation: FnOnce() + Send + 'static,
+    AfterMutation: FnOnce() + Send + 'static,
+{
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || materialize_rollout_for_append_blocking(path.as_path()))
-        .await
-        .map_err(io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        let custody = authority.admit().map_err(|error| {
+            io::Error::other(format!("rollout mutation admission failed: {error:?}"))
+        })?;
+        before_mutation();
+        let result = materialize_rollout_for_append_blocking(path.as_path());
+        after_mutation_before_release();
+        drop(custody);
+        result
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 /// Materializes a compressed rollout back to plain `.jsonl` for blocking append paths.

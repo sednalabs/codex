@@ -1,7 +1,13 @@
 use std::fs;
 use std::fs::FileTimes;
+use std::future::Future;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::mpsc;
+use std::task::Poll;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -16,14 +22,266 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::UserMessageEvent;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::*;
+use crate::mutation_authority::MutationAdmissionError;
+use crate::mutation_authority::RolloutMutationAuthority;
 use crate::RolloutConfig;
 use crate::RolloutRecorder;
 use crate::RolloutRecorderParams;
 use crate::append_rollout_item_to_path;
 use crate::search_rollout_matches;
+
+const MATERIALIZATION_DIAGNOSTIC_DEADLINE: Duration = Duration::from_secs(10);
+
+#[derive(Debug, PartialEq, Eq)]
+struct RolloutRepresentationSnapshot {
+    entries: Vec<(PathBuf, Vec<u8>)>,
+}
+
+struct BlockingBoundary {
+    entered: oneshot::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
+impl BlockingBoundary {
+    fn enter(self) {
+        let _ = self.entered.send(());
+        let _ = self.release.recv();
+    }
+}
+
+struct BoundaryControl {
+    name: &'static str,
+    entered: Option<oneshot::Receiver<()>>,
+    release: Option<mpsc::Sender<()>>,
+}
+
+impl BoundaryControl {
+    async fn wait_until_entered(&mut self) -> anyhow::Result<()> {
+        let entered = self
+            .entered
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("{} boundary awaited once", self.name))?;
+        with_materialization_deadline(self.name, entered).await??;
+        Ok(())
+    }
+
+    fn release(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
+}
+
+impl Drop for BoundaryControl {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+struct MaterializationControl {
+    before_mutation: BoundaryControl,
+    after_mutation_before_release: BoundaryControl,
+}
+
+fn boundary_pair(name: &'static str) -> (BoundaryControl, BlockingBoundary) {
+    let (entered_tx, entered) = oneshot::channel();
+    let (release, release_rx) = mpsc::channel();
+    (
+        BoundaryControl {
+            name,
+            entered: Some(entered),
+            release: Some(release),
+        },
+        BlockingBoundary {
+            entered: entered_tx,
+            release: release_rx,
+        },
+    )
+}
+
+fn start_controlled_materialization(
+    path: PathBuf,
+    authority: RolloutMutationAuthority,
+) -> (
+    tokio::task::JoinHandle<std::io::Result<PathBuf>>,
+    MaterializationControl,
+) {
+    let (before_control, before_boundary) = boundary_pair("waiting before rollout mutation");
+    let (after_control, after_boundary) =
+        boundary_pair("waiting after rollout mutation before custody release");
+    let materialization = tokio::spawn(async move {
+        materialize_rollout_for_append_with_authority(
+            path.as_path(),
+            authority,
+            move || before_boundary.enter(),
+            move || after_boundary.enter(),
+        )
+        .await
+    });
+    (
+        materialization,
+        MaterializationControl {
+            before_mutation: before_control,
+            after_mutation_before_release: after_control,
+        },
+    )
+}
+
+async fn with_materialization_deadline<T>(
+    context: &'static str,
+    future: impl Future<Output = T>,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(MATERIALIZATION_DIAGNOSTIC_DEADLINE, future).await {
+        Ok(output) => Ok(output),
+        Err(_) => anyhow::bail!("timed out while {context}"),
+    }
+}
+
+async fn is_pending<F>(mut future: Pin<&mut F>) -> bool
+where
+    F: Future<Output = ()> + ?Sized,
+{
+    std::future::poll_fn(move |context| {
+        Poll::Ready(matches!(future.as_mut().poll(context), Poll::Pending))
+    })
+    .await
+}
+
+async fn cancel_outer_materialization(
+    materialization: tokio::task::JoinHandle<std::io::Result<PathBuf>>,
+) -> anyhow::Result<()> {
+    materialization.abort();
+    match with_materialization_deadline("cancelling the outer materialization", materialization)
+        .await?
+    {
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => anyhow::bail!("outer materialization failed instead of cancelling: {error}"),
+        Ok(result) => {
+            anyhow::bail!("outer materialization completed before cancellation: {result:?}")
+        }
+    }
+}
+
+fn rollout_representation_snapshot(
+    directory: &Path,
+) -> anyhow::Result<RolloutRepresentationSnapshot> {
+    let mut entries = fs::read_dir(directory)?
+        .map(|entry| -> anyhow::Result<(PathBuf, Vec<u8>)> {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                anyhow::bail!(
+                    "unexpected non-file in rollout representation: {}",
+                    entry.path().display()
+                );
+            }
+            Ok((PathBuf::from(entry.file_name()), fs::read(entry.path())?))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(RolloutRepresentationSnapshot { entries })
+}
+
+async fn assert_cancelled_materialization_holds_custody(
+    rollout_path: &Path,
+    authority: RolloutMutationAuthority,
+    expected_snapshot: RolloutRepresentationSnapshot,
+) -> anyhow::Result<()> {
+    let directory = rollout_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rollout path should have a parent"))?;
+    let (materialization, mut control) =
+        start_controlled_materialization(rollout_path.to_path_buf(), authority.clone());
+    control.before_mutation.wait_until_entered().await?;
+
+    let mut revoke = Box::pin(authority.revoke());
+    assert!(is_pending(revoke.as_mut()).await);
+    assert!(matches!(
+        authority.admit(),
+        Err(MutationAdmissionError::AdmissionClosed)
+    ));
+    cancel_outer_materialization(materialization).await?;
+    assert!(is_pending(revoke.as_mut()).await);
+
+    control.before_mutation.release();
+    control
+        .after_mutation_before_release
+        .wait_until_entered()
+        .await?;
+    assert_eq!(
+        rollout_representation_snapshot(directory)?,
+        expected_snapshot
+    );
+    assert!(is_pending(revoke.as_mut()).await);
+
+    control.after_mutation_before_release.release();
+    with_materialization_deadline("waiting for materialization custody release", revoke).await?;
+    assert_eq!(
+        rollout_representation_snapshot(directory)?,
+        expected_snapshot
+    );
+    assert!(matches!(
+        authority.admit(),
+        Err(MutationAdmissionError::AdmissionClosed)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn compressed_materialization_custody_survives_caller_cancellation_through_success()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(16);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&rollout_path, thread_id, "custodied materialization")?;
+    let expected_plain_bytes = fs::read(&rollout_path)?;
+    compress_now(&rollout_path)?;
+    let expected_snapshot = RolloutRepresentationSnapshot {
+        entries: vec![(
+            PathBuf::from(
+                rollout_path
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("rollout path should have a file name"))?,
+            ),
+            expected_plain_bytes,
+        )],
+    };
+
+    assert_cancelled_materialization_holds_custody(
+        &rollout_path,
+        RolloutMutationAuthority::new(),
+        expected_snapshot,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(17);
+    let rollout_path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    let parent = rollout_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("rollout path should have a parent"))?;
+    fs::create_dir_all(parent)?;
+    fs::write(
+        compressed_rollout_path(&rollout_path),
+        [0x28, 0xb5, 0x2f, 0xfd],
+    )?;
+    let expected_snapshot = rollout_representation_snapshot(parent)?;
+
+    assert_cancelled_materialization_holds_custody(
+        &rollout_path,
+        RolloutMutationAuthority::new(),
+        expected_snapshot,
+    )
+    .await
+}
 
 #[tokio::test]
 async fn load_rollout_items_reads_compressed_rollout() -> anyhow::Result<()> {
