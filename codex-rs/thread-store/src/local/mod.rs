@@ -5,6 +5,7 @@ mod helpers;
 mod list_threads;
 mod live_writer;
 mod read_thread;
+mod read_thread_inference_identity;
 mod search_threads;
 mod unarchive_thread;
 mod update_thread_metadata;
@@ -29,11 +30,13 @@ use crate::DeleteThreadParams;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::SearchThreadsParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
 use crate::ThreadStore;
@@ -288,6 +291,16 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(LocalThreadStore::read_thread_by_rollout_path_params(
             self, params,
         ))
+    }
+
+    fn read_thread_inference_identity_sidecar(
+        &self,
+        params: ReadThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ThreadInferenceIdentitySidecar> {
+        Box::pin(async move {
+            read_thread_inference_identity::read_thread_inference_identity_sidecar(self, params)
+                .await
+        })
     }
 
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage> {

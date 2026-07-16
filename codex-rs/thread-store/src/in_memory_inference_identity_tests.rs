@@ -9,6 +9,8 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 
 use super::*;
+use crate::ReadThreadByRolloutPathParams;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadInferenceIdentitySidecarPatch;
 use crate::ThreadPersistenceMetadata;
@@ -225,6 +227,97 @@ async fn identity_sidecar_lifecycle_resets_restores_and_does_not_resurrect() {
     );
 }
 
+#[tokio::test]
+async fn identity_sidecar_read_composes_with_thread_read_shapes() {
+    let store = InMemoryThreadStore::default();
+    let thread_id = thread_id(/*suffix*/ 5);
+    let rollout_path = std::path::PathBuf::from("/tmp/in-memory-identity-sidecar.jsonl");
+    ThreadStore::create_thread(&store, create_thread_params(thread_id))
+        .await
+        .expect("thread should be created");
+    ThreadStore::resume_thread(
+        &store,
+        ResumeThreadParams {
+            thread_id,
+            rollout_path: Some(rollout_path.clone()),
+            history: None,
+            include_archived: false,
+            metadata: thread_metadata(),
+        },
+    )
+    .await
+    .expect("thread should resume by rollout path");
+    let expected = ThreadInferenceIdentitySidecar {
+        configured: ThreadInferenceIdentityAuthority::Valid(identity("configured")),
+        latest_request: ThreadInferenceIdentityAuthority::cleared(),
+    };
+    store
+        .state
+        .lock()
+        .await
+        .inference_identity
+        .sidecars
+        .insert(thread_id, expected.clone());
+
+    let direct = ThreadStore::read_thread(
+        &store,
+        ReadThreadParams {
+            thread_id,
+            include_archived: false,
+            include_history: false,
+        },
+    )
+    .await
+    .expect("direct read should find thread");
+    let by_path = ThreadStore::read_thread_by_rollout_path(
+        &store,
+        ReadThreadByRolloutPathParams {
+            rollout_path,
+            include_archived: false,
+            include_history: false,
+        },
+    )
+    .await
+    .expect("path read should find thread");
+    let listed = ThreadStore::list_threads(&store, list_threads_params())
+        .await
+        .expect("list should find thread")
+        .items
+        .into_iter()
+        .next()
+        .expect("listed thread");
+
+    for observed_thread_id in [direct.thread_id, by_path.thread_id, listed.thread_id] {
+        assert_eq!(
+            ThreadStore::read_thread_inference_identity_sidecar(
+                &store,
+                ReadThreadInferenceIdentitySidecarParams {
+                    thread_id: observed_thread_id,
+                    include_archived: false,
+                },
+            )
+            .await
+            .expect("sidecar read should compose with thread id"),
+            expected
+        );
+    }
+
+    ThreadStore::delete_thread(&store, DeleteThreadParams { thread_id })
+        .await
+        .expect("thread should delete");
+    assert!(matches!(
+        ThreadStore::read_thread_inference_identity_sidecar(
+            &store,
+            ReadThreadInferenceIdentitySidecarParams {
+                thread_id,
+                include_archived: false,
+            },
+        )
+        .await,
+        Err(ThreadStoreError::ThreadNotFound { thread_id: missing }) if missing == thread_id
+    ));
+}
+
 async fn sidecars(
     store: &InMemoryThreadStore,
 ) -> HashMap<ThreadId, ThreadInferenceIdentitySidecar> {
@@ -276,5 +369,21 @@ fn thread_metadata() -> ThreadPersistenceMetadata {
         cwd: None,
         model_provider: "test-provider".to_string(),
         memory_mode: ThreadMemoryMode::Enabled,
+    }
+}
+
+fn list_threads_params() -> ListThreadsParams {
+    ListThreadsParams {
+        page_size: 10,
+        cursor: None,
+        sort_key: ThreadSortKey::CreatedAt,
+        sort_direction: SortDirection::Asc,
+        allowed_sources: Vec::new(),
+        model_providers: None,
+        cwd_filters: None,
+        archived: false,
+        search_term: None,
+        relation_filter: None,
+        use_state_db_only: false,
     }
 }

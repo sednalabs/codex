@@ -25,10 +25,12 @@ use crate::DeleteThreadParams;
 use crate::ListThreadsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadMetadataPatch;
 use crate::ThreadPage;
 use crate::ThreadRelationFilter;
@@ -682,6 +684,15 @@ impl ThreadStore for InMemoryThreadStore {
         params: ReadThreadByRolloutPathParams,
     ) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(InMemoryThreadStore::read_thread_by_rollout_path(
+            self, params,
+        ))
+    }
+
+    fn read_thread_inference_identity_sidecar(
+        &self,
+        params: ReadThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ThreadInferenceIdentitySidecar> {
+        Box::pin(InMemoryThreadStore::read_thread_inference_identity_sidecar(
             self, params,
         ))
     }
