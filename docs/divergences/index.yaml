@@ -1860,17 +1860,20 @@
     },
     {
       "id": "rollout-mutation-authority-quiescence",
-      "title": "Rollout mutation authority quiescence foundation",
+      "title": "Rollout mutation authority and compressed materialization custody",
       "status": "live",
       "category": "core-runtime",
       "surface": [
         "crate-private rollout mutation admission",
-        "in-flight mutation quiescence"
+        "in-flight mutation quiescence",
+        "compressed-to-plain materialization custody"
       ],
       "files": [
         "codex-rs/rollout/src/lib.rs",
         "codex-rs/rollout/src/mutation_authority.rs",
         "codex-rs/rollout/src/mutation_authority_tests.rs",
+        "codex-rs/rollout/src/compression.rs",
+        "codex-rs/rollout/src/compression_tests.rs",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md"
       ],
@@ -1878,9 +1881,13 @@
         "codex-rs/rollout/src/mutation_authority.rs": [
           "pub(crate) struct RolloutMutationAuthority",
           "pub(crate) async fn revoke"
+        ],
+        "codex-rs/rollout/src/compression.rs": [
+          "async fn materialize_rollout_for_append_with_authority",
+          "drop(custody);"
         ]
       },
-      "behavior": "Downstream carries a crate-private foundation that permanently closes rollout mutation admission and waits for every custody token admitted before closure. The retained in-flight signal lets concurrent revokers observe final quiescence even when the last release occurs between polls. This foundation slice intentionally has no recorder integration or public API.",
+      "behavior": "Downstream carries a crate-private authority that permanently closes rollout mutation admission and waits for every custody token admitted before closure. Async compressed-to-plain materialization acquires and owns custody inside its non-cancellable blocking continuation across the complete filesystem side effect and failure cleanup, so cancelling the outer future cannot release custody early. This slice intentionally has no recorder lifecycle integration or public API.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1889,14 +1896,17 @@
       "guardrail_lane": "GitHub blocking-ci codex-rollout unit tests",
       "tests": [
         "revoke_waits_for_every_custody_and_wakes_every_waiter",
-        "close_counts_every_admission_and_retains_the_final_release"
+        "close_counts_every_admission_and_retains_the_final_release",
+        "compressed_materialization_custody_survives_caller_cancellation_through_success",
+        "compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd"
       ],
       "owner": "downstream",
-      "notes": "Keep the primitive private and focused. Later integration slices own recorder constructors, append-open and recovery, writer actor semantics, and public API decisions.",
+      "notes": "Keep the primitive private and the consumer limited to async compressed materialization. Later integration slices own recorder lifecycle authority, direct blocking materialization, append-open and recovery, writer actor semantics, and public API decisions.",
       "upstreamability_tier": "upstream-pr",
-      "boundary_type": "internal-concurrency-primitive",
+      "boundary_type": "internal-concurrency-and-filesystem-mutation",
       "hotspot_files": [
-        "codex-rs/rollout/src/mutation_authority.rs"
+        "codex-rs/rollout/src/mutation_authority.rs",
+        "codex-rs/rollout/src/compression.rs"
       ],
       "extraction_target": "upstream rollout mutation cancellation and quiescence contract"
     },

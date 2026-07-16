@@ -921,26 +921,35 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/code_mode_description.rs`
   - `codex-rs/core/src/tools/router.rs`
 
-### Rollout Mutation Authority Quiescence Foundation
+### Rollout Mutation Authority And Compressed Materialization Custody
 
 - The rollout crate carries a private, one-way mutation authority primitive.
   Revocation closes admission before waiting for every custody token that was
   already admitted, and a retained in-flight signal lets multiple revokers
   observe the same final quiescence without losing an intervening release.
-- This foundation is intentionally dormant in this slice. Recorder
-  constructors, compression, append-open and recovery paths, writer actor
-  semantics, and public API exposure remain outside its boundary.
-- Two complementary regressions carry the complete proof. One parks custody
-  while two independent revoker tasks each reach pending and later wake. The
-  other admits two custody tokens, proves the first release is insufficient,
-  and proves the retained final release completes one-way revocation while
-  later admission stays closed.
+- Async compressed-to-plain materialization is the first guarded consumer.
+  Admission happens inside the non-cancellable `spawn_blocking` continuation,
+  and that continuation retains custody across the complete filesystem side
+  effect, including failure cleanup, even if its outer async caller is
+  cancelled. Recorder lifecycle authority, direct blocking materialization,
+  append-open and recovery behavior, writer actor semantics, and public API
+  exposure remain outside this slice.
+- Four complementary regressions carry the complete proof. The foundation
+  pair proves multi-revoker wakeup and retained final-release quiescence. The
+  materialization pair cancels the outer caller while the controlled blocking
+  continuation is parked, closes admission, and compares complete
+  representation snapshots at the after-mutation-before-release boundary and
+  after final release for both exact-byte success and corrupt-zstd cleanup.
 - Guardrail selectors:
   - `revoke_waits_for_every_custody_and_wakes_every_waiter`
   - `close_counts_every_admission_and_retains_the_final_release`
+  - `compressed_materialization_custody_survives_caller_cancellation_through_success`
+  - `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`
 - Primary files:
   - `codex-rs/rollout/src/mutation_authority.rs`
   - `codex-rs/rollout/src/mutation_authority_tests.rs`
+  - `codex-rs/rollout/src/compression.rs`
+  - `codex-rs/rollout/src/compression_tests.rs`
 
 ## Not Counted As Standalone Live Divergences
 
