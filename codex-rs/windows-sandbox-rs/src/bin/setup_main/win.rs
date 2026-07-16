@@ -10,19 +10,16 @@ use codex_windows_sandbox::SETUP_VERSION;
 use codex_windows_sandbox::SetupErrorCode;
 use codex_windows_sandbox::SetupErrorReport;
 use codex_windows_sandbox::SetupFailure;
-use codex_windows_sandbox::add_deny_write_ace;
 use codex_windows_sandbox::canonicalize_path;
 use codex_windows_sandbox::convert_string_sid_to_sid;
 use codex_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
-use codex_windows_sandbox::ensure_allow_write_aces;
-use codex_windows_sandbox::ensure_allow_write_aces_recursively;
 use codex_windows_sandbox::extract_setup_failure;
 use codex_windows_sandbox::hide_newly_created_users;
 use codex_windows_sandbox::install_wfp_filters;
-use codex_windows_sandbox::is_command_cwd_root;
 use codex_windows_sandbox::log_note;
 use codex_windows_sandbox::log_writer;
 use codex_windows_sandbox::path_mask_allows;
+use codex_windows_sandbox::repair_write_acl_policy;
 use codex_windows_sandbox::sandbox_bin_dir;
 use codex_windows_sandbox::sandbox_dir;
 use codex_windows_sandbox::sandbox_secrets_dir;
@@ -30,6 +27,9 @@ use codex_windows_sandbox::string_from_sid_bytes;
 use codex_windows_sandbox::sync_persistent_deny_read_acls;
 use codex_windows_sandbox::to_wide;
 use codex_windows_sandbox::workspace_write_cap_sid_for_root;
+use codex_windows_sandbox::WriteAclRepairMode;
+use codex_windows_sandbox::WriteAclRoot;
+#[cfg(test)]
 use codex_windows_sandbox::workspace_write_root_overlaps_path;
 use codex_windows_sandbox::write_setup_error_report;
 use serde::Deserialize;
@@ -43,7 +43,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::mpsc;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
@@ -125,6 +124,7 @@ fn log_line(log: &mut dyn Write, msg: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn workspace_write_cap_sids_for_path(
     codex_home: &Path,
     command_cwd: &Path,
@@ -161,6 +161,7 @@ fn workspace_write_cap_sids_for_path(
     Ok(sid_strs)
 }
 
+#[cfg(test)]
 fn write_root_needs_refresh(root: &Path, psid: *mut c_void) -> Result<bool> {
     if !path_mask_allows(
         root,
@@ -846,11 +847,8 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
         )?;
     }
 
-    let mut grant_tasks: Vec<(PathBuf, String)> = Vec::new();
-
-    let mut seen_deny_paths: HashSet<PathBuf> = HashSet::new();
+    let mut write_acl_roots = Vec::new();
     let mut seen_write_roots: HashSet<PathBuf> = HashSet::new();
-    let canonical_command_cwd = canonicalize_path(&payload.command_cwd);
 
     for root in &payload.write_roots {
         if !seen_write_roots.insert(root.clone()) {
@@ -863,168 +861,26 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
             )?;
             continue;
         }
-        let mut need_grant = false;
-        let is_command_cwd = is_command_cwd_root(root, &canonical_command_cwd);
-        let cap_label = if is_command_cwd {
-            "workspace_cap"
-        } else {
-            "root_cap"
-        };
         let root_cap_sid_str =
             workspace_write_cap_sid_for_root(&payload.codex_home, &payload.command_cwd, root)?;
-        let root_cap_psid = unsafe {
-            convert_string_sid_to_sid(&root_cap_sid_str)
-                .ok_or_else(|| anyhow::anyhow!("convert write root capability SID failed"))?
-        };
-        for (label, psid) in [
-            ("sandbox_group", sandbox_group_psid),
-            (cap_label, root_cap_psid),
-        ] {
-            let needs_refresh = match write_root_needs_refresh(root, psid) {
-                Ok(needs_refresh) => needs_refresh,
-                Err(e) => {
-                    refresh_errors.push(format!(
-                        "write ACE check failed on {} for {label}: {}",
-                        root.display(),
-                        e
-                    ));
-                    log_line(
-                        log,
-                        &format!(
-                            "write ACE check failed on {} for {label}: {}; continuing",
-                            root.display(),
-                            e
-                        ),
-                    )?;
-                    true
-                }
-            };
-            if needs_refresh {
-                need_grant = true;
-            }
-        }
-        unsafe {
-            LocalFree(root_cap_psid as HLOCAL);
-        }
-        if need_grant {
-            log_line(
-                log,
-                &format!(
-                    "granting write ACE to {} for sandbox group and capability SID",
-                    root.display()
-                ),
-            )?;
-        }
-        if need_grant || root.is_dir() {
-            grant_tasks.push((root.clone(), root_cap_sid_str));
-        }
+        write_acl_roots.push(WriteAclRoot {
+            path: root.clone(),
+            capability_sid: root_cap_sid_str,
+        });
     }
 
-    let (tx, rx) = mpsc::channel::<(PathBuf, Result<bool>)>();
-    std::thread::scope(|scope| {
-        for (root, root_cap_sid_str) in grant_tasks {
-            let recurse_existing_descendants = root.is_dir();
-            let sid_strings = vec![sandbox_group_sid_str.clone(), root_cap_sid_str];
-            let tx = tx.clone();
-            scope.spawn(move || {
-                // Convert SID strings to psids locally in this thread.
-                let mut psids: Vec<*mut c_void> = Vec::new();
-                for sid_str in &sid_strings {
-                    if let Some(psid) = unsafe { convert_string_sid_to_sid(sid_str) } {
-                        psids.push(psid);
-                    } else {
-                        let _ = tx.send((root.clone(), Err(anyhow::anyhow!("convert SID failed"))));
-                        return;
-                    }
-                }
-
-                let res = unsafe {
-                    if recurse_existing_descendants {
-                        ensure_allow_write_aces_recursively(&root, &psids)
-                    } else {
-                        ensure_allow_write_aces(&root, &psids)
-                    }
-                };
-
-                for psid in psids {
-                    unsafe {
-                        LocalFree(psid as HLOCAL);
-                    }
-                }
-                let _ = tx.send((root, res));
-            });
-        }
-        drop(tx);
-        for (root, res) in rx {
-            match res {
-                Ok(_) => {}
-                Err(e) => {
-                    refresh_errors.push(format!("write ACE failed on {}: {}", root.display(), e));
-                    if log_line(
-                        log,
-                        &format!("write ACE grant failed on {}: {}", root.display(), e),
-                    )
-                    .is_err()
-                    {
-                        // ignore log errors inside scoped thread
-                    }
-                }
-            }
-        }
-    });
-
-    for path in &payload.deny_write_paths {
-        if !seen_deny_paths.insert(path.clone()) {
-            continue;
-        }
-
-        // These are deny-write carveouts, not deny-read paths. They may come from explicit
-        // read-only-under-a-writable-root carveouts in the transformed sandbox policy, or from
-        // legacy protected children such as `.git`, `.codex`, and `.agents`.
-        //
-        // Deny ACEs attach to filesystem objects; if an explicit policy carveout does not exist
-        // during setup, the sandbox could otherwise create it later under a writable parent and
-        // bypass the carveout. Materialize missing carveouts as directories so the deny-write ACL
-        // is present before the command starts. Legacy protected children are filtered before
-        // payload creation, so this should not create sentinel directories in a workspace.
-        if !path.exists() {
-            std::fs::create_dir_all(path)
-                .with_context(|| format!("failed to create deny-write path {}", path.display()))?;
-        }
-
-        let deny_sid_strs = workspace_write_cap_sids_for_path(
-            &payload.codex_home,
-            &payload.command_cwd,
-            &payload.write_roots,
-            path,
-        )?;
-        for deny_sid_str in deny_sid_strs {
-            let deny_psid = unsafe {
-                convert_string_sid_to_sid(&deny_sid_str)
-                    .ok_or_else(|| anyhow::anyhow!("convert deny capability SID failed"))?
-            };
-
-            match unsafe { add_deny_write_ace(path, deny_psid) } {
-                Ok(true) => {
-                    log_line(
-                        log,
-                        &format!("applied deny ACE to protect {}", path.display()),
-                    )?;
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    refresh_errors.push(format!("deny ACE failed on {}: {err}", path.display()));
-                    log_line(
-                        log,
-                        &format!("deny ACE failed on {}: {err}", path.display()),
-                    )?;
-                }
-            }
-            unsafe {
-                LocalFree(deny_psid as HLOCAL);
-            }
-        }
-    }
+    let repair_mode = if refresh_only {
+        WriteAclRepairMode::Refresh
+    } else {
+        WriteAclRepairMode::FullMigration
+    };
+    repair_write_acl_policy(
+        &write_acl_roots,
+        &payload.deny_write_paths,
+        Some(&sandbox_group_sid_str),
+        repair_mode,
+    )
+    .context("repair write ACL policy")?;
 
     lock_sandbox_bin_dir(payload, &sandbox_group_sid, log)?;
 
@@ -1047,12 +903,12 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
             LocalFree(sandbox_group_psid as HLOCAL);
         }
     }
-    if refresh_only && !refresh_errors.is_empty() {
+    if !refresh_errors.is_empty() {
         log_line(
             log,
-            &format!("setup refresh completed with errors: {refresh_errors:?}"),
+            &format!("setup completed with errors: {refresh_errors:?}"),
         )?;
-        anyhow::bail!("setup refresh had errors");
+        anyhow::bail!("setup had errors");
     }
     log_note("setup binary completed", Some(sbx_dir));
     Ok(())
