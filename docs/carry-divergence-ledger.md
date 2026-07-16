@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-16`
-- downstream branch `main` code tree: `127725f80cf6440326ee0af50ea4652bfd96d8ff`
+- downstream integration code tree: `43814ad3119063602abcf04f8cdf9d205fff668f`
 - comparison basis: `mirror`
-- mirror branch `upstream-main` (`origin/upstream-main`): `38b064c31b1f7464b281006316ec878ed23fea77`
-- `upstream/main`: `38b064c31b1f7464b281006316ec878ed23fea77`
-- downstream branch vs `upstream/main`: `1722` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
+- `upstream/main`: `9ff47868eb2afeec579183e01bb9d3d3e9df2bcd`
+- downstream branch vs `upstream/main`: `1758` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1506` unique, `0` patch-equivalent
+- Downstream-only commits at audit time: `1531` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -429,6 +429,13 @@ docs-only refresh commit that records this snapshot.
 ### Sub-agent orchestration override preservation, inventory metadata, and wait joins
 
 - Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry divergence is preserving those requests across role reload unless the role explicitly locks the fields.
+- The 2026-07-16 sync adopts upstream's unified `[agents]` configuration,
+  canonical `max_concurrent_threads_per_session` key, legacy `max_threads`
+  normalization, flattened role declarations, and conditional `agent_type`
+  exposure when roles are configured. Upstream's default sub-agent model and
+  reasoning settings remain reserved and unapplied; downstream's live model
+  selection behavior continues to come from explicit per-spawn overrides and
+  the documented role/profile precedence below.
 - Spawn-agent tool guidance should follow upstream's authorization wording that
   a user request or applicable `AGENTS.md`/skill instruction can authorize
   delegation, and should keep upstream's warning that `model` overrides are
