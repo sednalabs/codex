@@ -1568,9 +1568,7 @@ mod tests {
         let outcome = run_before_review_deadline(
             tokio::time::Instant::now() + Duration::from_millis(10),
             /*external_cancel*/ None,
-            async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            },
+            std::future::pending::<()>(),
         )
         .await;
 

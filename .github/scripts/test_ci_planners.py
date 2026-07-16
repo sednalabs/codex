@@ -946,6 +946,17 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
 
+    def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        windows_steps = (
+            ((payload.get("jobs") or {}).get("test-windows-shard") or {}).get("steps")
+            or []
+        )
+        windows_test_run = next(
+            step for step in windows_steps if step.get("name") == "bazel test shard"
+        ).get("run") or ""
+        self.assertIn("--local_test_jobs=1", windows_test_run)
+
 
 class DownstreamDivergenceAuditTests(unittest.TestCase):
     def run_git(self, repo: Path, *args: str) -> str:

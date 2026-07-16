@@ -172,6 +172,7 @@ async fn proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides()
     let command_cwd = command_cwd.abs();
     let secret = command_cwd.join("secret.env");
     std::fs::write(&secret, "secret")?;
+    let secret = secret.canonicalize()?;
     let sandbox_policy_cwd = PathUri::from_abs_path(&command_cwd);
     let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
