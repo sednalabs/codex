@@ -39,11 +39,18 @@ fn restore_persisted_agent_model_selection(
         )));
     };
 
-    let provider = config.model_providers.get(provider_id).cloned().ok_or_else(|| {
-        CodexErr::UnsupportedOperation(format!(
-            "cannot safely reload agent {thread_id}: persisted model provider `{provider_id}` is not configured"
-        ))
-    })?;
+    let provider = if config.model_provider_id == provider_id {
+        // Preserve runtime-only provider overrides such as test endpoints, headers, and
+        // transport selection. The provider catalog can contain the built-in descriptor for
+        // this same ID, which is not necessarily the effective provider for this session.
+        config.model_provider.clone()
+    } else {
+        config.model_providers.get(provider_id).cloned().ok_or_else(|| {
+            CodexErr::UnsupportedOperation(format!(
+                "cannot safely reload agent {thread_id}: persisted model provider `{provider_id}` is not configured"
+            ))
+        })?
+    };
 
     config.model = Some(model.to_string());
     config.model_provider_id = provider_id.to_string();
