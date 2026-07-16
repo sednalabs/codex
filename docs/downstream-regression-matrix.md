@@ -140,10 +140,11 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     the `remote_tests` replay job uses a 45-minute hosted budget for long
     archive download plus remote-environment setup, and the archive builders
     fail early if the hosted runner is still below the
-    archive safety floor. Remote replay excludes host-only compact/resume and
-    permission-hook fixtures, while Guardian local-proxy fixtures use a
-    host-native cwd. The large-output summary remains host-only until remote
-    exec replay preserves bounded head/tail output before core subscribes.
+    archive safety floor. Remote replay excludes host-only compact/resume,
+    permission-hook, and forced-`rm` shell-safety/approval fixtures, while
+    Guardian local-proxy fixtures use a host-native cwd. The large-output
+    summary remains host-only until remote exec replay preserves bounded
+    head/tail output before core subscribes.
     The `codex.skill-loader-fixture-hermeticity-targeted` lane pins the two
     skill-loader fixture assertions that suppress or ignore ambient parent
     project layers, so hosted-runner repository state cannot change the result.
