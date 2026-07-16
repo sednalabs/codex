@@ -19,6 +19,15 @@ pub struct ThreadInferenceIdentitySidecar {
     pub latest_request: ThreadInferenceIdentityAuthority,
 }
 
+/// Parameters for reading the complete inference identity sidecar for a stored thread.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ReadThreadInferenceIdentitySidecarParams {
+    /// Thread id whose inference identity authority should be read.
+    pub thread_id: ThreadId,
+    /// Whether archived threads are eligible.
+    pub include_archived: bool,
+}
+
 /// Presence-aware inference identity update: omission is a no-op, `null` clears, and an identity
 /// sets valid authority. Legacy-missing and malformed authority cannot be written through it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
