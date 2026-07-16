@@ -14,11 +14,13 @@ use crate::ListThreadsParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::SearchThreadsParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
+use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
 use crate::ThreadStoreError;
@@ -87,6 +89,21 @@ pub trait ThreadStore: Any + Send + Sync {
         &self,
         params: ReadThreadByRolloutPathParams,
     ) -> ThreadStoreFuture<'_, StoredThread>;
+
+    /// Reads the optional inference identity sidecar by durable thread id.
+    ///
+    /// The default keeps existing implementations source-compatible while distinguishing an
+    /// unsupported storage capability from persisted legacy-missing authority.
+    fn read_thread_inference_identity_sidecar(
+        &self,
+        _params: ReadThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreFuture<'_, ThreadInferenceIdentitySidecar> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "read_thread_inference_identity_sidecar",
+            })
+        })
+    }
 
     /// Lists stored threads matching the supplied filters.
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage>;
