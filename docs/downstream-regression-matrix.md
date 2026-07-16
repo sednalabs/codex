@@ -334,7 +334,8 @@ provider metadata on resume.
   and
   `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`; plus
   `plain_resume_tail_repair_custody_survives_caller_cancellation`,
-  and `recovery_materialization_tail_repair_and_creation_are_guarded`.
+  `recovery_materialization_tail_repair_and_creation_are_guarded`, and
+  `admitted_recovery_error_releases_custody_without_filesystem_drift`.
 - The foundation pair proves that two independently polled revokers wake and
   that a retained final release completes one-way quiescence. The
   materialization pair cancels the outer async task, closes later admission,

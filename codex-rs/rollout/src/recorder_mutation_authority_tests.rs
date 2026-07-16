@@ -75,44 +75,6 @@ fn boundary_pair() -> (BoundaryControl, BlockingBoundary) {
     )
 }
 
-fn controlled_boundaries() -> (
-    BoundaryControl,
-    BoundaryControl,
-    BlockingBoundary,
-    BlockingBoundary,
-) {
-    let (before_control, before_boundary) = boundary_pair();
-    let (after_control, after_boundary) = boundary_pair();
-    (
-        before_control,
-        after_control,
-        before_boundary,
-        after_boundary,
-    )
-}
-
-fn start_controlled_resume_open(
-    path: PathBuf,
-    authority: RolloutMutationAuthority,
-) -> (
-    tokio::task::JoinHandle<io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)>>,
-    BoundaryControl,
-    BoundaryControl,
-) {
-    let (before_control, after_control, before_boundary, after_boundary) =
-        controlled_boundaries();
-    let task = tokio::spawn(async move {
-        open_rollout_for_append_with_authority_and_hooks(
-            path.as_path(),
-            authority,
-            move || before_boundary.enter(),
-            move || after_boundary.enter(),
-        )
-        .await
-    });
-    (task, before_control, after_control)
-}
-
 fn start_controlled_recovery_open(
     path: PathBuf,
     authority: RolloutMutationAuthority,
@@ -121,8 +83,8 @@ fn start_controlled_recovery_open(
     BoundaryControl,
     BoundaryControl,
 ) {
-    let (before_control, after_control, before_boundary, after_boundary) =
-        controlled_boundaries();
+    let (before_control, before_boundary) = boundary_pair();
+    let (after_control, after_boundary) = boundary_pair();
     let task = tokio::spawn(async move {
         tokio::task::spawn_blocking(move || {
             open_log_file_with_authority(
@@ -200,17 +162,6 @@ fn compress_rollout(path: &Path) -> io::Result<PathBuf> {
     Ok(compressed_path)
 }
 
-async fn begin_revocation<'a>(
-    authority: &'a RolloutMutationAuthority,
-) -> Pin<Box<impl Future<Output = ()> + 'a>> {
-    let mut revocation = Box::pin(authority.revoke());
-    assert!(
-        is_pending(revocation.as_mut()).await,
-        "revocation completed while detached mutation custody was held"
-    );
-    revocation
-}
-
 #[tokio::test]
 async fn plain_resume_tail_repair_custody_survives_caller_cancellation() -> anyhow::Result<()> {
     let home = TempDir::new()?;
@@ -218,24 +169,37 @@ async fn plain_resume_tail_repair_custody_survives_caller_cancellation() -> anyh
     fs::write(&rollout_path, LEGACY_ROLLOUT)?;
     let initial = snapshot_directory(home.path())?;
     let authority = RolloutMutationAuthority::new();
-    let (task, mut before_mutation, mut after_mutation) =
-        start_controlled_resume_open(rollout_path.clone(), authority.clone());
+    let (mut before_mutation, before_boundary) = boundary_pair();
+    let (mut after_mutation, after_boundary) = boundary_pair();
+    let path_for_open = rollout_path.clone();
+    let authority_for_open = authority.clone();
+    let task = tokio::spawn(async move {
+        open_rollout_for_append_with_authority_and_hooks(
+            path_for_open.as_path(),
+            authority_for_open,
+            move || before_boundary.enter(),
+            move || after_boundary.enter(),
+        )
+        .await
+    });
 
     before_mutation.wait_until_entered().await?;
     cancel_outer_task(task).await?;
-    let mut revocation = begin_revocation(&authority).await;
+    let mut revocation = Box::pin(authority.revoke());
+    assert!(is_pending(revocation.as_mut()).await);
     assert_eq!(snapshot_directory(home.path())?, initial);
 
     before_mutation.release();
     after_mutation.wait_until_entered().await?;
     let mut repaired = LEGACY_ROLLOUT.to_vec();
     repaired.push(b'\n');
-    assert_eq!(fs::read(&rollout_path)?, repaired);
+    let repaired_snapshot = vec![(PathBuf::from("rollout.jsonl"), Some(repaired.clone()))];
+    assert_eq!(snapshot_directory(home.path())?, repaired_snapshot);
     assert!(is_pending(revocation.as_mut()).await);
 
     after_mutation.release();
     with_open_deadline(revocation).await?;
-    assert_eq!(fs::read(&rollout_path)?, repaired);
+    assert_eq!(snapshot_directory(home.path())?, repaired_snapshot);
 
     let unsafe_path = home.path().join("unsafe.jsonl");
     fs::write(&unsafe_path, LEGACY_ROLLOUT)?;
@@ -268,20 +232,21 @@ async fn recovery_materialization_tail_repair_and_creation_are_guarded() -> anyh
 
     before_mutation.wait_until_entered().await?;
     cancel_outer_task(task).await?;
-    let mut revocation = begin_revocation(&authority).await;
+    let mut revocation = Box::pin(authority.revoke());
+    assert!(is_pending(revocation.as_mut()).await);
     assert_eq!(snapshot_directory(home.path())?, initial);
 
     before_mutation.release();
     after_mutation.wait_until_entered().await?;
     let mut expected = LEGACY_ROLLOUT.to_vec();
     expected.push(b'\n');
-    assert_eq!(fs::read(&rollout_path)?, expected);
-    assert!(!compressed_rollout_path(&rollout_path).exists());
+    let recovered_snapshot = vec![(PathBuf::from("rollout.jsonl"), Some(expected.clone()))];
+    assert_eq!(snapshot_directory(home.path())?, recovered_snapshot);
     assert!(is_pending(revocation.as_mut()).await);
 
     after_mutation.release();
     with_open_deadline(revocation).await?;
-    assert_eq!(fs::read(&rollout_path)?, expected);
+    assert_eq!(snapshot_directory(home.path())?, recovered_snapshot);
 
     let creation_authority = RolloutMutationAuthority::new();
     let created_path = home.path().join("sessions/2026/07/rollout.jsonl");
@@ -291,12 +256,39 @@ async fn recovery_materialization_tail_repair_and_creation_are_guarded() -> anyh
         || {},
         || {},
     )?);
-    assert_eq!(fs::read(&created_path)?, Vec::<u8>::new());
+    let created_snapshot = vec![
+        (PathBuf::from("rollout.jsonl"), Some(expected)),
+        (PathBuf::from("sessions"), None),
+        (PathBuf::from("sessions/2026"), None),
+        (PathBuf::from("sessions/2026/07"), None),
+        (PathBuf::from("sessions/2026/07/rollout.jsonl"), Some(Vec::new())),
+    ];
+    assert_eq!(snapshot_directory(home.path())?, created_snapshot);
     creation_authority.revoke().await;
-    let terminal = snapshot_directory(home.path())?;
     let later_path = home.path().join("sessions/2026/08/rollout.jsonl");
     open_log_file_with_authority(later_path.as_path(), creation_authority, || {}, || {})
         .expect_err("revoked authority must deny later recovery creation");
-    assert_eq!(snapshot_directory(home.path())?, terminal);
+    assert_eq!(snapshot_directory(home.path())?, created_snapshot);
+    Ok(())
+}
+
+#[tokio::test]
+async fn admitted_recovery_error_releases_custody_without_filesystem_drift()
+-> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let blocking_parent = home.path().join("not-a-directory");
+    fs::write(&blocking_parent, b"block directory creation")?;
+    let initial = snapshot_directory(home.path())?;
+    let authority = RolloutMutationAuthority::new();
+
+    open_log_file_with_authority(
+        blocking_parent.join("rollout.jsonl").as_path(),
+        authority.clone(),
+        || {},
+        || {},
+    )
+    .expect_err("post-admission recovery mutation should fail");
+    with_open_deadline(authority.revoke()).await?;
+    assert_eq!(snapshot_directory(home.path())?, initial);
     Ok(())
 }
