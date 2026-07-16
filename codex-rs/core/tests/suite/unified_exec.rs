@@ -958,6 +958,21 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
 
     let call_id = "uexec-windows-direct-loopback-bypass";
     let port = server.address().port();
+    let runtime_proxy = test
+        .session_configured
+        .network_proxy
+        .as_ref()
+        .context("managed network proxy should be active")?;
+    let http_proxy_addr = runtime_proxy
+        .http_addr
+        .parse::<std::net::SocketAddr>()
+        .context("parse managed HTTP proxy address")?;
+    let socks_proxy_addr = runtime_proxy
+        .socks_addr
+        .parse::<std::net::SocketAddr>()
+        .context("parse managed SOCKS proxy address")?;
+    assert_ne!(port, http_proxy_addr.port());
+    assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
         "$client = [Net.Sockets.TcpClient]::new(); try {{ $task = $client.ConnectAsync('127.0.0.1', {port}); if ($task.Wait(3000) -and $client.Connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0 }} catch {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }} finally {{ $client.Dispose() }}"
     );
