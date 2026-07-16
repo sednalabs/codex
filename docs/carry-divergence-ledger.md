@@ -938,7 +938,7 @@ docs-only refresh commit that records this snapshot.
   creation, and recovery reopen. Closed authority denies later mutation without
   changing constructors or wire format; lifecycle revocation, terminal writer
   semantics, and public API remain separate slices.
-- Four complementary regressions carry the complete proof. The foundation
+- Seven complementary regressions carry the complete proof. The foundation
   pair proves multi-revoker wakeup and retained final-release quiescence. The
   materialization pair cancels the outer caller while the controlled blocking
   continuation is parked, closes admission, and compares complete
@@ -951,6 +951,7 @@ docs-only refresh commit that records this snapshot.
   - `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`
   - `plain_resume_tail_repair_custody_survives_caller_cancellation`
   - `recovery_materialization_tail_repair_and_creation_are_guarded`
+  - `admitted_recovery_error_releases_custody_without_filesystem_drift`
 - Primary files:
   - `codex-rs/rollout/src/mutation_authority.rs`
   - `codex-rs/rollout/src/mutation_authority_tests.rs`
