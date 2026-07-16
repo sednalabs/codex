@@ -254,13 +254,12 @@ fn spawn_agent_description_lists_visible_models_and_reasoning_efforts() -> Resul
     })
 }
 
-#[test_case(false, false, MULTI_AGENT_V1_NAMESPACE; "v1 hides agent type without roles")]
-#[test_case(true, true, "collaboration"; "v2 exposes agent type with a role")]
+#[test_case(false, false; "v1 hides agent type without roles")]
+#[test_case(true, true; "v2 exposes agent type with a role")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_agent_roles_control_spawn_agent_type(
     multi_agent_v2: bool,
     has_agent_role: bool,
-    namespace: &str,
 ) -> Result<()> {
     let server = start_mock_server().await;
     let response = mount_sse_once(
@@ -298,11 +297,20 @@ async fn configured_agent_roles_control_spawn_agent_type(
         })
         .build_with_auto_env(&server)
         .await?;
+    let namespace = if multi_agent_v2 {
+        test.config
+            .multi_agent_v2
+            .tool_namespace
+            .clone()
+            .expect("multi-agent V2 test config should define a tool namespace")
+    } else {
+        MULTI_AGENT_V1_NAMESPACE.to_string()
+    };
 
     test.submit_turn("hello").await?;
 
     assert_eq!(
-        spawn_agent_exposes_agent_type(&response.single_request().body_json(), namespace),
+        spawn_agent_exposes_agent_type(&response.single_request().body_json(), &namespace),
         has_agent_role
     );
     Ok(())

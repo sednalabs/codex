@@ -957,6 +957,14 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
+    def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
+        script = (REPO_ROOT / ".github/scripts/run-bazel-ci.sh").read_text()
+        config_append = 'bazel_run_args+=("--config=${ci_config}")'
+        caller_append = 'bazel_run_args+=("${bazel_args[@]:1}")'
+
+        self.assertIn('bazel_run_args=("${bazel_args[0]}")', script)
+        self.assertLess(script.index(config_append), script.index(caller_append))
+
 
 class DownstreamDivergenceAuditTests(unittest.TestCase):
     def run_git(self, repo: Path, *args: str) -> str:

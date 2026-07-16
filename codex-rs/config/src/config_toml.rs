@@ -676,7 +676,6 @@ where
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
-#[schemars(deny_unknown_fields)]
 pub struct AgentsToml {
     /// Whether multi-agent tools are enabled. Defaults to true.
     /// An enabled `features.multi_agent_v2` setting takes precedence.
