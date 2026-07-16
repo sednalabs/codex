@@ -2703,6 +2703,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_stack_sensitive_targeted_recipes_set_rust_min_stack(self) -> None:
+        recipes = just_recipe_bodies(REPO_ROOT / "justfile")
+
+        multi_agent_recipe = "\n".join(
+            recipes["core-multi-agent-orchestration-targeted"]
+        )
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 2)
+
+        unified_exec_recipe = "\n".join(
+            recipes["blocking-waits-unified-exec-targeted"]
+        )
+        self.assertEqual(unified_exec_recipe.count("RUST_MIN_STACK="), 8)
+
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,
     ) -> None:
@@ -4046,7 +4059,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
             summary = json.loads(output.read_text(encoding="utf-8"))
 
-        self.assertEqual(summary["error_lines"], ["error[E0277]: a real compiler failure"])
+        self.assertNotIn("error_lines", summary)
         self.assertEqual(summary["primary_signal"], "error[E0277]: a real compiler failure")
 
     def test_lane_summary_records_script_metadata_and_cache_telemetry(self) -> None:
