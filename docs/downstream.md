@@ -465,6 +465,26 @@ User-visible behavior:
 - `/agent` picker rows show per-thread used-token totals from cached thread usage.
 - Combined session token totals remain visible across `/status` and footer/status-line surfaces without overwriting the active thread's own usage totals.
 
+### TUI: retained realtime voice transport
+
+Why:
+
+- Upstream removed its realtime WebRTC crate and TUI voice surface, while the
+  downstream non-Linux voice path still depends on that transport.
+- Keep the transport isolated in `codex-realtime-webrtc` rather than spreading
+  platform-specific WebRTC code through the TUI.
+
+User-visible behavior:
+
+- macOS retains the realtime offer/answer flow, microphone audio track, and
+  local audio-level events consumed by the TUI voice session.
+- Unsupported targets return an explicit unavailable error; Linux retains the
+  corresponding TUI stubs rather than silently exposing an unusable session.
+- The carry includes `codex-rs/realtime-webrtc/{Cargo.toml,BUILD.bazel}` and
+  `src/{lib.rs,native.rs}`, plus the target-specific TUI dependency and lock
+  graph. Hosted Bazel release and clippy jobs on macOS are the buildability
+  proof for this platform boundary.
+
 ### TUI: Weekly usage pacing signal + stale handling
 
 Why:
