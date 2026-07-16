@@ -289,6 +289,21 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/`
   - `codex-rs/app-server/tests/suite/conversation_summary.rs`
 
+### Rollout Resume Mutation Custody
+
+- Authority-governed rollout resume construction uses revocable mutation authority.
+  Blocking representation materialization, append-open and tail repair own
+  custody inside the blocking operation, including recovery reopens.
+- Revocation closes new mutation admission and waits for admitted work, so
+  cancelling the awaiting constructor cannot leave an untracked filesystem
+  continuation. The existing unrestricted recorder constructor is unchanged.
+- Primary files:
+  - `codex-rs/rollout/src/mutation_authority.rs`
+  - `codex-rs/rollout/src/mutation_authority_test_support.rs`
+  - `codex-rs/rollout/src/compression.rs`
+  - `codex-rs/rollout/src/recorder.rs`
+  - `codex-rs/rollout/src/recorder_mutation_authority_tests.rs`
+
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation

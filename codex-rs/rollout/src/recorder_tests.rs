@@ -138,8 +138,9 @@ fn append_repair_terminates_nonempty_rollout_tail() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let rollout_path = home.path().join("rollout.jsonl");
     fs::write(&rollout_path, b"{\"type\":\"event_msg\"}")?;
-    drop(open_log_file(&rollout_path)?);
-    drop(open_log_file(&rollout_path)?);
+    let mutation_policy = RolloutMutationPolicy::Unrestricted;
+    drop(open_log_file(&rollout_path, &mutation_policy)?);
+    drop(open_log_file(&rollout_path, &mutation_policy)?);
 
     assert_eq!(fs::read(&rollout_path)?, b"{\"type\":\"event_msg\"}\n");
     Ok(())
@@ -717,6 +718,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        mutation_policy: RolloutMutationPolicy::Unrestricted,
     };
     state.add_items(vec![RolloutItem::EventMsg(EventMsg::AgentMessage(
         AgentMessageEvent {

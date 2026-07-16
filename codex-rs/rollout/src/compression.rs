@@ -10,6 +10,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::mutation_authority::RolloutMutationKind;
+use crate::mutation_authority::RolloutMutationPolicy;
+
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -64,11 +67,18 @@ pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
 }
 
 /// Materializes a compressed rollout back to plain `.jsonl` for async append paths.
-pub(crate) async fn materialize_rollout_for_append(path: &Path) -> io::Result<PathBuf> {
+pub(crate) async fn materialize_rollout_for_append(
+    path: &Path,
+    mutation_policy: RolloutMutationPolicy,
+) -> io::Result<PathBuf> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || materialize_rollout_for_append_blocking(path.as_path()))
-        .await
-        .map_err(io::Error::other)?
+    tokio::task::spawn_blocking(move || {
+        let _custody =
+            mutation_policy.acquire_custody(RolloutMutationKind::RepresentationMaterialization)?;
+        materialize_rollout_for_append_blocking(path.as_path())
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
 /// Materializes a compressed rollout back to plain `.jsonl` for blocking append paths.
