@@ -1,4 +1,5 @@
 use super::*;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ThreadInferenceIdentitySidecarPatch;
 
 struct DefaultStore;
@@ -30,6 +31,17 @@ impl ThreadStore for DefaultStore {
 #[tokio::test]
 async fn inference_identity_default_is_object_safe_empty_noop_and_stably_unsupported() {
     let store: &dyn ThreadStore = &DefaultStore;
+    let Err(ThreadStoreError::Unsupported { operation }) = store
+        .read_thread_inference_identity_sidecar(ReadThreadInferenceIdentitySidecarParams {
+            thread_id: ThreadId::default(),
+            include_archived: true,
+        })
+        .await
+    else {
+        panic!("default read should be unsupported");
+    };
+    assert_eq!(operation, "read_thread_inference_identity_sidecar");
+
     let mut params = UpdateThreadInferenceIdentitySidecarParams {
         thread_id: ThreadId::default(),
         patch: ThreadInferenceIdentitySidecarPatch::default(),

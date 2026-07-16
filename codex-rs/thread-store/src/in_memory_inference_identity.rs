@@ -4,6 +4,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::models::ThreadInferenceIdentityAuthority;
 
 use super::InMemoryThreadStore;
+use crate::ReadThreadInferenceIdentitySidecarParams;
 use crate::ThreadInferenceIdentitySidecar;
 use crate::ThreadInferenceIdentitySidecarPatch;
 use crate::ThreadStoreError;
@@ -51,6 +52,24 @@ impl InMemoryInferenceIdentityState {
 }
 
 impl InMemoryThreadStore {
+    pub(super) async fn read_thread_inference_identity_sidecar(
+        &self,
+        params: ReadThreadInferenceIdentitySidecarParams,
+    ) -> ThreadStoreResult<ThreadInferenceIdentitySidecar> {
+        let state = self.state.lock().await;
+        if !state.created_threads.contains_key(&params.thread_id) {
+            return Err(ThreadStoreError::ThreadNotFound {
+                thread_id: params.thread_id,
+            });
+        }
+        Ok(state
+            .inference_identity
+            .sidecars
+            .get(&params.thread_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     pub(super) async fn update_thread_inference_identity_sidecar(
         &self,
         params: UpdateThreadInferenceIdentitySidecarParams,
