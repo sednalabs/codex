@@ -25,6 +25,8 @@ use time::format_description::FormatItem;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::OwnedRwLockReadGuard;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -85,6 +87,60 @@ pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
     writer_task: Arc<RolloutWriterTask>,
     pub(crate) rollout_path: PathBuf,
+}
+
+/// One-way write authority shared with a rollout recorder generation.
+///
+/// The default authority is unrestricted for existing recorder callers. Lifecycle owners that
+/// need to retire a generation can create a revocable authority and revoke it before a stale
+/// writer is allowed to open or recreate its rollout path.
+#[derive(Clone, Default)]
+pub struct RolloutWriteAuthority {
+    state: Option<Arc<RwLock<RolloutWriteAuthorityState>>>,
+}
+
+struct RolloutWritePermit {
+    _guard: Option<OwnedRwLockReadGuard<RolloutWriteAuthorityState>>,
+}
+
+#[derive(Clone, Copy)]
+enum RolloutWriteAuthorityState {
+    Active,
+    Revoked,
+}
+
+impl RolloutWriteAuthority {
+    /// Create an authority that starts active and can only transition to revoked.
+    pub fn new_revocable() -> Self {
+        Self {
+            state: Some(Arc::new(RwLock::new(RolloutWriteAuthorityState::Active))),
+        }
+    }
+
+    /// Prevent future writer opens, materialization, and write attempts for this authority.
+    pub async fn revoke(&self) {
+        if let Some(state) = &self.state {
+            *state.write().await = RolloutWriteAuthorityState::Revoked;
+        }
+    }
+
+    async fn acquire_permit(&self) -> Result<RolloutWritePermit, RolloutWriteError> {
+        let Some(state) = &self.state else {
+            return Ok(RolloutWritePermit { _guard: None });
+        };
+        let guard = Arc::clone(state).read_owned().await;
+        match *guard {
+            RolloutWriteAuthorityState::Active => Ok(RolloutWritePermit {
+                _guard: Some(guard),
+            }),
+            RolloutWriteAuthorityState::Revoked => Err(RolloutWriteError::Revoked),
+        }
+    }
+
+    async fn ensure_active(&self) -> Result<(), RolloutWriteError> {
+        let _permit = self.acquire_permit().await?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -757,6 +813,15 @@ impl RolloutRecorder {
         config: &impl RolloutConfigView,
         params: RolloutRecorderParams,
     ) -> std::io::Result<Self> {
+        Self::new_with_write_authority(config, params, RolloutWriteAuthority::default()).await
+    }
+
+    /// Attempt to create a recorder with generation-scoped write authority.
+    pub async fn new_with_write_authority(
+        config: &impl RolloutConfigView,
+        params: RolloutRecorderParams,
+        write_authority: RolloutWriteAuthority,
+    ) -> std::io::Result<Self> {
         // Clone the cwd for the spawned task to collect git info asynchronously.
         let cwd = config.cwd().to_path_buf();
         let state = match params {
@@ -826,10 +891,16 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    write_authority,
                 }
             }
             RolloutRecorderParams::Resume { path } => {
+                let open_permit = write_authority
+                    .acquire_permit()
+                    .await
+                    .map_err(RolloutWriteError::into_io)?;
                 let (path, file, ordinal_state) = open_rollout_for_append(path.as_path()).await?;
+                drop(open_permit);
                 RolloutWriterState {
                     writer: Some(JsonlWriter { file }),
                     deferred_log_file_info: None,
@@ -839,6 +910,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    write_authority,
                 }
             }
         };
@@ -1556,6 +1628,30 @@ fn open_log_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
+#[derive(Debug)]
+enum RolloutWriteError {
+    Revoked,
+    Io(IoError),
+}
+
+impl RolloutWriteError {
+    fn into_io(self) -> IoError {
+        match self {
+            Self::Revoked => IoError::new(
+                std::io::ErrorKind::PermissionDenied,
+                "rollout write authority was revoked",
+            ),
+            Self::Io(err) => err,
+        }
+    }
+}
+
+impl From<IoError> for RolloutWriteError {
+    fn from(err: IoError) -> Self {
+        Self::Io(err)
+    }
+}
+
 /// Mutable state owned by the background rollout writer.
 ///
 /// Items are first appended to `pending_items`; persist/flush/shutdown remove each item from that
@@ -1570,6 +1666,7 @@ struct RolloutWriterState {
     rollout_path: PathBuf,
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
+    write_authority: RolloutWriteAuthority,
 }
 
 impl RolloutWriterState {
@@ -1581,36 +1678,49 @@ impl RolloutWriterState {
         if self.is_deferred() {
             return;
         }
-        if let Err(err) = self.flush().await {
+        if let Err(RolloutWriteError::Io(err)) = self.write_pending_with_recovery("flush").await {
             self.enter_recovery_mode(&err);
         }
     }
 
     async fn persist(&mut self) -> std::io::Result<()> {
-        self.write_pending_with_recovery("persist").await
+        self.write_pending_with_recovery("persist")
+            .await
+            .map_err(RolloutWriteError::into_io)
     }
 
     async fn flush(&mut self) -> std::io::Result<()> {
         if self.is_deferred() && self.pending_items.is_empty() {
             return Ok(());
         }
-        self.write_pending_with_recovery("flush").await
+        self.write_pending_with_recovery("flush")
+            .await
+            .map_err(RolloutWriteError::into_io)
     }
 
     async fn shutdown(&mut self) -> std::io::Result<()> {
         if self.is_deferred() && self.pending_items.is_empty() {
             return Ok(());
         }
-        self.write_pending_with_recovery("shutdown").await
+        self.write_pending_with_recovery("shutdown")
+            .await
+            .map_err(RolloutWriteError::into_io)
     }
 
-    async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
+    async fn write_pending_with_recovery(
+        &mut self,
+        operation: &str,
+    ) -> Result<(), RolloutWriteError> {
         match self.write_pending_once().await {
             Ok(()) => {
                 self.last_logged_error = None;
                 Ok(())
             }
-            Err(first_err) => {
+            Err(RolloutWriteError::Revoked) => {
+                self.enter_revoked_mode();
+                Err(RolloutWriteError::Revoked)
+            }
+            Err(RolloutWriteError::Io(first_err)) => {
                 self.enter_recovery_mode(&first_err);
                 warn!("failed to {operation} rollout writer; reopening and retrying: {first_err}");
                 match self.write_pending_once().await {
@@ -1618,13 +1728,17 @@ impl RolloutWriterState {
                         self.last_logged_error = None;
                         Ok(())
                     }
-                    Err(second_err) => {
+                    Err(RolloutWriteError::Revoked) => {
+                        self.enter_revoked_mode();
+                        Err(RolloutWriteError::Revoked)
+                    }
+                    Err(RolloutWriteError::Io(second_err)) => {
                         self.enter_recovery_mode(&second_err);
                         warn!(
                             "retrying rollout writer {operation} failed; first error: \
                              {first_err}; final error: {second_err}"
                         );
-                        Err(second_err)
+                        Err(RolloutWriteError::Io(second_err))
                     }
                 }
             }
@@ -1650,17 +1764,23 @@ impl RolloutWriterState {
         self.writer = None;
     }
 
-    async fn ensure_writer_open(&mut self) -> std::io::Result<()> {
+    fn enter_revoked_mode(&mut self) {
+        self.writer = None;
+    }
+
+    async fn ensure_writer_open(&mut self) -> Result<(), RolloutWriteError> {
         if self.writer.is_some() {
             return Ok(());
         }
 
+        let open_permit = self.write_authority.acquire_permit().await?;
         let path = self
             .deferred_log_file_info
             .as_ref()
             .map(|info| info.path.as_path())
             .unwrap_or(self.rollout_path.as_path());
         let file = open_log_file(path)?;
+        drop(open_permit);
         self.writer = Some(JsonlWriter {
             file: tokio::fs::File::from_std(file),
         });
@@ -1668,10 +1788,11 @@ impl RolloutWriterState {
         Ok(())
     }
 
-    async fn write_session_meta_if_needed(&mut self) -> std::io::Result<()> {
+    async fn write_session_meta_if_needed(&mut self) -> Result<(), RolloutWriteError> {
         let Some(session_meta) = self.meta.as_ref().cloned() else {
             return Ok(());
         };
+        let write_permit = self.write_authority.acquire_permit().await?;
         write_session_meta(
             self.writer.as_mut(),
             &mut self.ordinal_state,
@@ -1679,11 +1800,13 @@ impl RolloutWriterState {
             &self.cwd,
         )
         .await?;
+        drop(write_permit);
         self.meta = None;
         Ok(())
     }
 
-    async fn write_pending_once(&mut self) -> std::io::Result<()> {
+    async fn write_pending_once(&mut self) -> Result<(), RolloutWriteError> {
+        self.write_authority.ensure_active().await?;
         self.ensure_writer_open().await?;
         self.write_session_meta_if_needed().await?;
 
@@ -1695,27 +1818,37 @@ impl RolloutWriterState {
         Ok(())
     }
 
-    async fn write_pending_items_once(&mut self) -> std::io::Result<()> {
+    async fn write_pending_items_once(&mut self) -> Result<(), RolloutWriteError> {
         let Some(writer) = self.writer.as_mut() else {
-            return Err(IoError::other("rollout writer is not open"));
+            return Err(RolloutWriteError::Io(IoError::other(
+                "rollout writer is not open",
+            )));
         };
 
         let mut written_count = 0usize;
         let mut write_result = Ok(());
         for item in &self.pending_items {
-            match self.ordinal_state.current() {
-                Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
-                    Ok(()) => self.ordinal_state.advance(),
-                    Err(err) => {
-                        write_result = Err(err);
-                        break;
-                    }
-                },
+            let write_permit = match self.write_authority.acquire_permit().await {
+                Ok(permit) => permit,
                 Err(err) => {
                     write_result = Err(err);
                     break;
                 }
+            };
+            match self.ordinal_state.current() {
+                Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
+                    Ok(()) => self.ordinal_state.advance(),
+                    Err(err) => {
+                        write_result = Err(RolloutWriteError::Io(err));
+                        break;
+                    }
+                },
+                Err(err) => {
+                    write_result = Err(RolloutWriteError::Io(err));
+                    break;
+                }
             }
+            drop(write_permit);
             written_count += 1;
         }
 

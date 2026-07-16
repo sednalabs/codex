@@ -398,6 +398,26 @@ docs-only refresh commit that records this snapshot.
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
 
+### Thread Rollout-Writer Authority And Retry Classification
+
+- A lifecycle owner can give one rollout-recorder generation revocable write
+  authority without changing existing unrestricted recorder callers.
+- Revocation is a typed writer outcome, not an interpretation of
+  `std::io::ErrorKind`. Ordinary filesystem failures, including Windows
+  `PermissionDenied`, retain the existing reopen-and-retry behavior.
+- Short read permits cover initial or recovery materialization and open, plus
+  one item write at a time. Revocation therefore cannot race a path recreation
+  and does not wait for an unbounded pending-item drain.
+- A revoked writer releases its current file handle, keeps unwritten items
+  buffered, and reports the denial instead of silently acknowledging or
+  retrying it.
+- Local registry retirement, archive/delete ordering, and caller-independent
+  terminal shutdown cleanup remain later lifecycle slices.
+- Primary files:
+  - `codex-rs/rollout/src/lib.rs`
+  - `codex-rs/rollout/src/recorder.rs`
+  - `codex-rs/rollout/src/recorder_tests.rs`
+
 ### Dead-Cwd Absolute Path Handling
 
 - `AbsolutePathBuf::from_absolute_path()` avoids consulting process cwd for

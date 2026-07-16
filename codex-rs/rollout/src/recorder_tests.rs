@@ -717,6 +717,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        write_authority: RolloutWriteAuthority::default(),
     };
     state.add_items(vec![RolloutItem::EventMsg(EventMsg::AgentMessage(
         AgentMessageEvent {
@@ -732,6 +733,111 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         text_after_retry.contains("queued-after-writer-error"),
         "flush should retry after reopening and write buffered items"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn writer_state_does_not_retry_revoked_authority() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    File::create(&rollout_path)?;
+    let authority = RolloutWriteAuthority::new_revocable();
+    let mut state = RolloutWriterState {
+        writer: Some(JsonlWriter {
+            file: tokio::fs::File::from_std(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&rollout_path)?,
+            ),
+        }),
+        deferred_log_file_info: None,
+        pending_items: Vec::new(),
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Legacy,
+        last_logged_error: None,
+        write_authority: authority.clone(),
+    };
+    state.add_items(vec![agent_message_item("must-not-be-written")]);
+    authority.revoke().await;
+
+    let err = state
+        .flush()
+        .await
+        .expect_err("revoked authority should deny the write");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(err.to_string(), "rollout write authority was revoked");
+    assert!(
+        state.writer.is_none(),
+        "revocation should release the writer"
+    );
+    assert_eq!(state.last_logged_error, None);
+    assert_eq!(state.pending_items.len(), 1);
+    assert_eq!(fs::read_to_string(&rollout_path)?, "");
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_authority_cannot_materialize_deferred_rollout() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let authority = RolloutWriteAuthority::new_revocable();
+    let recorder = RolloutRecorder::new_with_write_authority(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+        authority.clone(),
+    )
+    .await?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    let rollout_parent = rollout_path.parent().expect("rollout parent").to_path_buf();
+    assert!(!rollout_parent.exists());
+    recorder
+        .record_canonical_items(&[agent_message_item("must-remain-buffered")])
+        .await?;
+    authority.revoke().await;
+
+    let err = recorder
+        .flush()
+        .await
+        .expect_err("revoked authority should deny materialization");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(err.to_string(), "rollout write authority was revoked");
+    assert!(!rollout_parent.exists());
+    assert!(!rollout_path.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_authority_cannot_open_resumed_rollout() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let rollout_path = home.path().join("rollout.jsonl");
+    write_paginated_rollout(&rollout_path, ThreadId::new(), &[])?;
+    let before = fs::read(&rollout_path)?;
+    let authority = RolloutWriteAuthority::new_revocable();
+    authority.revoke().await;
+
+    let err = RolloutRecorder::new_with_write_authority(
+        &config,
+        RolloutRecorderParams::resume(rollout_path.clone()),
+        authority,
+    )
+    .await
+    .err()
+    .expect("revoked authority should deny resume open");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(err.to_string(), "rollout write authority was revoked");
+    assert_eq!(fs::read(&rollout_path)?, before);
     Ok(())
 }
 
