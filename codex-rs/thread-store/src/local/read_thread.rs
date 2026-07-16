@@ -60,7 +60,9 @@ pub(super) async fn read_thread(
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
-            rollout_thread.model_provider = thread.model_provider.clone();
+            if !thread.model_provider.is_empty() {
+                rollout_thread.model_provider = thread.model_provider.clone();
+            }
             rollout_thread.model = thread.model.clone().or(rollout_thread.model);
             // Indexed presence semantics are authoritative here: `None` is a
             // persisted clear and must not revive an older rollout effort.
@@ -899,7 +901,7 @@ mod tests {
             Utc::now(),
             SessionSource::Cli,
         );
-        builder.model_provider = Some(config.default_model_provider_id.clone());
+        builder.model_provider = Some(String::new());
         builder.cwd = home.path().join("sqlite-workspace");
         let mut metadata = builder.build(config.default_model_provider_id.as_str());
         metadata.title = "Saved title".to_string();
@@ -924,8 +926,8 @@ mod tests {
         assert_eq!(thread.preview, "Hello from rollout");
         assert_eq!(thread.name, Some("Saved title".to_string()));
         assert_eq!(
-            thread.model_provider, config.default_model_provider_id,
-            "indexed provider remains authoritative during a rollout preview overlay"
+            thread.model_provider, "rollout-provider",
+            "an unknown indexed provider must not erase the rollout provider"
         );
         assert_eq!(thread.cwd, rollout_cwd);
         let legacy_policy = SandboxPolicy::WorkspaceWrite {

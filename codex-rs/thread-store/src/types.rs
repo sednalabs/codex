@@ -633,7 +633,7 @@ impl ThreadMetadataPatch {
             self.model = next.model;
         }
         if next.reasoning_effort_update.is_some() {
-            self.reasoning_effort = None;
+            self.reasoning_effort = next.reasoning_effort_update.clone().flatten();
             self.reasoning_effort_update = next.reasoning_effort_update;
         } else if next.reasoning_effort.is_some() {
             self.reasoning_effort = next.reasoning_effort;
@@ -886,6 +886,35 @@ mod tests {
                 branch: Some(Some("feature".to_string())),
                 origin_url: Some(None),
             })
+        );
+    }
+
+    #[test]
+    fn thread_metadata_patch_merge_keeps_reasoning_effort_fields_in_sync() {
+        let mut current = ThreadMetadataPatch::default();
+
+        current.merge(ThreadMetadataPatch {
+            reasoning_effort_update: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        });
+
+        let value = serde_json::to_value(&current).expect("serialize set patch");
+        assert_eq!(
+            (
+                value["reasoning_effort"].clone(),
+                value["reasoning_effort_update"].clone(),
+            ),
+            (json!("high"), json!("high"))
+        );
+
+        current.merge(ThreadMetadataPatch {
+            reasoning_effort_update: Some(None),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            (current.reasoning_effort, current.reasoning_effort_update),
+            (None, Some(None))
         );
     }
 
