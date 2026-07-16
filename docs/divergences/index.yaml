@@ -1888,7 +1888,8 @@
       },
       "guardrail_lane": "GitHub blocking-ci codex-rollout unit tests",
       "tests": [
-        "revoke_waits_for_every_custody_and_wakes_every_waiter"
+        "revoke_waits_for_every_custody_and_wakes_every_waiter",
+        "close_counts_every_admission_and_retains_the_final_release"
       ],
       "owner": "downstream",
       "notes": "Keep the primitive private and focused. Later integration slices own recorder constructors, append-open and recovery, writer actor semantics, and public API decisions.",

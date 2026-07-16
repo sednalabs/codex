@@ -930,9 +930,14 @@ docs-only refresh commit that records this snapshot.
 - This foundation is intentionally dormant in this slice. Recorder
   constructors, compression, append-open and recovery paths, writer actor
   semantics, and public API exposure remain outside its boundary.
-- The focused regression parks two independently admitted custody tokens,
-  polls two revokers to pending, proves the first release is insufficient, and
-  proves the second release wakes both while later admission stays closed.
+- Two complementary regressions carry the complete proof. One parks custody
+  while two independent revoker tasks each reach pending and later wake. The
+  other admits two custody tokens, proves the first release is insufficient,
+  and proves the retained final release completes one-way revocation while
+  later admission stays closed.
+- Guardrail selectors:
+  - `revoke_waits_for_every_custody_and_wakes_every_waiter`
+  - `close_counts_every_admission_and_retains_the_final_release`
 - Primary files:
   - `codex-rs/rollout/src/mutation_authority.rs`
   - `codex-rs/rollout/src/mutation_authority_tests.rs`
