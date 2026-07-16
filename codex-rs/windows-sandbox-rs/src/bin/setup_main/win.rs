@@ -15,7 +15,6 @@ use codex_windows_sandbox::canonicalize_path;
 use codex_windows_sandbox::convert_string_sid_to_sid;
 use codex_windows_sandbox::ensure_allow_mask_aces_with_inheritance;
 use codex_windows_sandbox::ensure_allow_write_aces;
-use codex_windows_sandbox::ensure_allow_write_aces_recursively;
 use codex_windows_sandbox::extract_setup_failure;
 use codex_windows_sandbox::hide_newly_created_users;
 use codex_windows_sandbox::install_wfp_filters;
@@ -914,8 +913,6 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
                     root.display()
                 ),
             )?;
-        }
-        if need_grant || root.is_dir() {
             grant_tasks.push((root.clone(), root_cap_sid_str));
         }
     }
@@ -923,7 +920,6 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
     let (tx, rx) = mpsc::channel::<(PathBuf, Result<bool>)>();
     std::thread::scope(|scope| {
         for (root, root_cap_sid_str) in grant_tasks {
-            let recurse_existing_descendants = root.is_dir();
             let sid_strings = vec![sandbox_group_sid_str.clone(), root_cap_sid_str];
             let tx = tx.clone();
             scope.spawn(move || {
@@ -938,13 +934,7 @@ fn run_setup_full(payload: &Payload, log: &mut dyn Write, sbx_dir: &Path) -> Res
                     }
                 }
 
-                let res = unsafe {
-                    if recurse_existing_descendants {
-                        ensure_allow_write_aces_recursively(&root, &psids)
-                    } else {
-                        ensure_allow_write_aces(&root, &psids)
-                    }
-                };
+                let res = unsafe { ensure_allow_write_aces(&root, &psids) };
 
                 for psid in psids {
                     unsafe {

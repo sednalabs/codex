@@ -17,16 +17,12 @@ use windows_sys::Win32::Security::AclSizeInformation;
 use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
 use windows_sys::Win32::Security::Authorization::GetNamedSecurityInfoW;
 use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
-use windows_sys::Win32::Security::Authorization::ProgressInvokeNever;
 use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
 use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
 use windows_sys::Win32::Security::Authorization::SetSecurityInfo;
-use windows_sys::Win32::Security::Authorization::TREE_SEC_INFO_RESET_KEEP_EXPLICIT;
-use windows_sys::Win32::Security::Authorization::TreeSetNamedSecurityInfoW;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_SID;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_IS_UNKNOWN;
 use windows_sys::Win32::Security::Authorization::TRUSTEE_W;
-use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::EqualSid;
 use windows_sys::Win32::Security::GENERIC_MAPPING;
@@ -441,47 +437,6 @@ pub unsafe fn ensure_allow_write_aces(path: &Path, sids: &[*mut c_void]) -> Resu
         FILE_DELETE_CHILD,
         CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
     )
-}
-
-/// Ensure a directory and its existing descendants inherit the write ACEs while preserving
-/// explicit child ACEs.
-///
-/// # Safety
-/// Caller must pass valid SID pointers and an existing path.
-pub unsafe fn ensure_allow_write_aces_recursively(
-    path: &Path,
-    sids: &[*mut c_void],
-) -> Result<bool> {
-    let added = ensure_allow_write_aces(path, sids)?;
-    if !path.is_dir() {
-        return Ok(added);
-    }
-
-    let (p_dacl, p_sd) = fetch_dacl_handle(path)?;
-    let code = TreeSetNamedSecurityInfoW(
-        to_wide(path).as_ptr(),
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        p_dacl,
-        std::ptr::null(),
-        TREE_SEC_INFO_RESET_KEEP_EXPLICIT,
-        None,
-        ProgressInvokeNever,
-        std::ptr::null(),
-    );
-    if !p_sd.is_null() {
-        LocalFree(p_sd as HLOCAL);
-    }
-    if code != ERROR_SUCCESS {
-        return Err(anyhow!(
-            "TreeSetNamedSecurityInfoW failed for {}: {}",
-            path.display(),
-            code
-        ));
-    }
-    Ok(added)
 }
 
 /// Adds an allow ACE granting read/write/execute to the given SID on the target path.
