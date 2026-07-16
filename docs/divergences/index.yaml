@@ -271,6 +271,42 @@
       "extraction_target": "multi-agent runtime capability declarations"
     },
     {
+      "id": "thread-rollout-writer-authority",
+      "title": "Thread rollout-writer authority and retry classification",
+      "status": "live",
+      "category": "thread-store",
+      "surface": [
+        "rollout writer generation authority",
+        "filesystem retry classification"
+      ],
+      "files": [
+        "codex-rs/rollout/src/lib.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/rollout/src/recorder_tests.rs"
+      ],
+      "behavior": "Downstream can retire one rollout-writer generation with explicit typed authority while preserving reopen-and-retry behavior for ordinary filesystem failures, including PermissionDenied.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "blocking-ci",
+      "tests": [
+        "writer_state_retries_write_error_before_reporting_flush_success",
+        "writer_state_does_not_retry_revoked_authority",
+        "revoked_authority_cannot_materialize_deferred_rollout",
+        "revoked_authority_cannot_open_resumed_rollout"
+      ],
+      "owner": "downstream",
+      "notes": "Keeps authority revocation separate from std::io::ErrorKind so Windows PermissionDenied remains recoverable. Local registry retirement and terminal shutdown integration are tracked as later lifecycle slices.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "rollout-persistence-authority",
+      "hotspot_files": [
+        "codex-rs/rollout/src/recorder.rs"
+      ],
+      "extraction_target": "generation-scoped rollout writer authority"
+    },
+    {
       "id": "dead-cwd-absolute-path-handling",
       "title": "Dead-cwd absolute path handling",
       "status": "live",
