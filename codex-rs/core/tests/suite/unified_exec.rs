@@ -947,6 +947,10 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     let server = start_mock_server().await;
     let (test, permission_profile) =
         unified_exec_network_denial_test(&server, /*allow_local_binding*/ false).await?;
+    assert_eq!(
+        test.config.permissions.windows_sandbox_mode,
+        Some(WindowsSandboxModeToml::Elevated)
+    );
     let sandbox_codex_home = super::windows_sandbox::codex_home_for_windows_sandbox_test(
         "unified-exec-proxy-firewall-codex-home",
     )?;
@@ -980,40 +984,32 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
         "cmd": command,
         "shell": "powershell",
         "login": false,
-        "yield_time_ms": 5_000,
-        "wait_until_terminal": true,
+        "yield_time_ms": 1_000,
     });
-    let responses = vec![
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-        sse(vec![
-            ev_response_created("resp-2"),
-            ev_assistant_message("msg-1", "finished"),
-            ev_completed("resp-2"),
-        ]),
-    ];
-    mount_sse_sequence(&server, responses).await;
+    let response_mock =
+        mount_unified_exec_network_denial_responses(&server, call_id, &args).await?;
 
     submit_unified_exec_turn(&test, "exercise direct loopback bypass", permission_profile).await?;
 
-    let output = wait_for_raw_unified_exec_output(&test, call_id).await?;
-    assert_eq!(output.exit_code, Some(0), "unexpected output: {output:?}");
+    let (end_event, turn_completed) =
+        wait_for_unified_exec_end(&test, call_id, &response_mock).await;
+    assert_eq!(end_event.status, ExecCommandStatus::Completed);
+    assert_eq!(end_event.exit_code, 0);
     assert!(
-        output.output.contains("DIRECT-BLOCKED"),
-        "elevated proxy firewall should block direct loopback access: {output:?}"
+        end_event.aggregated_output.contains("DIRECT-BLOCKED"),
+        "elevated proxy firewall should block direct loopback access: {end_event:?}"
     );
     assert!(
-        !output.output.contains("DIRECT-CONNECTED"),
-        "sandboxed process bypassed the managed proxy: {output:?}"
+        !end_event.aggregated_output.contains("DIRECT-CONNECTED"),
+        "sandboxed process bypassed the managed proxy: {end_event:?}"
     );
 
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
+    if !turn_completed {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
 
     Ok(())
 }
@@ -1075,7 +1071,7 @@ allow_local_binding = {allow_local_binding}
                 .expect("set permission profile");
             #[cfg(target_os = "windows")]
             {
-                config.permissions.windows_sandbox_mode = Some(WindowsSandboxModeToml::Unelevated);
+                config.permissions.windows_sandbox_mode = Some(WindowsSandboxModeToml::Elevated);
                 config.permissions.windows_sandbox_private_desktop = false;
             }
         });
