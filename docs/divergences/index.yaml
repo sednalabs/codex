@@ -1778,7 +1778,8 @@
           "import_repo_hooks_rejects_symlinked_target_parent"
         ],
         "codex-rs/external-agent-migration/src/memory_import_tests.rs": [
-          "projects_needing_import_rejects_symlinked_stale_memory_project"
+          "projects_needing_import_rejects_symlinked_stale_memory_project",
+          "projects_needing_import_rejects_symlinked_stale_project_scope"
         ],
         "codex-rs/external-agent-migration/src/utils.rs": [
           "ensure_migration_path_rejects_parent_after_missing_component"
@@ -1787,7 +1788,7 @@
           "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation"
         ]
       },
-      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them.",
+      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, every resource entry, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them. Only directories with a regular non-symlink scope.json marker are managed; ordinary metadata and unmarked directories are ignored.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": "c61390d3acc273e711b0e90feaa9dadd43b5a792",
@@ -1812,6 +1813,7 @@
         "rejects_memory_project_keys_that_are_not_single_components",
         "rejects_symlinked_memory_destination_ancestors",
         "projects_needing_import_rejects_symlinked_stale_memory_project",
+        "projects_needing_import_rejects_symlinked_stale_project_scope",
         "rejects_symlinked_memory_instructions_before_project_mutation",
         "rejects_symlinked_memory_resource_and_scope_leaves",
         "ensure_migration_path_rejects_parent_after_missing_component",
@@ -1819,7 +1821,7 @@
         "removes_project_resources_when_the_source_project_disappears"
       ],
       "owner": "downstream",
-      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
+      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. Marker-based ownership affects future detection; one-time backfill of unchanged pre-marker imports is tracked separately and is not an automatic sync mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "filesystem-containment",
       "hotspot_files": [

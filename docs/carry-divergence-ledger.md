@@ -1176,10 +1176,19 @@ docs-only refresh commit that records this snapshot.
   are checked beneath `CODEX_HOME` and rejected when any existing component is
   a symlink. This preserves stale-project removal without allowing absolute or
   parent-relative selections to escape the extension workspace.
+- A resource directory is managed only when it contains a regular, non-symlink
+  `scope.json` marker. Ordinary files and unmarked metadata directories are
+  ignored, but every directory entry and candidate marker is symlink-preflighted
+  before its type is used, so stale project-root and marker symlinks fail closed.
+- The marker rule affects future detection. A one-time backfill for unchanged
+  imports that predate the marker is an explicit follow-up, not an automatic
+  mutation performed by this sync.
 - The focused lane covers both the extracted migration-crate denial tests and
   the app-server request boundary.
   `projects_needing_import_rejects_symlinked_stale_memory_project` proves stale
   owned projects are preflighted before detection offers them. In particular,
+  `projects_needing_import_rejects_symlinked_stale_project_scope` proves a real
+  project directory cannot redirect its ownership marker, while
   `external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation`
   proves a rejected stale-project selection cannot initialize or rewrite the
   memory workspace before the containment error is reported.
