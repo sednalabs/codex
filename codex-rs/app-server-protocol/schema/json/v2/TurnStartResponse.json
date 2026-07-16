@@ -549,12 +549,6 @@
             "string",
             "null"
           ]
-        },
-        "templateId": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [

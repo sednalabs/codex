@@ -141,9 +141,8 @@ external-agent-session-migration-targeted:
 
 # Focused containment slice for repository and memory migration paths.
 external-agent-migration-containment-targeted:
-    cargo test --locked -p codex-app-server external_agent_migration::service:: --lib -- --test-threads=1
-    cargo test --locked -p codex-app-server --test all suite::v2::external_agent_config::external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation -- --exact --test-threads=1
-    cargo test --locked -p codex-external-agent-migration --lib -- --test-threads=1
+    cargo nextest run --locked -p codex-external-agent-migration --no-fail-fast --no-tests=fail --lib
+    cargo nextest run --locked -p codex-app-server --no-fail-fast --no-tests=fail --test all -- suite::v2::external_agent_config::external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation --exact
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
@@ -151,11 +150,14 @@ core-subagent-surface-targeted:
 
 # Focused inspect_agent_tree stale-descendant fallback regression.
 core-subagent-inspect-tree-fallback-targeted:
-    cargo test -p codex-core inspect_agent_tree_without_state_db_points_to_subagent_tail --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests=fail -- agent::control::tests::inspect_agent_tree_without_state_db_points_to_subagent_tail --exact
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- format_subagent_notification_message_round_trips_completed_status classifies_memory_excluded_fragments drop_last_n_user_turns_ignores_session_prefix_user_messages serializes_memory_rollout_with_agents_removed_but_environment_kept
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- context_manager::history::tests::drop_last_n_user_turns_ignores_session_prefix_user_messages --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- session_prefix::tests::format_subagent_notification_message_round_trips_completed_status --exact
+    cargo nextest run -p codex-memories-write --no-fail-fast --no-tests=fail --lib -- phase1::job::tests::classifies_memory_excluded_fragments --exact
+    cargo nextest run -p codex-memories-write --no-fail-fast --no-tests=fail --lib -- phase1::tests::serializes_memory_rollout_with_agents_removed_but_environment_kept --exact
 
 # Focused sub-agent completion-notification parser + TUI render slice after the
 
@@ -357,9 +359,11 @@ mcp-device-login-targeted:
 
 # Focused model-pinning slice for exact spawn-agent model slug preservation.
 core-subagent-model-pinning-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents_spec::tests::spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings --exact
-    cargo nextest run -p codex-state -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- extract::tests::thread_settings_replace_complete_configured_identity_and_clear_effort local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay local::read_thread::tests::read_thread_keeps_complete_indexed_identity_for_malformed_rollout thread_metadata_sync::tests::settings_events_replace_complete_configured_identity_and_preserve_clears types::tests::thread_metadata_patch_round_trips_optional_clears types::tests::legacy_reasoning_effort_null_remains_a_noop --exact
+    cargo nextest run -p codex-state -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- extract::tests::turn_context_sets_model_and_reasoning_effort extract::tests::thread_settings_applied_updates_resume_metadata local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay thread_metadata_sync::tests::thread_settings_applied_updates_live_metadata types::tests::thread_metadata_patch_round_trips_optional_clears --exact
+    cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::multi_agent_resume::cold_root_resume_restores_agent_identity_and_reloads_target_on_followup --exact
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:

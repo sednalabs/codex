@@ -1488,6 +1488,7 @@ fn token_usage_update_is_emitted_on_turn_completion() {
                         total_tokens: 42,
                         input_tokens: 10,
                         cached_input_tokens: 3,
+                        cache_write_input_tokens: 4,
                         output_tokens: 29,
                         reasoning_output_tokens: 7,
                     },
@@ -1495,6 +1496,7 @@ fn token_usage_update_is_emitted_on_turn_completion() {
                         total_tokens: 42,
                         input_tokens: 10,
                         cached_input_tokens: 3,
+                        cache_write_input_tokens: 4,
                         output_tokens: 29,
                         reasoning_output_tokens: 7,
                     },
@@ -1536,6 +1538,7 @@ fn token_usage_update_is_emitted_on_turn_completion() {
                 usage: Usage {
                     input_tokens: 10,
                     cached_input_tokens: 3,
+                    cache_write_input_tokens: 4,
                     output_tokens: 29,
                     reasoning_output_tokens: 7,
                 },

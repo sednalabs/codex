@@ -46,6 +46,7 @@ struct ToolCallState {
 struct TokenUsageTotals {
     uncached_input_tokens: i64,
     cached_input_tokens: i64,
+    cache_write_input_tokens: i64,
     output_tokens: i64,
     total_tokens: i64,
 }
@@ -311,10 +312,11 @@ ON CONFLICT(thread_id) DO UPDATE SET
             completed_at,
             input_tokens_uncached,
             input_tokens_cached,
+            input_tokens_cache_write,
             output_tokens,
             total_tokens,
             status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(provider_call_id.clone())
         .bind(self.thread_id.to_string())
@@ -327,6 +329,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(Utc::now().to_rfc3339())
         .bind(uncached_input_tokens)
         .bind(usage.cached_input_tokens)
+        .bind(usage.cache_write_input_tokens)
         .bind(usage.output_tokens)
         .bind(usage.total_tokens)
         .bind(status)
@@ -336,6 +339,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
         self.last_provider_usage = Some(TokenUsageTotals {
             uncached_input_tokens,
             cached_input_tokens: usage.cached_input_tokens,
+            cache_write_input_tokens: usage.cache_write_input_tokens,
             output_tokens: usage.output_tokens,
             total_tokens: usage.total_tokens,
         });
@@ -562,13 +566,15 @@ WHERE provider_call_id = ?
             parent_last_provider_call_id,
             parent_cumulative_uncached_tokens,
             parent_cumulative_cached_tokens,
+            parent_cumulative_cache_write_tokens,
             parent_cumulative_output_tokens,
             parent_cumulative_total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(child_thread_id) DO UPDATE SET
             parent_last_provider_call_id = COALESCE(excluded.parent_last_provider_call_id, usage_fork_snapshots.parent_last_provider_call_id),
             parent_cumulative_uncached_tokens = COALESCE(excluded.parent_cumulative_uncached_tokens, usage_fork_snapshots.parent_cumulative_uncached_tokens),
             parent_cumulative_cached_tokens = COALESCE(excluded.parent_cumulative_cached_tokens, usage_fork_snapshots.parent_cumulative_cached_tokens),
+            parent_cumulative_cache_write_tokens = COALESCE(excluded.parent_cumulative_cache_write_tokens, usage_fork_snapshots.parent_cumulative_cache_write_tokens),
             parent_cumulative_output_tokens = COALESCE(excluded.parent_cumulative_output_tokens, usage_fork_snapshots.parent_cumulative_output_tokens),
             parent_cumulative_total_tokens = COALESCE(excluded.parent_cumulative_total_tokens, usage_fork_snapshots.parent_cumulative_total_tokens)
         "#,
@@ -579,6 +585,7 @@ WHERE provider_call_id = ?
         .bind(parent_call_id)
         .bind(usage.as_ref().map(|u| u.uncached_input_tokens))
         .bind(usage.as_ref().map(|u| u.cached_input_tokens))
+        .bind(usage.as_ref().map(|u| u.cache_write_input_tokens))
         .bind(usage.as_ref().map(|u| u.output_tokens))
         .bind(usage.as_ref().map(|u| u.total_tokens))
         .execute(self.pool.as_ref())
@@ -704,6 +711,7 @@ WHERE row_num = 1
                 provider_call_id,
                 input_tokens_uncached,
                 input_tokens_cached,
+                input_tokens_cache_write,
                 output_tokens,
                 total_tokens
             FROM usage_provider_calls
@@ -725,6 +733,10 @@ WHERE row_num = 1
             row.get::<Option<i64>, _>("input_tokens_cached")
                 .unwrap_or_default()
         });
+        let cache_write_tokens = usage.as_ref().map(|row| {
+            row.get::<Option<i64>, _>("input_tokens_cache_write")
+                .unwrap_or_default()
+        });
         let output_tokens = usage.as_ref().map(|row| {
             row.get::<Option<i64>, _>("output_tokens")
                 .unwrap_or_default()
@@ -742,13 +754,15 @@ WHERE row_num = 1
             parent_last_provider_call_id,
             parent_cumulative_uncached_tokens,
             parent_cumulative_cached_tokens,
+            parent_cumulative_cache_write_tokens,
             parent_cumulative_output_tokens,
             parent_cumulative_total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(child_thread_id) DO UPDATE SET
             parent_last_provider_call_id = COALESCE(excluded.parent_last_provider_call_id, usage_fork_snapshots.parent_last_provider_call_id),
             parent_cumulative_uncached_tokens = COALESCE(excluded.parent_cumulative_uncached_tokens, usage_fork_snapshots.parent_cumulative_uncached_tokens),
             parent_cumulative_cached_tokens = COALESCE(excluded.parent_cumulative_cached_tokens, usage_fork_snapshots.parent_cumulative_cached_tokens),
+            parent_cumulative_cache_write_tokens = COALESCE(excluded.parent_cumulative_cache_write_tokens, usage_fork_snapshots.parent_cumulative_cache_write_tokens),
             parent_cumulative_output_tokens = COALESCE(excluded.parent_cumulative_output_tokens, usage_fork_snapshots.parent_cumulative_output_tokens),
             parent_cumulative_total_tokens = COALESCE(excluded.parent_cumulative_total_tokens, usage_fork_snapshots.parent_cumulative_total_tokens)
         "#,
@@ -759,6 +773,7 @@ WHERE row_num = 1
         .bind(parent_call_id)
         .bind(uncached_tokens)
         .bind(cached_tokens)
+        .bind(cache_write_tokens)
         .bind(output_tokens)
         .bind(total_tokens)
         .execute(pool.as_ref())
@@ -806,6 +821,7 @@ mod tests {
         model_snapshot: Option<String>,
         input_tokens_uncached: i64,
         input_tokens_cached: i64,
+        input_tokens_cache_write: i64,
         output_tokens: i64,
         total_tokens: i64,
         status: Option<String>,
@@ -849,6 +865,7 @@ mod tests {
         parent_last_provider_call_id: Option<String>,
         parent_cumulative_uncached_tokens: Option<i64>,
         parent_cumulative_cached_tokens: Option<i64>,
+        parent_cumulative_cache_write_tokens: Option<i64>,
         parent_cumulative_output_tokens: Option<i64>,
         parent_cumulative_total_tokens: Option<i64>,
     }
@@ -867,6 +884,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 2,
+            cache_write_input_tokens: 3,
             output_tokens: 3,
             reasoning_output_tokens: 1,
             total_tokens: 16,
@@ -946,6 +964,7 @@ SELECT
   model_snapshot,
   input_tokens_uncached,
   input_tokens_cached,
+  input_tokens_cache_write,
   output_tokens,
   total_tokens,
   status
@@ -966,6 +985,7 @@ WHERE thread_id = ?
                 model_snapshot: None,
                 input_tokens_uncached: 8,
                 input_tokens_cached: 2,
+                input_tokens_cache_write: 3,
                 output_tokens: 3,
                 total_tokens: 16,
                 status: Some("ok".to_string()),
@@ -1068,6 +1088,7 @@ SELECT
   model_snapshot,
   input_tokens_uncached,
   input_tokens_cached,
+  input_tokens_cache_write,
   output_tokens,
   total_tokens,
   status
@@ -1088,6 +1109,7 @@ WHERE thread_id = ?
                 model_snapshot: Some("provider-model-snapshot".to_string()),
                 input_tokens_uncached: 8,
                 input_tokens_cached: 2,
+                input_tokens_cache_write: 3,
                 output_tokens: 3,
                 total_tokens: 16,
                 status: Some("ok".to_string()),
@@ -1216,6 +1238,7 @@ SELECT
   model_snapshot,
   input_tokens_uncached,
   input_tokens_cached,
+  input_tokens_cache_write,
   output_tokens,
   total_tokens,
   status
@@ -1238,6 +1261,7 @@ ORDER BY rowid
                     model_snapshot: None,
                     input_tokens_uncached: 8,
                     input_tokens_cached: 2,
+                    input_tokens_cache_write: 3,
                     output_tokens: 3,
                     total_tokens: 16,
                     status: Some("ok".to_string()),
@@ -1250,6 +1274,7 @@ ORDER BY rowid
                     model_snapshot: None,
                     input_tokens_uncached: 8,
                     input_tokens_cached: 2,
+                    input_tokens_cache_write: 3,
                     output_tokens: 3,
                     total_tokens: 16,
                     status: Some("ok".to_string()),
@@ -1290,7 +1315,6 @@ ORDER BY rowid
                 mcp_app_resource_uri: None,
                 link_id: None,
                 app_name: None,
-                template_id: None,
                 action_name: None,
                 plugin_id: None,
             }),
@@ -1306,7 +1330,6 @@ ORDER BY rowid
                 mcp_app_resource_uri: None,
                 link_id: None,
                 app_name: None,
-                template_id: None,
                 action_name: None,
                 plugin_id: None,
                 duration: Duration::from_millis(42),
@@ -1448,6 +1471,7 @@ SELECT
   parent_last_provider_call_id,
   parent_cumulative_uncached_tokens,
   parent_cumulative_cached_tokens,
+  parent_cumulative_cache_write_tokens,
   parent_cumulative_output_tokens,
   parent_cumulative_total_tokens
 FROM usage_fork_snapshots
@@ -1469,6 +1493,7 @@ WHERE child_thread_id = ?
                 parent_last_provider_call_id: Some("<provider_call_id>".to_string()),
                 parent_cumulative_uncached_tokens: Some(8),
                 parent_cumulative_cached_tokens: Some(2),
+                parent_cumulative_cache_write_tokens: Some(3),
                 parent_cumulative_output_tokens: Some(3),
                 parent_cumulative_total_tokens: Some(16),
             }
@@ -1511,6 +1536,7 @@ SELECT
   parent_last_provider_call_id,
   parent_cumulative_uncached_tokens,
   parent_cumulative_cached_tokens,
+  parent_cumulative_cache_write_tokens,
   parent_cumulative_output_tokens,
   parent_cumulative_total_tokens
 FROM usage_fork_snapshots
@@ -1532,6 +1558,7 @@ WHERE child_thread_id = ?
                 parent_last_provider_call_id: Some("<provider_call_id>".to_string()),
                 parent_cumulative_uncached_tokens: Some(8),
                 parent_cumulative_cached_tokens: Some(2),
+                parent_cumulative_cache_write_tokens: Some(3),
                 parent_cumulative_output_tokens: Some(3),
                 parent_cumulative_total_tokens: Some(16),
             }

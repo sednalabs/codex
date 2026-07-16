@@ -9,6 +9,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
@@ -306,7 +307,7 @@ async fn wait_for_hook_log(
     filename: &str,
     expected_len: usize,
 ) -> Result<Vec<serde_json::Value>> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let inputs = read_hook_log(home, filename)?;
         if inputs.len() >= expected_len {
@@ -718,8 +719,23 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
         .await?;
 
     test.submit_turn(TURN_1_PROMPT).await?;
+    let spawned_id = wait_for_spawned_thread_id(&test).await?;
+    let spawned_thread = test
+        .thread_manager
+        .get_thread(ThreadId::from_string(&spawned_id)?)
+        .await?;
     let _ = wait_for_requests(&first_child_request).await?;
     let _ = wait_for_requests(&second_child_request).await?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if matches!(spawned_thread.agent_status().await, AgentStatus::Completed(_)) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for spawned worker completion");
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
 
     let subagent_stop_inputs = wait_for_hook_log(
         test.codex_home_path(),

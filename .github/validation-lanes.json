@@ -210,7 +210,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -316,7 +316,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -324,7 +324,8 @@
     {
       "lane_id": "codex.core-subagent-notification-contract-targeted",
       "groups": [
-        "core"
+        "core",
+        "memories-write"
       ],
       "lane_sets": [
         "all",
@@ -1014,7 +1015,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -1937,14 +1938,42 @@
         "codex.core-subagent-model-pinning-targeted"
       ],
       "allowed_paths": [
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
         "codex-rs/core/src/tools/handlers/spawn.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
         "codex-rs/core/src/agent/role_tests.rs",
+        "codex-rs/core/tests/suite/multi_agent_resume.rs",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/types.rs",
         "codex-rs/tools/src/spawn_agent.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
         "docs/downstream-regression-matrix.md",
         "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/agent/role_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/spawn.rs",
+        "codex-rs/core/tests/suite/multi_agent_resume.rs",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        "codex-rs/thread-store/src/thread_metadata_sync.rs",
+        "codex-rs/thread-store/src/types.rs",
+        "codex-rs/tools/src/spawn_agent.rs"
       ]
     },
     {
@@ -2130,9 +2159,15 @@
         "codex.external-agent-migration-containment-targeted"
       ],
       "allowed_paths": [
+        ".github/scripts/test_ci_planners.py",
         "codex-rs/app-server/src/external_agent_migration/**",
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+        "codex-rs/Cargo.lock",
+        "codex-rs/external-agent-migration/Cargo.toml",
         "codex-rs/external-agent-migration/src/**",
         ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "MODULE.bazel.lock",
         "docs/carry-divergence-ledger.md",
         "docs/divergences/index.yaml",
         "docs/downstream-regression-matrix.md",
@@ -2141,6 +2176,8 @@
       ],
       "required_any_paths": [
         "codex-rs/app-server/src/external_agent_migration/**",
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+        "codex-rs/external-agent-migration/Cargo.toml",
         "codex-rs/external-agent-migration/src/**"
       ]
     },

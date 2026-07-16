@@ -219,7 +219,7 @@ fn rejects_symlinked_memory_destination_ancestors() {
 
 #[cfg(unix)]
 #[test]
-fn detect_rejects_symlinked_stale_memory_project() {
+fn projects_needing_import_rejects_symlinked_stale_memory_project() {
     let root = TempDir::new().expect("create tempdir");
     let codex_home = root.path().join(".codex");
     let source_home = root.path().join(".external-agent");
@@ -232,7 +232,8 @@ fn detect_rejects_symlinked_stale_memory_project() {
     fs::write(outside.join("sentinel"), b"outside").expect("write outside sentinel");
     std::os::unix::fs::symlink(&outside, &stale_project).expect("create stale project symlink");
 
-    let error = detect(&codex_home, &source_home)
+    let memory_files = discover_external_memory_files(&source_home).expect("discover memory files");
+    let error = projects_needing_import(&codex_home, &memory_files)
         .expect_err("reject symlinked stale project during detection");
 
     assert!(error.to_string().contains("symlink"));

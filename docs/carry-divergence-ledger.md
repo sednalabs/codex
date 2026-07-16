@@ -307,6 +307,10 @@ docs-only refresh commit that records this snapshot.
   captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
   TUI, and usage-ledger consumers receive provider-confirmed identity instead
   of falling back to `None`.
+- Provider calls and fork snapshots retain upstream's prompt-cache write token
+  count as a distinct accounting dimension. The existing non-cached input
+  total remains input minus cache reads, matching upstream telemetry semantics;
+  cache-write usage is stored alongside it rather than silently collapsed.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
@@ -325,6 +329,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
+  - `codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
@@ -467,19 +472,31 @@ docs-only refresh commit that records this snapshot.
   outcome state. The v2 schema also permits omitting `targets` when the caller
   intentionally wants a current-turn input-activity wait, including mailbox
   delivery or user steering, or timeout.
+- Cold V2 descendant reloads preserve the child's indexed agent path, model,
+  provider, and reasoning effort rather than inheriting the resumed root's
+  selection. Rollout previews may supply history and display context, but
+  cannot overwrite the complete indexed identity used to reload the child.
+  Legacy rows with no
+  indexed model identity retain their rollout model and effort, while a
+  populated indexed model makes an absent indexed effort an intentional clear.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/control.rs`
+  - `codex-rs/core/src/agent/control/spawn.rs`
+  - `codex-rs/core/src/agent/control_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_common.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
+  - `codex-rs/core/tests/suite/multi_agent_resume.rs`
+  - `codex-rs/thread-store/src/local/read_thread.rs`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
 
@@ -1111,8 +1128,9 @@ docs-only refresh commit that records this snapshot.
   are checked beneath `CODEX_HOME` and rejected when any existing component is
   a symlink. This preserves stale-project removal without allowing absolute or
   parent-relative selections to escape the extension workspace.
-- The focused lane covers both the service-module denial tests and the app-server
-  request boundary. `detect_rejects_symlinked_stale_memory_project` proves stale
+- The focused lane covers both the extracted migration-crate denial tests and
+  the app-server request boundary.
+  `projects_needing_import_rejects_symlinked_stale_memory_project` proves stale
   owned projects are preflighted before detection offers them. In particular,
   `external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation`
   proves a rejected stale-project selection cannot initialize or rewrite the
@@ -1128,13 +1146,28 @@ docs-only refresh commit that records this snapshot.
   - `.github/scripts/test_ci_planners.py`
   - `.github/validation-lanes.json`
   - `.github/workflows/sedna-heavy-tests.yml`
-  - `codex-rs/app-server/src/external_agent_migration/service.rs`
-  - `codex-rs/app-server/src/external_agent_migration/service/memory.rs`
-  - `codex-rs/app-server/src/external_agent_migration/service/memory_tests.rs`
-  - `codex-rs/app-server/src/external_agent_migration/service/utils.rs`
-  - `codex-rs/app-server/src/external_agent_migration/service_tests.rs`
-  - `codex-rs/external-agent-migration/src/lib.rs`
+  - `codex-rs/app-server/tests/suite/v2/external_agent_config.rs`
+  - `codex-rs/external-agent-migration/Cargo.toml`
+  - `codex-rs/external-agent-migration/src/detect/mod.rs`
+  - `codex-rs/external-agent-migration/src/hooks_common.rs`
   - `codex-rs/external-agent-migration/src/lib_tests.rs`
+  - `codex-rs/external-agent-migration/src/memory_import.rs`
+  - `codex-rs/external-agent-migration/src/memory_import_tests.rs`
+  - `codex-rs/external-agent-migration/src/migration_source.rs`
+  - `codex-rs/external-agent-migration/src/scope.rs`
+  - `codex-rs/external-agent-migration/src/scope_tests.rs`
+  - `codex-rs/external-agent-migration/src/service.rs`
+  - `codex-rs/external-agent-migration/src/service_tests.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/containment.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/general/config_import.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/general/detection.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/general/repo_import.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/plugins/basics.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/plugins/marketplaces.rs`
+  - `codex-rs/external-agent-migration/src/source/cla.rs`
+  - `codex-rs/external-agent-migration/src/source/cur.rs`
+  - `codex-rs/external-agent-migration/src/subagents.rs`
+  - `codex-rs/external-agent-migration/src/utils.rs`
   - `justfile`
 - Hosted guardrails:
   - `codex.external-agent-migration-containment-targeted`

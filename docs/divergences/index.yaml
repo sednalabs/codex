@@ -99,10 +99,11 @@
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql",
         "codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql",
+        "codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, final provider model identity, and distinct prompt-cache write token metadata through the usage-ledger extension storage namespace for downstream audit workflows, fork accounting, and completed-thread model display precedence.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -116,7 +117,7 @@
         "status_surfaces_prefer_turn_completed_provider_model_identity"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None. Prompt-cache write tokens remain a separate provider-call and fork-snapshot dimension while non-cached input retains upstream's input-minus-cache-read meaning.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
@@ -219,30 +220,39 @@
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
         "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/config/mod.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
-        "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/core/tests/suite/multi_agent_resume.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides, the configurable agents tool namespace, and task-message-free descendant diagnostics while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Downstream preserves explicit spawn overrides, the configurable agents tool namespace, task-message-free descendant diagnostics, and complete indexed agent-path/model/provider/reasoning identity across cold V2 descendant reloads. A populated indexed model makes an absent indexed effort an intentional clear, while legacy rows with no indexed model identity retain rollout model and effort. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.core-subagent-surface-targeted",
+      "guardrail_lane": "codex.core-subagent-model-pinning-targeted; codex.core-subagent-surface-targeted; codex.core-subagent-inspect-tree-fallback-targeted",
       "tests": [
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
+        "read_thread_keeps_complete_indexed_identity_during_rollout_overlay",
+        "ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
+        "cold_root_resume_restores_agent_identity_and_reloads_target_on_followup",
         "multi_agent_v2_list_agents_returns_completed_status",
         "multi_agent_v2_list_agents_filters_by_relative_path_prefix",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
+        "inspect_agent_tree_without_state_db_points_to_subagent_tail",
         "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
@@ -1689,15 +1699,53 @@
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
         ".github/workflows/sedna-heavy-tests.yml",
-        "codex-rs/app-server/src/external_agent_migration/service.rs",
-        "codex-rs/app-server/src/external_agent_migration/service/memory.rs",
-        "codex-rs/app-server/src/external_agent_migration/service/memory_tests.rs",
-        "codex-rs/app-server/src/external_agent_migration/service/utils.rs",
-        "codex-rs/app-server/src/external_agent_migration/service_tests.rs",
-        "codex-rs/external-agent-migration/src/lib.rs",
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+        "codex-rs/external-agent-migration/Cargo.toml",
+        "codex-rs/external-agent-migration/src/detect/mod.rs",
+        "codex-rs/external-agent-migration/src/hooks_common.rs",
         "codex-rs/external-agent-migration/src/lib_tests.rs",
+        "codex-rs/external-agent-migration/src/memory_import.rs",
+        "codex-rs/external-agent-migration/src/memory_import_tests.rs",
+        "codex-rs/external-agent-migration/src/migration_source.rs",
+        "codex-rs/external-agent-migration/src/scope.rs",
+        "codex-rs/external-agent-migration/src/scope_tests.rs",
+        "codex-rs/external-agent-migration/src/service.rs",
+        "codex-rs/external-agent-migration/src/service_tests.rs",
+        "codex-rs/external-agent-migration/src/service_tests/containment.rs",
+        "codex-rs/external-agent-migration/src/service_tests/general/config_import.rs",
+        "codex-rs/external-agent-migration/src/service_tests/general/detection.rs",
+        "codex-rs/external-agent-migration/src/service_tests/general/repo_import.rs",
+        "codex-rs/external-agent-migration/src/service_tests/plugins/basics.rs",
+        "codex-rs/external-agent-migration/src/service_tests/plugins/marketplaces.rs",
+        "codex-rs/external-agent-migration/src/source/cla.rs",
+        "codex-rs/external-agent-migration/src/source/cur.rs",
+        "codex-rs/external-agent-migration/src/subagents.rs",
+        "codex-rs/external-agent-migration/src/utils.rs",
         "justfile"
       ],
+      "required_markers": {
+        "codex-rs/external-agent-migration/src/service_tests.rs": [
+          "#[path = \"service_tests/containment.rs\"]",
+          "mod containment;"
+        ],
+        "codex-rs/external-agent-migration/src/scope_tests.rs": [
+          "detect_repo_canonicalizes_relative_cwd",
+          "detect_repo_canonicalizes_without_windows_verbatim_prefix"
+        ],
+        "codex-rs/external-agent-migration/src/service_tests/containment.rs": [
+          "detect_repo_rejects_symlinked_local_settings",
+          "import_repo_hooks_rejects_symlinked_target_parent"
+        ],
+        "codex-rs/external-agent-migration/src/memory_import_tests.rs": [
+          "projects_needing_import_rejects_symlinked_stale_memory_project"
+        ],
+        "codex-rs/external-agent-migration/src/utils.rs": [
+          "ensure_migration_path_rejects_parent_after_missing_component"
+        ],
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs": [
+          "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation"
+        ]
+      },
       "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them.",
       "upstream_equivalent": false,
       "introduced_in": {
@@ -1708,6 +1756,7 @@
       "tests": [
         "detect_repo_canonicalizes_relative_cwd",
         "detect_repo_canonicalizes_symlinked_nested_cwd_before_containment_checks",
+        "detect_repo_canonicalizes_without_windows_verbatim_prefix",
         "detect_repo_rejects_symlinked_local_settings",
         "detect_repo_rejects_symlinked_mcp_source",
         "import_repo_config_rejects_symlinked_local_settings",
@@ -1721,20 +1770,22 @@
         "subagent_import_skips_dangling_symlink_target",
         "rejects_memory_project_keys_that_are_not_single_components",
         "rejects_symlinked_memory_destination_ancestors",
-        "detect_rejects_symlinked_stale_memory_project",
+        "projects_needing_import_rejects_symlinked_stale_memory_project",
         "rejects_symlinked_memory_instructions_before_project_mutation",
         "rejects_symlinked_memory_resource_and_scope_leaves",
         "ensure_migration_path_rejects_parent_after_missing_component",
-        "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation"
+        "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation",
+        "removes_project_resources_when_the_source_project_disappears"
       ],
       "owner": "downstream",
       "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "filesystem-containment",
       "hotspot_files": [
-        "codex-rs/app-server/src/external_agent_migration/service.rs",
-        "codex-rs/app-server/src/external_agent_migration/service/memory.rs",
-        "codex-rs/external-agent-migration/src/lib.rs"
+        "codex-rs/external-agent-migration/src/scope.rs",
+        "codex-rs/external-agent-migration/src/service.rs",
+        "codex-rs/external-agent-migration/src/memory_import.rs",
+        "codex-rs/external-agent-migration/src/utils.rs"
       ],
       "extraction_target": "upstream external-agent migration containment"
     },

@@ -386,9 +386,6 @@ pub struct McpToolCallItem {
     pub app_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub template_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub action_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
