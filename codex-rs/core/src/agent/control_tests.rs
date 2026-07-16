@@ -748,6 +748,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::High);
     conflicting_resume_config.service_tier = Some("priority".to_string());
     let mut missing_provider_config = conflicting_resume_config.clone();
+    missing_provider_config.model_provider_id = "different-caller-provider".to_string();
     missing_provider_config
         .model_providers
         .remove(&original_config.model_provider_id);
@@ -760,6 +761,10 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         "persisted model provider `{}` is not configured",
         original_config.model_provider_id
     )));
+    conflicting_resume_config.model_provider.base_url =
+        Some("http://runtime-provider.invalid/v1".to_string());
+    conflicting_resume_config.model_provider.supports_websockets = false;
+    let expected_runtime_provider = conflicting_resume_config.model_provider.clone();
     harness
         .control
         .ensure_v2_agent_loaded(conflicting_resume_config, spawned_agent.thread_id)
@@ -782,6 +787,12 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
             original_config.model_provider_id,
             original_config.reasoning_effort,
         )
+    );
+    let reloaded_provider = reloaded_thread.session.provider().await;
+    assert_eq!(reloaded_provider.base_url, expected_runtime_provider.base_url);
+    assert_eq!(
+        reloaded_provider.supports_websockets,
+        expected_runtime_provider.supports_websockets
     );
 
     let communication = InterAgentCommunication::new(
