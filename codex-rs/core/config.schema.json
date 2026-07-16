@@ -46,14 +46,14 @@
       },
       "properties": {
         "default_subagent_model": {
-          "description": "Reserved default model for spawned subagents. Currently ignored.",
+          "description": "Default model for spawned subagents when the spawn call does not select one.",
           "type": [
             "string",
             "null"
           ]
         },
         "default_subagent_reasoning_effort": {
-          "description": "Reserved default reasoning effort for spawned subagents. Currently ignored.",
+          "description": "Default reasoning effort for spawned subagents when the spawn call does not select one.",
           "oneOf": [
             {
               "$ref": "#/definitions/ReasoningEffort"

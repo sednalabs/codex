@@ -260,58 +260,82 @@ User-visible behavior:
 - Namespaced custom tool calls preserve their namespace through `ToolRouter`, so MCP/app custom tools route by their registry name instead of a flattened plain name.
 - Downstream code-mode examples therefore differ slightly from upstream examples that still inline `declare const tools: { ... }`.
 
-### Sub-agent orchestration: override preservation, richer inventory, and blocking joins
+### Sub-agent orchestration: selection compatibility, richer inventory, and blocking joins
 
 Why:
 
-- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides, so the live downstream divergence is narrower than the historical carry title suggests.
+- Upstream now owns configured default and explicit
+  `spawn_agent(model=..., reasoning_effort=...)` child selection, applies role
+  settings after selection, and validates the final effective pair.
 - Upstream now unifies multi-agent settings and role declarations under
   `[agents]`, normalizes legacy `max_threads` to
   `max_concurrent_threads_per_session`, and exposes `agent_type` only when roles
-  are configured. The reserved default sub-agent model and reasoning settings
-  are not yet applied by upstream; downstream selection remains explicit at
-  spawn time and subject to the role/profile precedence below.
+  are configured. Default sub-agent model and reasoning settings are active
+  upstream behavior rather than downstream carry.
 - Preserve flattened `[agents.<role>]` declarations in the generated schema
   despite the downstream Schemars 1.2 generator: named roles must remain
   role-valued additional properties rather than being rejected as unknown.
-- Preserve those explicit child overrides at the spawn boundary, even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
+- Preserve downstream compatibility at the edges of that upstream pipeline:
+  incomplete reasoning-support metadata must not reject a valid selection, and
+  role reload must retain the resolved runtime provider object, reasoning
+  summary, and verbosity when the role does not replace them.
+- Keep models with unspecified MultiAgentV2 backend metadata selectable while
+  rejecting models known to belong to a different backend.
 - Surface the effective resolved child settings directly in the tool layer so callers can see what actually launched.
 - Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
 - Upstream-native reimplementation is welcome when it preserves the live nested-agent visibility, the cheap `list_agents` surface, the richer `inspect_agent_tree` inspection, and the explicit blocking `wait_agent` contract so we can shrink the divergence without losing the downstream visibility model.
 
 User-visible behavior:
 
-- Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
+- Configured defaults and explicit child `model` and
+  `model_reasoning_effort` requests follow upstream selection and role
+  precedence. Downstream does not duplicate that pipeline; it preserves the
+  runtime provider object, `model_reasoning_summary`, and verbosity across an
+  unrelated role reload.
 - The v1 `spawn_agent` result stays on the upstream `agent_id`/`nickname` shape. The v2 result returns its canonical `task_name`, includes `agent_id` and `nickname` only when spawn metadata is visible, and reports requested/effective model and reasoning fields so callers can see what actually launched after role/profile resolution. Role, status, identity source, provider ID, and the preserved `model_reasoning_summary` remain inventory or internal metadata rather than raw spawn-result fields.
 - V2 description tests resolve the configured tool namespace rather than
   assuming an upstream or downstream literal, and a delegate cancelled before
   launch returns `TurnAborted` without spawning a child session.
-- Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
+- Role-defined fields remain authoritative over configured defaults and
+  explicit child requests, with final compatibility validation performed after
+  role application.
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
+- The built-in `terminal-babysitter` role intentionally locks
+  `gpt-5.4-mini` with low reasoning for bounded monitored waits.
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. Those completion fields are tool-output-only; canonical transcript items retain identities and status snapshots without duplicating timeout, mailbox, or pending outcome state. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
+- Full-history forks keep their conversation and agent identity while accepting
+  configured or explicit child model/reasoning selection; they still reject an
+  explicit `agent_type` because that would change the preserved identity.
 - Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
 Primary files:
 
 - `codex-rs/core/src/agent/role.rs`
+- `codex-rs/core/src/agent/role_tests.rs`
+- `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
 - `codex-rs/core/src/agent/control.rs`
 - `codex-rs/config/src/config_toml.rs`
 - `codex-rs/core/config.schema.json`
 - `codex-rs/core/src/codex_delegate.rs`
 - `codex-rs/core/src/config/schema_tests.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
 - `codex-rs/core/src/tools/handlers/inspect_agent_tree.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs`
 - `codex-rs/core/src/tools/spec_plan.rs`
 - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
 - `codex-rs/core/tests/suite/spawn_agent_description.rs`
+- `codex-rs/core/tests/suite/subagent_notifications.rs`
+- `.github/scripts/test_ci_planners.py`
+- `justfile`
 - `docs/config.md`
 - `docs/downstream-tool-surface-matrix.md`
 
@@ -528,6 +552,8 @@ Why:
 
 User-visible behavior:
 
+- The `/tmp` special permission root resolves only on Unix; Windows policy
+  construction does not reinterpret it as a drive-root path.
 - Proxy-enforced Windows commands use one effective elevated-backend decision
   for filesystem overrides, PowerShell startup, process spawning, and telemetry.
 - Unified exec cannot bypass the managed proxy with an unrelated direct
