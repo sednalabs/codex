@@ -2860,6 +2860,41 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ),
             (
                 "codex-thread-store",
+                "local::lifecycle::tests::classifies_missing_unmaterialized_materialized_and_archived_live_threads",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "local::lifecycle::tests::archive_transition_completes_before_queued_classification",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "local::lifecycle::tests::unarchive_transition_completes_before_queued_classification",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "local::lifecycle::tests::custody_is_per_thread_and_prunes_idle_entries",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "local::lifecycle::tests::rejects_simultaneous_active_and_archived_materialization",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "local::lifecycle::tests::delete_transition_completes_before_queued_classification",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
+                "local::lifecycle::tests::discard_transition_completes_before_queued_classification",
+                "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+            ),
+            (
+                "codex-thread-store",
                 "in_memory::inference_identity_tests::identity_patch_preserves_omitted_state_and_thread_isolation",
                 "codex-rs/thread-store/src/in_memory_inference_identity_tests.rs",
             ),

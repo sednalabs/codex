@@ -26,6 +26,7 @@ pub(super) async fn create_thread(
     params: CreateThreadParams,
 ) -> ThreadStoreResult<()> {
     let thread_id = params.thread_id;
+    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
     let history_mode = params.history_mode;
     store.ensure_live_recorder_absent(thread_id).await?;
     let recorder = create_thread::create_thread(store, params).await?;
@@ -38,6 +39,9 @@ pub(super) async fn resume_thread(
     store: &LocalThreadStore,
     params: ResumeThreadParams,
 ) -> ThreadStoreResult<()> {
+    let _lifecycle_guard = store
+        .acquire_lifecycle_custody(params.thread_id)
+        .await?;
     store.ensure_live_recorder_absent(params.thread_id).await?;
     let history_mode = if let Some(history) = params.history.as_deref() {
         canonical_history_mode_from_rollout_items(history)
@@ -170,6 +174,7 @@ pub(super) async fn shutdown_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
+    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
     let recorder = store.live_recorder(thread_id).await?;
     let rollout_path = recorder.rollout_path().to_path_buf();
     recorder.shutdown().await.map_err(thread_store_io_error)?;
@@ -188,6 +193,7 @@ pub(super) async fn discard_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
+    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
     store
         .live_recorders
         .lock()

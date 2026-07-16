@@ -2,6 +2,7 @@ mod archive_thread;
 mod create_thread;
 mod delete_thread;
 mod helpers;
+mod lifecycle;
 mod list_threads;
 mod live_writer;
 mod read_thread;
@@ -20,7 +21,9 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Weak;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -58,6 +61,7 @@ use crate::UpdateThreadMetadataParams;
 #[derive(Clone)]
 pub struct LocalThreadStore {
     pub(super) config: LocalThreadStoreConfig,
+    lifecycle_custody: Arc<Mutex<HashMap<ThreadId, Weak<Semaphore>>>>,
     live_recorders: Arc<Mutex<HashMap<ThreadId, LiveRecorderEntry>>>,
     state_db: Option<StateDbHandle>,
 }
@@ -105,6 +109,7 @@ impl LocalThreadStore {
     pub fn new(config: LocalThreadStoreConfig, state_db: Option<StateDbHandle>) -> Self {
         Self {
             config,
+            lifecycle_custody: Arc::new(Mutex::new(HashMap::new())),
             live_recorders: Arc::new(Mutex::new(HashMap::new())),
             state_db,
         }
