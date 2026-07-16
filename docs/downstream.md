@@ -271,6 +271,9 @@ Why:
   are configured. The reserved default sub-agent model and reasoning settings
   are not yet applied by upstream; downstream selection remains explicit at
   spawn time and subject to the role/profile precedence below.
+- Preserve flattened `[agents.<role>]` declarations in the generated schema
+  despite the downstream Schemars 1.2 generator: named roles must remain
+  role-valued additional properties rather than being rejected as unknown.
 - Preserve those explicit child overrides at the spawn boundary, even when launching a role-backed sub-agent whose role file does not lock model/economy fields, so downstream economical deployments do not drift back to inherited parent-profile defaults during role reload.
 - Surface the effective resolved child settings directly in the tool layer so callers can see what actually launched.
 - Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
@@ -280,6 +283,9 @@ User-visible behavior:
 
 - Explicit child `model` and `model_reasoning_effort` requests survive role application unless the selected role explicitly sets those fields or locks the summary, and the `model_reasoning_summary` is preserved internally so downstream metadata can keep the intended reasoning context even though it is not part of the tool response. The role reload itself stays on the upstream-native profile/provider path; the sticky child override carry now lives in the spawn handlers.
 - The v1 `spawn_agent` result stays on the upstream `agent_id`/`nickname` shape. The v2 result returns its canonical `task_name`, includes `agent_id` and `nickname` only when spawn metadata is visible, and reports requested/effective model and reasoning fields so callers can see what actually launched after role/profile resolution. Role, status, identity source, provider ID, and the preserved `model_reasoning_summary` remain inventory or internal metadata rather than raw spawn-result fields.
+- V2 description tests resolve the configured tool namespace rather than
+  assuming an upstream or downstream literal, and a delegate cancelled before
+  launch returns `TurnAborted` without spawning a child session.
 - Active-profile updates (parent/session config/role) that set `model`, `model_reasoning_summary`, or `model_reasoning_effort` continue to override child requests; the precedence stack is role-defined fields > active profile overrides > child requests, and the split between `core/src/agent/role.rs` and the spawn handlers encodes that boundary explicitly.
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
@@ -292,6 +298,10 @@ Primary files:
 
 - `codex-rs/core/src/agent/role.rs`
 - `codex-rs/core/src/agent/control.rs`
+- `codex-rs/config/src/config_toml.rs`
+- `codex-rs/core/config.schema.json`
+- `codex-rs/core/src/codex_delegate.rs`
+- `codex-rs/core/src/config/schema_tests.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
 - `codex-rs/core/src/tools/handlers/inspect_agent_tree.rs`
@@ -301,6 +311,7 @@ Primary files:
 - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
 - `codex-rs/core/src/tools/spec_plan.rs`
 - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
+- `codex-rs/core/tests/suite/spawn_agent_description.rs`
 - `docs/config.md`
 - `docs/downstream-tool-surface-matrix.md`
 
