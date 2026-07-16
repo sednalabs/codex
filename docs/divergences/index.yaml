@@ -1859,6 +1859,41 @@
       "extraction_target": "upstream CodeQL action support for complete large-PR diff ranges"
     },
     {
+      "id": "rollout-resume-mutation-custody",
+      "title": "Cancellation-safe rollout resume mutations",
+      "status": "live",
+      "category": "thread-persistence",
+      "surface": [
+        "authority-governed rollout resume construction",
+        "rollout representation recovery"
+      ],
+      "files": [
+        "codex-rs/rollout/src/mutation_authority.rs",
+        "codex-rs/rollout/src/mutation_authority_test_support.rs",
+        "codex-rs/rollout/src/compression.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/rollout/src/recorder_mutation_authority_tests.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "Authority-governed resume construction admits blocking representation mutations through revocable custody held inside each blocking operation. Revocation waits for admitted materialization, append-open, tail repair, and recovery reopen work while preventing later filesystem mutation admission; unrestricted recorder construction remains compatible.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": null},
+      "guardrail_lane": "core-test-progressive",
+      "tests": [
+        "cancelled_compressed_resume_keeps_materialization_in_revocation_custody",
+        "cancelled_plain_resume_keeps_open_and_tail_repair_in_revocation_custody",
+        "cancelled_recovery_open_releases_custody_before_revocation_returns"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve until upstream provides equivalent cancellation-safe custody for resumed rollout representation mutations.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "rollout-mutation-authority",
+      "hotspot_files": ["codex-rs/rollout/src/recorder.rs"],
+      "extraction_target": "generic resumed rollout mutation custody"
+    },
+    {
       "id": "python-code-quality-corrections",
       "title": "Python Code Quality corrections",
       "status": "live",
