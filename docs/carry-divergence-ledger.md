@@ -1009,8 +1009,10 @@ docs-only refresh commit that records this snapshot.
   though upstream removed that surface; Linux keeps explicit unavailable stubs,
   so syncs should preserve the platform split instead of deleting
   `audio_device.rs` or the Linux `voice` stub as stale code. The non-Linux
-  split also depends on the target-scoped `cpal` entry in
-  `codex-rs/tui/Cargo.toml` and its `codex-rs/Cargo.lock` graph.
+  split also depends on the isolated `codex-realtime-webrtc` crate, the
+  target-scoped `cpal` entry in `codex-rs/tui/Cargo.toml`, and their Cargo and
+  Bazel dependency graphs. The WebRTC crate is an intentional macOS transport
+  boundary, not an orphan left behind by upstream's removal.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - Upgradeable legacy models stay visible in the model picker even when ordinary
@@ -1026,6 +1028,10 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/Cargo.toml`
   - `codex-rs/Cargo.lock`
+  - `codex-rs/realtime-webrtc/BUILD.bazel`
+  - `codex-rs/realtime-webrtc/Cargo.toml`
+  - `codex-rs/realtime-webrtc/src/lib.rs`
+  - `codex-rs/realtime-webrtc/src/native.rs`
   - `codex-rs/tui/src/audio_device.rs`
   - `codex-rs/tui/src/bottom_pane/mod.rs`
   - `codex-rs/tui/src/bottom_pane/textarea.rs`
