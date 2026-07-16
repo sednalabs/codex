@@ -921,7 +921,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/code_mode_description.rs`
   - `codex-rs/core/src/tools/router.rs`
 
-### Rollout Mutation Authority And Compressed Materialization Custody
+### Rollout Mutation Authority And Recorder Filesystem Custody
 
 - The rollout crate carries a private, one-way mutation authority primitive.
   Revocation closes admission before waiting for every custody token that was
@@ -931,9 +931,13 @@ docs-only refresh commit that records this snapshot.
   Admission happens inside the non-cancellable `spawn_blocking` continuation,
   and that continuation retains custody across the complete filesystem side
   effect, including failure cleanup, even if its outer async caller is
-  cancelled. Recorder lifecycle authority, direct blocking materialization,
-  append-open and recovery behavior, writer actor semantics, and public API
-  exposure remain outside this slice.
+  cancelled.
+- Every recorder now shares one private authority across initial resume and
+  background writer state. After read-only ordinal preflight, detached custody
+  encloses plain append-open/tail repair plus writer materialization, directory
+  creation, and recovery reopen. Closed authority denies later mutation without
+  changing constructors or wire format; lifecycle revocation, terminal writer
+  semantics, and public API remain separate slices.
 - Four complementary regressions carry the complete proof. The foundation
   pair proves multi-revoker wakeup and retained final-release quiescence. The
   materialization pair cancels the outer caller while the controlled blocking
@@ -945,6 +949,8 @@ docs-only refresh commit that records this snapshot.
   - `close_counts_every_admission_and_retains_the_final_release`
   - `compressed_materialization_custody_survives_caller_cancellation_through_success`
   - `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`
+  - `plain_resume_tail_repair_custody_survives_caller_cancellation`
+  - `recovery_materialization_tail_repair_and_creation_are_guarded`
 - Primary files:
   - `codex-rs/rollout/src/mutation_authority.rs`
   - `codex-rs/rollout/src/mutation_authority_tests.rs`

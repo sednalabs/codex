@@ -1860,13 +1860,14 @@
     },
     {
       "id": "rollout-mutation-authority-quiescence",
-      "title": "Rollout mutation authority and compressed materialization custody",
+      "title": "Rollout mutation authority and recorder filesystem custody",
       "status": "live",
       "category": "core-runtime",
       "surface": [
         "crate-private rollout mutation admission",
         "in-flight mutation quiescence",
-        "compressed-to-plain materialization custody"
+        "compressed-to-plain materialization custody",
+        "plain append-open, tail-repair, recovery materialization, and creation custody"
       ],
       "files": [
         "codex-rs/rollout/src/lib.rs",
@@ -1874,6 +1875,8 @@
         "codex-rs/rollout/src/mutation_authority_tests.rs",
         "codex-rs/rollout/src/compression.rs",
         "codex-rs/rollout/src/compression_tests.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/rollout/src/recorder_mutation_authority_tests.rs",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md"
       ],
@@ -1885,9 +1888,14 @@
         "codex-rs/rollout/src/compression.rs": [
           "async fn materialize_rollout_for_append_with_authority",
           "drop(custody);"
+        ],
+        "codex-rs/rollout/src/recorder.rs": [
+          "async fn open_rollout_for_append_with_authority_and_hooks",
+          "fn open_log_file_with_authority",
+          "mutation_authority: RolloutMutationAuthority"
         ]
       },
-      "behavior": "Downstream carries a crate-private authority that permanently closes rollout mutation admission and waits for every custody token admitted before closure. Async compressed-to-plain materialization acquires and owns custody inside its non-cancellable blocking continuation across the complete filesystem side effect and failure cleanup, so cancelling the outer future cannot release custody early. This slice intentionally has no recorder lifecycle integration or public API.",
+      "behavior": "Downstream carries a crate-private authority that permanently closes rollout mutation admission and waits for every custody token admitted before closure. Async compressed-to-plain materialization acquires and owns custody inside its non-cancellable blocking continuation across the complete filesystem side effect and failure cleanup. Each recorder shares one authority across initial resume and background writer state; detached plain append-open, newline repair, blocking recovery materialization, directory creation, and recovery reopen retain custody through the complete mutation even when the outer caller is cancelled. Ordinal derivation remains a read-only preflight, and revoked authority denies later create or repair without changing unrestricted constructors or the rollout wire format. Recorder lifecycle revocation, terminal writer semantics, and public API remain separate slices.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1898,15 +1906,18 @@
         "revoke_waits_for_every_custody_and_wakes_every_waiter",
         "close_counts_every_admission_and_retains_the_final_release",
         "compressed_materialization_custody_survives_caller_cancellation_through_success",
-        "compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd"
+        "compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd",
+        "plain_resume_tail_repair_custody_survives_caller_cancellation",
+        "recovery_materialization_tail_repair_and_creation_are_guarded"
       ],
       "owner": "downstream",
-      "notes": "Keep the primitive private and the consumer limited to async compressed materialization. Later integration slices own recorder lifecycle authority, direct blocking materialization, append-open and recovery, writer actor semantics, and public API decisions.",
+      "notes": "Keep the primitive and recorder authority private. Later integration slices own lifecycle-triggered revocation, terminal writer actor semantics, command acknowledgements, and public API decisions.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "internal-concurrency-and-filesystem-mutation",
       "hotspot_files": [
         "codex-rs/rollout/src/mutation_authority.rs",
-        "codex-rs/rollout/src/compression.rs"
+        "codex-rs/rollout/src/compression.rs",
+        "codex-rs/rollout/src/recorder.rs"
       ],
       "extraction_target": "upstream rollout mutation cancellation and quiescence contract"
     },
