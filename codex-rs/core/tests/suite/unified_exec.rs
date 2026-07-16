@@ -978,7 +978,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
-        "$client = [Net.Sockets.TcpClient]::new(); try {{ $task = $client.ConnectAsync('127.0.0.1', {port}); if ($task.Wait(3000) -and $client.Connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0 }} catch {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }} finally {{ $client.Dispose() }}"
+        "curl.exe --noproxy '*' --silent --show-error --connect-timeout 1 --max-time 3 'http://127.0.0.1:{port}/' | Out-Null; if ($LASTEXITCODE -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0"
     );
     let args = json!({
         "cmd": command,
