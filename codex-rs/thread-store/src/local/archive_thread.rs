@@ -13,6 +13,7 @@ pub(super) async fn archive_thread(
     params: ArchiveThreadParams,
 ) -> ThreadStoreResult<()> {
     let thread_id = params.thread_id;
+    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
     let state_db_ctx = store.state_db().await;
     let rollout_path = find_thread_path_by_id_str(
         store.config.codex_home.as_path(),

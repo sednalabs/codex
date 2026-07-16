@@ -214,7 +214,8 @@
         "spawn overrides",
         "agent inventory",
         "blocking waits",
-        "strict inference identity authority wire"
+        "strict inference identity authority wire",
+        "local lifecycle eligibility custody"
       ],
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
@@ -222,6 +223,13 @@
         "codex-rs/state/migrations/0045_threads_inference_identity_authority.sql",
         "codex-rs/state/src/inference_identity.rs",
         "codex-rs/thread-store/src/inference_identity.rs",
+        "codex-rs/thread-store/src/local/archive_thread.rs",
+        "codex-rs/thread-store/src/local/delete_thread.rs",
+        "codex-rs/thread-store/src/local/lifecycle.rs",
+        "codex-rs/thread-store/src/local/lifecycle_tests.rs",
+        "codex-rs/thread-store/src/local/live_writer.rs",
+        "codex-rs/thread-store/src/local/mod.rs",
+        "codex-rs/thread-store/src/local/unarchive_thread.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
@@ -232,7 +240,7 @@
         "codex-rs/core/src/tools/spec_plan.rs",
         "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire and optional store sidecar while richer inventory and wait behavior remain capability-declared.",
+      "behavior": "Downstream preserves explicit spawn overrides plus a source-compatible strict versioned inference identity authority wire, optional store sidecar, and lifecycle-aware Local custody while richer inventory and wait behavior remain capability-declared.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -244,6 +252,13 @@
         "authority_codec_enforces_strict_v1_wire_and_preserves_raw_diagnostics",
         "inference_identity_authority_migration_preserves_populated_0044_row",
         "inference_identity_sidecar_has_exact_json_defaults_and_legacy_missing",
+        "classifies_missing_unmaterialized_materialized_and_archived_live_threads",
+        "archive_transition_completes_before_queued_classification",
+        "unarchive_transition_completes_before_queued_classification",
+        "custody_is_per_thread_and_prunes_idle_entries",
+        "rejects_simultaneous_active_and_archived_materialization",
+        "delete_transition_completes_before_queued_classification",
+        "discard_transition_completes_before_queued_classification",
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
         "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",

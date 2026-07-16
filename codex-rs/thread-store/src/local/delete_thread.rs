@@ -25,6 +25,7 @@ pub(super) async fn delete_thread(
     params: DeleteThreadParams,
 ) -> ThreadStoreResult<()> {
     let thread_id = params.thread_id;
+    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
     let thread_id_str = thread_id.to_string();
     let state_db_ctx = store.state_db().await;
     let mut rollout_paths = Vec::new();
