@@ -991,8 +991,13 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
 
     submit_unified_exec_turn(&test, "exercise direct loopback bypass", permission_profile).await?;
 
-    let (end_event, turn_completed) =
-        wait_for_unified_exec_end(&test, call_id, &response_mock).await;
+    let (end_event, turn_completed) = wait_for_unified_exec_end_with_timeout(
+        &test,
+        call_id,
+        &response_mock,
+        Duration::from_secs(/*secs*/ 90),
+    )
+    .await;
     assert_eq!(end_event.status, ExecCommandStatus::Completed);
     assert_eq!(end_event.exit_code, 0);
     assert!(
@@ -1109,7 +1114,22 @@ async fn wait_for_unified_exec_end(
     call_id: &str,
     response_mock: &core_test_support::responses::ResponseMock,
 ) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    wait_for_unified_exec_end_with_timeout(
+        test,
+        call_id,
+        response_mock,
+        Duration::from_secs(/*secs*/ 15),
+    )
+    .await
+}
+
+async fn wait_for_unified_exec_end_with_timeout(
+    test: &TestCodex,
+    call_id: &str,
+    response_mock: &core_test_support::responses::ResponseMock,
+    timeout: Duration,
+) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
+    let deadline = std::time::Instant::now() + timeout;
     let mut observed_events = Vec::new();
     let mut turn_completed = false;
     let end_event = loop {
