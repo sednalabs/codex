@@ -29,10 +29,8 @@ pub(crate) fn permission_profile_sandbox_tag(
         }
     }
     if cfg!(target_os = "windows")
-        && windows_sandbox_uses_elevated_backend(
-            windows_sandbox_level,
-            enforce_managed_network,
-        )
+        && windows_sandbox_level != WindowsSandboxLevel::Disabled
+        && windows_sandbox_uses_elevated_backend(windows_sandbox_level, enforce_managed_network)
     {
         return "windows_elevated";
     }

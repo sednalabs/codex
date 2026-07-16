@@ -1031,8 +1031,8 @@ async fn external_agent_config_detects_and_imports_project_memory_files() -> Res
 
 #[cfg(unix)]
 #[tokio::test]
-async fn external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation()
--> Result<()> {
+async fn external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation() -> Result<()>
+{
     let codex_home = TempDir::new()?;
     std::fs::write(
         codex_home.path().join("config.toml"),
@@ -1096,8 +1096,8 @@ async fn external_agent_memory_import_rejects_stale_symlink_before_workspace_mut
     assert_eq!(memory_result.successes, Vec::new());
     assert_eq!(memory_result.failures.len(), 1);
     let failure = &memory_result.failures[0];
-    assert_eq!(failure.source.as_deref(), Some("stale-project"));
-    assert_eq!(failure.failure_stage, "memory_import");
+    assert!(failure.source.is_none());
+    assert_eq!(failure.failure_stage, "import_request_failed");
     assert!(failure.message.contains("symlink"));
     assert_eq!(
         std::fs::read_to_string(memory_root.join("phase2_workspace_diff.md"))?,

@@ -172,13 +172,18 @@ docs-only refresh commit that records this snapshot.
   override is required. Ordinary workspace-write therefore remains
   legacy-equivalent and neither backend creates absent `.git`, `.agents`, or
   `.codex` paths during setup.
+- The generated `/tmp` special root resolves only on Unix. On Windows, treating
+  root-relative `/tmp` as a real drive path would create a split writable-root
+  set that the legacy restricted-token backend cannot enforce.
 - Pre-existing protected metadata and explicitly configured read-only carveouts
   remain enforced. NTFS ACLs cannot reserve a nonexistent child name while
   leaving its parent generally writable, so this carry does not claim that
   opaque child processes cannot create an absent name.
 - Preserve this order until upstream performs the same normalization or supplies
-  side-effect-free filesystem interception. Do not replace it with persistent
-  sentinel directories or command-text parsing.
+  side-effect-free filesystem interception, and preserve the focused platform
+  guard from dormant upstream commit `77fec98a2e` until it lands on upstream
+  `main`. Do not replace either with persistent sentinel directories or
+  command-text parsing.
 - Hosted Windows guardrails:
   `windows_workspace_defaults_do_not_hide_explicit_metadata_carveouts`,
   `windows_elevated_does_not_create_missing_workspace_metadata`, and
@@ -188,6 +193,7 @@ docs-only refresh commit that records this snapshot.
   `legacy_workspace_write_delete_is_limited_to_writable_roots` for explicit
   carveout and pre-existing metadata boundaries.
 - Primary files:
+  - `codex-rs/protocol/src/permissions.rs`
   - `codex-rs/sandboxing/src/windows.rs`
   - `codex-rs/core/src/exec_tests.rs`
   - `codex-rs/core/tests/suite/windows_sandbox.rs`

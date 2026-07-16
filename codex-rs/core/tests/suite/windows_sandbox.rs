@@ -62,9 +62,7 @@ impl TestCodexHome {
     }
 }
 
-pub(super) fn codex_home_for_windows_sandbox_test(
-    name: &str,
-) -> anyhow::Result<TestCodexHome> {
+pub(super) fn codex_home_for_windows_sandbox_test(name: &str) -> anyhow::Result<TestCodexHome> {
     if let Some(test_tmpdir) = std::env::var_os("TEST_TMPDIR") {
         // The elevated backend provisions machine-local sandbox users. Bazel
         // retries run in the same Windows VM, so keep CODEX_HOME stable within
@@ -266,8 +264,8 @@ async fn windows_elevated_does_not_create_missing_workspace_metadata() -> anyhow
 
 #[tokio::test]
 #[serial(codex_home)]
-async fn windows_restricted_token_does_not_create_missing_workspace_metadata()
--> anyhow::Result<()> {
+async fn windows_restricted_token_does_not_create_missing_workspace_metadata() -> anyhow::Result<()>
+{
     assert_windows_sandbox_does_not_create_missing_workspace_metadata(
         WindowsSandboxLevel::RestrictedToken,
         "windows-restricted-token-missing-metadata-codex-home",

@@ -947,10 +947,9 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     let server = start_mock_server().await;
     let (test, permission_profile) =
         unified_exec_network_denial_test(&server, /*allow_local_binding*/ false).await?;
-    let sandbox_codex_home =
-        super::windows_sandbox::codex_home_for_windows_sandbox_test(
-            "unified-exec-proxy-firewall-codex-home",
-        )?;
+    let sandbox_codex_home = super::windows_sandbox::codex_home_for_windows_sandbox_test(
+        "unified-exec-proxy-firewall-codex-home",
+    )?;
     let _codex_home_guard = super::windows_sandbox::EnvVarGuard::set(
         "CODEX_HOME",
         sandbox_codex_home.path().as_os_str(),
@@ -982,12 +981,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     ];
     mount_sse_sequence(&server, responses).await;
 
-    submit_unified_exec_turn(
-        &test,
-        "exercise direct loopback bypass",
-        permission_profile,
-    )
-    .await?;
+    submit_unified_exec_turn(&test, "exercise direct loopback bypass", permission_profile).await?;
 
     let output = wait_for_raw_unified_exec_output(&test, call_id).await?;
     assert_eq!(output.exit_code, Some(0), "unexpected output: {output:?}");
@@ -1065,8 +1059,7 @@ allow_local_binding = {allow_local_binding}
                 .expect("set permission profile");
             #[cfg(target_os = "windows")]
             {
-                config.permissions.windows_sandbox_mode =
-                    Some(WindowsSandboxModeToml::Unelevated);
+                config.permissions.windows_sandbox_mode = Some(WindowsSandboxModeToml::Unelevated);
                 config.permissions.windows_sandbox_private_desktop = false;
             }
         });

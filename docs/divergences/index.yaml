@@ -1513,11 +1513,24 @@
         "restricted-token filesystem override resolution"
       ],
       "files": [
+        "codex-rs/protocol/src/permissions.rs",
         "codex-rs/sandboxing/src/windows.rs",
         "codex-rs/core/src/exec_tests.rs",
         "codex-rs/core/tests/suite/windows_sandbox.rs"
       ],
-      "behavior": "Generated built-in metadata defaults are removed before the restricted-token backend decides whether direct runtime enforcement is required, so ordinary workspace-write remains on the legacy-equivalent path and neither Windows backend materializes absent metadata during setup. Explicit carveouts and pre-existing protected metadata remain enforced.",
+      "required_markers": {
+        "codex-rs/protocol/src/permissions.rs": [
+          "FileSystemSpecialPath::SlashTmp",
+          "if !cfg!(unix)"
+        ],
+        "codex-rs/core/src/exec_tests.rs": [
+          "windows_workspace_defaults_do_not_hide_explicit_metadata_carveouts"
+        ],
+        "codex-rs/core/tests/suite/windows_sandbox.rs": [
+          "windows_restricted_token_does_not_create_missing_workspace_metadata"
+        ]
+      },
+      "behavior": "Generated built-in metadata defaults are removed before the restricted-token backend decides whether direct runtime enforcement is required, and the generated /tmp special root resolves only on Unix. Ordinary Windows workspace-write therefore remains on the legacy-equivalent path and neither Windows backend materializes absent metadata during setup. Explicit carveouts and pre-existing protected metadata remain enforced.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1532,10 +1545,11 @@
         "legacy_workspace_write_delete_is_limited_to_writable_roots"
       ],
       "owner": "downstream",
-      "notes": "This carry preserves upstream PR #33430's side-effect-free setup contract and fixes restricted-token classification after generated defaults are filtered. It does not claim that NTFS ACLs reserve absent child names beneath a writable directory; existing protected metadata and explicit carveouts remain the enforceable boundary. Preserve the ordering until upstream performs the same normalization or introduces a side-effect-free filesystem interception mechanism.",
+      "notes": "This carry preserves upstream PR #33430's side-effect-free setup contract, fixes restricted-token classification after generated defaults are filtered, and applies the focused Unix-only SlashTmp guard from dormant upstream commit 77fec98a2e without its unrelated fixture changes. It does not claim that NTFS ACLs reserve absent child names beneath a writable directory; existing protected metadata and explicit carveouts remain the enforceable boundary. Preserve the normalization and platform guard until upstream main provides equivalent behavior or introduces a side-effect-free filesystem interception mechanism.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "windows-sandbox-policy-adapter",
       "hotspot_files": [
+        "codex-rs/protocol/src/permissions.rs",
         "codex-rs/sandboxing/src/windows.rs"
       ],
       "extraction_target": "upstream restricted-token policy normalization"

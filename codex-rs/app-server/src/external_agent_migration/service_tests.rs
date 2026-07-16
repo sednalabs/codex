@@ -68,16 +68,12 @@ fn cursor_repo_source_cases() -> Vec<(
         (
             PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::MCP_CONFIG_FILE),
             ExternalAgentConfigMigrationItemType::McpServerConfig,
-            CursorRepoSourceFixture::File(
-                r#"{"mcpServers":{"outside":{"command":"outside"}}}"#,
-            ),
+            CursorRepoSourceFixture::File(r#"{"mcpServers":{"outside":{"command":"outside"}}}"#),
         ),
         (
             PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::HOOKS_CONFIG_FILE),
             ExternalAgentConfigMigrationItemType::Hooks,
-            CursorRepoSourceFixture::File(
-                r#"{"hooks":{"stop":[{"command":"echo outside"}]}}"#,
-            ),
+            CursorRepoSourceFixture::File(r#"{"hooks":{"stop":[{"command":"echo outside"}]}}"#),
         ),
         (
             PathBuf::from(source_cur::CONFIG_DIR).join(source_cur::HOOKS_DIR),
@@ -968,8 +964,7 @@ async fn detect_cursor_repo_rejects_symlinked_source_files() {
         let external_source = root.path().join("external-source");
         let source = repo_root.join(relative_source);
         fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-        fs::create_dir_all(source.parent().expect("source parent"))
-            .expect("create source parent");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create source parent");
         match source_fixture {
             CursorRepoSourceFixture::File(contents) => {
                 fs::write(&external_source, contents).expect("write external source");
@@ -1079,8 +1074,7 @@ async fn import_cursor_repo_rejects_symlinked_source_files() {
         let external_source = root.path().join("external-source");
         let source = repo_root.join(relative_source);
         fs::create_dir_all(repo_root.join(".git")).expect("create git dir");
-        fs::create_dir_all(source.parent().expect("source parent"))
-            .expect("create source parent");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create source parent");
         match source_fixture {
             CursorRepoSourceFixture::File(contents) => {
                 fs::write(&external_source, contents).expect("write external source");

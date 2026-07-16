@@ -33,10 +33,7 @@ pub fn windows_sandbox_uses_elevated_backend(
     sandbox_level: WindowsSandboxLevel,
     proxy_enforced: bool,
 ) -> bool {
-    codex_windows_sandbox::windows_sandbox_uses_elevated_backend(
-        sandbox_level,
-        proxy_enforced,
-    )
+    codex_windows_sandbox::windows_sandbox_uses_elevated_backend(sandbox_level, proxy_enforced)
 }
 
 pub fn resolve_windows_sandbox_filesystem_overrides(
@@ -46,8 +43,7 @@ pub fn resolve_windows_sandbox_filesystem_overrides(
     windows_sandbox_level: WindowsSandboxLevel,
     proxy_enforced: bool,
 ) -> std::result::Result<Option<WindowsSandboxFilesystemOverrides>, String> {
-    let use_elevated =
-        windows_sandbox_uses_elevated_backend(windows_sandbox_level, proxy_enforced);
+    let use_elevated = windows_sandbox_uses_elevated_backend(windows_sandbox_level, proxy_enforced);
     if use_elevated {
         resolve_windows_elevated_filesystem_overrides(
             sandbox,
