@@ -97,8 +97,6 @@ mod wfp_setup;
 mod winutil;
 #[cfg(target_os = "windows")]
 mod workspace_acl;
-#[cfg(target_os = "windows")]
-mod write_acl_repair;
 
 mod deny_read_resolver;
 
@@ -157,7 +155,7 @@ pub use acl::ensure_allow_mask_aces_with_inheritance;
 #[cfg(target_os = "windows")]
 pub use acl::ensure_allow_write_aces;
 #[cfg(target_os = "windows")]
-pub use acl::ensure_write_acl_on_handle;
+pub use acl::ensure_allow_write_aces_recursively;
 #[cfg(target_os = "windows")]
 pub use acl::fetch_dacl_handle;
 #[cfg(target_os = "windows")]
@@ -350,12 +348,6 @@ pub use winutil::string_from_sid_bytes;
 pub use winutil::to_wide;
 #[cfg(target_os = "windows")]
 pub use workspace_acl::is_command_cwd_root;
-#[cfg(target_os = "windows")]
-pub use write_acl_repair::WriteAclRepairMode;
-#[cfg(target_os = "windows")]
-pub use write_acl_repair::WriteAclRoot;
-#[cfg(target_os = "windows")]
-pub use write_acl_repair::repair_write_acl_policy;
 #[cfg(target_os = "windows")]
 pub use wrapper::CODEX_WINDOWS_SANDBOX_ARG1;
 #[cfg(target_os = "windows")]
