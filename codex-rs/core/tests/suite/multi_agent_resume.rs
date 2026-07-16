@@ -15,8 +15,6 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
-use tracing::Level;
-use tracing_subscriber::fmt::format::FmtSpan;
 
 const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 const SPAWN_CALL_ID: &str = "spawn-worker";
@@ -75,14 +73,6 @@ fn configure_multi_agent_v2(config: &mut codex_core::config::Config) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup() -> Result<()> {
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_max_level(Level::TRACE)
-        .with_span_events(FmtSpan::FULL)
-        .with_test_writer()
-        .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
-
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": INITIAL_TASK,
