@@ -11,6 +11,7 @@ use codex_rollout::find_thread_path_by_id_str;
 use codex_rollout::read_session_meta_line;
 use codex_rollout::read_thread_item_from_rollout;
 use codex_state::ThreadMetadata;
+use codex_state::apply_rollout_item;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
@@ -48,6 +49,7 @@ pub(super) async fn read_thread(
             .await)
     {
         let metadata_sandbox_policy = metadata.sandbox_policy.clone();
+        let rollout_identity_fallback = metadata.model.is_none().then(|| metadata.clone());
         let mut thread = stored_thread_from_sqlite_metadata(store, metadata).await?;
         if !params.include_history
             && let Some(rollout_path) = thread.rollout_path.clone()
@@ -56,6 +58,13 @@ pub(super) async fn read_thread(
             && (params.include_archived || rollout_thread.archived_at.is_none())
             && !rollout_thread.preview.is_empty()
         {
+            if let Some(metadata) = rollout_identity_fallback {
+                // Preview overlays are best-effort; keep the indexed fallback if
+                // legacy rollout history cannot be replayed.
+                let _ =
+                    populate_rollout_identity_from_history(store, &mut rollout_thread, metadata)
+                        .await;
+            }
             rollout_thread.recency_at = thread.recency_at;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
@@ -309,6 +318,28 @@ pub(super) async fn load_history_items(
             message: format!("failed to load thread history {}: {err}", path.display()),
         })?;
     Ok(items)
+}
+
+async fn populate_rollout_identity_from_history(
+    store: &LocalThreadStore,
+    thread: &mut StoredThread,
+    mut metadata: ThreadMetadata,
+) -> ThreadStoreResult<()> {
+    let Some(path) = thread.rollout_path.as_deref() else {
+        return Ok(());
+    };
+    metadata.model = None;
+    metadata.reasoning_effort = None;
+    for item in load_history_items(path).await? {
+        apply_rollout_item(
+            &mut metadata,
+            &item,
+            store.config.default_model_provider_id.as_str(),
+        );
+    }
+    thread.model = metadata.model;
+    thread.reasoning_effort = metadata.reasoning_effort;
+    Ok(())
 }
 
 async fn read_sqlite_metadata(
