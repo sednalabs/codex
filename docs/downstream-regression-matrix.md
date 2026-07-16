@@ -324,6 +324,19 @@ provider metadata on resume.
 | Postgres ledger ingest + copied-history/source-row regressions                                                                                                                                                                                                                                                                                                                                                                | `downstream-ledger-seam`                                                                                                                                                                                                                                         | `ensure_schema.sh`; `ingest_codex_rollouts_to_postgres.sh`; `test_codex_copied_history_filter.sh`; `test_codex_source_row_identity.sh`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Python Code Quality corrections for timeout, exec, and dead-binding control flow                                                                                                                                                                                                                                                                                                                                              | GitHub Code Quality main evaluation; `codex.downstream-divergence-audit`                                                                                                                                                                                         | Findings `C277`, `C287`, `C288`, and `C331` close after the post-merge evaluation; downstream divergence audit remains green                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
+### Rollout Mutation Authority Quiescence
+
+- Guardrail: GitHub `blocking-ci` unit tests for `codex-rollout`.
+- Primary check:
+  `revoke_waits_for_every_custody_and_wakes_every_waiter`.
+- The check synchronizes two parked custody tokens with two independently
+  polled revokers. It proves one-way admission closure, exact two-token
+  quiescence, wakeup of both revokers after the final release, and retained
+  notification when release occurs between polls. Diagnostic deadlines are
+  fail-safes only; ordering comes from channels and direct future polling.
+- This foundation lane does not cover recorder integration, compression,
+  append-open or recovery, writer actor behavior, or public API exposure.
+
 The replay assertions that used to live under `tui_app_server` now ride on the
 cut-over `codex-tui` app tests. Keep the preset green with the parser test and
 the exact `codex-tui` render/app checks rather than carrying compile coverage

@@ -1859,6 +1859,47 @@
       "extraction_target": "upstream CodeQL action support for complete large-PR diff ranges"
     },
     {
+      "id": "rollout-mutation-authority-quiescence",
+      "title": "Rollout mutation authority quiescence foundation",
+      "status": "live",
+      "category": "core-runtime",
+      "surface": [
+        "crate-private rollout mutation admission",
+        "in-flight mutation quiescence"
+      ],
+      "files": [
+        "codex-rs/rollout/src/lib.rs",
+        "codex-rs/rollout/src/mutation_authority.rs",
+        "codex-rs/rollout/src/mutation_authority_tests.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "required_markers": {
+        "codex-rs/rollout/src/mutation_authority.rs": [
+          "pub(crate) struct RolloutMutationAuthority",
+          "pub(crate) async fn revoke"
+        ]
+      },
+      "behavior": "Downstream carries a crate-private foundation that permanently closes rollout mutation admission and waits for every custody token admitted before closure. The retained in-flight signal lets concurrent revokers observe final quiescence even when the last release occurs between polls. This foundation slice intentionally has no recorder integration or public API.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub blocking-ci codex-rollout unit tests",
+      "tests": [
+        "revoke_waits_for_every_custody_and_wakes_every_waiter"
+      ],
+      "owner": "downstream",
+      "notes": "Keep the primitive private and focused. Later integration slices own recorder constructors, append-open and recovery, writer actor semantics, and public API decisions.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "internal-concurrency-primitive",
+      "hotspot_files": [
+        "codex-rs/rollout/src/mutation_authority.rs"
+      ],
+      "extraction_target": "upstream rollout mutation cancellation and quiescence contract"
+    },
+    {
       "id": "python-code-quality-corrections",
       "title": "Python Code Quality corrections",
       "status": "live",

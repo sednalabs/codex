@@ -921,6 +921,22 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/code_mode_description.rs`
   - `codex-rs/core/src/tools/router.rs`
 
+### Rollout Mutation Authority Quiescence Foundation
+
+- The rollout crate carries a private, one-way mutation authority primitive.
+  Revocation closes admission before waiting for every custody token that was
+  already admitted, and a retained in-flight signal lets multiple revokers
+  observe the same final quiescence without losing an intervening release.
+- This foundation is intentionally dormant in this slice. Recorder
+  constructors, compression, append-open and recovery paths, writer actor
+  semantics, and public API exposure remain outside its boundary.
+- The focused regression parks two independently admitted custody tokens,
+  polls two revokers to pending, proves the first release is insufficient, and
+  proves the second release wakes both while later admission stays closed.
+- Primary files:
+  - `codex-rs/rollout/src/mutation_authority.rs`
+  - `codex-rs/rollout/src/mutation_authority_tests.rs`
+
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:
