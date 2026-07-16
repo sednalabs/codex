@@ -47,19 +47,28 @@
       "properties": {
         "default_subagent_model": {
           "description": "Reserved default model for spawned subagents. Currently ignored.",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "default_subagent_reasoning_effort": {
-          "allOf": [
+          "description": "Reserved default reasoning effort for spawned subagents. Currently ignored.",
+          "oneOf": [
             {
               "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Reserved default reasoning effort for spawned subagents. Currently ignored."
+          ]
         },
         "enabled": {
           "description": "Whether multi-agent tools are enabled. Defaults to true. An enabled `features.multi_agent_v2` setting takes precedence.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "interrupt_message": {
           "description": "Whether to record a model-visible message when an agent turn is interrupted. Defaults to true.",
@@ -80,13 +89,19 @@
         "max_concurrent_threads_per_session": {
           "description": "Maximum number of spawned agent threads that can be open concurrently per session. When unset, the selected multi-agent backend uses its default.",
           "format": "uint",
-          "minimum": 1.0,
-          "type": "integer"
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "max_depth": {
           "description": "Maximum nesting depth for V1 agent threads. Ignored by V2.",
           "format": "int32",
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
