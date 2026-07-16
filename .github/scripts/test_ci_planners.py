@@ -1507,6 +1507,106 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_recommend_lab_external_agent_containment_route_is_fail_closed(self) -> None:
+        payload = self.recommend_lab_for_files(
+            [
+                "codex-rs/external-agent-migration/src/service.rs",
+                "codex-rs/external-agent-migration/Cargo.toml",
+                "codex-rs/Cargo.lock",
+                "MODULE.bazel.lock",
+                "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+                ".github/scripts/test_ci_planners.py",
+                ".github/workflows/sedna-heavy-tests.yml",
+                "docs/carry-divergence-ledger.md",
+            ]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            ["codex.external-agent-migration-containment-targeted"],
+        )
+
+        lane = next(
+            lane
+            for lane in RESOLVE_VALIDATION_PLAN.load_catalog()["lanes"]
+            if lane["lane_id"]
+            == "codex.external-agent-migration-containment-targeted"
+        )
+        self.assertTrue(lane["needs_nextest"])
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "external-agent-migration-containment-targeted"
+            ]
+        )
+        self.assertEqual(recipe.count("cargo nextest run --locked"), 2)
+        self.assertEqual(recipe.count("--no-tests=fail"), 2)
+        self.assertIn(
+            "suite::v2::external_agent_config::"
+            "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation",
+            recipe,
+        )
+        self.assertIn("--exact", recipe)
+
+    def test_recommend_lab_subagent_model_pinning_route_is_fail_closed(self) -> None:
+        payload = self.recommend_lab_for_files(
+            [
+                "codex-rs/core/src/agent/control.rs",
+                "codex-rs/core/src/agent/control/spawn.rs",
+                "codex-rs/core/src/agent/control_tests.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+                "codex-rs/core/tests/suite/multi_agent_resume.rs",
+                "codex-rs/state/src/extract.rs",
+                "codex-rs/thread-store/src/local/read_thread.rs",
+                "codex-rs/thread-store/src/thread_metadata_sync.rs",
+                "codex-rs/thread-store/src/types.rs",
+                ".github/scripts/test_ci_planners.py",
+                ".github/validation-lanes.json",
+                "docs/carry-divergence-ledger.md",
+                "docs/divergences/index.yaml",
+                "docs/downstream-regression-matrix.md",
+                "justfile",
+            ]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            ["codex.core-subagent-model-pinning-targeted"],
+        )
+
+        lane = next(
+            lane
+            for lane in RESOLVE_VALIDATION_PLAN.load_catalog()["lanes"]
+            if lane["lane_id"] == "codex.core-subagent-model-pinning-targeted"
+        )
+        self.assertTrue(lane["needs_nextest"])
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "core-subagent-model-pinning-targeted"
+            ]
+        )
+        self.assertEqual(recipe.count("cargo nextest run"), 5)
+        self.assertEqual(recipe.count("--no-tests=fail"), 5)
+        self.assertIn(
+            "tools::handlers::multi_agents_spec::tests::"
+            "spawn_agent_tool_v2_requires_task_name_and_lists_visible_models",
+            recipe,
+        )
+        self.assertIn(
+            "local::read_thread::tests::"
+            "read_thread_keeps_complete_indexed_identity_during_rollout_overlay",
+            recipe,
+        )
+        self.assertIn(
+            "suite::multi_agent_resume::"
+            "cold_root_resume_restores_agent_identity_and_reloads_target_on_followup",
+            recipe,
+        )
+        self.assertEqual(recipe.count("--exact"), 5)
+
     def test_recommend_lab_docs_path_uses_docs_domain_fallback(self) -> None:
         payload = self.recommend_lab_for_files(["docs/validation_workflow.md"])
 

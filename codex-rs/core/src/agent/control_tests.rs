@@ -355,6 +355,37 @@ async fn wait_for_live_thread_spawn_children(
     .expect("expected persisted child tree");
 }
 
+#[tokio::test]
+async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
+    let (home, mut config) = test_config().await;
+    config.features.disable(Feature::Sqlite);
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    assert!(harness.state_db.is_none());
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+
+    let err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("stale inspection should require the state db");
+    assert_matches!(
+        err,
+        CodexErr::UnsupportedOperation(message)
+            if message == INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE
+    );
+}
+
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
     match manager.get_thread(thread_id).await {
         Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, thread_id),

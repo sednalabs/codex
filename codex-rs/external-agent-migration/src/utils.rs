@@ -1,9 +1,18 @@
-use codex_external_agent_migration::RewriteProfile;
+use crate::RewriteProfile;
+use serde_json::Value as JsonValue;
 use std::fs;
 use std::io;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+
+pub(super) fn display_source_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 pub(super) fn ensure_migration_path(root: &Path, path: &Path) -> io::Result<()> {
     let relative = path.strip_prefix(root).map_err(|_| {
@@ -45,12 +54,40 @@ pub(super) fn ensure_migration_path(root: &Path, path: &Path) -> io::Result<()> 
     Ok(())
 }
 
-pub(super) fn display_source_paths(paths: &[PathBuf]) -> String {
-    paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+pub(crate) fn read_json_file(path: &Path) -> io::Result<Option<JsonValue>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(path)?;
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|err| invalid_data_error(err.to_string()))
+}
+
+pub(super) fn is_missing_or_empty_text_file(path: &Path) -> io::Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+    };
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+
+    Ok(fs::read_to_string(path)?.trim().is_empty())
+}
+
+pub(crate) fn path_is_missing_without_follow(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(err) => Err(err),
+    }
+}
+
+pub(super) fn invalid_data_error(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 pub(super) fn copy_dir_recursive(
@@ -104,44 +141,7 @@ pub(super) fn rewrite_external_agent_terms(
     content: &str,
     rewrite_profile: RewriteProfile,
 ) -> String {
-    let mut rewritten = replace_case_insensitive_with_boundaries(
-        content,
-        rewrite_profile.doc_file_name(),
-        "AGENTS.md",
-    );
-    for from in rewrite_profile.term_variants() {
-        rewritten = replace_case_insensitive_with_boundaries(&rewritten, from, "Codex");
-    }
-    for from in rewrite_profile.case_sensitive_term_variants() {
-        rewritten = replace_with_boundaries(&rewritten, from, "Codex");
-    }
-    rewritten
-}
-
-fn replace_with_boundaries(input: &str, needle: &str, replacement: &str) -> String {
-    if needle.is_empty() {
-        return input.to_string();
-    }
-
-    let bytes = input.as_bytes();
-    let mut output = String::with_capacity(input.len());
-    let mut last_emitted = 0usize;
-    let mut search_start = 0usize;
-
-    while let Some(relative_pos) = input[search_start..].find(needle) {
-        let start = search_start + relative_pos;
-        let end = start + needle.len();
-        let boundary_before = start == 0 || !is_word_char(bytes[start - 1]);
-        let boundary_after = end == bytes.len() || !is_word_char(bytes[end]);
-        if boundary_before && boundary_after {
-            output.push_str(&input[last_emitted..start]);
-            output.push_str(replacement);
-            last_emitted = end;
-        }
-        search_start = end;
-    }
-    output.push_str(&input[last_emitted..]);
-    output
+    rewrite_profile.rewrite(content)
 }
 
 fn is_skill_md(path: &Path) -> bool {
@@ -158,46 +158,6 @@ fn rewrite_and_copy_text_file(
     let source_contents = fs::read_to_string(source)?;
     let rewritten = rewrite_external_agent_terms(&source_contents, rewrite_profile);
     fs::write(target, rewritten)
-}
-
-fn replace_case_insensitive_with_boundaries(
-    input: &str,
-    needle: &str,
-    replacement: &str,
-) -> String {
-    let needle_lower = needle.to_ascii_lowercase();
-    if needle_lower.is_empty() {
-        return input.to_string();
-    }
-
-    let haystack_lower = input.to_ascii_lowercase();
-    let bytes = input.as_bytes();
-    let mut output = String::with_capacity(input.len());
-    let mut last_emitted = 0usize;
-    let mut search_start = 0usize;
-
-    while let Some(relative_pos) = haystack_lower[search_start..].find(&needle_lower) {
-        let start = search_start + relative_pos;
-        let end = start + needle_lower.len();
-        let boundary_before = start == 0 || !is_word_char(bytes[start - 1]);
-        let boundary_after = end == bytes.len() || !is_word_char(bytes[end]);
-        if boundary_before && boundary_after {
-            output.push_str(&input[last_emitted..start]);
-            output.push_str(replacement);
-            last_emitted = end;
-        }
-        search_start = end;
-    }
-    output.push_str(&input[last_emitted..]);
-    output
-}
-
-fn is_word_char(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn invalid_data_error(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
 #[cfg(test)]
