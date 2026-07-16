@@ -5745,14 +5745,14 @@
           },
           {
             "properties": {
-              "credentialSource": {
-                "$ref": "#/definitions/v2/AmazonBedrockCredentialSource",
-                "default": "awsManaged"
-              },
               "type": {
                 "const": "amazonBedrock",
                 "title": "AmazonBedrockAccountType",
                 "type": "string"
+              },
+              "usesCodexManagedCredentials": {
+                "default": false,
+                "type": "boolean"
               }
             },
             "required": [
@@ -6058,13 +6058,6 @@
             "type": "object"
           }
         ]
-      },
-      "AmazonBedrockCredentialSource": {
-        "enum": [
-          "codexManaged",
-          "awsManaged"
-        ],
-        "type": "string"
       },
       "AnalyticsConfig": {
         "additionalProperties": true,

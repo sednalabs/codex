@@ -2573,12 +2573,7 @@ async fn inactive_thread_exec_approval_preserves_context() {
         action: AppServerNetworkPolicyRuleAction::Allow,
     }]);
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec {
-        available_decisions,
-        network_approval_context,
-        additional_permissions,
-        ..
-    })) = app
+    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(approval))) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -2587,14 +2582,14 @@ async fn inactive_thread_exec_approval_preserves_context() {
     };
 
     assert_eq!(
-        network_approval_context,
+        approval.network_approval_context,
         Some(AppServerNetworkApprovalContext {
             host: "example.com".to_string(),
             protocol: AppServerNetworkApprovalProtocol::Socks5Tcp,
         })
     );
     assert_eq!(
-        additional_permissions,
+        approval.additional_permissions,
         Some(AdditionalPermissionProfile {
             network: Some(AdditionalNetworkPermissions {
                 enabled: Some(true),
@@ -2608,7 +2603,7 @@ async fn inactive_thread_exec_approval_preserves_context() {
         })
     );
     assert_eq!(
-        available_decisions,
+        approval.available_decisions,
         vec![
             codex_app_server_protocol::CommandExecutionApprovalDecision::Accept,
             codex_app_server_protocol::CommandExecutionApprovalDecision::AcceptForSession,
@@ -2640,7 +2635,7 @@ async fn inactive_thread_exec_approval_splits_shell_wrapped_command() {
     params.command =
         Some(shlex::try_join(["/bin/zsh", "-lc", script]).expect("round-trippable shell wrapper"));
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec { command, .. })) = app
+    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(approval))) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -2649,7 +2644,7 @@ async fn inactive_thread_exec_approval_splits_shell_wrapped_command() {
     };
 
     assert_eq!(
-        command,
+        approval.command,
         vec![
             "/bin/zsh".to_string(),
             "-lc".to_string(),
@@ -2700,14 +2695,11 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
         .expect("valid localized paths")
         .expect("expected file change approval request");
 
-    let ThreadInteractiveRequest::Approval(ApprovalRequest::ApplyPatch {
-        changes, reason, ..
-    }) = &request
-    else {
+    let ThreadInteractiveRequest::Approval(ApprovalRequest::ApplyPatch(approval)) = &request else {
         panic!("expected apply-patch approval request");
     };
     assert_eq!(
-        changes,
+        &approval.changes,
         &HashMap::from([(
             PathBuf::from("README.md"),
             FileChange::Add {
@@ -2716,7 +2708,7 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
         )])
     );
     assert_eq!(
-        reason,
+        &approval.reason,
         &Some("command failed; retry without sandbox?".to_string())
     );
 
@@ -2758,11 +2750,7 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
         },
     };
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Permissions {
-        environment_id,
-        permissions,
-        ..
-    })) = app
+    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Permissions(approval))) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -2770,9 +2758,9 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
         panic!("expected permissions approval request");
     };
 
-    assert_eq!(environment_id.as_deref(), Some("remote"));
+    assert_eq!(approval.environment_id.as_deref(), Some("remote"));
     assert_eq!(
-        permissions,
+        approval.permissions,
         RequestPermissionProfile {
             network: Some(NetworkPermissions {
                 enabled: Some(true),
