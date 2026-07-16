@@ -31,7 +31,7 @@ pub(super) async fn create_thread(
     store.ensure_live_recorder_absent(thread_id).await?;
     let recorder = create_thread::create_thread(store, params).await?;
     store
-        .insert_live_recorder(thread_id, recorder, history_mode)
+        .insert_live_recorder(thread_id, recorder, history_mode, /*materialized*/ false)
         .await
 }
 
@@ -106,7 +106,12 @@ pub(super) async fn resume_thread(
             message: format!("failed to resume local thread recorder: {err}"),
         })?;
     store
-        .insert_live_recorder(params.thread_id, recorder, history_mode)
+        .insert_live_recorder(
+            params.thread_id,
+            recorder,
+            history_mode,
+            /*materialized*/ true,
+        )
         .await
 }
 
@@ -122,70 +127,81 @@ pub(super) async fn append_items(
     // A live append should always have a recorder: create/resume installs one, while
     // shutdown/discard/delete removes it. Keep the lookup defensive so late appends fail after
     // teardown.
-    let (recorder, history_mode) = store
-        .live_recorders
-        .lock()
-        .await
-        .get(&params.thread_id)
-        .map(|entry| (entry.recorder.clone(), entry.history_mode))
-        .ok_or(ThreadStoreError::ThreadNotFound {
-            thread_id: params.thread_id,
-        })?;
-    let persisted_items = persisted_rollout_items(params.items.as_slice(), history_mode);
+    let live_recorder = store.live_recorder(params.thread_id).await?;
+    let persisted_items =
+        persisted_rollout_items(params.items.as_slice(), live_recorder.history_mode);
     if persisted_items.is_empty() {
         return Ok(());
     }
-    recorder
+    live_recorder
+        .recorder
         .record_canonical_items(persisted_items.as_slice())
         .await
         .map_err(thread_store_io_error)?;
     // LiveThread applies metadata immediately after append_items returns. Wait for the local
     // writer so SQLite never gets ahead of JSONL for accepted live appends.
-    recorder.flush().await.map_err(thread_store_io_error)
+    live_recorder
+        .recorder
+        .flush()
+        .await
+        .map_err(thread_store_io_error)?;
+    let _ = store
+        .mark_live_recorder_materialized(params.thread_id, &live_recorder.token)
+        .await;
+    Ok(())
 }
 
 pub(super) async fn persist_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
-    store
-        .live_recorder(thread_id)
-        .await?
+    let live_recorder = store.live_recorder(thread_id).await?;
+    live_recorder
+        .recorder
         .persist()
         .await
         .map_err(thread_store_io_error)?;
-    sync_materialized_rollout_path(store, thread_id).await
+    sync_materialized_rollout_path(store, thread_id, &live_recorder).await
 }
 
 pub(super) async fn flush_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
-    store
-        .live_recorder(thread_id)
-        .await?
+    let live_recorder = store.live_recorder(thread_id).await?;
+    live_recorder
+        .recorder
         .flush()
         .await
         .map_err(thread_store_io_error)?;
-    sync_materialized_rollout_path(store, thread_id).await
+    sync_materialized_rollout_path(store, thread_id, &live_recorder).await
 }
 
 pub(super) async fn shutdown_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
-    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
-    let recorder = store.live_recorder(thread_id).await?;
-    let rollout_path = recorder.rollout_path().to_path_buf();
-    recorder.shutdown().await.map_err(thread_store_io_error)?;
-    sync_materialized_rollout_path(store, thread_id).await?;
+    // Keep the unbounded drain outside lifecycle custody: archive/delete intentionally proceed
+    // after their bounded app-layer shutdown wait expires. The short removal commit below takes
+    // custody so an unmaterialized recorder remains eligible throughout a concurrent read.
+    let live_recorder = store.live_recorder(thread_id).await?;
+    let rollout_path = live_recorder.recorder.rollout_path().to_path_buf();
+    live_recorder
+        .recorder
+        .shutdown()
+        .await
+        .map_err(thread_store_io_error)?;
+    sync_materialized_rollout_path(store, thread_id, &live_recorder).await?;
     if let Some(metrics) = codex_otel::global()
         && let Ok(metadata) = tokio::fs::metadata(rollout_path).await
     {
         let size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
         let _ = metrics.histogram(ROLLOUT_SIZE_BYTES_METRIC, size_bytes, &[]);
     }
-    store.live_recorders.lock().await.remove(&thread_id);
+    let _lifecycle_guard = store.acquire_lifecycle_custody(thread_id).await?;
+    store
+        .remove_live_recorder_if_current(thread_id, &live_recorder.token)
+        .await;
     Ok(())
 }
 
@@ -208,11 +224,8 @@ pub(super) async fn rollout_path(
     thread_id: ThreadId,
 ) -> ThreadStoreResult<PathBuf> {
     Ok(store
-        .live_recorders
-        .lock()
-        .await
-        .get(&thread_id)
-        .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?
+        .live_recorder(thread_id)
+        .await?
         .recorder
         .rollout_path()
         .to_path_buf())
@@ -221,11 +234,18 @@ pub(super) async fn rollout_path(
 async fn sync_materialized_rollout_path(
     store: &LocalThreadStore,
     thread_id: ThreadId,
+    live_recorder: &super::LiveRecorderSnapshot,
 ) -> ThreadStoreResult<()> {
-    let rollout_path = rollout_path(store, thread_id).await?;
+    let rollout_path = live_recorder.recorder.rollout_path().to_path_buf();
     if codex_rollout::existing_rollout_path(rollout_path.as_path())
         .await
         .is_none()
+    {
+        return Ok(());
+    }
+    if !store
+        .mark_live_recorder_materialized(thread_id, &live_recorder.token)
+        .await
     {
         return Ok(());
     }

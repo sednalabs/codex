@@ -100,28 +100,37 @@ impl LocalThreadLifecycleGuard<'_> {
             (None, None) => {}
         }
 
-        let live_rollout_path = self
+        let live_recorder = self
             .store
             .live_recorders
             .lock()
             .await
             .get(&thread_id)
-            .map(|entry| entry.recorder.rollout_path().to_path_buf());
-        let Some(live_rollout_path) = live_rollout_path else {
+            .map(|entry| {
+                (
+                    entry.recorder.rollout_path().to_path_buf(),
+                    entry.materialized,
+                )
+            });
+        let Some((live_rollout_path, was_materialized)) = live_recorder else {
             return Ok(LocalThreadLifecycle::Missing);
         };
-        // A resumed archived recorder remains archived even if its path cannot be re-discovered.
-        // The later read still verifies the path before returning persisted authority.
+        let materialized_path =
+            codex_rollout::existing_rollout_path(live_rollout_path.as_path()).await;
         if rollout_path_is_archived(
             self.store.config.codex_home.as_path(),
             live_rollout_path.as_path(),
         ) {
-            return Ok(LocalThreadLifecycle::Archived(live_rollout_path));
+            return Ok(materialized_path.map_or(
+                LocalThreadLifecycle::Missing,
+                LocalThreadLifecycle::Archived,
+            ));
         }
-        if let Some(materialized_path) =
-            codex_rollout::existing_rollout_path(live_rollout_path.as_path()).await
-        {
+        if let Some(materialized_path) = materialized_path {
             return Ok(LocalThreadLifecycle::Active(materialized_path));
+        }
+        if was_materialized {
+            return Ok(LocalThreadLifecycle::Missing);
         }
         Ok(LocalThreadLifecycle::UnmaterializedActive)
     }

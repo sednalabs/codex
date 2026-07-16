@@ -67,9 +67,8 @@ pub(super) async fn delete_thread(
     }
 
     let found_rollout_path = !rollout_paths.is_empty();
-    for rollout_path in rollout_paths {
-        delete_rollout_file(store, rollout_path.as_path(), thread_id)?;
-    }
+    // Finish fallible name-index cleanup before the irreversible deletion commit. If this preflight
+    // fails, the rollout and live recorder remain eligible and a retry starts from intact evidence.
     remove_thread_name_entries(store.config.codex_home.as_path(), thread_id)
         .await
         .map_err(|err| ThreadStoreError::Internal {
@@ -80,7 +79,12 @@ pub(super) async fn delete_thread(
         return Err(ThreadStoreError::ThreadNotFound { thread_id });
     }
 
+    // Invalidate live authority before the first synchronous file deletion. No await follows the
+    // physical commit, so cancellation or a later filesystem error cannot resurrect this recorder.
     store.live_recorders.lock().await.remove(&thread_id);
+    for rollout_path in rollout_paths {
+        delete_rollout_file(store, rollout_path.as_path(), thread_id)?;
+    }
 
     Ok(())
 }
