@@ -251,7 +251,42 @@ async fn cold_root_resume_restores_agent_identity_and_reloads_target_on_followup
             break request;
         }
         if Instant::now() >= deadline {
-            anyhow::bail!("timed out waiting for child follow-up; tool result: {followup_output}");
+            let worker_status = resumed
+                .thread_manager
+                .get_thread(worker_thread_id)
+                .await?
+                .agent_status()
+                .await;
+            let response_requests: Vec<Value> = server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .iter()
+                .filter(|request| request.url.path().ends_with("/responses"))
+                .map(|request| {
+                    let body = decoded_body(request)
+                        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                        .unwrap_or(Value::Null);
+                    let input_types: Vec<&str> = body
+                        .get("input")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|item| item.get("type").and_then(Value::as_str))
+                        .collect();
+                    json!({
+                        "path": request.url.path(),
+                        "model": body.get("model").and_then(Value::as_str),
+                        "thread_id": body.pointer("/client_metadata/thread_id").and_then(Value::as_str),
+                        "input_types": input_types,
+                        "contains_followup_task": body_contains(request, FOLLOWUP_TASK),
+                    })
+                })
+                .collect();
+            anyhow::bail!(
+                "timed out waiting for child follow-up; tool result: {followup_output}; worker status: {worker_status:?}; response requests: {}",
+                serde_json::to_string(&response_requests)?
+            );
         }
         sleep(Duration::from_millis(10)).await;
     };
