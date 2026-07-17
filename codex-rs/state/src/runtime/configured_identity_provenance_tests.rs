@@ -130,7 +130,9 @@ async fn configured_identity_provenance_competing_writers_preserve_present() {
     let (absent_result, present_result) = tokio::join!(
         async {
             barrier.wait().await;
-            runtime_a.mark_configured_identity_known_absent(thread_id).await
+            runtime_a
+                .mark_configured_identity_known_absent(thread_id)
+                .await
         },
         async {
             barrier.wait().await;
