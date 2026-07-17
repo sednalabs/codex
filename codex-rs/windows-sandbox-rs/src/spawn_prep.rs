@@ -295,7 +295,8 @@ pub(crate) fn apply_legacy_session_acl_rules(
                 let Some(root_sid) = matching_root_capability(p, acl_sids.write_root_sids) else {
                     continue;
                 };
-                let _ = ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()]);
+                ensure_allow_write_aces(p, &[root_sid.sid.as_ptr()])
+                    .with_context(|| format!("grant workspace-write access to {}", p.display()))?;
             }
         }
         for p in &deny {
