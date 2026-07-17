@@ -33,10 +33,8 @@ use windows_sys::Win32::Security::TOKEN_ASSIGN_PRIMARY;
 use windows_sys::Win32::Security::TOKEN_DUPLICATE;
 use windows_sys::Win32::Security::TOKEN_PRIVILEGES;
 use windows_sys::Win32::Security::TOKEN_QUERY;
-use windows_sys::Win32::Security::TOKEN_USER;
 use windows_sys::Win32::Security::TokenDefaultDacl;
 use windows_sys::Win32::Security::TokenGroups;
-use windows_sys::Win32::Security::TokenUser;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const DISABLE_MAX_PRIVILEGE: u32 = 0x01;
@@ -45,6 +43,7 @@ const WRITE_RESTRICTED: u32 = 0x08;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const WIN_WORLD_SID: i32 = 1;
 const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
+const OWNER_RIGHTS_SID: &str = "S-1-3-4";
 const WRITE_RESTRICTED_CODE_SID: &str = "S-1-5-33";
 
 #[repr(C)]
@@ -277,46 +276,6 @@ pub unsafe fn get_logon_sid_bytes(h_token: HANDLE) -> Result<Vec<u8>> {
     Err(anyhow!("Logon SID not present on token"))
 }
 
-unsafe fn get_user_sid_bytes(h_token: HANDLE) -> Result<Vec<u8>> {
-    let mut needed: u32 = 0;
-    GetTokenInformation(h_token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
-    if needed == 0 {
-        return Err(anyhow!("TokenUser size query returned 0"));
-    }
-    let mut user_buf: Vec<u8> = vec![0u8; needed as usize];
-    let ok = GetTokenInformation(
-        h_token,
-        TokenUser,
-        user_buf.as_mut_ptr() as *mut c_void,
-        needed,
-        &mut needed,
-    );
-    if ok == 0 || (needed as usize) < std::mem::size_of::<TOKEN_USER>() {
-        return Err(anyhow!(
-            "GetTokenInformation(TokenUser) failed: {}",
-            GetLastError()
-        ));
-    }
-    let token_user: TOKEN_USER = std::ptr::read_unaligned(user_buf.as_ptr() as *const TOKEN_USER);
-    let sid_len = GetLengthSid(token_user.User.Sid);
-    if sid_len == 0 {
-        return Err(anyhow!(
-            "GetLengthSid(TokenUser) failed: {}",
-            GetLastError()
-        ));
-    }
-    let mut user_sid_bytes = vec![0u8; sid_len as usize];
-    if CopySid(
-        sid_len,
-        user_sid_bytes.as_mut_ptr() as *mut c_void,
-        token_user.User.Sid,
-    ) == 0
-    {
-        return Err(anyhow!("CopySid(TokenUser) failed: {}", GetLastError()));
-    }
-    Ok(user_sid_bytes)
-}
-
 unsafe fn enable_single_privilege(h_token: HANDLE, name: &str) -> Result<()> {
     let mut luid = LUID {
         LowPart: 0,
@@ -382,20 +341,23 @@ pub unsafe fn create_workspace_write_token_with_caps_from(
     create_token_with_caps_from(base_token, psid_capabilities, &[])
 }
 
-/// Create a restricted token that includes all provided capability SIDs plus the token user SID.
+/// Create a restricted token that includes all provided capability SIDs plus OWNER RIGHTS.
 ///
-/// This is intended for the elevated sandbox backend, where the token user is the dedicated
-/// sandbox account rather than the real signed-in user.
+/// The elevated runner needs owner-scoped access for kernel objects created by sandboxed child
+/// processes. OWNER RIGHTS is narrower than re-admitting the sandbox account's user SID.
 ///
 /// # Safety
 /// Caller must close the returned token handle; base_token must be a valid primary token.
-pub unsafe fn create_workspace_write_token_with_caps_and_user_from(
+pub unsafe fn create_workspace_write_token_with_caps_and_owner_rights_from(
     base_token: HANDLE,
     psid_capabilities: &[*mut c_void],
 ) -> Result<HANDLE> {
-    let mut user_sid_bytes = get_user_sid_bytes(base_token)?;
-    let psid_user = user_sid_bytes.as_mut_ptr() as *mut c_void;
-    create_token_with_caps_from(base_token, psid_capabilities, &[psid_user])
+    let owner_rights_sid = LocalSid::from_string(OWNER_RIGHTS_SID)?;
+    create_token_with_caps_from(
+        base_token,
+        psid_capabilities,
+        &[owner_rights_sid.as_ptr()],
+    )
 }
 
 /// Create a restricted token that includes all provided capability SIDs.
@@ -409,20 +371,23 @@ pub unsafe fn create_readonly_token_with_caps_from(
     create_token_with_caps_from(base_token, psid_capabilities, &[])
 }
 
-/// Create a restricted token that includes all provided capability SIDs plus the token user SID.
+/// Create a restricted token that includes all provided capability SIDs plus OWNER RIGHTS.
 ///
-/// This is intended for the elevated sandbox backend, where the token user is the dedicated
-/// sandbox account rather than the real signed-in user.
+/// This mirrors the workspace-write helper so elevated read-only sessions retain owner-scoped
+/// kernel-object compatibility without re-admitting the full sandbox-account user SID.
 ///
 /// # Safety
 /// Caller must close the returned token handle; base_token must be a valid primary token.
-pub unsafe fn create_readonly_token_with_caps_and_user_from(
+pub unsafe fn create_readonly_token_with_caps_and_owner_rights_from(
     base_token: HANDLE,
     psid_capabilities: &[*mut c_void],
 ) -> Result<HANDLE> {
-    let mut user_sid_bytes = get_user_sid_bytes(base_token)?;
-    let psid_user = user_sid_bytes.as_mut_ptr() as *mut c_void;
-    create_token_with_caps_from(base_token, psid_capabilities, &[psid_user])
+    let owner_rights_sid = LocalSid::from_string(OWNER_RIGHTS_SID)?;
+    create_token_with_caps_from(
+        base_token,
+        psid_capabilities,
+        &[owner_rights_sid.as_ptr()],
+    )
 }
 
 fn build_restricted_sid_entries(
