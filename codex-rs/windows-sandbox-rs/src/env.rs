@@ -247,10 +247,7 @@ mod tests {
                 ),
                 ("TEMP".to_string(), r"C:\Temp".to_string()),
                 ("TMP".to_string(), r"C:\Temp".to_string()),
-                (
-                    "USERPROFILE".to_string(),
-                    r"C:\Users\codex".to_string(),
-                ),
+                ("USERPROFILE".to_string(), r"C:\Users\codex".to_string(),),
                 ("HOMEDRIVE".to_string(), "C:".to_string()),
                 ("HOMEPATH".to_string(), r"\Users\codex".to_string()),
             ])

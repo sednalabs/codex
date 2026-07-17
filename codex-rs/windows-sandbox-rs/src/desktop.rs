@@ -208,8 +208,7 @@ mod tests {
     #[test]
     fn non_private_desktop_leaves_startup_desktop_unset() {
         let desktop = LaunchDesktop::prepare(
-            /*use_private_desktop*/ false,
-            /*logs_base_dir*/ None,
+            /*use_private_desktop*/ false, /*logs_base_dir*/ None,
         )
         .expect("desktop");
         assert!(desktop.startup_info_desktop().is_null());
