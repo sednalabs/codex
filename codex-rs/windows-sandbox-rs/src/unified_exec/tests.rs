@@ -481,35 +481,6 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         fs::write(&tmp_file, "tmp").expect("seed TMP file");
         fs::write(&outside_file, "outside").expect("seed outside file");
 
-        let script = workspace.join("delete-fixtures.cmd");
-        fs::write(
-            &script,
-            concat!(
-                "@echo off\r\n",
-                "echo DELETE_ENV_WORKSPACE=%WORKSPACE_DELETE%\r\n",
-                "echo DELETE_ENV_TEMP=%TEMP_DELETE%\r\n",
-                "echo DELETE_ENV_TMP=%TMP_DELETE%\r\n",
-                "echo DELETE_ENV_OUTSIDE=%OUTSIDE_DELETE%\r\n",
-                "del /f /q \"%WORKSPACE_DELETE%\" 2>&1\r\n",
-                "echo DELETE_WORKSPACE_ERRORLEVEL=%ERRORLEVEL%\r\n",
-                "if exist \"%WORKSPACE_DELETE%\" (echo DELETE_WORKSPACE_EXISTS=1) else (echo DELETE_WORKSPACE_EXISTS=0)\r\n",
-                "del /f /q \"%TEMP_DELETE%\" 2>&1\r\n",
-                "echo DELETE_TEMP_ERRORLEVEL=%ERRORLEVEL%\r\n",
-                "if exist \"%TEMP_DELETE%\" (echo DELETE_TEMP_EXISTS=1) else (echo DELETE_TEMP_EXISTS=0)\r\n",
-                "del /f /q \"%TMP_DELETE%\" 2>&1\r\n",
-                "echo DELETE_TMP_ERRORLEVEL=%ERRORLEVEL%\r\n",
-                "if exist \"%TMP_DELETE%\" (echo DELETE_TMP_EXISTS=1) else (echo DELETE_TMP_EXISTS=0)\r\n",
-                "del /f /q \"%OUTSIDE_DELETE%\" 2>&1\r\n",
-                "echo DELETE_OUTSIDE_ERRORLEVEL=%ERRORLEVEL%\r\n",
-                "if exist \"%OUTSIDE_DELETE%\" (echo DELETE_OUTSIDE_EXISTS=1) else (echo DELETE_OUTSIDE_EXISTS=0)\r\n",
-                "rmdir \"%PROTECTED_GIT_DIR%\" 2>&1\r\n",
-                "echo DELETE_PROTECTED_GIT_ERRORLEVEL=%ERRORLEVEL%\r\n",
-                "if exist \"%PROTECTED_GIT_DIR%\\\" (echo DELETE_PROTECTED_GIT_EXISTS=1) else (echo DELETE_PROTECTED_GIT_EXISTS=0)\r\n",
-                "exit /b 0\r\n",
-            ),
-        )
-        .expect("write delete script");
-
         let env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
             ("TMP".to_string(), tmp_root.to_string_lossy().into_owned()),
@@ -543,8 +514,31 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             vec![
                 "C:\\Windows\\System32\\cmd.exe".to_string(),
                 "/d".to_string(),
+                "/v:on".to_string(),
                 "/c".to_string(),
-                script.display().to_string(),
+                concat!(
+                    "echo DELETE_ENV_WORKSPACE=%WORKSPACE_DELETE% & ",
+                    "echo DELETE_ENV_TEMP=%TEMP_DELETE% & ",
+                    "echo DELETE_ENV_TMP=%TMP_DELETE% & ",
+                    "echo DELETE_ENV_OUTSIDE=%OUTSIDE_DELETE% & ",
+                    "del /f /q \"%WORKSPACE_DELETE%\" 2>&1 & ",
+                    "echo DELETE_WORKSPACE_ERRORLEVEL=!ERRORLEVEL! & ",
+                    "if exist \"%WORKSPACE_DELETE%\" (echo DELETE_WORKSPACE_EXISTS=1) else (echo DELETE_WORKSPACE_EXISTS=0) & ",
+                    "del /f /q \"%TEMP_DELETE%\" 2>&1 & ",
+                    "echo DELETE_TEMP_ERRORLEVEL=!ERRORLEVEL! & ",
+                    "if exist \"%TEMP_DELETE%\" (echo DELETE_TEMP_EXISTS=1) else (echo DELETE_TEMP_EXISTS=0) & ",
+                    "del /f /q \"%TMP_DELETE%\" 2>&1 & ",
+                    "echo DELETE_TMP_ERRORLEVEL=!ERRORLEVEL! & ",
+                    "if exist \"%TMP_DELETE%\" (echo DELETE_TMP_EXISTS=1) else (echo DELETE_TMP_EXISTS=0) & ",
+                    "del /f /q \"%OUTSIDE_DELETE%\" 2>&1 & ",
+                    "echo DELETE_OUTSIDE_ERRORLEVEL=!ERRORLEVEL! & ",
+                    "if exist \"%OUTSIDE_DELETE%\" (echo DELETE_OUTSIDE_EXISTS=1) else (echo DELETE_OUTSIDE_EXISTS=0) & ",
+                    "rmdir \"%PROTECTED_GIT_DIR%\" 2>&1 & ",
+                    "echo DELETE_PROTECTED_GIT_ERRORLEVEL=!ERRORLEVEL! & ",
+                    "if exist \"%PROTECTED_GIT_DIR%\\\" (echo DELETE_PROTECTED_GIT_EXISTS=1) else (echo DELETE_PROTECTED_GIT_EXISTS=0) & ",
+                    "exit /b 0",
+                )
+                .to_string(),
             ],
             workspace.as_path(),
             env_map,
