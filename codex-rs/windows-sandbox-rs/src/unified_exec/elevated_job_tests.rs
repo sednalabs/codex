@@ -300,12 +300,8 @@ fn elevated_control_transport_eof_stops_grandchild() {
     let cwd = sandbox_cwd();
     let powershell = windows_powershell_path();
     let codex_home = elevated_test_codex_home();
-    let (fixture, transport) = spawn_pipe_backed_grandchild(
-        &cwd,
-        &powershell,
-        codex_home,
-        /*timeout_ms*/ 30_000,
-    );
+    let (fixture, transport) =
+        spawn_pipe_backed_grandchild(&cwd, &powershell, codex_home, /*timeout_ms*/ 30_000);
 
     wait_for_grandchild(&fixture);
     let (pipe_write, pipe_read) = transport.into_files();
@@ -324,12 +320,8 @@ fn elevated_pipe_timeout_stops_grandchild_and_reports_terminal_result() {
     let cwd = sandbox_cwd();
     let powershell = windows_powershell_path();
     let codex_home = elevated_test_codex_home();
-    let (fixture, transport) = spawn_pipe_backed_grandchild(
-        &cwd,
-        &powershell,
-        codex_home,
-        /*timeout_ms*/ 5_000,
-    );
+    let (fixture, transport) =
+        spawn_pipe_backed_grandchild(&cwd, &powershell, codex_home, /*timeout_ms*/ 5_000);
 
     wait_for_grandchild(&fixture);
     let (_pipe_write, pipe_read) = transport.into_files();
