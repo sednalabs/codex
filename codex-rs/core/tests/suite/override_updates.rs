@@ -28,6 +28,24 @@ fn collab_mode_with_instructions(instructions: Option<&str>) -> CollaborationMod
     }
 }
 
+async fn assert_settings_only_rollout_has_no_turn_context(
+    rollout_path: &std::path::Path,
+) -> Result<()> {
+    let InitialHistory::Resumed(history) = RolloutRecorder::get_rollout_history(rollout_path).await?
+    else {
+        panic!("settings-only shutdown should load as resumed history");
+    };
+    assert!(
+        history.history.iter().all(|item| matches!(
+            item,
+            RolloutItem::SessionMeta(_) | RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_))
+        )),
+        "settings-only shutdown should not record turn-scoped context"
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_settings_update_without_user_turn_does_not_record_permissions_update() -> Result<()>
 {
@@ -52,10 +70,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_permissions_up
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    assert!(
-        !rollout_path.exists(),
-        "did not expect a rollout before a new user turn"
-    );
+    assert_settings_only_rollout_has_no_turn_context(rollout_path).await?;
 
     Ok(())
 }
@@ -82,10 +97,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_environment_up
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    assert!(
-        !rollout_path.exists(),
-        "did not expect a rollout before a new user turn"
-    );
+    assert_settings_only_rollout_has_no_turn_context(rollout_path).await?;
 
     Ok(())
 }
@@ -113,18 +125,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_collaboration_
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    let InitialHistory::Resumed(history) =
-        RolloutRecorder::get_rollout_history(&rollout_path).await?
-    else {
-        panic!("settings-only shutdown should load as resumed history");
-    };
-    assert!(
-        history.history.iter().all(|item| matches!(
-            item,
-            RolloutItem::SessionMeta(_) | RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_))
-        )),
-        "settings-only shutdown should not record turn-scoped collaboration context"
-    );
+    assert_settings_only_rollout_has_no_turn_context(rollout_path).await?;
 
     Ok(())
 }
