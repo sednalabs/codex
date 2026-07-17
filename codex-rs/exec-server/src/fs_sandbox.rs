@@ -284,7 +284,8 @@ fn helper_env_key_is_allowed(key: &str) -> bool {
         // CoreFoundation consults this before falling back to user lookup during helper startup.
         || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
         || bazel_bwrap_env_key_is_allowed(key)
-        || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+        || (cfg!(windows)
+            && (key.eq_ignore_ascii_case("PATH") || key.eq_ignore_ascii_case("SYSTEMROOT")))
 }
 
 #[cfg(debug_assertions)]
@@ -513,11 +514,13 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn helper_env_preserves_windows_path_key_for_system_bwrap_discovery() {
+    fn helper_env_preserves_windows_runtime_keys_without_leaking_secrets() {
         let env = helper_env_from_vars(
             [
                 ("Path", r"C:\Windows\System32"),
+                ("SYSTEMROOT", r"C:\Windows"),
                 ("PATH_INJECTION", "bad"),
+                ("SYSTEMROOT_BACKUP", r"C:\Windows.old"),
                 ("OPENAI_API_KEY", "secret"),
             ]
             .map(|(key, value)| (OsString::from(key), OsString::from(value))),
@@ -525,7 +528,10 @@ mod tests {
 
         assert_eq!(
             env,
-            HashMap::from([("Path".to_string(), r"C:\Windows\System32".to_string())])
+            HashMap::from([
+                ("Path".to_string(), r"C:\Windows\System32".to_string()),
+                ("SYSTEMROOT".to_string(), r"C:\Windows".to_string()),
+            ])
         );
     }
 
