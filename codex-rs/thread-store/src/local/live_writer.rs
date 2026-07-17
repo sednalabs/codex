@@ -165,10 +165,21 @@ pub(super) async fn append_items(
                 .await
             {
                 Ok(Some(_)) => {}
-                Ok(None) => warn!(
-                    "state db thread disappeared while applying configured identity provenance: {}",
-                    params.thread_id
-                ),
+                Ok(None) => {
+                    // A new recorder can persist settings before its first metadata row exists.
+                    // Reconcile that rollout once to materialize the row and its provenance;
+                    // subsequent settings appends take the keyed atomic path above.
+                    codex_rollout::state_db::reconcile_rollout(
+                        Some(state_db),
+                        recorder.rollout_path(),
+                        store.config.default_model_provider_id.as_str(),
+                        /*builder*/ None,
+                        &[],
+                        /*archived_only*/ None,
+                        /*new_thread_memory_mode*/ None,
+                    )
+                    .await;
+                }
                 Err(err) => warn!(
                     "failed to apply configured identity provenance for thread {}: {err}",
                     params.thread_id
