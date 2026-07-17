@@ -71,7 +71,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_permissions_up
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    assert_settings_only_rollout_has_no_turn_context(rollout_path).await?;
+    assert_settings_only_rollout_has_no_turn_context(&rollout_path).await?;
 
     Ok(())
 }
@@ -98,7 +98,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_environment_up
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    assert_settings_only_rollout_has_no_turn_context(rollout_path).await?;
+    assert_settings_only_rollout_has_no_turn_context(&rollout_path).await?;
 
     Ok(())
 }
@@ -126,7 +126,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_collaboration_
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    assert_settings_only_rollout_has_no_turn_context(rollout_path).await?;
+    assert_settings_only_rollout_has_no_turn_context(&rollout_path).await?;
 
     Ok(())
 }
