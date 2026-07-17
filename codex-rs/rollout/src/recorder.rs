@@ -25,9 +25,11 @@ use time::format_description::FormatItem;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::error;
 use tracing::info;
@@ -85,6 +87,9 @@ use codex_utils_path as path_utils;
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
     writer_task: Arc<RolloutWriterTask>,
+    command_admission: Arc<AsyncMutex<()>>,
+    #[cfg(test)]
+    mutation_authority: RolloutMutationAuthority,
     pub(crate) rollout_path: PathBuf,
 }
 
@@ -119,23 +124,44 @@ enum RolloutCmd {
     Flush {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
-    Shutdown {
+    Revoke {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutWriterLifecycle {
+    Active,
+    Revoking,
+    Revoked,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutWriterJoinState {
+    Pending,
+    Succeeded,
+    Failed,
 }
 
 /// Observable state for the background rollout writer task.
 struct RolloutWriterTask {
     handle: Mutex<Option<JoinHandle<()>>>,
     terminal_failure: Mutex<Option<Arc<IoError>>>,
+    lifecycle: watch::Sender<RolloutWriterLifecycle>,
+    join_state: watch::Sender<RolloutWriterJoinState>,
 }
 
 impl RolloutWriterTask {
     /// Create task observability state before spawning the writer.
     fn new() -> Self {
+        let (lifecycle, _lifecycle_rx) = watch::channel(RolloutWriterLifecycle::Active);
+        let (join_state, _join_state_rx) = watch::channel(RolloutWriterJoinState::Pending);
         Self {
             handle: Mutex::new(None),
             terminal_failure: Mutex::new(None),
+            lifecycle,
+            join_state,
         }
     }
 
@@ -155,9 +181,17 @@ impl RolloutWriterTask {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(Arc::new(clone_io_error(err)));
+        self.lifecycle.send_replace(RolloutWriterLifecycle::Failed);
     }
 
-    /// Return the terminal writer-task failure, if the task exited with an error.
+    fn set_lifecycle(&self, lifecycle: RolloutWriterLifecycle) {
+        self.lifecycle.send_replace(lifecycle);
+    }
+
+    fn lifecycle(&self) -> RolloutWriterLifecycle {
+        *self.lifecycle.borrow()
+    }
+
     fn terminal_failure(&self) -> Option<IoError> {
         let guard = self
             .terminal_failure
@@ -165,7 +199,81 @@ impl RolloutWriterTask {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.as_ref().map(|err| clone_io_error(err.as_ref()))
     }
+
+    fn terminal_error(&self) -> Option<IoError> {
+        match self.lifecycle() {
+            RolloutWriterLifecycle::Active => self.terminal_failure(),
+            RolloutWriterLifecycle::Revoking => Some(IoError::other(REVOKING_RECORDER_MESSAGE)),
+            RolloutWriterLifecycle::Revoked => Some(IoError::other(REVOKED_RECORDER_MESSAGE)),
+            RolloutWriterLifecycle::Failed => self
+                .terminal_failure()
+                .or_else(|| Some(IoError::other("rollout writer task failed"))),
+        }
+    }
+
+    async fn wait_for_revocation_outcome(&self) -> RolloutWriterLifecycle {
+        let mut lifecycle = self.lifecycle.subscribe();
+        loop {
+            let current = *lifecycle.borrow_and_update();
+            if current != RolloutWriterLifecycle::Revoking {
+                return current;
+            }
+            if lifecycle.changed().await.is_err() {
+                unreachable!("rollout writer task owns the lifecycle sender");
+            }
+        }
+    }
+
+    fn ensure_join_started(self: &Arc<Self>) {
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            let writer_task = Arc::clone(self);
+            tokio::spawn(async move {
+                match handle.await {
+                    Ok(()) => {
+                        writer_task
+                            .join_state
+                            .send_replace(RolloutWriterJoinState::Succeeded);
+                    }
+                    Err(err) => {
+                        writer_task.mark_failed(&IoError::other(format!(
+                            "rollout writer task join failed: {err}"
+                        )));
+                        writer_task
+                            .join_state
+                            .send_replace(RolloutWriterJoinState::Failed);
+                    }
+                }
+            });
+        }
+    }
+
+    async fn join(self: &Arc<Self>) -> std::io::Result<()> {
+        self.ensure_join_started();
+        let mut join_state = self.join_state.subscribe();
+        loop {
+            match *join_state.borrow_and_update() {
+                RolloutWriterJoinState::Pending => {}
+                RolloutWriterJoinState::Succeeded => return Ok(()),
+                RolloutWriterJoinState::Failed => {
+                    return Err(self
+                        .terminal_failure()
+                        .unwrap_or_else(|| IoError::other("rollout writer task join failed")));
+                }
+            }
+            if join_state.changed().await.is_err() {
+                unreachable!("rollout writer task owns the join-state sender");
+            }
+        }
+    }
 }
+
+const REVOKING_RECORDER_MESSAGE: &str = "rollout recorder revocation is in progress";
+const REVOKED_RECORDER_MESSAGE: &str = "rollout recorder is permanently revoked";
 
 fn clone_io_error(err: &IoError) -> IoError {
     IoError::new(err.kind(), err.to_string())
@@ -828,7 +936,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
-                    mutation_authority,
+                    mutation_authority: mutation_authority.clone(),
                 }
             }
             RolloutRecorderParams::Resume { path } => {
@@ -846,7 +954,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
-                    mutation_authority,
+                    mutation_authority: mutation_authority.clone(),
                 }
             }
         };
@@ -863,7 +971,7 @@ impl RolloutRecorder {
         let writer_task_for_spawn = Arc::clone(&writer_task);
         let rollout_path_for_spawn = rollout_path.clone();
         let handle = tokio::task::spawn(async move {
-            let result = rollout_writer(state, rx).await;
+            let result = rollout_writer(state, rx, writer_task_for_spawn.as_ref()).await;
             if let Err(err) = result {
                 // This is the terminal background-task failure path. Normal I/O failures stay inside
                 // `rollout_writer`, are reported through command acks, and leave items buffered for retry.
@@ -881,6 +989,9 @@ impl RolloutRecorder {
         Ok(Self {
             tx,
             writer_task,
+            command_admission: Arc::new(AsyncMutex::new(())),
+            #[cfg(test)]
+            mutation_authority,
             rollout_path,
         })
     }
@@ -893,14 +1004,20 @@ impl RolloutRecorder {
         if items.is_empty() {
             return Ok(());
         }
-        self.tx
-            .send(RolloutCmd::AddItems(items.to_vec()))
-            .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout items: {e}"))
-                })
-            })
+        let _admission = self.command_admission.lock().await;
+        if self.writer_task.lifecycle() != RolloutWriterLifecycle::Active {
+            return Err(self
+                .writer_task
+                .terminal_error()
+                .unwrap_or_else(|| IoError::other("rollout writer is not active")));
+        }
+        let permit = self.tx.reserve().await.map_err(|e| {
+            self.writer_task
+                .terminal_error()
+                .unwrap_or_else(|| IoError::other(format!("failed to queue rollout items: {e}")))
+        })?;
+        permit.send(RolloutCmd::AddItems(items.to_vec()));
+        Ok(())
     }
 
     /// Materialize the rollout file and persist all buffered items.
@@ -913,12 +1030,12 @@ impl RolloutRecorder {
             .send(RolloutCmd::Persist { ack: tx })
             .await
             .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
                     IoError::other(format!("failed to queue rollout persist: {e}"))
                 })
             })?;
         rx.await.map_err(|e| {
-            self.writer_task.terminal_failure().unwrap_or_else(|| {
+            self.writer_task.terminal_error().unwrap_or_else(|| {
                 IoError::other(format!("failed waiting for rollout persist: {e}"))
             })
         })?
@@ -934,13 +1051,13 @@ impl RolloutRecorder {
             .send(RolloutCmd::Flush { ack: tx })
             .await
             .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
                     IoError::other(format!("failed to queue rollout flush: {e}"))
                 })
             })?;
         rx.await.map_err(|e| {
             self.writer_task
-                .terminal_failure()
+                .terminal_error()
                 .unwrap_or_else(|| IoError::other(format!("failed waiting for rollout flush: {e}")))
         })?
     }
@@ -1027,31 +1144,77 @@ impl RolloutRecorder {
         }))
     }
 
-    /// Drain pending items before stopping the writer task.
+    /// Drain pending items and permanently stop the writer task.
     ///
-    /// If draining fails, the writer stays alive so callers can continue retrying flush/shutdown.
+    /// Shutdown shares the revocation admission boundary so another clone cannot enqueue accepted
+    /// canonical items behind the terminal command.
     pub async fn shutdown(&self) -> std::io::Result<()> {
-        let (tx_done, rx_done) = oneshot::channel();
-        match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
-            Ok(_) => rx_done.await.map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed waiting for rollout shutdown: {e}"))
-                })
-            })??,
-            Err(e) => {
-                if let Some(err) = self.writer_task.terminal_failure() {
-                    warn!(
-                        "failed to send rollout shutdown command because writer task failed: {err}"
-                    );
-                    return Err(err);
+        if self.writer_task.lifecycle() == RolloutWriterLifecycle::Revoked {
+            return Err(IoError::other(REVOKED_RECORDER_MESSAGE));
+        }
+        self.revoke().await
+    }
+
+    /// Permanently revoke rollout mutation authority and stop the writer actor.
+    ///
+    /// Successful item transfers are serialized before this transition. A failed drain restores
+    /// active admission for retry. Joining is delegated to shared task state, so another recorder
+    /// clone can finish cleanup if the caller that initiated revocation is cancelled.
+    pub async fn revoke(&self) -> std::io::Result<()> {
+        loop {
+            let ack = {
+                let _admission = self.command_admission.lock().await;
+                match self.writer_task.lifecycle() {
+                    RolloutWriterLifecycle::Active => {
+                        let permit = self.tx.reserve().await.map_err(|e| {
+                            self.writer_task.terminal_error().unwrap_or_else(|| {
+                                IoError::other(format!("failed to queue rollout revocation: {e}"))
+                            })
+                        })?;
+                        let (ack_tx, ack_rx) = oneshot::channel();
+                        self.writer_task
+                            .set_lifecycle(RolloutWriterLifecycle::Revoking);
+                        permit.send(RolloutCmd::Revoke { ack: ack_tx });
+                        self.writer_task.ensure_join_started();
+                        Some(ack_rx)
+                    }
+                    RolloutWriterLifecycle::Revoking => None,
+                    RolloutWriterLifecycle::Revoked | RolloutWriterLifecycle::Failed => {
+                        drop(_admission);
+                        return self.finish_terminal_revoke().await;
+                    }
                 }
-                warn!("failed to send rollout shutdown command: {e}");
-                return Err(IoError::other(format!(
-                    "failed to send rollout shutdown command: {e}"
-                )));
+            };
+
+            if let Some(ack) = ack {
+                match ack.await {
+                    Ok(Ok(())) => return self.finish_terminal_revoke().await,
+                    Ok(Err(err)) => return Err(err),
+                    Err(_) => return self.finish_terminal_revoke().await,
+                }
             }
-        };
-        Ok(())
+            match self.writer_task.wait_for_revocation_outcome().await {
+                RolloutWriterLifecycle::Active => continue,
+                RolloutWriterLifecycle::Revoked | RolloutWriterLifecycle::Failed => {
+                    return self.finish_terminal_revoke().await;
+                }
+                RolloutWriterLifecycle::Revoking => unreachable!(),
+            }
+        }
+    }
+
+    async fn finish_terminal_revoke(&self) -> std::io::Result<()> {
+        self.writer_task.join().await?;
+        match self.writer_task.lifecycle() {
+            RolloutWriterLifecycle::Revoked => Ok(()),
+            RolloutWriterLifecycle::Failed => Err(self
+                .writer_task
+                .terminal_error()
+                .unwrap_or_else(|| IoError::other("rollout writer task failed"))),
+            RolloutWriterLifecycle::Active | RolloutWriterLifecycle::Revoking => Err(
+                IoError::other("rollout writer task did not reach a terminal state"),
+            ),
+        }
     }
 }
 
@@ -1630,11 +1793,13 @@ impl RolloutWriterState {
         self.write_pending_with_recovery("flush").await
     }
 
-    async fn shutdown(&mut self) -> std::io::Result<()> {
-        if self.is_deferred() && self.pending_items.is_empty() {
-            return Ok(());
+    async fn revoke(&mut self) -> std::io::Result<()> {
+        if !(self.is_deferred() && self.pending_items.is_empty()) {
+            self.write_pending_with_recovery("revoke").await?;
         }
-        self.write_pending_with_recovery("shutdown").await
+        self.mutation_authority.revoke().await;
+        self.writer = None;
+        Ok(())
     }
 
     async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
@@ -1768,6 +1933,7 @@ impl RolloutWriterState {
 async fn rollout_writer(
     mut state: RolloutWriterState,
     mut rx: mpsc::Receiver<RolloutCmd>,
+    writer_task: &RolloutWriterTask,
 ) -> std::io::Result<()> {
     // Process rollout commands
     while let Some(cmd) = rx.recv().await {
@@ -1782,12 +1948,14 @@ async fn rollout_writer(
             RolloutCmd::Flush { ack } => {
                 let _ = ack.send(state.flush().await);
             }
-            RolloutCmd::Shutdown { ack } => match state.shutdown().await {
+            RolloutCmd::Revoke { ack } => match state.revoke().await {
                 Ok(()) => {
+                    writer_task.set_lifecycle(RolloutWriterLifecycle::Revoked);
                     let _ = ack.send(Ok(()));
                     break;
                 }
                 Err(err) => {
+                    writer_task.set_lifecycle(RolloutWriterLifecycle::Active);
                     let _ = ack.send(Err(err));
                 }
             },
@@ -2100,3 +2268,7 @@ mod tests;
 #[cfg(test)]
 #[path = "recorder_mutation_authority_tests.rs"]
 mod mutation_authority_tests;
+
+#[cfg(test)]
+#[path = "recorder_terminal_revocation_tests.rs"]
+mod terminal_revocation_tests;
