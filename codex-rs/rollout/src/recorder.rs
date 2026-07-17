@@ -1568,9 +1568,9 @@ where
             path.display()
         )));
     };
-    let custody = authority.admit().map_err(|error| {
-        IoError::other(format!("rollout mutation admission failed: {error:?}"))
-    })?;
+    let custody = authority
+        .admit()
+        .map_err(|error| IoError::other(format!("rollout mutation admission failed: {error:?}")))?;
     before_mutation();
     let result = (|| {
         let path = compression::materialize_rollout_for_append_blocking(path.as_path())?;
@@ -1695,12 +1695,7 @@ impl RolloutWriterState {
             .unwrap_or_else(|| self.rollout_path.clone());
         let mutation_authority = self.mutation_authority.clone();
         let file = tokio::task::spawn_blocking(move || {
-            open_log_file_with_authority(
-                path.as_path(),
-                mutation_authority,
-                || {},
-                || {},
-            )
+            open_log_file_with_authority(path.as_path(), mutation_authority, || {}, || {})
         })
         .await
         .map_err(IoError::other)??;
@@ -1879,8 +1874,7 @@ where
     let path_for_open = path.clone();
     let (file, ordinal_state) = tokio::task::spawn_blocking(move || {
         let mut ordinal_file = File::open(path_for_open.as_path())?;
-        let ordinal_state =
-            ordinal_state_for_rollout(&mut ordinal_file, path_for_open.as_path())?;
+        let ordinal_state = ordinal_state_for_rollout(&mut ordinal_file, path_for_open.as_path())?;
         let custody = authority.admit().map_err(|error| {
             IoError::other(format!("rollout mutation admission failed: {error:?}"))
         })?;
