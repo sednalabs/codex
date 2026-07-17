@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 
 use codex_protocol::protocol::SessionSource;
 
+#[cfg_attr(not(test), allow(dead_code))]
+mod command_admission;
 pub(crate) mod compression;
 pub(crate) mod config;
 pub(crate) mod list;
