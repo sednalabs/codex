@@ -7,16 +7,20 @@ fn fake_ptr(value: usize) -> *mut c_void {
 }
 
 #[test]
-fn restricted_sids_exclude_everyone() {
+fn restricted_sids_include_restricted_code_and_exclude_everyone() {
     let caps = [fake_ptr(/*value*/ 0x10), fake_ptr(/*value*/ 0x20)];
     let extras = [fake_ptr(/*value*/ 0x30)];
-    let logon = fake_ptr(/*value*/ 0x40);
-    let everyone = fake_ptr(/*value*/ 0x50);
+    let restricted_code = fake_ptr(/*value*/ 0x40);
+    let logon = fake_ptr(/*value*/ 0x50);
+    let everyone = fake_ptr(/*value*/ 0x60);
 
-    let entries = build_restricted_sid_entries(&caps, &extras, logon);
+    let entries = build_restricted_sid_entries(&caps, &extras, restricted_code, logon);
     let restricted = entries.iter().map(|entry| entry.Sid).collect::<Vec<_>>();
 
-    assert_eq!(restricted, vec![caps[0], caps[1], extras[0], logon]);
+    assert_eq!(
+        restricted,
+        vec![caps[0], caps[1], extras[0], restricted_code, logon]
+    );
     assert!(!restricted.contains(&everyone));
 }
 
