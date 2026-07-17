@@ -1728,6 +1728,46 @@
       "extraction_target": "thread provenance and history-mode coexistence contract"
     },
     {
+      "id": "configured-thread-identity-provenance-contract",
+      "title": "Private configured thread identity provenance contract",
+      "status": "live",
+      "category": "thread-metadata",
+      "surface": [
+        "SQLite thread metadata",
+        "StateRuntime provenance API"
+      ],
+      "files": [
+        "codex-rs/state/migrations/0045_threads_configured_identity_provenance.sql",
+        "codex-rs/state/src/migrations_tests.rs",
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/configured_identity_provenance.rs",
+        "codex-rs/state/src/runtime/configured_identity_provenance_tests.rs"
+      ],
+      "behavior": "Downstream stores configured-identity provenance as a private SQLite fact outside generic ThreadMetadata. Codex-state publicly exposes only the typed Unknown, KnownAbsent, or Present enum and three narrow StateRuntime read/transition methods; transitions are atomic and forward-only, missing rows are explicit, and generic metadata upserts cannot overwrite the private state.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub blocking-ci codex-state unit tests",
+      "tests": [
+        "configured_identity_provenance_migration_defaults_existing_and_old_binary_rows_to_unknown",
+        "configured_identity_provenance_transitions_monotonically",
+        "configured_identity_provenance_competing_writers_preserve_present",
+        "configured_identity_provenance_rejects_invalid_values",
+        "generic_thread_metadata_upsert_preserves_configured_identity_provenance"
+      ],
+      "owner": "downstream",
+      "notes": "Unknown is not evidence that configured identity is absent. Preserve this contract until upstream provides equivalent private storage, typed cross-crate access, monotonic transitions, migration compatibility, and generic-upsert isolation. Event classification, history reconstruction, identity values, precedence, and live synchronization remain separate authorities.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/runtime/configured_identity_provenance.rs"
+      ],
+      "extraction_target": "upstream private thread identity-provenance state contract"
+    },
+    {
       "id": "mcp-direct-app-tool-reconciliation",
       "title": "Direct and app-backed MCP tool catalog reconciliation",
       "status": "live",
