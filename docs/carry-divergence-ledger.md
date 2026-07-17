@@ -187,13 +187,19 @@ docs-only refresh commit that records this snapshot.
 - The compatible restricted token keeps the Everyone SID on its default DACL
   for IPC compatibility, but excludes Everyone from the restricting SID set.
   Adding Everyone to both sets makes the write restriction ineffective.
+- The S-1-5-33 write-restricted code SID is appended after the logon SID in the
+  restricting set, with its `LocalSid` allocation retained through token
+  creation. This preserves Windows child-runtime initialization without
+  changing the IPC DACL or widening the filesystem boundary.
 - Hosted Windows guardrails:
   `slash_tmp_permission_path_is_unix_only`,
   `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
   `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
   `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
-  `legacy_workspace_write_delete_is_limited_to_writable_roots`, plus
-  `restricted_sids_exclude_everyone` and
+  `legacy_workspace_write_delete_is_limited_to_writable_roots`,
+  `legacy_tty_cmd_emits_output_and_accepts_input`,
+  `legacy_tty_cmd_default_desktop_emits_output_and_accepts_input`,
+  `restricted_sids_exclude_everyone`, and
   `default_dacl_keeps_everyone_for_ipc_compatibility`.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`

@@ -484,6 +484,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             &script,
             concat!(
                 "@echo off\r\n",
+                "echo WRITE-RESTRICTED-TOKEN-READY\r\n",
                 "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
                 "del /f /q \"%TEMP_DELETE%\"\r\n",
                 "del /f /q \"%TMP_DELETE%\"\r\n",
@@ -545,18 +546,28 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(/*secs*/ 10))
                 .await;
         let stdout = String::from_utf8_lossy(&stdout);
+        let exit_code_hex = exit_code as u32;
 
         assert_eq!(
             (
                 exit_code,
+                stdout.contains("WRITE-RESTRICTED-TOKEN-READY"),
                 workspace_file.exists(),
                 temp_file.exists(),
                 tmp_file.exists(),
                 fs::read_to_string(&outside_file).ok(),
                 protected_git_dir.is_dir(),
             ),
-            (0, false, false, false, Some("outside".to_string()), true),
-            "stdout={stdout:?}\n{}",
+            (
+                0,
+                true,
+                false,
+                false,
+                false,
+                Some("outside".to_string()),
+                true,
+            ),
+            "exit_code={exit_code} (0x{exit_code_hex:08x}) stdout={stdout:?}\n{}",
             sandbox_log(codex_home.path())
         );
     });
@@ -671,8 +682,8 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
 }
 
 #[test]
-#[ignore = "TODO: legacy ConPTY cmd.exe exits with STATUS_DLL_INIT_FAILED in CI"]
 fn legacy_tty_cmd_emits_output_and_accepts_input() {
+    let _guard = windows_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -715,15 +726,21 @@ fn legacy_tty_cmd_emits_output_and_accepts_input() {
         let (stdout, exit_code) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
         let stdout = String::from_utf8_lossy(&stdout);
-        assert_eq!(exit_code, 0, "stdout={stdout:?}");
+        let exit_code_hex = exit_code as u32;
+        assert_eq!(
+            exit_code,
+            0,
+            "exit_code={exit_code} (0x{exit_code_hex:08x}) stdout={stdout:?}\n{}",
+            sandbox_log(codex_home.path())
+        );
         assert!(stdout.contains("ready"), "stdout={stdout:?}");
         assert!(stdout.contains("second"), "stdout={stdout:?}");
     });
 }
 
 #[test]
-#[ignore = "TODO: legacy ConPTY cmd.exe exits with STATUS_DLL_INIT_FAILED in CI"]
 fn legacy_tty_cmd_default_desktop_emits_output_and_accepts_input() {
+    let _guard = windows_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
         let cwd = sandbox_cwd();
@@ -769,7 +786,13 @@ fn legacy_tty_cmd_default_desktop_emits_output_and_accepts_input() {
         let (stdout, exit_code) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
         let stdout = String::from_utf8_lossy(&stdout);
-        assert_eq!(exit_code, 0, "stdout={stdout:?}");
+        let exit_code_hex = exit_code as u32;
+        assert_eq!(
+            exit_code,
+            0,
+            "exit_code={exit_code} (0x{exit_code_hex:08x}) stdout={stdout:?}\n{}",
+            sandbox_log(codex_home.path())
+        );
         assert!(stdout.contains("ready"), "stdout={stdout:?}");
         assert!(stdout.contains("second"), "stdout={stdout:?}");
     });

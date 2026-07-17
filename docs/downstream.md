@@ -578,9 +578,10 @@ User-visible behavior:
 
 - The `/tmp` special permission root resolves only on Unix; Windows policy
   construction does not reinterpret it as a drive-root path.
-- The compatible restricted token excludes Everyone from its restricting SID
-  set while retaining Everyone on the default DACL needed for child-process
-  pipes and IPC.
+- The compatible restricted token appends the S-1-5-33 write-restricted code
+  SID after the logon SID so Windows child runtimes can initialize.
+- Everyone remains excluded from the restricting SID set while retained on the
+  unchanged default DACL needed for child-process pipes and IPC.
 - Proxy-enforced Windows commands use one effective elevated-backend decision
   for filesystem overrides, PowerShell startup, process spawning, and telemetry.
 - Unified exec cannot bypass the managed proxy with an unrelated direct

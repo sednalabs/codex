@@ -45,6 +45,7 @@ const WRITE_RESTRICTED: u32 = 0x08;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const WIN_WORLD_SID: i32 = 1;
 const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
+const WRITE_RESTRICTED_CODE_SID: &str = "S-1-5-33";
 
 #[repr(C)]
 struct TokenDefaultDaclInfo {
@@ -428,11 +429,12 @@ fn build_restricted_sid_entries(
     psid_capabilities: &[*mut c_void],
     extra_restricting_sids: &[*mut c_void],
     psid_logon: *mut c_void,
+    psid_write_restricted_code: *mut c_void,
 ) -> Vec<SID_AND_ATTRIBUTES> {
     let mut entries: Vec<SID_AND_ATTRIBUTES> =
         vec![
             unsafe { std::mem::zeroed() };
-            psid_capabilities.len() + extra_restricting_sids.len() + 1
+            psid_capabilities.len() + extra_restricting_sids.len() + 2
         ];
     for (i, psid) in psid_capabilities.iter().enumerate() {
         entries[i].Sid = *psid;
@@ -446,6 +448,8 @@ fn build_restricted_sid_entries(
     let logon_idx = extras_idx + extra_restricting_sids.len();
     entries[logon_idx].Sid = psid_logon;
     entries[logon_idx].Attributes = 0;
+    entries[logon_idx + 1].Sid = psid_write_restricted_code;
+    entries[logon_idx + 1].Attributes = 0;
     entries
 }
 
@@ -473,10 +477,17 @@ unsafe fn create_token_with_caps_from(
     let psid_logon = logon_sid_bytes.as_mut_ptr() as *mut c_void;
     let mut everyone = world_sid()?;
     let psid_everyone = everyone.as_mut_ptr() as *mut c_void;
+    // Keep the LocalSid allocation alive until CreateRestrictedToken has copied its SID.
+    let write_restricted_code_sid = LocalSid::from_string(WRITE_RESTRICTED_CODE_SID)?;
+    let psid_write_restricted_code = write_restricted_code_sid.as_ptr();
 
     // Everyone stays on the IPC DACL, but must not widen the write-restricted token.
-    let mut entries =
-        build_restricted_sid_entries(psid_capabilities, extra_restricting_sids, psid_logon);
+    let mut entries = build_restricted_sid_entries(
+        psid_capabilities,
+        extra_restricting_sids,
+        psid_logon,
+        psid_write_restricted_code,
+    );
 
     let mut new_token: HANDLE = 0;
     let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
