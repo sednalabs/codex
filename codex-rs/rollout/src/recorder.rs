@@ -36,6 +36,9 @@ use tracing::warn;
 
 use super::ARCHIVED_SESSIONS_SUBDIR;
 use super::SESSIONS_SUBDIR;
+use super::command_admission::RolloutCommandAdmission;
+use super::command_admission::RolloutCommandAdmissionError;
+use super::command_admission::RolloutTerminalTransition;
 use super::compression;
 use super::list::Cursor;
 use super::list::SortDirection;
@@ -120,13 +123,27 @@ enum RolloutCmd {
     },
     Shutdown {
         ack: oneshot::Sender<std::io::Result<()>>,
+        /// Sent after an error only when the writer will continue receiving commands.
+        continuing: oneshot::Sender<()>,
     },
+}
+
+enum TerminalCommandOutcome {
+    Terminated(std::io::Result<()>),
+    Retryable(IoError),
+}
+
+enum WriterContinuationRace {
+    WriterStopped(std::io::Result<()>),
+    Continuing,
+    SignalLost,
 }
 
 /// Observable state for the background rollout writer task.
 struct RolloutWriterTask {
     handle: Mutex<Option<JoinHandle<()>>>,
     terminal_failure: Mutex<Option<Arc<IoError>>>,
+    command_admission: RolloutCommandAdmission,
 }
 
 impl RolloutWriterTask {
@@ -135,6 +152,7 @@ impl RolloutWriterTask {
         Self {
             handle: Mutex::new(None),
             terminal_failure: Mutex::new(None),
+            command_admission: RolloutCommandAdmission::new(),
         }
     }
 
@@ -145,6 +163,138 @@ impl RolloutWriterTask {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = Some(handle);
+    }
+
+    /// Reserve bounded-channel capacity before transferring shutdown ownership to the writer.
+    #[cfg_attr(not(test), allow(dead_code))]
+    async fn reserve_shutdown(&self, tx: &Sender<RolloutCmd>) -> TerminalCommandOutcome {
+        let terminal_admission = match self.command_admission.acquire_terminal().await {
+            Ok(admission) => admission,
+            Err(RolloutCommandAdmissionError::Terminal) => {
+                return TerminalCommandOutcome::Terminated(Err(IoError::other(
+                    "rollout writer terminal command was already committed",
+                )));
+            }
+        };
+        let permit = match tx.reserve().await {
+            Ok(permit) => permit,
+            Err(err) => {
+                let command_result = Err(IoError::other(format!(
+                    "failed to reserve rollout shutdown command: {err}"
+                )));
+                let transition = terminal_admission.commit(|| {});
+                let Some(custody) = self.take_handle() else {
+                    return self.sealed_terminal_outcome(
+                        transition,
+                        command_result,
+                        Err(IoError::other("rollout writer task handle is unavailable")),
+                    );
+                };
+                return self.sealed_terminal_outcome(
+                    transition,
+                    command_result,
+                    custody.wait().await,
+                );
+            }
+        };
+
+        let (ack, ack_rx) = oneshot::channel();
+        let (continuing, mut continuing_rx) = oneshot::channel();
+        let transition = terminal_admission.commit(|| {
+            permit.send(RolloutCmd::Shutdown { ack, continuing });
+        });
+
+        let Some(mut custody) = self.take_handle() else {
+            return self.sealed_terminal_outcome(
+                transition,
+                Err(IoError::other("rollout writer task handle is unavailable")),
+                Ok(()),
+            );
+        };
+        match ack_rx.await {
+            Ok(Ok(())) => {
+                self.sealed_terminal_outcome(transition, Ok(()), custody.wait().await)
+            }
+            Ok(Err(err)) => {
+                let race = match custody.handle.as_mut() {
+                    Some(handle) => {
+                        tokio::select! {
+                            biased;
+                            result = handle => WriterContinuationRace::WriterStopped(
+                                writer_join_result(result)
+                            ),
+                            continued = &mut continuing_rx => {
+                                if continued.is_ok() {
+                                    WriterContinuationRace::Continuing
+                                } else {
+                                    WriterContinuationRace::SignalLost
+                                }
+                            }
+                        }
+                    }
+                    None => WriterContinuationRace::WriterStopped(Err(IoError::other(
+                        "rollout writer task handle is unavailable",
+                    ))),
+                };
+                match race {
+                    WriterContinuationRace::WriterStopped(task_result) => {
+                        custody.handle = None;
+                        self.sealed_terminal_outcome(transition, Err(err), task_result)
+                    }
+                    WriterContinuationRace::Continuing => {
+                        drop(custody);
+                        transition.reopen();
+                        TerminalCommandOutcome::Retryable(err)
+                    }
+                    WriterContinuationRace::SignalLost => self.sealed_terminal_outcome(
+                        transition,
+                        Err(err),
+                        custody.wait().await,
+                    ),
+                }
+            }
+            Err(err) => self.sealed_terminal_outcome(
+                transition,
+                Err(IoError::other(format!(
+                    "failed waiting for rollout shutdown: {err}"
+                ))),
+                custody.wait().await,
+            ),
+        }
+    }
+
+    fn take_handle(&self) -> Option<WriterHandleCustody<'_>> {
+        let mut guard = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.take().map(|handle| WriterHandleCustody {
+            owner: self,
+            handle: Some(handle),
+        })
+    }
+
+    fn terminal_outcome(
+        &self,
+        command_result: std::io::Result<()>,
+        task_result: std::io::Result<()>,
+    ) -> TerminalCommandOutcome {
+        let result = match self.terminal_failure() {
+            Some(err) => Err(err),
+            None => task_result.and(command_result),
+        };
+        TerminalCommandOutcome::Terminated(result)
+    }
+
+    fn sealed_terminal_outcome(
+        &self,
+        transition: RolloutTerminalTransition,
+        command_result: std::io::Result<()>,
+        task_result: std::io::Result<()>,
+    ) -> TerminalCommandOutcome {
+        let outcome = self.terminal_outcome(command_result, task_result);
+        transition.seal();
+        outcome
     }
 
     /// Remember a terminal task failure for future recorder API calls.
@@ -164,6 +314,44 @@ impl RolloutWriterTask {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.as_ref().map(|err| clone_io_error(err.as_ref()))
     }
+}
+
+struct WriterHandleCustody<'a> {
+    owner: &'a RolloutWriterTask,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl WriterHandleCustody<'_> {
+    async fn wait(mut self) -> std::io::Result<()> {
+        let result = match self.handle.as_mut() {
+            Some(handle) => writer_join_result(handle.await),
+            None => Err(IoError::other("rollout writer task handle is unavailable")),
+        };
+        self.handle = None;
+        result
+    }
+}
+
+impl Drop for WriterHandleCustody<'_> {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let mut guard = self
+            .owner
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(handle);
+        } else {
+            error!("rollout writer task handle custody was already restored");
+        }
+    }
+}
+
+fn writer_join_result(result: Result<(), tokio::task::JoinError>) -> std::io::Result<()> {
+    result.map_err(|err| IoError::other(format!("rollout writer task failed: {err}")))
 }
 
 fn clone_io_error(err: &IoError) -> IoError {
@@ -1024,7 +1212,15 @@ impl RolloutRecorder {
     /// If draining fails, the writer stays alive so callers can continue retrying flush/shutdown.
     pub async fn shutdown(&self) -> std::io::Result<()> {
         let (tx_done, rx_done) = oneshot::channel();
-        match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
+        let (continuing, _continuing_rx) = oneshot::channel();
+        match self
+            .tx
+            .send(RolloutCmd::Shutdown {
+                ack: tx_done,
+                continuing,
+            })
+            .await
+        {
             Ok(_) => rx_done.await.map_err(|e| {
                 self.writer_task.terminal_failure().unwrap_or_else(|| {
                     IoError::other(format!("failed waiting for rollout shutdown: {e}"))
@@ -1744,13 +1940,14 @@ async fn rollout_writer(
             RolloutCmd::Flush { ack } => {
                 let _ = ack.send(state.flush().await);
             }
-            RolloutCmd::Shutdown { ack } => match state.shutdown().await {
+            RolloutCmd::Shutdown { ack, continuing } => match state.shutdown().await {
                 Ok(()) => {
                     let _ = ack.send(Ok(()));
                     break;
                 }
                 Err(err) => {
                     let _ = ack.send(Err(err));
+                    let _ = continuing.send(());
                 }
             },
         }

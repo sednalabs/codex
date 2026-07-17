@@ -22,12 +22,174 @@ use codex_protocol::protocol::UserMessageEvent;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::fs::File;
+use std::future::Future;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::sync::Barrier;
 use uuid::Uuid;
+
+fn tracked_writer(future: impl Future<Output = ()> + Send + 'static) -> Arc<RolloutWriterTask> {
+    let writer_task = Arc::new(RolloutWriterTask::new());
+    writer_task.set_handle(tokio::spawn(future));
+    writer_task
+}
+
+async fn assert_pending_once<F: Future>(mut future: Pin<&mut F>) {
+    std::future::poll_fn(|cx| match future.as_mut().poll(cx) {
+        Poll::Pending => Poll::Ready(()),
+        Poll::Ready(_) => panic!("terminal command completed before its barrier opened"),
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn terminal_reservation_preserves_order_and_post_commit_cancel_fails_closed() {
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.send(RolloutCmd::AddItems(Vec::new())).await.unwrap();
+    let reader_gate = Arc::new(Barrier::new(2));
+    let ack_gate = Arc::new(Barrier::new(2));
+    let exit_gate = Arc::new(Barrier::new(2));
+    let writer_task = tracked_writer({
+        let reader_gate = Arc::clone(&reader_gate);
+        let ack_gate = Arc::clone(&ack_gate);
+        let exit_gate = Arc::clone(&exit_gate);
+        async move {
+            reader_gate.wait().await;
+            assert!(matches!(
+                rx.recv().await,
+                Some(RolloutCmd::AddItems(items)) if items.is_empty()
+            ));
+            let Some(RolloutCmd::Shutdown { ack, .. }) = rx.recv().await else {
+                panic!("shutdown must follow the command that consumed bounded capacity");
+            };
+            ack.send(Ok(())).unwrap();
+            ack_gate.wait().await;
+            exit_gate.wait().await;
+        }
+    });
+
+    let mut attempt = Box::pin(writer_task.reserve_shutdown(&tx));
+    assert_pending_once(attempt.as_mut()).await;
+    reader_gate.wait().await;
+    tokio::select! {
+        _ = &mut attempt => panic!("shutdown completed before writer exit"),
+        _ = ack_gate.wait() => {}
+    }
+    assert_pending_once(attempt.as_mut()).await;
+    assert!(writer_task.command_admission.is_terminal());
+    drop(attempt);
+    match writer_task.reserve_shutdown(&tx).await {
+        TerminalCommandOutcome::Terminated(Err(err)) => assert!(
+            err.to_string().contains("terminal command was already committed")
+        ),
+        TerminalCommandOutcome::Terminated(Ok(())) => panic!("shutdown unexpectedly succeeded"),
+        TerminalCommandOutcome::Retryable(err) => panic!("shutdown reopened after cancel: {err}"),
+    }
+    {
+        let guard = writer_task
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(guard.as_ref().is_some_and(|handle| !handle.is_finished()));
+    }
+    exit_gate.wait().await;
+    writer_task.take_handle().unwrap().wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_capacity_wait_leaves_admission_and_writer_active() {
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.send(RolloutCmd::AddItems(Vec::new())).await.unwrap();
+    let reader_gate = Arc::new(Barrier::new(2));
+    let writer_task = tracked_writer({
+        let reader_gate = Arc::clone(&reader_gate);
+        async move {
+            reader_gate.wait().await;
+            assert!(matches!(rx.recv().await, Some(RolloutCmd::AddItems(_))));
+        }
+    });
+
+    let mut attempt = Box::pin(writer_task.reserve_shutdown(&tx));
+    assert_pending_once(attempt.as_mut()).await;
+    drop(attempt);
+    assert!(!writer_task.command_admission.is_terminal());
+    writer_task
+        .command_admission
+        .acquire_data()
+        .await
+        .unwrap()
+        .commit(|| {});
+    {
+        let guard = writer_task
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(guard.as_ref().is_some_and(|handle| !handle.is_finished()));
+    }
+
+    reader_gate.wait().await;
+    writer_task.take_handle().unwrap().wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_error_with_completed_writer_is_terminal() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let writer_task = tracked_writer(async move {
+        let Some(RolloutCmd::Shutdown { ack, continuing }) = rx.recv().await else {
+            panic!("expected shutdown command");
+        };
+        ack.send(Err(IoError::other("shutdown failed"))).unwrap();
+        continuing.send(()).unwrap();
+    });
+
+    match writer_task.reserve_shutdown(&tx).await {
+        TerminalCommandOutcome::Terminated(Err(err)) => {
+            assert_eq!(err.to_string(), "shutdown failed");
+        }
+        TerminalCommandOutcome::Terminated(Ok(())) => panic!("shutdown unexpectedly succeeded"),
+        TerminalCommandOutcome::Retryable(err) => panic!("dead writer was retryable: {err}"),
+    }
+}
+
+#[tokio::test]
+async fn shutdown_error_with_continuing_writer_restores_handle() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let exit_gate = Arc::new(Barrier::new(2));
+    let writer_task = tracked_writer({
+        let exit_gate = Arc::clone(&exit_gate);
+        async move {
+            let Some(RolloutCmd::Shutdown { ack, continuing }) = rx.recv().await else {
+                panic!("expected shutdown command");
+            };
+            ack.send(Err(IoError::other("retry shutdown"))).unwrap();
+            continuing.send(()).unwrap();
+            exit_gate.wait().await;
+        }
+    });
+
+    match writer_task.reserve_shutdown(&tx).await {
+        TerminalCommandOutcome::Retryable(err) => {
+            assert_eq!(err.to_string(), "retry shutdown");
+        }
+        TerminalCommandOutcome::Terminated(result) => {
+            panic!("live writer was terminal: {result:?}");
+        }
+    }
+    {
+        let guard = writer_task
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(guard.as_ref().is_some_and(|handle| !handle.is_finished()));
+    }
+    exit_gate.wait().await;
+    writer_task.take_handle().unwrap().wait().await.unwrap();
+}
 
 fn test_config(codex_home: &Path) -> RolloutConfig {
     RolloutConfig {
