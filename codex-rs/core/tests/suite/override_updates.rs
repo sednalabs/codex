@@ -31,7 +31,8 @@ fn collab_mode_with_instructions(instructions: Option<&str>) -> CollaborationMod
 async fn assert_settings_only_rollout_has_no_turn_context(
     rollout_path: &std::path::Path,
 ) -> Result<()> {
-    let InitialHistory::Resumed(history) = RolloutRecorder::get_rollout_history(rollout_path).await?
+    let InitialHistory::Resumed(history) =
+        RolloutRecorder::get_rollout_history(rollout_path).await?
     else {
         panic!("settings-only shutdown should load as resumed history");
     };
