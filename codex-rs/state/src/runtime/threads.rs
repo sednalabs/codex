@@ -1045,6 +1045,17 @@ ON CONFLICT(thread_id, position) DO NOTHING
         {
             return Err(err);
         }
+        if configured_identity_provenance::rollout_items_observe_configured_identity(items)
+            && self
+                .mark_configured_identity_present(builder.id)
+                .await?
+                .is_none()
+        {
+            return Err(anyhow::anyhow!(
+                "thread disappeared while applying configured identity provenance: {}",
+                builder.id
+            ));
+        }
         Ok(())
     }
 

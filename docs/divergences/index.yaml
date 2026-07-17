@@ -1741,9 +1741,12 @@
         "codex-rs/state/src/migrations_tests.rs",
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/configured_identity_provenance.rs",
-        "codex-rs/state/src/runtime/configured_identity_provenance_tests.rs"
+        "codex-rs/state/src/runtime/configured_identity_provenance_tests.rs",
+        "codex-rs/rollout/src/metadata.rs",
+        "codex-rs/rollout/src/state_db.rs",
+        "codex-rs/thread-store/src/local/live_writer.rs"
       ],
-      "behavior": "Downstream stores configured-identity provenance as a private SQLite fact outside generic ThreadMetadata. Codex-state publicly exposes only the typed Unknown, KnownAbsent, or Present enum and three narrow StateRuntime read/transition methods; transitions are atomic and forward-only, missing rows are explicit, and generic metadata upserts cannot overwrite the private state.",
+      "behavior": "Downstream stores configured-identity provenance as a private SQLite fact outside generic ThreadMetadata. Codex-state exposes typed monotonic transitions and classifies incremental ThreadSettingsApplied items as Present. Local live append, resume, bounded read repair, and rollout backfill reconcile complete files as Present or KnownAbsent while incomplete history remains Unknown unless presence was observed.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1755,15 +1758,19 @@
         "configured_identity_provenance_transitions_monotonically",
         "configured_identity_provenance_competing_writers_preserve_present",
         "configured_identity_provenance_rejects_invalid_values",
-        "generic_thread_metadata_upsert_preserves_configured_identity_provenance"
+        "generic_thread_metadata_upsert_preserves_configured_identity_provenance",
+        "live_settings_append_persists_provenance_across_restart",
+        "resume_reconciles_only_complete_configured_identity_history"
       ],
       "owner": "downstream",
-      "notes": "Unknown is not evidence that configured identity is absent. Preserve this contract until upstream provides equivalent private storage, typed cross-crate access, monotonic transitions, migration compatibility, and generic-upsert isolation. Event classification, history reconstruction, identity values, precedence, and live synchronization remain separate authorities.",
+      "notes": "Unknown is not evidence that configured identity is absent. Preserve this contract until upstream provides equivalent private storage, typed cross-crate access, monotonic transitions, migration compatibility, generic-upsert isolation, and complete-history reconciliation. Identity values, precedence, and public live snapshots remain separate authorities.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "direct-upstream-fix",
       "hotspot_files": [
         "codex-rs/state/src/runtime.rs",
-        "codex-rs/state/src/runtime/configured_identity_provenance.rs"
+        "codex-rs/state/src/runtime/configured_identity_provenance.rs",
+        "codex-rs/rollout/src/state_db.rs",
+        "codex-rs/thread-store/src/local/live_writer.rs"
       ],
       "extraction_target": "upstream private thread identity-provenance state contract"
     },

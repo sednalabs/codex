@@ -326,22 +326,31 @@ mod tests {
     use std::sync::Arc;
 
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::Settings;
     use codex_protocol::items::TurnItem;
     use codex_protocol::items::UserMessageItem;
     use codex_protocol::models::BaseInstructions;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::MessagePhase;
+    use codex_protocol::models::PermissionProfile;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::protocol::ThreadMemoryMode;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
+    use codex_state::ConfiguredIdentityProvenance;
+    use std::io::Write;
     use tempfile::TempDir;
 
     use super::*;
@@ -471,6 +480,169 @@ mod tests {
         );
         assert_eq!(metadata.preview.as_deref(), Some("observed append"));
         assert_eq!(metadata.title, "observed append");
+    }
+
+    #[tokio::test]
+    async fn live_settings_append_persists_provenance_across_restart() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = Arc::new(LocalThreadStore::new(config.clone(), Some(runtime.clone())));
+        let thread_id = ThreadId::default();
+        let live_thread = LiveThread::create(store.clone(), create_thread_params(thread_id))
+            .await
+            .expect("create live thread");
+
+        live_thread
+            .append_items(&[thread_settings_item(home.path())])
+            .await
+            .expect("append settings event");
+        let live_provenance = runtime
+            .read_configured_identity_provenance(thread_id)
+            .await
+            .expect("live provenance should load");
+        live_thread.shutdown().await.expect("shutdown live thread");
+        drop(live_thread);
+        drop(store);
+        runtime.close().await;
+
+        let reopened = codex_state::StateRuntime::init(
+            config.sqlite_home,
+            config.default_model_provider_id,
+        )
+        .await
+        .expect("state db should reopen");
+        let restarted_provenance = reopened
+            .read_configured_identity_provenance(thread_id)
+            .await
+            .expect("restarted provenance should load");
+
+        assert_eq!(
+            (live_provenance, restarted_provenance),
+            (
+                Some(ConfiguredIdentityProvenance::Present),
+                Some(ConfiguredIdentityProvenance::Present),
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_reconciles_only_complete_configured_identity_history() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let present_uuid = uuid::Uuid::from_u128(410);
+        let absent_uuid = uuid::Uuid::from_u128(411);
+        let partial_uuid = uuid::Uuid::from_u128(412);
+        let direct_uuid = uuid::Uuid::from_u128(413);
+        let present_path = write_session_file(
+            home.path(),
+            "2025-01-03T18-00-00",
+            present_uuid,
+        )
+        .expect("present rollout");
+        codex_rollout::append_rollout_item_to_path(
+            present_path.as_path(),
+            &thread_settings_item(home.path()),
+        )
+        .await
+        .expect("append historical settings event");
+        let absent_path =
+            write_session_file(home.path(), "2025-01-03T18-01-00", absent_uuid)
+                .expect("absent rollout");
+        let partial_path =
+            write_session_file(home.path(), "2025-01-03T18-02-00", partial_uuid)
+                .expect("partial rollout");
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(partial_path.as_path())
+                .expect("open partial rollout"),
+            "not-json"
+        )
+        .expect("append unreadable rollout line");
+        let direct_path =
+            write_session_file(home.path(), "2025-01-03T18-03-00", direct_uuid)
+                .expect("direct rollout");
+
+        let mut seeded = Vec::new();
+        for (uuid, path) in [
+            (present_uuid, &present_path),
+            (absent_uuid, &absent_path),
+            (partial_uuid, &partial_path),
+            (direct_uuid, &direct_path),
+        ] {
+            let thread_id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
+            seeded.push((
+                thread_id,
+                seed_unknown_provenance(runtime.as_ref(), path.as_path()).await,
+            ));
+        }
+        runtime
+            .apply_rollout_items(
+                &seeded[3].1,
+                &[thread_settings_item(home.path())],
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("direct rollout items should apply");
+
+        let store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
+        let mut resumed = Vec::new();
+        for (thread_id, path) in [
+            (seeded[0].0, present_path),
+            (seeded[1].0, absent_path),
+            (seeded[2].0, partial_path),
+        ] {
+            resumed.push(
+                LiveThread::resume(
+                    store.clone(),
+                    ThreadHistoryMode::Legacy,
+                    ResumeThreadParams {
+                        thread_id,
+                        rollout_path: Some(path),
+                        history: None,
+                        include_archived: false,
+                        metadata: thread_metadata(),
+                    },
+                )
+                .await
+                .expect("resume rollout"),
+            );
+        }
+
+        let mut provenance = Vec::new();
+        for (thread_id, _) in &seeded {
+            provenance.push(
+                runtime
+                    .read_configured_identity_provenance(*thread_id)
+                    .await
+                    .expect("provenance should load"),
+            );
+        }
+        assert_eq!(
+            provenance,
+            vec![
+                Some(ConfiguredIdentityProvenance::Present),
+                Some(ConfiguredIdentityProvenance::KnownAbsent),
+                Some(ConfiguredIdentityProvenance::Unknown),
+                Some(ConfiguredIdentityProvenance::Present),
+            ]
+        );
+        for live_thread in resumed {
+            live_thread.shutdown().await.expect("shutdown resumed thread");
+        }
     }
 
     #[tokio::test]
@@ -1371,6 +1543,55 @@ mod tests {
             text_elements: Vec::new(),
             ..Default::default()
         }))
+    }
+
+    fn thread_settings_item(cwd: &std::path::Path) -> RolloutItem {
+        RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: "gpt-5".to_string(),
+                    model_provider_id: "test-provider".to_string(),
+                    service_tier: None,
+                    approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
+                    approvals_reviewer: ApprovalsReviewer::User,
+                    permission_profile: PermissionProfile::Disabled,
+                    active_permission_profile: None,
+                    cwd: cwd.to_path_buf().try_into().expect("absolute cwd"),
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    personality: None,
+                    collaboration_mode: CollaborationMode {
+                        mode: ModeKind::Default,
+                        settings: Settings {
+                            model: "gpt-5".to_string(),
+                            reasoning_effort: None,
+                            developer_instructions: None,
+                        },
+                    },
+                },
+            },
+        ))
+    }
+
+    async fn seed_unknown_provenance(
+        runtime: &codex_state::StateRuntime,
+        path: &std::path::Path,
+    ) -> codex_state::ThreadMetadataBuilder {
+        let (items, _, _) = RolloutRecorder::load_rollout_items(path)
+            .await
+            .expect("load rollout for seed");
+        let builder = codex_rollout::builder_from_items(items.as_slice(), path)
+            .expect("rollout metadata builder");
+        runtime
+            .apply_rollout_items(
+                &builder,
+                &items[..1],
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("seed unknown provenance");
+        builder
     }
 
     async fn assert_rollout_contains_message(path: &std::path::Path, expected: &str) {

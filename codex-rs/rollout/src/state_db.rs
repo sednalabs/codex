@@ -525,6 +525,7 @@ pub async fn reconcile_rollout(
                 return;
             }
         };
+    let configured_identity_provenance = outcome.configured_identity_provenance;
     let mut metadata = outcome.metadata;
     let memory_mode = outcome.memory_mode.unwrap_or_else(|| "enabled".to_string());
     metadata.cwd = normalize_cwd_for_state_db(&metadata.cwd);
@@ -557,6 +558,18 @@ pub async fn reconcile_rollout(
             rollout_path.display()
         );
     }
+    if let Err(err) = metadata::apply_configured_identity_provenance(
+        ctx,
+        metadata.id,
+        configured_identity_provenance,
+    )
+    .await
+    {
+        warn!(
+            "state db reconcile_rollout configured identity update failed {}: {err}",
+            rollout_path.display()
+        );
+    }
 }
 
 /// Repair a thread's rollout path after filesystem fallback succeeds.
@@ -569,6 +582,29 @@ pub async fn read_repair_rollout_path(
     let Some(ctx) = context else {
         return;
     };
+
+    if let Some(thread_id) = thread_id
+        && matches!(
+            ctx.read_configured_identity_provenance(thread_id).await,
+            Ok(Some(codex_state::ConfiguredIdentityProvenance::Unknown))
+        )
+    {
+        let default_provider = crate::list::read_session_meta_line(rollout_path)
+            .await
+            .ok()
+            .and_then(|meta| meta.meta.model_provider)
+            .unwrap_or_default();
+        reconcile_rollout(
+            Some(ctx),
+            rollout_path,
+            default_provider.as_str(),
+            /*builder*/ None,
+            &[],
+            archived_only,
+            /*new_thread_memory_mode*/ None,
+        )
+        .await;
+    }
 
     // Fast path: update an existing metadata row in place, but avoid writes when
     // read-repair computes no effective change.

@@ -17,6 +17,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_state::BackfillState;
 use codex_state::BackfillStats;
 use codex_state::BackfillStatus;
+use codex_state::ConfiguredIdentityProvenance;
 use codex_state::DB_ERROR_METRIC;
 use codex_state::DB_METRIC_BACKFILL;
 use codex_state::DB_METRIC_BACKFILL_DURATION_MS;
@@ -116,6 +117,18 @@ pub async fn extract_metadata_from_rollout(
     for item in &items {
         apply_rollout_item(&mut metadata, item, default_provider);
     }
+    let configured_identity_provenance = if items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::ThreadSettingsApplied(_))
+        )
+    }) {
+        Some(ConfiguredIdentityProvenance::Present)
+    } else if parse_errors == 0 {
+        Some(ConfiguredIdentityProvenance::KnownAbsent)
+    } else {
+        None
+    };
     if let Some(updated_at) = file_modified_time_utc(rollout_path).await {
         metadata.updated_at = updated_at;
         metadata.recency_at = updated_at;
@@ -132,8 +145,33 @@ pub async fn extract_metadata_from_rollout(
             | RolloutItem::WorldState(_)
             | RolloutItem::EventMsg(_) => None,
         }),
+        configured_identity_provenance,
         parse_errors,
     })
+}
+
+pub(crate) async fn apply_configured_identity_provenance(
+    runtime: &codex_state::StateRuntime,
+    thread_id: ThreadId,
+    provenance: Option<ConfiguredIdentityProvenance>,
+) -> anyhow::Result<()> {
+    let result = match provenance {
+        Some(ConfiguredIdentityProvenance::Present) => {
+            runtime.mark_configured_identity_present(thread_id).await?
+        }
+        Some(ConfiguredIdentityProvenance::KnownAbsent) => {
+            runtime
+                .mark_configured_identity_known_absent(thread_id)
+                .await?
+        }
+        Some(ConfiguredIdentityProvenance::Unknown) | None => return Ok(()),
+    };
+    if result.is_none() {
+        return Err(anyhow::anyhow!(
+            "thread disappeared while reconciling configured identity provenance: {thread_id}"
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn backfill_sessions(
@@ -262,6 +300,7 @@ pub(crate) async fn backfill_sessions_with_lease(
                             &[("stage", "backfill_sessions")],
                         );
                     }
+                    let configured_identity_provenance = outcome.configured_identity_provenance;
                     let mut metadata = outcome.metadata;
                     metadata.cwd = normalize_cwd_for_state_db(&metadata.cwd);
                     let memory_mode = outcome.memory_mode.unwrap_or_else(|| "enabled".to_string());
@@ -286,6 +325,20 @@ pub(crate) async fn backfill_sessions_with_lease(
                             stats.failed = stats.failed.saturating_add(1);
                             warn!(
                                 "failed to restore memory mode for {}: {err}",
+                                rollout.path.display()
+                            );
+                            continue;
+                        }
+                        if let Err(err) = apply_configured_identity_provenance(
+                            runtime,
+                            metadata.id,
+                            configured_identity_provenance,
+                        )
+                        .await
+                        {
+                            stats.failed = stats.failed.saturating_add(1);
+                            warn!(
+                                "failed to restore configured identity provenance for {}: {err}",
                                 rollout.path.display()
                             );
                             continue;

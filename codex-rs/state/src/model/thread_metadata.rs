@@ -69,6 +69,10 @@ pub struct ExtractionOutcome {
     pub metadata: ThreadMetadata,
     /// The explicit thread memory mode from rollout metadata, if present.
     pub memory_mode: Option<String>,
+    /// Configured-identity provenance established by the inspected rollout.
+    ///
+    /// `None` means the rollout was not complete enough to prove absence.
+    pub configured_identity_provenance: Option<crate::ConfiguredIdentityProvenance>,
     /// The number of rollout lines that failed to parse.
     pub parse_errors: usize,
 }

@@ -303,13 +303,21 @@ docs-only refresh commit that records this snapshot.
   explicitly rather than treating it as an idempotent transition.
 - Generic thread-metadata inserts and upserts deliberately omit the private
   column, so unrelated metadata writes cannot reset or fabricate provenance.
-- This stage does not classify rollout events, reconstruct history, store
-  configured identity values, enforce precedence, or synchronize live state.
+- Incremental state projection and local live appends advance provenance to
+  `Present` when they observe `ThreadSettingsApplied`. Local resume, bounded
+  read repair, and rollout backfill classify complete rollout files; a
+  zero-error parse without a settings event proves `KnownAbsent`, while any
+  incomplete parse remains `Unknown` unless it contains a settings event.
+- This stage does not store configured identity values, enforce identity
+  precedence or clears, or expose provenance in public thread snapshots.
 - Primary files:
   - `codex-rs/state/migrations/0045_threads_configured_identity_provenance.sql`
   - `codex-rs/state/src/migrations_tests.rs`
   - `codex-rs/state/src/runtime/configured_identity_provenance.rs`
   - `codex-rs/state/src/runtime/configured_identity_provenance_tests.rs`
+  - `codex-rs/rollout/src/metadata.rs`
+  - `codex-rs/rollout/src/state_db.rs`
+  - `codex-rs/thread-store/src/local/live_writer.rs`
 
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 

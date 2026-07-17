@@ -1,5 +1,7 @@
 use super::StateRuntime;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RolloutItem;
 
 /// Whether configured thread identity has been established from authoritative history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +19,15 @@ impl ConfiguredIdentityProvenance {
     const fn as_i64(self) -> i64 {
         self as i64
     }
+}
+
+pub(super) fn rollout_items_observe_configured_identity(items: &[RolloutItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_))
+        )
+    })
 }
 
 impl TryFrom<i64> for ConfiguredIdentityProvenance {

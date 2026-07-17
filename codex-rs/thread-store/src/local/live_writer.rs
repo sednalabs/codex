@@ -101,9 +101,21 @@ pub(super) async fn resume_thread(
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to resume local thread recorder: {err}"),
         })?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
     store
         .insert_live_recorder(params.thread_id, recorder, history_mode)
-        .await
+        .await?;
+    codex_rollout::state_db::reconcile_rollout(
+        store.state_db().await.as_deref(),
+        rollout_path.as_path(),
+        store.config.default_model_provider_id.as_str(),
+        /*builder*/ None,
+        &[],
+        /*archived_only*/ None,
+        /*new_thread_memory_mode*/ None,
+    )
+    .await;
+    Ok(())
 }
 
 #[tracing::instrument(
@@ -137,7 +149,27 @@ pub(super) async fn append_items(
         .map_err(thread_store_io_error)?;
     // LiveThread applies metadata immediately after append_items returns. Wait for the local
     // writer so SQLite never gets ahead of JSONL for accepted live appends.
-    recorder.flush().await.map_err(thread_store_io_error)
+    recorder.flush().await.map_err(thread_store_io_error)?;
+    if persisted_items.iter().any(|item| {
+        matches!(
+            item,
+            codex_protocol::protocol::RolloutItem::EventMsg(
+                codex_protocol::protocol::EventMsg::ThreadSettingsApplied(_)
+            )
+        )
+    }) {
+        codex_rollout::state_db::reconcile_rollout(
+            store.state_db().await.as_deref(),
+            recorder.rollout_path(),
+            store.config.default_model_provider_id.as_str(),
+            /*builder*/ None,
+            &[],
+            /*archived_only*/ None,
+            /*new_thread_memory_mode*/ None,
+        )
+        .await;
+    }
+    Ok(())
 }
 
 pub(super) async fn persist_thread(
