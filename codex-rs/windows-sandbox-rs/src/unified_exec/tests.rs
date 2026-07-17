@@ -511,6 +511,18 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             ),
         )
         .expect("write delete script");
+        let workspace_cap_sid = crate::workspace_write_cap_sid_for_root(
+            codex_home.path(),
+            workspace.as_path(),
+            workspace.as_path(),
+        )
+        .expect("derive workspace capability SID");
+        let workspace_cap_sid = crate::token::LocalSid::from_string(&workspace_cap_sid)
+            .expect("parse workspace SID");
+        unsafe {
+            crate::ensure_allow_write_aces(&script, &[workspace_cap_sid.as_ptr()])
+                .expect("grant direct script capability access");
+        }
 
         let env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
