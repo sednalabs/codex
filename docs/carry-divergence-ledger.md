@@ -936,9 +936,18 @@ docs-only refresh commit that records this snapshot.
   background writer state. After read-only ordinal preflight, detached custody
   encloses plain append-open/tail repair plus writer materialization, directory
   creation, and recovery reopen. Closed authority denies later mutation without
-  changing constructors or wire format; lifecycle revocation, terminal writer
-  semantics, and public API remain separate slices.
-- Seven complementary regressions carry the complete proof. The foundation
+  changing constructors or wire format.
+- Recorder revocation is an explicit terminal actor transition. A shared command
+  admission gate serializes AddItems transfer with Revoke across clones, while
+  channel reservation preserves the original cancellation-safe, no-I/O-wait
+  item handoff. Successful revoke drains every accepted item, closes authority,
+  drops the writer handle, and publishes terminal state before acknowledgement.
+  Failed drains restore active admission with their suffix intact.
+- Actor joining is owned by one detached shared joiner. Cancelling the initiating
+  `revoke()` cannot strand the handle; another clone can observe the transition
+  and wait for the same terminal join result. Later add, persist, flush, and
+  shutdown calls return a stable terminal error.
+- Ten complementary regressions carry the complete proof. The foundation
   pair proves multi-revoker wakeup and retained final-release quiescence. The
   materialization pair cancels the outer caller while the controlled blocking
   continuation is parked, closes admission, and compares complete
@@ -952,11 +961,16 @@ docs-only refresh commit that records this snapshot.
   - `plain_resume_tail_repair_custody_survives_caller_cancellation`
   - `recovery_materialization_tail_repair_and_creation_are_guarded`
   - `admitted_recovery_error_releases_custody_without_filesystem_drift`
+  - `cancelled_shutdown_is_joined_by_revoke_and_orders_item_admission`
+  - `failed_revoke_reopens_admission_and_retry_persists_the_exact_suffix`
+  - `empty_deferred_revoke_is_terminal_without_materializing_history`
 - Primary files:
   - `codex-rs/rollout/src/mutation_authority.rs`
   - `codex-rs/rollout/src/mutation_authority_tests.rs`
   - `codex-rs/rollout/src/compression.rs`
   - `codex-rs/rollout/src/compression_tests.rs`
+  - `codex-rs/rollout/src/recorder.rs`
+  - `codex-rs/rollout/src/recorder_terminal_revocation_tests.rs`
 
 ## Not Counted As Standalone Live Divergences
 
