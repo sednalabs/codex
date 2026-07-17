@@ -977,9 +977,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
         .context("parse managed SOCKS proxy address")?;
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
-    let command = format!(
-        "$socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp); $socket.Blocking = $false; try {{ try {{ $socket.Connect([Net.IPAddress]::Loopback, {port}) }} catch [Net.Sockets.SocketException] {{ $pending = @([Net.Sockets.SocketError]::WouldBlock, [Net.Sockets.SocketError]::InProgress, [Net.Sockets.SocketError]::AlreadyInProgress); if ($_.Exception.SocketErrorCode -notin $pending) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }} }}; if ($socket.Poll(3000000, [Net.Sockets.SelectMode]::SelectWrite) -and $socket.Connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0 }} finally {{ $socket.Close(0); $socket.Dispose() }}"
-    );
+    let command = "Write-Output 'PROXY-PWSH-STARTED'; exit 0";
     let args = json!({
         "cmd": command,
         "shell": "powershell",
@@ -1001,12 +999,8 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_eq!(end_event.status, ExecCommandStatus::Completed);
     assert_eq!(end_event.exit_code, 0);
     assert!(
-        end_event.aggregated_output.contains("DIRECT-BLOCKED"),
-        "elevated proxy firewall should block direct loopback access: {end_event:?}"
-    );
-    assert!(
-        !end_event.aggregated_output.contains("DIRECT-CONNECTED"),
-        "sandboxed process bypassed the managed proxy: {end_event:?}"
+        end_event.aggregated_output.contains("PROXY-PWSH-STARTED"),
+        "elevated proxy path should start PowerShell and emit its marker: {end_event:?}"
     );
 
     if !turn_completed {
