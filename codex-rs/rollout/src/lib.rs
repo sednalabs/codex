@@ -6,8 +6,6 @@ use codex_protocol::protocol::SessionSource;
 
 #[cfg_attr(not(test), allow(dead_code))]
 mod command_admission;
-#[cfg_attr(not(test), allow(dead_code))]
-mod writer_revocation;
 pub(crate) mod compression;
 pub(crate) mod config;
 pub(crate) mod list;
@@ -21,6 +19,8 @@ pub(crate) mod search;
 pub(crate) mod session_index;
 mod sqlite_metrics;
 pub mod state_db;
+#[cfg_attr(not(test), allow(dead_code))]
+mod writer_revocation;
 
 pub(crate) use codex_protocol::protocol;
 

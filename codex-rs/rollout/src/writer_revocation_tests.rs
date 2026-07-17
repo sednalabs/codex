@@ -2,12 +2,14 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 
 use pretty_assertions::assert_eq;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::RetainedIoError;
 use super::RevocationOutcome;
@@ -54,7 +56,6 @@ async fn cancellation_before_commit_keeps_attempt_and_writer_active() {
     task.abort();
     assert!(deadline(task).await.unwrap_err().is_cancelled());
     data.commit(|| {});
-
     let outcome = deadline(revocation.revoke(|ack| cmd_tx.send(ack).unwrap())).await;
     assert!(!transferred.load(Ordering::Acquire));
     assert_eq!(outcome, revoked(1));
@@ -73,22 +74,23 @@ async fn cancellation_after_commit_leaves_shared_success_for_participants() {
         let _ = ack.send(Ok(()));
     });
     let revocation = RolloutWriterRevocation::new(admission, writer);
+    let start = revocation.shared.start.lock().await;
     let first_revocation = revocation.clone();
     let first = tokio::spawn(async move {
         first_revocation
             .revoke(|ack| cmd_tx.send(ack).unwrap())
             .await
     });
+    tokio::task::yield_now().await;
+    let participant_revocation = revocation.clone();
+    let participant = tokio::spawn(async move { participant_revocation.revoke(drop).await });
+    tokio::task::yield_now().await;
+    drop(start);
     deadline(committed_rx).await.unwrap();
+    drop(deadline(revocation.shared.start.lock()).await);
     first.abort();
     assert!(deadline(first).await.unwrap_err().is_cancelled());
-    let participant = tokio::spawn(async move {
-        revocation
-            .revoke(|_| panic!("participant must join the committed attempt"))
-            .await
-    });
     let _ = release_tx.send(());
-
     assert_eq!(deadline(participant).await.unwrap(), revoked(1));
 }
 
@@ -98,12 +100,14 @@ async fn recoverable_failure_reopens_after_shared_outcome_and_advances_attempt()
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
     let writer = tokio::spawn(async move {
         let first = cmd_rx.recv().await.unwrap();
-        let _ = first.send(Err(io::Error::new(io::ErrorKind::WriteZero, "drain blocked")));
+        let _ = first.send(Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "drain blocked",
+        )));
         let second = cmd_rx.recv().await.unwrap();
         let _ = second.send(Ok(()));
     });
     let revocation = RolloutWriterRevocation::new(admission.clone(), writer);
-
     let failure = deadline(revocation.revoke(|ack| cmd_tx.send(ack).unwrap())).await;
     assert_eq!(
         failure,
