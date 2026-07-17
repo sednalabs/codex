@@ -164,8 +164,26 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
             std::process::exit(1);
         }
     };
+    let codex_self_exe = if cfg!(windows) {
+        match env::var_os("CARGO_BIN_EXE_codex") {
+            Some(codex_self_exe) => {
+                let codex_self_exe = PathBuf::from(codex_self_exe);
+                if !codex_self_exe.is_absolute() {
+                    eprintln!(
+                        "resolved Windows Codex test runfile is not absolute: {}",
+                        codex_self_exe.display()
+                    );
+                    std::process::exit(1);
+                }
+                codex_self_exe
+            }
+            None => current_exe.clone(),
+        }
+    } else {
+        current_exe.clone()
+    };
     let runtime_paths = match ExecServerRuntimePaths::new(
-        current_exe.clone(),
+        codex_self_exe,
         linux_sandbox_exe(guard, &current_exe),
     ) {
         Ok(runtime_paths) => runtime_paths,
