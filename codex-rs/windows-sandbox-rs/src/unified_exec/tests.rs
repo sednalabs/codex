@@ -459,11 +459,12 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
-        // Keep writable roots out of USERPROFILE exclusions such as AppData, and
-        // outside the broad workspace root granted by earlier legacy tests.
-        let sandbox_cwd = sandbox_cwd();
-        let test_parent = sandbox_cwd.parent().expect("sandbox cwd parent");
-        let test_root = TempDir::new_in(test_parent).expect("create legacy delete test root");
+        // A direct USERPROFILE child avoids exclusions such as AppData without
+        // inheriting mutable ACLs from the checkout used by other legacy tests.
+        let user_profile = PathBuf::from(
+            std::env::var_os("USERPROFILE").expect("USERPROFILE for legacy delete test"),
+        );
+        let test_root = TempDir::new_in(user_profile).expect("create legacy delete test root");
         let codex_home = sandbox_home("legacy-delete-writable-roots");
         let workspace = test_root.path().join("workspace");
         let temp_root = test_root.path().join("temp");
