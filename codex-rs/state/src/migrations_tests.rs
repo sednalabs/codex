@@ -132,6 +132,13 @@ async fn configured_identity_provenance_migration_defaults_existing_and_old_bina
         (migrated_provenance, post_v45_old_binary_provenance),
         (0, 0)
     );
+    let invalid_update = sqlx::query(
+        "UPDATE threads SET configured_identity_provenance = 3 WHERE id = ?",
+    )
+    .bind("00000000-0000-0000-0000-000000000011")
+    .execute(&pool)
+    .await;
+    assert!(invalid_update.is_err(), "invalid provenance must be rejected");
 }
 
 #[tokio::test]

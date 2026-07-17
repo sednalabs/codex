@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::ConfiguredIdentityProvenance;
 use super::StateRuntime;
 use crate::runtime::test_support::test_thread_metadata;
@@ -15,89 +17,160 @@ async fn configured_identity_provenance_transitions_monotonically() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000801").expect("valid thread id");
     let second_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000802").expect("valid thread id");
-    runtime
-        .upsert_thread(&test_thread_metadata(
-            &codex_home,
-            first_thread_id,
-            codex_home.clone(),
-        ))
-        .await
-        .expect("first thread should persist");
-    runtime
-        .upsert_thread(&test_thread_metadata(
-            &codex_home,
-            second_thread_id,
-            codex_home.clone(),
-        ))
-        .await
-        .expect("second thread should persist");
+    let missing_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000804").expect("valid thread id");
+    for thread_id in [first_thread_id, second_thread_id] {
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.clone(),
+            ))
+            .await
+            .expect("thread should persist");
+    }
 
     let first_initial = runtime
         .read_configured_identity_provenance(first_thread_id)
         .await
         .expect("first provenance should load");
-    let second_initial = runtime
-        .read_configured_identity_provenance(second_thread_id)
+    let missing_read = runtime
+        .read_configured_identity_provenance(missing_thread_id)
         .await
-        .expect("second provenance should load");
+        .expect("missing provenance should be reported");
+    let missing_mark = runtime
+        .mark_configured_identity_present(missing_thread_id)
+        .await
+        .expect("missing mutation should be reported");
+    runtime
+        .upsert_thread(&test_thread_metadata(
+            &codex_home,
+            missing_thread_id,
+            codex_home.clone(),
+        ))
+        .await
+        .expect("missing thread should later persist");
+    let inserted_after_missing_mark = runtime
+        .read_configured_identity_provenance(missing_thread_id)
+        .await
+        .expect("later insertion provenance should load");
     let marked_absent = runtime
         .mark_configured_identity_known_absent(first_thread_id)
         .await
         .expect("unknown should advance to known absent");
-    let after_absent = runtime
-        .read_configured_identity_provenance(first_thread_id)
+    let duplicate_absent = runtime
+        .mark_configured_identity_known_absent(first_thread_id)
         .await
-        .expect("known-absent provenance should load");
+        .expect("known absent should remain known absent");
     let promoted_to_present = runtime
         .mark_configured_identity_present(first_thread_id)
         .await
         .expect("known absent should advance to present");
-    let downgrade_rejected = runtime
+    let downgrade_preserved_present = runtime
         .mark_configured_identity_known_absent(first_thread_id)
         .await
         .expect("present-to-known-absent transition should be evaluated");
-    let duplicate_present_rejected = runtime
+    let duplicate_present = runtime
         .mark_configured_identity_present(first_thread_id)
         .await
         .expect("duplicate present transition should be evaluated");
-    let first_final = runtime
-        .read_configured_identity_provenance(first_thread_id)
-        .await
-        .expect("final first provenance should load");
     let unknown_promoted_to_present = runtime
         .mark_configured_identity_present(second_thread_id)
         .await
         .expect("unknown should advance directly to present");
-    let second_final = runtime
-        .read_configured_identity_provenance(second_thread_id)
-        .await
-        .expect("final second provenance should load");
 
     assert_eq!(
         (
             first_initial,
-            second_initial,
+            missing_read,
+            missing_mark,
+            inserted_after_missing_mark,
             marked_absent,
-            after_absent,
+            duplicate_absent,
             promoted_to_present,
-            downgrade_rejected,
-            duplicate_present_rejected,
-            first_final,
+            downgrade_preserved_present,
+            duplicate_present,
             unknown_promoted_to_present,
-            second_final,
         ),
         (
             Some(ConfiguredIdentityProvenance::Unknown),
+            None,
+            None,
             Some(ConfiguredIdentityProvenance::Unknown),
-            true,
             Some(ConfiguredIdentityProvenance::KnownAbsent),
-            true,
-            false,
-            false,
+            Some(ConfiguredIdentityProvenance::KnownAbsent),
             Some(ConfiguredIdentityProvenance::Present),
-            true,
+            Some(ConfiguredIdentityProvenance::Present),
+            Some(ConfiguredIdentityProvenance::Present),
             Some(ConfiguredIdentityProvenance::Present),
         )
+    );
+}
+
+#[tokio::test]
+async fn configured_identity_provenance_competing_writers_preserve_present() {
+    let codex_home = unique_temp_dir();
+    let runtime_a = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("first state runtime should initialize");
+    let runtime_b = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        .await
+        .expect("second state runtime should initialize");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000805").expect("valid thread id");
+    runtime_a
+        .upsert_thread(&test_thread_metadata(
+            &codex_home,
+            thread_id,
+            codex_home.clone(),
+        ))
+        .await
+        .expect("thread should persist");
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let (absent_result, present_result) = tokio::join!(
+        async {
+            barrier.wait().await;
+            runtime_a.mark_configured_identity_known_absent(thread_id).await
+        },
+        async {
+            barrier.wait().await;
+            runtime_b.mark_configured_identity_present(thread_id).await
+        }
+    );
+    let absent_result = absent_result.expect("known-absent writer should complete");
+    let present_result = present_result.expect("present writer should complete");
+    let final_state = runtime_a
+        .read_configured_identity_provenance(thread_id)
+        .await
+        .expect("final provenance should load");
+
+    assert_eq!(
+        (
+            matches!(
+                absent_result,
+                Some(
+                    ConfiguredIdentityProvenance::KnownAbsent
+                        | ConfiguredIdentityProvenance::Present
+                )
+            ),
+            present_result,
+            final_state,
+        ),
+        (
+            true,
+            Some(ConfiguredIdentityProvenance::Present),
+            Some(ConfiguredIdentityProvenance::Present),
+        )
+    );
+}
+
+#[test]
+fn configured_identity_provenance_rejects_invalid_values() {
+    assert_eq!(
+        ConfiguredIdentityProvenance::try_from(3)
+            .expect_err("invalid provenance should fail")
+            .to_string(),
+        "invalid configured identity provenance value: 3"
     );
 }
 
@@ -117,7 +190,8 @@ async fn generic_thread_metadata_upsert_preserves_configured_identity_provenance
     runtime
         .mark_configured_identity_present(thread_id)
         .await
-        .expect("provenance should advance to present");
+        .expect("provenance should advance to present")
+        .expect("thread should exist");
 
     metadata.title = "unrelated metadata update".to_string();
     runtime
