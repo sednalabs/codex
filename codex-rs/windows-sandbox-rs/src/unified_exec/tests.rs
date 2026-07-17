@@ -2,10 +2,12 @@
 
 use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
+use crate::ensure_allow_write_aces;
 use crate::ipc_framed::Message;
 use crate::ipc_framed::decode_bytes;
 use crate::ipc_framed::read_frame;
 use crate::run_windows_sandbox_capture;
+use crate::spawn_prep::root_capability_sids;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::ProcessDriver;
@@ -481,20 +483,24 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         fs::write(&tmp_file, "tmp").expect("seed TMP file");
         fs::write(&outside_file, "outside").expect("seed outside file");
 
-        let script = workspace.join("delete-fixtures.cmd");
-        fs::write(
-            &script,
-            concat!(
-                "@echo off\r\n",
-                "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
-                "del /f /q \"%TEMP_DELETE%\"\r\n",
-                "del /f /q \"%TMP_DELETE%\"\r\n",
-                "del /f /q \"%OUTSIDE_DELETE%\"\r\n",
-                "rmdir \"%PROTECTED_GIT_DIR%\"\r\n",
-                "exit /b 0\r\n",
-            ),
-        )
-        .expect("write delete script");
+        for (file, root) in [
+            (&workspace_file, &workspace),
+            (&temp_file, &temp_root),
+            (&tmp_file, &tmp_root),
+        ] {
+            let mut root_sids = root_capability_sids(
+                codex_home.path(),
+                workspace.as_path(),
+                [root.clone()],
+            )
+            .expect("derive exact root capability SID");
+            let root_sid = root_sids.pop().expect("one root capability SID");
+            assert!(root_sids.is_empty(), "expected one root capability SID");
+            assert_eq!(root_sid.root.as_path(), root.as_path());
+            let added = unsafe { ensure_allow_write_aces(file, &[root_sid.sid.as_ptr()]) }
+                .expect("stamp child file with root capability SID");
+            assert!(added, "expected a fresh child file capability ACE");
+        }
 
         let env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
@@ -530,7 +536,15 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
                 "C:\\Windows\\System32\\cmd.exe".to_string(),
                 "/d".to_string(),
                 "/c".to_string(),
-                script.display().to_string(),
+                concat!(
+                    "del /f /q \"%WORKSPACE_DELETE%\" & ",
+                    "del /f /q \"%TEMP_DELETE%\" & ",
+                    "del /f /q \"%TMP_DELETE%\" & ",
+                    "del /f /q \"%OUTSIDE_DELETE%\" & ",
+                    "rmdir \"%PROTECTED_GIT_DIR%\" & ",
+                    "exit /b 0",
+                )
+                .to_string(),
             ],
             workspace.as_path(),
             env_map,
