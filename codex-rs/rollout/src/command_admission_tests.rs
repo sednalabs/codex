@@ -58,7 +58,8 @@ async fn reserved_channel_transfers_commit_without_an_intervening_await() {
     let (tx, mut rx) = mpsc::channel(/*buffer*/ 2);
 
     let data = data_admission(&admission).await;
-    let data_permit = match with_diagnostic_deadline("reserving data capacity", tx.reserve()).await {
+    let data_permit = match with_diagnostic_deadline("reserving data capacity", tx.reserve()).await
+    {
         Ok(permit) => permit,
         Err(err) => panic!("data channel reservation unexpectedly failed: {err}"),
     };
@@ -70,9 +71,7 @@ async fn reserved_channel_transfers_commit_without_an_intervening_await() {
             Ok(permit) => permit,
             Err(err) => panic!("terminal channel reservation unexpectedly failed: {err}"),
         };
-    terminal
-        .commit(|| terminal_permit.send("terminal"))
-        .seal();
+    terminal.commit(|| terminal_permit.send("terminal")).seal();
 
     assert_eq!(
         with_diagnostic_deadline("receiving data command", rx.recv()).await,
@@ -90,9 +89,10 @@ async fn cancelled_waiter_does_not_retain_admission() {
     let data = data_admission(&admission).await;
     let (pending_tx, pending_rx) = oneshot::channel();
     let waiting_admission = admission.clone();
-    let waiting_task = tokio::spawn(async move {
-        acquire_terminal_after_pending(waiting_admission, pending_tx).await
-    });
+    let waiting_task =
+        tokio::spawn(
+            async move { acquire_terminal_after_pending(waiting_admission, pending_tx).await },
+        );
 
     assert!(
         with_diagnostic_deadline("waiting for queued terminal admission", pending_rx)
@@ -103,10 +103,7 @@ async fn cancelled_waiter_does_not_retain_admission() {
     assert_task_cancelled("joining cancelled terminal admission", waiting_task).await;
     data.commit(|| {});
 
-    terminal_admission(&admission)
-        .await
-        .commit(|| {})
-        .seal();
+    terminal_admission(&admission).await.commit(|| {}).seal();
     assert!(admission.is_terminal());
 }
 
@@ -142,10 +139,7 @@ async fn cancellation_while_waiting_for_channel_capacity_releases_data_admission
     task.abort();
     assert_task_cancelled("joining cancelled data reservation", task).await;
 
-    terminal_admission(&admission)
-        .await
-        .commit(|| {})
-        .seal();
+    terminal_admission(&admission).await.commit(|| {}).seal();
     assert!(admission.is_terminal());
 }
 
@@ -197,10 +191,7 @@ async fn recoverable_terminal_failure_reopens_a_new_epoch() {
     assert!(!admission.is_terminal());
 
     data_admission(&admission).await.commit(|| {});
-    terminal_admission(&admission)
-        .await
-        .commit(|| {})
-        .seal();
+    terminal_admission(&admission).await.commit(|| {}).seal();
     assert!(admission.is_terminal());
 }
 
@@ -260,10 +251,7 @@ async fn terminal_admission(admission: &RolloutCommandAdmission) -> RolloutTermi
     }
 }
 
-async fn with_diagnostic_deadline<T>(
-    context: &'static str,
-    future: impl Future<Output = T>,
-) -> T {
+async fn with_diagnostic_deadline<T>(context: &'static str, future: impl Future<Output = T>) -> T {
     match tokio::time::timeout(DIAGNOSTIC_DEADLINE, future).await {
         Ok(output) => output,
         Err(_) => panic!("timed out while {context}"),
@@ -273,7 +261,10 @@ async fn with_diagnostic_deadline<T>(
 async fn assert_task_cancelled<T>(context: &'static str, task: JoinHandle<T>) {
     match with_diagnostic_deadline(context, task).await {
         Ok(_) => panic!("task completed instead of being cancelled while {context}"),
-        Err(err) => assert!(err.is_cancelled(), "task failed without cancellation: {err}"),
+        Err(err) => assert!(
+            err.is_cancelled(),
+            "task failed without cancellation: {err}"
+        ),
     }
 }
 
