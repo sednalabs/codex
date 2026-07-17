@@ -537,7 +537,7 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
     let source = std::path::PathBuf::from(&program);
     // Diagnostic: keep the filesystem helper at its configured path to isolate relocation.
     let helper = if is_file_system_helper {
-        source
+        source.clone()
     } else {
         codex_windows_sandbox::resolve_exe_for_launch(source.as_path(), codex_home)
     };
