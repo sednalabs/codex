@@ -87,7 +87,7 @@ trait RunnerJobController: Send + 'static {
 
 impl RunnerJobController for KillOnCloseJob {
     fn terminate_job(&self) {
-        let _ = self.terminate_and_close(1);
+        let _ = self.terminate_and_close(/*exit_code*/ 1);
     }
 }
 
@@ -639,7 +639,7 @@ pub fn main() -> Result<()> {
     let exit_code: i32;
     unsafe {
         if timed_out {
-            let _ = job.terminate_and_close(1);
+            let _ = job.terminate_and_close(/*exit_code*/ 1);
             exit_code = 128 + 64;
         } else {
             let mut raw_exit: u32 = 1;

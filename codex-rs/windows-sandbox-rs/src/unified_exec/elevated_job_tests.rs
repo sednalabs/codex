@@ -1,6 +1,7 @@
 #![cfg(target_os = "windows")]
 
 use super::current_thread_runtime;
+use super::job_test_support::GrandchildFixture;
 use super::job_test_support::SessionEnding;
 use super::job_test_support::SessionMode;
 use super::job_test_support::assert_grandchild_stopped;
@@ -16,6 +17,7 @@ use crate::ipc_framed::Message;
 use crate::ipc_framed::SpawnRequest;
 use crate::ipc_framed::read_frame;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
+use crate::runner_client::RunnerTransport;
 use crate::runner_client::spawn_runner_transport;
 use crate::spawn_prep::prepare_elevated_spawn_context_for_permissions;
 use crate::unified_exec::spawn_windows_sandbox_session_elevated_for_permission_profile;
@@ -106,13 +108,15 @@ fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wait_for_runner_exit(mut pipe_read: std::fs::File) -> i32 {
+fn wait_for_runner_terminal_result(mut pipe_read: std::fs::File) -> (i32, bool) {
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     let reader = std::thread::spawn(move || {
         let result = loop {
             match read_frame(&mut pipe_read) {
                 Ok(Some(frame)) => match frame.message {
-                    Message::Exit { payload } => break Ok(payload.exit_code),
+                    Message::Exit { payload } => {
+                        break Ok((payload.exit_code, payload.timed_out));
+                    }
                     Message::Error { payload } => {
                         break Err(anyhow::anyhow!("runner error: {}", payload.message));
                     }
@@ -130,12 +134,78 @@ fn wait_for_runner_exit(mut pipe_read: std::fs::File) -> i32 {
         };
         let _ = result_tx.send(result);
     });
-    let exit_code = result_rx
+    let terminal_result = result_rx
         .recv_timeout(Duration::from_secs(10))
-        .expect("timed out waiting for runner exit after control transport EOF")
-        .expect("runner should report exit after control transport EOF");
+        .expect("timed out waiting for runner terminal result")
+        .expect("runner should report a terminal result");
     reader.join().expect("runner output reader should finish");
-    exit_code
+    terminal_result
+}
+
+fn spawn_pipe_backed_grandchild(
+    cwd: &Path,
+    powershell: &Path,
+    codex_home: &Path,
+    timeout_ms: u64,
+) -> (GrandchildFixture, RunnerTransport) {
+    let fixture = grandchild_fixture(cwd, powershell, "Start-Sleep -Seconds 30");
+    let permission_profile = PermissionProfile::workspace_write();
+    let workspace_roots = workspace_roots_for(cwd);
+    let mut env_map = HashMap::new();
+    let permissions =
+        ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
+            &permission_profile,
+            &workspace_roots,
+        )
+        .expect("resolve elevated test permissions");
+    let elevated = prepare_elevated_spawn_context_for_permissions(
+        permissions,
+        codex_home,
+        cwd,
+        &mut env_map,
+        &fixture.command,
+        /*read_roots_override*/ None,
+        /*read_roots_include_platform_defaults*/ false,
+        /*write_roots_override*/ None,
+        &[],
+        &[],
+        /*proxy_enforced*/ false,
+        WindowsSandboxProxySettingsMode::Reconcile,
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "prepare elevated pipe-backed session: {err:#}\n{}",
+            sandbox_log(codex_home)
+        )
+    });
+    let spawn_request = SpawnRequest {
+        command: fixture.command.clone(),
+        cwd: cwd.to_path_buf(),
+        env: env_map,
+        permission_profile,
+        workspace_roots,
+        codex_home: elevated.sandbox_base.clone(),
+        real_codex_home: codex_home.to_path_buf(),
+        cap_sids: elevated.cap_sids.clone(),
+        timeout_ms: Some(timeout_ms),
+        tty: false,
+        stdin_open: false,
+        use_private_desktop: false,
+    };
+    let transport = spawn_runner_transport(
+        codex_home,
+        cwd,
+        &elevated.sandbox_creds,
+        elevated.logs_base_dir.as_deref(),
+        spawn_request,
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "spawn elevated runner transport: {err:#}\n{}",
+            sandbox_log(codex_home)
+        )
+    });
+    (fixture, transport)
 }
 
 fn assert_elevated_session_stops_grandchild(mode: SessionMode, ending: SessionEnding) {
@@ -229,70 +299,41 @@ fn elevated_control_transport_eof_stops_grandchild() {
     stage_windows_sandbox_helpers().expect("stage elevated sandbox helpers");
     let cwd = sandbox_cwd();
     let powershell = windows_powershell_path();
-    let fixture = grandchild_fixture(&cwd, &powershell, "Start-Sleep -Seconds 30");
     let codex_home = elevated_test_codex_home();
-    let permission_profile = PermissionProfile::workspace_write();
-    let workspace_roots = workspace_roots_for(&cwd);
-    let mut env_map = HashMap::new();
-    let permissions =
-        ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
-            &permission_profile,
-            &workspace_roots,
-        )
-        .expect("resolve elevated test permissions");
-    let elevated = prepare_elevated_spawn_context_for_permissions(
-        permissions,
-        codex_home,
+    let (fixture, transport) = spawn_pipe_backed_grandchild(
         &cwd,
-        &mut env_map,
-        &fixture.command,
-        /*read_roots_override*/ None,
-        /*read_roots_include_platform_defaults*/ false,
-        /*write_roots_override*/ None,
-        &[],
-        &[],
-        /*proxy_enforced*/ false,
-        WindowsSandboxProxySettingsMode::Reconcile,
-    )
-    .unwrap_or_else(|err| {
-        panic!(
-            "prepare elevated transport-drop session: {err:#}\n{}",
-            sandbox_log(codex_home)
-        )
-    });
-    let spawn_request = SpawnRequest {
-        command: fixture.command.clone(),
-        cwd: cwd.clone(),
-        env: env_map,
-        permission_profile,
-        workspace_roots,
-        codex_home: elevated.sandbox_base.clone(),
-        real_codex_home: codex_home.to_path_buf(),
-        cap_sids: elevated.cap_sids.clone(),
-        timeout_ms: Some(30_000),
-        tty: false,
-        stdin_open: false,
-        use_private_desktop: false,
-    };
-    let transport = spawn_runner_transport(
+        &powershell,
         codex_home,
-        &cwd,
-        &elevated.sandbox_creds,
-        elevated.logs_base_dir.as_deref(),
-        spawn_request,
-    )
-    .unwrap_or_else(|err| {
-        panic!(
-            "spawn elevated runner transport: {err:#}\n{}",
-            sandbox_log(codex_home)
-        )
-    });
+        /*timeout_ms*/ 30_000,
+    );
 
     wait_for_grandchild(&fixture);
     let (pipe_write, pipe_read) = transport.into_files();
     drop(pipe_write);
 
-    let exit_code = wait_for_runner_exit(pipe_read);
+    let (exit_code, timed_out) = wait_for_runner_terminal_result(pipe_read);
     assert_ne!(exit_code, 0);
+    assert!(!timed_out);
+    assert_grandchild_stopped(&fixture);
+}
+
+#[test]
+fn elevated_pipe_timeout_stops_grandchild_and_reports_terminal_result() {
+    let _guard = windows_process_test_guard();
+    stage_windows_sandbox_helpers().expect("stage elevated sandbox helpers");
+    let cwd = sandbox_cwd();
+    let powershell = windows_powershell_path();
+    let codex_home = elevated_test_codex_home();
+    let (fixture, transport) = spawn_pipe_backed_grandchild(
+        &cwd,
+        &powershell,
+        codex_home,
+        /*timeout_ms*/ 5_000,
+    );
+
+    wait_for_grandchild(&fixture);
+    let (_pipe_write, pipe_read) = transport.into_files();
+
+    assert_eq!(wait_for_runner_terminal_result(pipe_read), (192, true));
     assert_grandchild_stopped(&fixture);
 }

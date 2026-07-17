@@ -8,6 +8,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 use tempfile::TempDir;
@@ -17,7 +18,7 @@ static WINDOWS_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 pub(super) fn windows_process_test_guard() -> MutexGuard<'static, ()> {
     WINDOWS_PROCESS_TEST_LOCK
         .lock()
-        .expect("Windows sandbox process test lock poisoned")
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(super) fn windows_powershell_path() -> PathBuf {
