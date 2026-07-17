@@ -59,6 +59,7 @@ pub(super) fn test_thread_metadata(
         model_provider: "test-provider".to_string(),
         model: Some("gpt-5".to_string()),
         reasoning_effort: Some(ReasoningEffort::Medium),
+        configured_identity_seen: false,
         cwd,
         cli_version: "0.0.0".to_string(),
         title: String::new(),

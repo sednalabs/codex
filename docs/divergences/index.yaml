@@ -1728,6 +1728,43 @@
       "extraction_target": "thread provenance and history-mode coexistence contract"
     },
     {
+      "id": "configured-thread-identity-provenance",
+      "title": "Configured thread identity provenance",
+      "status": "live",
+      "category": "thread-metadata",
+      "surface": [
+        "rollout metadata extraction",
+        "SQLite thread metadata"
+      ],
+      "files": [
+        "codex-rs/state/migrations/0045_threads_configured_identity_seen.sql",
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/state/src/model/thread_metadata.rs",
+        "codex-rs/state/src/runtime/threads.rs",
+        "codex-rs/state/src/runtime/memories.rs"
+      ],
+      "behavior": "Downstream persists a monotonic fact when a ThreadSettingsApplied event establishes configured-identity provenance, retaining that fact across incremental state updates and runtime reloads without inferring provenance from model, provider, or reasoning values.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub blocking-ci codex-state unit tests",
+      "tests": [
+        "configured_identity_provenance_survives_incremental_updates_and_reload",
+        "turn_context_sets_model_and_reasoning_effort"
+      ],
+      "owner": "downstream",
+      "notes": "This stage records provenance only. Configured-versus-request identity precedence, presence-aware clears, read overlays, and live session/service-tier integration remain separate authorities.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/state/src/extract.rs",
+        "codex-rs/state/src/runtime/threads.rs"
+      ],
+      "extraction_target": "upstream thread metadata identity-provenance marker"
+    },
+    {
       "id": "mcp-direct-app-tool-reconciliation",
       "title": "Direct and app-backed MCP tool catalog reconciliation",
       "status": "live",

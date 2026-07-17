@@ -289,6 +289,24 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/`
   - `codex-rs/app-server/tests/suite/conversation_summary.rs`
 
+### Configured Thread Identity Provenance
+
+- Persist a monotonic `configured_identity_seen` fact when rollout extraction
+  observes `ThreadSettingsApplied`, so later state work can distinguish an
+  explicit settings authority from legacy turn-effective metadata.
+- Keep this provenance durable across separate incremental state updates,
+  generic metadata upserts, and SQLite runtime reloads. Do not infer it from
+  nullable or coincidentally equal model, provider, or reasoning values.
+- This stage intentionally does not change configured-versus-request identity
+  precedence, presence-aware clear behavior, read overlays, or live session and
+  service-tier integration.
+- Primary files:
+  - `codex-rs/state/migrations/0045_threads_configured_identity_seen.sql`
+  - `codex-rs/state/src/extract.rs`
+  - `codex-rs/state/src/model/thread_metadata.rs`
+  - `codex-rs/state/src/runtime/threads.rs`
+  - `codex-rs/state/src/runtime/memories.rs`
+
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation

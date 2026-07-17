@@ -24,6 +24,7 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
+    threads.configured_identity_seen,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -596,6 +597,7 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
+    configured_identity_seen,
     cwd,
     cli_version,
     title,
@@ -610,7 +612,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -641,6 +643,7 @@ ON CONFLICT(id) DO NOTHING
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
+        .bind(metadata.configured_identity_seen)
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -830,6 +833,7 @@ WHERE id = ?
         // Backfill/reconcile callers merge existing git info before upserting, but that
         // read/modify/write is not atomic. Preserve non-null SQLite git fields here so
         // an explicit metadata update cannot be lost if a stale rollout upsert lands later.
+        // Configured-identity provenance is monotonic for the same reason.
         sqlx::query(
             r#"
 INSERT INTO threads (
@@ -850,6 +854,7 @@ INSERT INTO threads (
     model_provider,
     model,
     reasoning_effort,
+    configured_identity_seen,
     cwd,
     cli_version,
     title,
@@ -864,7 +869,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -882,6 +887,10 @@ ON CONFLICT(id) DO UPDATE SET
     model_provider = excluded.model_provider,
     model = excluded.model,
     reasoning_effort = excluded.reasoning_effort,
+    configured_identity_seen = MAX(
+        threads.configured_identity_seen,
+        excluded.configured_identity_seen
+    ),
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
     title = excluded.title,
@@ -924,6 +933,7 @@ ON CONFLICT(id) DO UPDATE SET
                 .as_ref()
                 .map(crate::extract::enum_to_string),
         )
+        .bind(metadata.configured_identity_seen)
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
         .bind(metadata.title.as_str())
@@ -1320,6 +1330,7 @@ SELECT
     threads.model_provider,
     threads.model,
     threads.reasoning_effort,
+    threads.configured_identity_seen,
     threads.cwd,
     threads.cli_version,
     threads.title,
@@ -1521,12 +1532,22 @@ mod tests {
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
     use anyhow::Result;
+    use codex_protocol::config_types::CollaborationMode;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::Settings;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GitInfo;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
+    use codex_protocol::protocol::TurnContextItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use std::path::PathBuf;
@@ -2302,6 +2323,201 @@ mod tests {
             .await
             .expect("memory mode should load");
         assert_eq!(memory_mode.as_deref(), Some("polluted"));
+    }
+
+    #[tokio::test]
+    async fn configured_identity_provenance_survives_incremental_updates_and_reload() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000799").expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("initial metadata should persist");
+        let builder = ThreadMetadataBuilder::new(
+            thread_id,
+            metadata.rollout_path.clone(),
+            metadata.created_at,
+            SessionSource::Cli,
+        );
+        let settings_item = RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+            ThreadSettingsAppliedEvent {
+                thread_settings: ThreadSettingsSnapshot {
+                    model: "configured-model".to_string(),
+                    model_provider_id: "configured-provider".to_string(),
+                    service_tier: None,
+                    approval_policy: AskForApproval::OnRequest,
+                    approvals_reviewer: Default::default(),
+                    permission_profile: PermissionProfile::workspace_write(),
+                    active_permission_profile: None,
+                    cwd: serde_json::from_value(json!(&codex_home)).expect("absolute cwd"),
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    personality: None,
+                    collaboration_mode: CollaborationMode {
+                        mode: ModeKind::Default,
+                        settings: Settings {
+                            model: "configured-model".to_string(),
+                            reasoning_effort: None,
+                            developer_instructions: None,
+                        },
+                    },
+                },
+            },
+        ));
+        assert!(crate::rollout_item_affects_thread_metadata(&settings_item));
+
+        runtime
+            .apply_rollout_items(
+                &builder,
+                &[settings_item],
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("settings provenance should persist");
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(
+            (
+                persisted.configured_identity_seen,
+                persisted.model.as_deref(),
+                persisted.model_provider.as_str(),
+                persisted.reasoning_effort.clone(),
+            ),
+            (
+                true,
+                Some("gpt-5"),
+                "test-provider",
+                Some(ReasoningEffort::Medium),
+            )
+        );
+
+        runtime.close().await;
+        drop(runtime);
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should reopen");
+        let legacy_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000798").expect("valid thread id");
+        let legacy_metadata =
+            test_thread_metadata(&codex_home, legacy_thread_id, codex_home.clone());
+        runtime
+            .upsert_thread(&legacy_metadata)
+            .await
+            .expect("legacy metadata should persist");
+        let legacy_builder = ThreadMetadataBuilder::new(
+            legacy_thread_id,
+            legacy_metadata.rollout_path,
+            legacy_metadata.created_at,
+            SessionSource::Cli,
+        );
+        let turn_item = RolloutItem::TurnContext(TurnContextItem {
+            turn_id: Some("request-turn".to_string()),
+            cwd: serde_json::from_value(json!(&codex_home)).expect("absolute cwd"),
+            workspace_roots: None,
+            current_date: None,
+            timezone: None,
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            permission_profile: None,
+            network: None,
+            file_system_sandbox_policy: None,
+            model: "request-effective-model".to_string(),
+            comp_hash: None,
+            personality: None,
+            collaboration_mode: None,
+            multi_agent_version: None,
+            multi_agent_mode: None,
+            realtime_active: None,
+            effort: Some(ReasoningEffort::High),
+            summary: codex_protocol::config_types::ReasoningSummary::Auto,
+        });
+
+        runtime
+            .apply_rollout_items(
+                &legacy_builder,
+                std::slice::from_ref(&turn_item),
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("legacy turn metadata should persist");
+        let legacy_persisted = runtime
+            .get_thread(legacy_thread_id)
+            .await
+            .expect("legacy thread should load")
+            .expect("legacy thread should exist");
+        assert_eq!(
+            (
+                legacy_persisted.configured_identity_seen,
+                legacy_persisted.model.as_deref(),
+                legacy_persisted.reasoning_effort.clone(),
+            ),
+            (
+                false,
+                Some("request-effective-model"),
+                Some(ReasoningEffort::High),
+            )
+        );
+
+        runtime
+            .apply_rollout_items(
+                &builder,
+                &[turn_item],
+                /*new_thread_memory_mode*/ None,
+                /*updated_at_override*/ None,
+            )
+            .await
+            .expect("post-reload turn metadata should persist");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load after reopen")
+            .expect("thread should exist after reopen");
+        assert_eq!(
+            (
+                persisted.configured_identity_seen,
+                persisted.model.as_deref(),
+                persisted.model_provider.as_str(),
+                persisted.reasoning_effort.clone(),
+            ),
+            (
+                true,
+                Some("request-effective-model"),
+                "test-provider",
+                Some(ReasoningEffort::High),
+            )
+        );
+
+        let mut unrelated_update = persisted;
+        unrelated_update.configured_identity_seen = false;
+        unrelated_update.title = "updated title".to_string();
+        runtime
+            .upsert_thread(&unrelated_update)
+            .await
+            .expect("unrelated metadata upsert should persist");
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load after metadata upsert")
+            .expect("thread should exist after metadata upsert");
+        assert_eq!(
+            (
+                persisted.configured_identity_seen,
+                persisted.title.as_str(),
+            ),
+            (true, "updated title")
+        );
     }
 
     #[tokio::test]
