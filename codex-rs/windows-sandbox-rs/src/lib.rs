@@ -175,6 +175,8 @@ pub use conpty::ConptyInstance;
 #[cfg(target_os = "windows")]
 pub use conpty::spawn_conpty_process_as_user;
 #[cfg(target_os = "windows")]
+pub use conpty::spawn_job_conpty_process_as_user;
+#[cfg(target_os = "windows")]
 pub use deny_read_acl::apply_deny_read_acls;
 #[cfg(target_os = "windows")]
 pub use deny_read_acl::plan_deny_read_acl_paths;
@@ -248,6 +250,8 @@ pub use path_normalization::canonicalize_path;
 #[cfg(target_os = "windows")]
 pub use process::ConsoleMode;
 #[cfg(target_os = "windows")]
+pub use process::JobPipeSpawnHandles;
+#[cfg(target_os = "windows")]
 pub use process::PipeSpawnHandles;
 #[cfg(target_os = "windows")]
 pub use process::StderrMode;
@@ -257,6 +261,8 @@ pub use process::StdinMode;
 pub use process::create_process_as_user;
 #[cfg(target_os = "windows")]
 pub use process::read_handle_loop;
+#[cfg(target_os = "windows")]
+pub use process::spawn_job_process_with_pipes;
 #[cfg(target_os = "windows")]
 pub use process::spawn_process_with_pipes;
 #[cfg(target_os = "windows")]
