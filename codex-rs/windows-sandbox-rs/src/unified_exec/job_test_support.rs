@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use std::sync::MutexGuard;
 use std::sync::PoisonError;
 use std::time::Duration;
-use std::time::Instant;
 use tempfile::TempDir;
 
 static WINDOWS_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -47,8 +46,34 @@ fn powershell_encoded_command(script: &str) -> String {
 pub(super) struct GrandchildFixture {
     _test_dir: TempDir,
     ticks_path: PathBuf,
-    ready_path: PathBuf,
+    root_ready_path: PathBuf,
+    grandchild_ready_path: PathBuf,
     pub(super) command: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(super) struct GrandchildReadiness {
+    pub(super) root_ready: bool,
+    pub(super) grandchild_ready: bool,
+    pub(super) ticks: u64,
+}
+
+impl GrandchildReadiness {
+    pub(super) fn is_complete(&self) -> bool {
+        self.root_ready && self.grandchild_ready && self.ticks >= 3
+    }
+}
+
+impl GrandchildFixture {
+    pub(super) fn readiness(&self) -> GrandchildReadiness {
+        GrandchildReadiness {
+            root_ready: self.root_ready_path.exists(),
+            grandchild_ready: self.grandchild_ready_path.exists(),
+            ticks: fs::metadata(&self.ticks_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0),
+        }
+    }
 }
 
 pub(super) fn grandchild_fixture(
@@ -58,21 +83,24 @@ pub(super) fn grandchild_fixture(
 ) -> GrandchildFixture {
     let test_dir = tempfile::tempdir_in(cwd).expect("create grandchild test directory");
     let ticks_path = test_dir.path().join("ticks.txt");
-    let ready_path = test_dir.path().join("ready.txt");
+    let root_ready_path = test_dir.path().join("root-ready.txt");
+    let grandchild_ready_path = test_dir.path().join("grandchild-ready.txt");
     let child_script = format!(
-        "while ($true) {{ [IO.File]::AppendAllText('{}', 'x'); Start-Sleep -Milliseconds 25 }}",
+        "[IO.File]::WriteAllText('{}', 'ready'); while ($true) {{ [IO.File]::AppendAllText('{}', 'x'); Start-Sleep -Milliseconds 25 }}",
+        powershell_single_quoted(&grandchild_ready_path),
         powershell_single_quoted(&ticks_path)
     );
     let root_script = format!(
-        "$child = Start-Process -PassThru -FilePath '{}' -ArgumentList @('-NoProfile', '-EncodedCommand', '{}'); [IO.File]::WriteAllText('{}', [string]$child.Id); {root_tail}",
+        "[IO.File]::WriteAllText('{}', [string]$PID); $child = Start-Process -PassThru -FilePath '{}' -ArgumentList @('-NoProfile', '-EncodedCommand', '{}'); {root_tail}",
+        powershell_single_quoted(&root_ready_path),
         powershell_single_quoted(powershell),
         powershell_encoded_command(&child_script),
-        powershell_single_quoted(&ready_path),
     );
     GrandchildFixture {
         _test_dir: test_dir,
         ticks_path,
-        ready_path,
+        root_ready_path,
+        grandchild_ready_path,
         command: vec![
             powershell.display().to_string(),
             "-NoProfile".to_string(),
@@ -80,30 +108,6 @@ pub(super) fn grandchild_fixture(
             powershell_encoded_command(&root_script),
         ],
     }
-}
-
-pub(super) fn wait_for_grandchild(fixture: &GrandchildFixture) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while (!fixture.ready_path.exists()
-        || fs::metadata(&fixture.ticks_path)
-            .map(|meta| meta.len())
-            .unwrap_or(0)
-            < 3)
-        && Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        fixture.ready_path.exists(),
-        "root did not report child startup"
-    );
-    assert!(
-        fs::metadata(&fixture.ticks_path)
-            .map(|meta| meta.len())
-            .unwrap_or(0)
-            >= 3,
-        "grandchild did not write ticks"
-    );
 }
 
 pub(super) fn assert_grandchild_stopped(fixture: &GrandchildFixture) {

@@ -6,7 +6,6 @@ use super::job_test_support::SessionEnding;
 use super::job_test_support::SessionMode;
 use super::job_test_support::assert_grandchild_stopped;
 use super::job_test_support::grandchild_fixture;
-use super::job_test_support::wait_for_grandchild;
 use super::job_test_support::windows_powershell_path;
 use super::job_test_support::windows_process_test_guard;
 use super::sandbox_cwd;
@@ -14,7 +13,9 @@ use super::sandbox_log;
 use super::workspace_roots_for;
 use crate::WindowsSandboxProxySettingsMode;
 use crate::ipc_framed::Message;
+use crate::ipc_framed::OutputStream;
 use crate::ipc_framed::SpawnRequest;
+use crate::ipc_framed::decode_bytes;
 use crate::ipc_framed::read_frame;
 use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
 use crate::runner_client::RunnerTransport;
@@ -29,9 +30,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
+use std::time::Instant;
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tokio::time::timeout;
 
 static ELEVATED_TEST_CODEX_HOME: OnceLock<PathBuf> = OnceLock::new();
+const DIAGNOSTIC_OUTPUT_CAP: usize = 8 * 1024;
 
 fn elevated_test_codex_home() -> &'static Path {
     ELEVATED_TEST_CODEX_HOME
@@ -108,38 +113,150 @@ fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn wait_for_runner_terminal_result(mut pipe_read: std::fs::File) -> (i32, bool) {
-    let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
-    let reader = std::thread::spawn(move || {
-        let result = loop {
-            match read_frame(&mut pipe_read) {
-                Ok(Some(frame)) => match frame.message {
-                    Message::Exit { payload } => {
-                        break Ok((payload.exit_code, payload.timed_out));
+fn append_diagnostic_output(buffer: &mut Vec<u8>, chunk: &[u8]) {
+    let remaining = DIAGNOSTIC_OUTPUT_CAP.saturating_sub(buffer.len());
+    buffer.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+}
+
+#[derive(Debug)]
+enum RunnerTerminal {
+    Exit { exit_code: i32, timed_out: bool },
+    Error(String),
+}
+
+enum RunnerProbeEvent {
+    Output {
+        stream: OutputStream,
+        data: Vec<u8>,
+    },
+    Terminal(RunnerTerminal),
+}
+
+struct RunnerProbe {
+    events: std::sync::mpsc::Receiver<RunnerProbeEvent>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    terminal: Option<RunnerTerminal>,
+}
+
+impl RunnerProbe {
+    fn start(mut pipe_read: std::fs::File) -> Self {
+        let (event_tx, events) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let terminal = loop {
+                match read_frame(&mut pipe_read) {
+                    Ok(Some(frame)) => match frame.message {
+                        Message::Output { payload } => match decode_bytes(&payload.data_b64) {
+                            Ok(data) => {
+                                if event_tx
+                                    .send(RunnerProbeEvent::Output {
+                                        stream: payload.stream,
+                                        data,
+                                    })
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Err(err) => break RunnerTerminal::Error(format!(
+                                "decode runner {:?} output: {err}",
+                                payload.stream
+                            )),
+                        },
+                        Message::Exit { payload } => {
+                            break RunnerTerminal::Exit {
+                                exit_code: payload.exit_code,
+                                timed_out: payload.timed_out,
+                            };
+                        }
+                        Message::Error { payload } => {
+                            break RunnerTerminal::Error(format!(
+                                "runner {:?} error {:?}: {}",
+                                payload.stage, payload.windows_error_code, payload.message
+                            ));
+                        }
+                        Message::SpawnReady { .. }
+                        | Message::SpawnRequest { .. }
+                        | Message::Stdin { .. }
+                        | Message::CloseStdin { .. }
+                        | Message::Resize { .. }
+                        | Message::Terminate { .. } => {}
+                    },
+                    Ok(None) => {
+                        break RunnerTerminal::Error(
+                            "runner pipe closed before terminal result".to_string(),
+                        );
                     }
-                    Message::Error { payload } => {
-                        break Err(anyhow::anyhow!("runner error: {}", payload.message));
+                    Err(err) => {
+                        break RunnerTerminal::Error(format!("read runner frame: {err:#}"));
                     }
-                    Message::Output { .. }
-                    | Message::SpawnReady { .. }
-                    | Message::SpawnRequest { .. }
-                    | Message::Stdin { .. }
-                    | Message::CloseStdin { .. }
-                    | Message::Resize { .. }
-                    | Message::Terminate { .. } => {}
-                },
-                Ok(None) => break Err(anyhow::anyhow!("runner pipe closed before exit")),
-                Err(err) => break Err(err.context("read runner exit frame")),
+                }
+            };
+            let _ = event_tx.send(RunnerProbeEvent::Terminal(terminal));
+        });
+        Self {
+            events,
+            reader: Some(reader),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            terminal: None,
+        }
+    }
+
+    fn handle_event(&mut self, event: RunnerProbeEvent) {
+        match event {
+            RunnerProbeEvent::Output { stream, data } => match stream {
+                OutputStream::Stdout => append_diagnostic_output(&mut self.stdout, &data),
+                OutputStream::Stderr => append_diagnostic_output(&mut self.stderr, &data),
+            },
+            RunnerProbeEvent::Terminal(terminal) => self.terminal = Some(terminal),
+        }
+    }
+
+    fn drain(&mut self) {
+        while let Ok(event) = self.events.try_recv() {
+            self.handle_event(event);
+        }
+    }
+
+    fn diagnostics(&mut self) -> String {
+        self.drain();
+        format!(
+            "terminal={:?}, stdout={:?}, stderr={:?}",
+            self.terminal,
+            String::from_utf8_lossy(&self.stdout),
+            String::from_utf8_lossy(&self.stderr)
+        )
+    }
+
+    fn wait_for_terminal_result(&mut self) -> (i32, bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.terminal.is_none() && Instant::now() < deadline {
+            match self.events.recv_timeout(Duration::from_millis(25)) {
+                Ok(event) => self.handle_event(event),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
-        };
-        let _ = result_tx.send(result);
-    });
-    let terminal_result = result_rx
-        .recv_timeout(Duration::from_secs(10))
-        .expect("timed out waiting for runner terminal result")
-        .expect("runner should report a terminal result");
-    reader.join().expect("runner output reader should finish");
-    terminal_result
+        }
+        self.drain();
+        let terminal = self.terminal.take().unwrap_or_else(|| {
+            panic!(
+                "timed out waiting for runner terminal result: {}",
+                self.diagnostics()
+            )
+        });
+        if let Some(reader) = self.reader.take() {
+            reader.join().expect("runner output reader should finish");
+        }
+        match terminal {
+            RunnerTerminal::Exit {
+                exit_code,
+                timed_out,
+            } => (exit_code, timed_out),
+            RunnerTerminal::Error(message) => panic!("{message}: {}", self.diagnostics()),
+        }
+    }
 }
 
 fn spawn_pipe_backed_grandchild(
@@ -208,6 +325,63 @@ fn spawn_pipe_backed_grandchild(
     (fixture, transport)
 }
 
+async fn wait_for_spawned_grandchild(
+    fixture: &GrandchildFixture,
+    session: &codex_utils_pty::ProcessHandle,
+    stdout_rx: &mut mpsc::Receiver<Vec<u8>>,
+    stderr_rx: &mut mpsc::Receiver<Vec<u8>>,
+    codex_home: &Path,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    loop {
+        while let Ok(chunk) = stdout_rx.try_recv() {
+            append_diagnostic_output(&mut stdout, &chunk);
+        }
+        while let Ok(chunk) = stderr_rx.try_recv() {
+            append_diagnostic_output(&mut stderr, &chunk);
+        }
+        let readiness = fixture.readiness();
+        if readiness.is_complete() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "grandchild startup incomplete: readiness={readiness:?}, early_exit={:?}, timed_out=not_exposed, stdout={:?}, stderr={:?}\n{}",
+                session.exit_code(),
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr),
+                sandbox_log(codex_home)
+            );
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn wait_for_runner_grandchild(
+    fixture: &GrandchildFixture,
+    probe: &mut RunnerProbe,
+    codex_home: &Path,
+) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        probe.drain();
+        let readiness = fixture.readiness();
+        if readiness.is_complete() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "grandchild startup incomplete: readiness={readiness:?}, {}\n{}",
+                probe.diagnostics(),
+                sandbox_log(codex_home)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn assert_elevated_session_stops_grandchild(mode: SessionMode, ending: SessionEnding) {
     let _guard = windows_process_test_guard();
     stage_windows_sandbox_helpers().expect("stage elevated sandbox helpers");
@@ -245,14 +419,20 @@ fn assert_elevated_session_stops_grandchild(mode: SessionMode, ending: SessionEn
             )
         });
 
-        wait_for_grandchild(&fixture);
-
         let codex_utils_pty::SpawnedProcess {
             session,
-            stdout_rx: _stdout_rx,
-            stderr_rx: _stderr_rx,
+            mut stdout_rx,
+            mut stderr_rx,
             exit_rx,
         } = spawned;
+        wait_for_spawned_grandchild(
+            &fixture,
+            &session,
+            &mut stdout_rx,
+            &mut stderr_rx,
+            codex_home,
+        )
+        .await;
         if matches!(ending, SessionEnding::ExplicitTermination) {
             session.request_terminate();
         }
@@ -303,11 +483,12 @@ fn elevated_control_transport_eof_stops_grandchild() {
     let (fixture, transport) =
         spawn_pipe_backed_grandchild(&cwd, &powershell, codex_home, /*timeout_ms*/ 30_000);
 
-    wait_for_grandchild(&fixture);
     let (pipe_write, pipe_read) = transport.into_files();
+    let mut probe = RunnerProbe::start(pipe_read);
+    wait_for_runner_grandchild(&fixture, &mut probe, codex_home);
     drop(pipe_write);
 
-    let (exit_code, timed_out) = wait_for_runner_terminal_result(pipe_read);
+    let (exit_code, timed_out) = probe.wait_for_terminal_result();
     assert_ne!(exit_code, 0);
     assert!(!timed_out);
     assert_grandchild_stopped(&fixture);
@@ -323,9 +504,10 @@ fn elevated_pipe_timeout_stops_grandchild_and_reports_terminal_result() {
     let (fixture, transport) =
         spawn_pipe_backed_grandchild(&cwd, &powershell, codex_home, /*timeout_ms*/ 5_000);
 
-    wait_for_grandchild(&fixture);
     let (_pipe_write, pipe_read) = transport.into_files();
+    let mut probe = RunnerProbe::start(pipe_read);
+    wait_for_runner_grandchild(&fixture, &mut probe, codex_home);
 
-    assert_eq!(wait_for_runner_terminal_result(pipe_read), (192, true));
+    assert_eq!(probe.wait_for_terminal_result(), (192, true));
     assert_grandchild_stopped(&fixture);
 }
