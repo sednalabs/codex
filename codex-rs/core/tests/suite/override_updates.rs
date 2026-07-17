@@ -1,11 +1,14 @@
 use anyhow::Result;
+use codex_core::RolloutRecorder;
 use codex_core::config::Constrained;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::RolloutItem;
 use core_test_support::TempDirExt;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -110,9 +113,18 @@ async fn thread_settings_update_without_user_turn_does_not_record_collaboration_
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 
     let rollout_path = test.codex.rollout_path().expect("rollout path");
+    let InitialHistory::Resumed(history) =
+        RolloutRecorder::get_rollout_history(&rollout_path).await?
+    else {
+        panic!("settings-only shutdown should load as resumed history");
+    };
     assert!(
-        !rollout_path.exists(),
-        "did not expect a rollout before a new user turn"
+        history.history.iter().all(|item| matches!(
+            item,
+            RolloutItem::SessionMeta(_)
+                | RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_))
+        )),
+        "settings-only shutdown should not record turn-scoped collaboration context"
     );
 
     Ok(())
