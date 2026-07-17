@@ -23,6 +23,7 @@ pub use model::LogQuery;
 pub use model::LogRow;
 pub use model::Phase2AttestedBaseline;
 pub use model::Phase2JobClaimOutcome;
+pub use runtime::ConfiguredIdentityProvenance;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
 

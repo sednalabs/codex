@@ -20,6 +20,7 @@ const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
 const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
 const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
 const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
+const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
 
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
@@ -39,6 +40,42 @@ fn migrator_through(version: i64) -> Migrator {
     }
 }
 
+async fn insert_old_binary_thread(pool: &sqlx::SqlitePool, id: &str, rollout_path: &str) {
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id,
+    rollout_path,
+    created_at,
+    updated_at,
+    created_at_ms,
+    updated_at_ms,
+    source,
+    model_provider,
+    cwd,
+    title,
+    sandbox_policy,
+    approval_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(id)
+    .bind(rollout_path)
+    .bind(1_700_000_000_i64)
+    .bind(1_700_000_100_i64)
+    .bind(1_700_000_000_123_i64)
+    .bind(1_700_000_100_456_i64)
+    .bind("cli")
+    .bind("openai")
+    .bind("/tmp")
+    .bind("")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(pool)
+    .await
+    .expect("old-binary-shaped thread should insert");
+}
+
 #[test]
 fn state_migration_versions_are_unique() {
     let mut seen = BTreeSet::new();
@@ -51,6 +88,64 @@ fn state_migration_versions_are_unique() {
     assert!(
         duplicates.is_empty(),
         "duplicate state migration versions: {duplicates:?}"
+    );
+}
+
+#[tokio::test]
+async fn configured_identity_provenance_migration_defaults_existing_and_old_binary_rows_to_unknown()
+{
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory database should open");
+    migrator_through(PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION)
+        .run(&pool)
+        .await
+        .expect("pre-provenance migrations should apply");
+    insert_old_binary_thread(
+        &pool,
+        "00000000-0000-0000-0000-000000000011",
+        "/tmp/pre-v45.jsonl",
+    )
+    .await;
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("configured-identity provenance migration should apply");
+    let migrated_provenance: i64 =
+        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
+            .bind("00000000-0000-0000-0000-000000000011")
+            .fetch_one(&pool)
+            .await
+            .expect("migrated provenance should load");
+
+    insert_old_binary_thread(
+        &pool,
+        "00000000-0000-0000-0000-000000000012",
+        "/tmp/post-v45.jsonl",
+    )
+    .await;
+    let post_v45_old_binary_provenance: i64 =
+        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
+            .bind("00000000-0000-0000-0000-000000000012")
+            .fetch_one(&pool)
+            .await
+            .expect("old-binary provenance default should load");
+
+    assert_eq!(
+        (migrated_provenance, post_v45_old_binary_provenance),
+        (0, 0)
+    );
+    let invalid_update =
+        sqlx::query("UPDATE threads SET configured_identity_provenance = 3 WHERE id = ?")
+            .bind("00000000-0000-0000-0000-000000000011")
+            .execute(&pool)
+            .await;
+    assert!(
+        invalid_update.is_err(),
+        "invalid provenance must be rejected"
     );
 }
 
