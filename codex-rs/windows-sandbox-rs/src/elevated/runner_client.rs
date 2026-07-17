@@ -96,6 +96,8 @@ impl std::error::Error for RunnerStartupError {}
 pub(crate) struct RunnerTransport {
     pipe_write: File,
     pipe_read: File,
+    #[cfg(test)]
+    spawn_ready_process_id: Option<u32>,
 }
 
 fn is_refreshable_windows_error(code: u32) -> bool {
@@ -162,12 +164,23 @@ impl RunnerTransport {
         let msg = read_frame(&mut self.pipe_read)?
             .ok_or_else(|| anyhow::anyhow!("runner pipe closed before spawn_ready"))?;
         match msg.message {
+            #[cfg(test)]
+            Message::SpawnReady { payload } => {
+                self.spawn_ready_process_id = Some(payload.process_id);
+                Ok(())
+            }
+            #[cfg(not(test))]
             Message::SpawnReady { .. } => Ok(()),
             Message::Error { payload } => Err(RunnerStartupError::new(payload).into()),
             other => Err(anyhow::anyhow!(
                 "expected spawn_ready from runner, got {other:?}"
             )),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_ready_process_id(&self) -> Option<u32> {
+        self.spawn_ready_process_id
     }
 
     pub(crate) fn into_files(self) -> (File, File) {
@@ -408,6 +421,8 @@ pub(crate) fn spawn_runner_transport(
         // From here on, the `RunnerTransport` owns closing the pipes on every success/error path.
         pipe_write: unsafe { File::from_raw_handle(h_pipe_in as _) },
         pipe_read: unsafe { File::from_raw_handle(h_pipe_out as _) },
+        #[cfg(test)]
+        spawn_ready_process_id: None,
     };
     let startup_result = (|| -> Result<()> {
         // Keep the runner process HANDLE alive until the *entire* startup handshake finishes.

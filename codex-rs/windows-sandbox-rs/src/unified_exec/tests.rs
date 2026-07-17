@@ -35,6 +35,9 @@ use tokio::time::timeout;
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[path = "elevated_child_telemetry_tests.rs"]
+mod elevated_child_telemetry_tests;
+
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
         .lock()
