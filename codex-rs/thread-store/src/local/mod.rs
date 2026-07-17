@@ -342,10 +342,10 @@ mod tests {
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionSource;
-    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
-    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::protocol::ThreadMemoryMode;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
     use codex_protocol::protocol::TurnCompleteEvent;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
@@ -511,12 +511,10 @@ mod tests {
         drop(store);
         runtime.close().await;
 
-        let reopened = codex_state::StateRuntime::init(
-            config.sqlite_home,
-            config.default_model_provider_id,
-        )
-        .await
-        .expect("state db should reopen");
+        let reopened =
+            codex_state::StateRuntime::init(config.sqlite_home, config.default_model_provider_id)
+                .await
+                .expect("state db should reopen");
         let restarted_provenance = reopened
             .read_configured_identity_provenance(thread_id)
             .await
@@ -545,24 +543,18 @@ mod tests {
         let absent_uuid = uuid::Uuid::from_u128(411);
         let partial_uuid = uuid::Uuid::from_u128(412);
         let direct_uuid = uuid::Uuid::from_u128(413);
-        let present_path = write_session_file(
-            home.path(),
-            "2025-01-03T18-00-00",
-            present_uuid,
-        )
-        .expect("present rollout");
+        let present_path = write_session_file(home.path(), "2025-01-03T18-00-00", present_uuid)
+            .expect("present rollout");
         codex_rollout::append_rollout_item_to_path(
             present_path.as_path(),
             &thread_settings_item(home.path()),
         )
         .await
         .expect("append historical settings event");
-        let absent_path =
-            write_session_file(home.path(), "2025-01-03T18-01-00", absent_uuid)
-                .expect("absent rollout");
-        let partial_path =
-            write_session_file(home.path(), "2025-01-03T18-02-00", partial_uuid)
-                .expect("partial rollout");
+        let absent_path = write_session_file(home.path(), "2025-01-03T18-01-00", absent_uuid)
+            .expect("absent rollout");
+        let partial_path = write_session_file(home.path(), "2025-01-03T18-02-00", partial_uuid)
+            .expect("partial rollout");
         writeln!(
             std::fs::OpenOptions::new()
                 .append(true)
@@ -571,9 +563,8 @@ mod tests {
             "not-json"
         )
         .expect("append unreadable rollout line");
-        let direct_path =
-            write_session_file(home.path(), "2025-01-03T18-03-00", direct_uuid)
-                .expect("direct rollout");
+        let direct_path = write_session_file(home.path(), "2025-01-03T18-03-00", direct_uuid)
+            .expect("direct rollout");
 
         let mut seeded = Vec::new();
         for (uuid, path) in [
@@ -641,7 +632,10 @@ mod tests {
             ]
         );
         for live_thread in resumed {
-            live_thread.shutdown().await.expect("shutdown resumed thread");
+            live_thread
+                .shutdown()
+                .await
+                .expect("shutdown resumed thread");
         }
     }
 
