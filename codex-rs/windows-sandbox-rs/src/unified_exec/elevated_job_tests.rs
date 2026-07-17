@@ -323,7 +323,7 @@ fn spawn_pipe_backed_command(
         stdin_open: false,
         use_private_desktop: false,
     };
-    let transport = spawn_runner_transport(
+    spawn_runner_transport(
         codex_home,
         cwd,
         &elevated.sandbox_creds,
