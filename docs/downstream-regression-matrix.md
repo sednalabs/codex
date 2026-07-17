@@ -335,7 +335,10 @@ provider metadata on resume.
   `compressed_materialization_custody_survives_caller_cancellation_through_corrupt_zstd`; plus
   `plain_resume_tail_repair_custody_survives_caller_cancellation`,
   `recovery_materialization_tail_repair_and_creation_are_guarded`, and
-  `admitted_recovery_error_releases_custody_without_filesystem_drift`.
+  `admitted_recovery_error_releases_custody_without_filesystem_drift`; plus
+  `revoke_persists_exact_admitted_suffix_and_rejects_every_later_command`,
+  `writer_state_revoke_is_terminal_lossless_and_releases_the_file`, and
+  `failed_revoke_preserves_the_exact_suffix_and_keeps_authority_active`.
 - The foundation pair proves that two independently polled revokers wake and
   that a retained final release completes one-way quiescence. The
   materialization pair cancels the outer async task, closes later admission,
@@ -348,7 +351,13 @@ provider metadata on resume.
 - The recorder trio applies the same proof to resume append-open, blocking
   recovery materialization/tail repair, and missing-path creation. Recursive
   snapshots prove the before, after-mutation, and post-revocation states.
-- This lane does not cover recorder lifecycle revocation, terminal writer actor behavior, command acknowledgement semantics, or public API exposure.
+- The terminal-state trio proves complete pre-revocation suffix persistence,
+  actor acknowledgement and join, revoke-time writer-handle retirement, stable
+  repeated rejection for all post-revocation commands, and exact suffix retention
+  when a drain fails. Git collection remains outside custody while each
+  session-meta or history write owns one bounded item permit.
+- This lane does not cover LocalThreadStore lifecycle triggers or deterministic
+  ordinary `PermissionDenied` retry injection.
 
 The replay assertions that used to live under `tui_app_server` now ride on the
 cut-over `codex-tui` app tests. Keep the preset green with the parser test and

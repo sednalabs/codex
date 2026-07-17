@@ -936,9 +936,18 @@ docs-only refresh commit that records this snapshot.
   background writer state. After read-only ordinal preflight, detached custody
   encloses plain append-open/tail repair plus writer materialization, directory
   creation, and recovery reopen. Closed authority denies later mutation without
-  changing constructors or wire format; lifecycle revocation, terminal writer
-  semantics, and public API remain separate slices.
-- Seven complementary regressions carry the complete proof. The foundation
+  changing constructors or wire format.
+- Recorder revocation is an explicit terminal actor transition rather than an
+  I/O error category. `AddItems` is actor-acknowledged, all items admitted before
+  the ordered revoke command are flushed, the authority closes, and the writer
+  handle is dropped before the revoke acknowledgement. `revoke()` then joins the
+  actor. A failed drain leaves the actor active with the exact unwritten suffix
+  available for retry; successful revocation rejects later add, persist, flush,
+  and shutdown calls with one stable caller-visible error.
+- Git metadata collection remains outside mutation custody. Session metadata and
+  canonical history writes take one short custody token per item, so revocation
+  waits for complete writes without enclosing long subprocess preflight.
+- Ten complementary regressions carry the complete proof. The foundation
   pair proves multi-revoker wakeup and retained final-release quiescence. The
   materialization pair cancels the outer caller while the controlled blocking
   continuation is parked, closes admission, and compares complete
@@ -952,11 +961,16 @@ docs-only refresh commit that records this snapshot.
   - `plain_resume_tail_repair_custody_survives_caller_cancellation`
   - `recovery_materialization_tail_repair_and_creation_are_guarded`
   - `admitted_recovery_error_releases_custody_without_filesystem_drift`
+  - `revoke_persists_exact_admitted_suffix_and_rejects_every_later_command`
+  - `writer_state_revoke_is_terminal_lossless_and_releases_the_file`
+  - `failed_revoke_preserves_the_exact_suffix_and_keeps_authority_active`
 - Primary files:
   - `codex-rs/rollout/src/mutation_authority.rs`
   - `codex-rs/rollout/src/mutation_authority_tests.rs`
   - `codex-rs/rollout/src/compression.rs`
   - `codex-rs/rollout/src/compression_tests.rs`
+  - `codex-rs/rollout/src/recorder.rs`
+  - `codex-rs/rollout/src/recorder_revocation_tests.rs`
 
 ## Not Counted As Standalone Live Divergences
 

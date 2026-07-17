@@ -49,6 +49,7 @@ use super::list::get_threads_in_root;
 use super::list::parse_cursor;
 use super::list::parse_timestamp_uuid_from_filename;
 use super::metadata;
+use super::mutation_authority::MutationAdmissionError;
 use super::mutation_authority::RolloutMutationAuthority;
 use super::ordinal::RolloutOrdinalState;
 use super::ordinal::ordinal_state_for_rollout;
@@ -111,7 +112,10 @@ pub enum RolloutRecorderParams {
 }
 
 enum RolloutCmd {
-    AddItems(Vec<RolloutItem>),
+    AddItems {
+        items: Vec<RolloutItem>,
+        ack: oneshot::Sender<std::io::Result<()>>,
+    },
     Persist {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
@@ -122,12 +126,21 @@ enum RolloutCmd {
     Shutdown {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
+    Revoke {
+        ack: oneshot::Sender<std::io::Result<()>>,
+    },
+}
+
+#[derive(Debug)]
+enum RolloutWriterTerminalState {
+    Revoked,
+    Failed(Arc<IoError>),
 }
 
 /// Observable state for the background rollout writer task.
 struct RolloutWriterTask {
     handle: Mutex<Option<JoinHandle<()>>>,
-    terminal_failure: Mutex<Option<Arc<IoError>>>,
+    terminal_state: Mutex<Option<RolloutWriterTerminalState>>,
 }
 
 impl RolloutWriterTask {
@@ -135,7 +148,7 @@ impl RolloutWriterTask {
     fn new() -> Self {
         Self {
             handle: Mutex::new(None),
-            terminal_failure: Mutex::new(None),
+            terminal_state: Mutex::new(None),
         }
     }
 
@@ -151,20 +164,54 @@ impl RolloutWriterTask {
     /// Remember a terminal task failure for future recorder API calls.
     fn mark_failed(&self, err: &IoError) {
         let mut guard = self
-            .terminal_failure
+            .terminal_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(Arc::new(clone_io_error(err)));
+        *guard = Some(RolloutWriterTerminalState::Failed(Arc::new(
+            clone_io_error(err),
+        )));
     }
 
-    /// Return the terminal writer-task failure, if the task exited with an error.
-    fn terminal_failure(&self) -> Option<IoError> {
-        let guard = self
-            .terminal_failure
+    fn mark_revoked(&self) {
+        let mut guard = self
+            .terminal_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.as_ref().map(|err| clone_io_error(err.as_ref()))
+        *guard = Some(RolloutWriterTerminalState::Revoked);
     }
+
+    /// Return the caller-visible error for a terminal writer state.
+    fn terminal_error(&self) -> Option<IoError> {
+        let guard = self
+            .terminal_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.as_ref().map(|state| match state {
+            RolloutWriterTerminalState::Revoked => revoked_recorder_error(),
+            RolloutWriterTerminalState::Failed(err) => clone_io_error(err.as_ref()),
+        })
+    }
+
+    /// Join the writer task exactly once. Other recorder clones observe the shared terminal state.
+    async fn join(&self) -> std::io::Result<()> {
+        let handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            handle
+                .await
+                .map_err(|err| IoError::other(format!("rollout writer task join failed: {err}")))?;
+        }
+        Ok(())
+    }
+}
+
+const REVOKED_RECORDER_MESSAGE: &str = "rollout recorder is permanently revoked";
+
+fn revoked_recorder_error() -> IoError {
+    IoError::other(REVOKED_RECORDER_MESSAGE)
 }
 
 fn clone_io_error(err: &IoError) -> IoError {
@@ -829,6 +876,7 @@ impl RolloutRecorder {
                     ordinal_state,
                     last_logged_error: None,
                     mutation_authority,
+                    lifecycle: RolloutWriterLifecycle::Active,
                 }
             }
             RolloutRecorderParams::Resume { path } => {
@@ -847,6 +895,7 @@ impl RolloutRecorder {
                     ordinal_state,
                     last_logged_error: None,
                     mutation_authority,
+                    lifecycle: RolloutWriterLifecycle::Active,
                 }
             }
         };
@@ -863,7 +912,7 @@ impl RolloutRecorder {
         let writer_task_for_spawn = Arc::clone(&writer_task);
         let rollout_path_for_spawn = rollout_path.clone();
         let handle = tokio::task::spawn(async move {
-            let result = rollout_writer(state, rx).await;
+            let result = rollout_writer(state, rx, writer_task_for_spawn.as_ref()).await;
             if let Err(err) = result {
                 // This is the terminal background-task failure path. Normal I/O failures stay inside
                 // `rollout_writer`, are reported through command acks, and leave items buffered for retry.
@@ -893,14 +942,23 @@ impl RolloutRecorder {
         if items.is_empty() {
             return Ok(());
         }
+        let (tx, rx) = oneshot::channel();
         self.tx
-            .send(RolloutCmd::AddItems(items.to_vec()))
+            .send(RolloutCmd::AddItems {
+                items: items.to_vec(),
+                ack: tx,
+            })
             .await
             .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
                     IoError::other(format!("failed to queue rollout items: {e}"))
                 })
+            })?;
+        rx.await.map_err(|e| {
+            self.writer_task.terminal_error().unwrap_or_else(|| {
+                IoError::other(format!("failed waiting for rollout item admission: {e}"))
             })
+        })?
     }
 
     /// Materialize the rollout file and persist all buffered items.
@@ -913,12 +971,12 @@ impl RolloutRecorder {
             .send(RolloutCmd::Persist { ack: tx })
             .await
             .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
                     IoError::other(format!("failed to queue rollout persist: {e}"))
                 })
             })?;
         rx.await.map_err(|e| {
-            self.writer_task.terminal_failure().unwrap_or_else(|| {
+            self.writer_task.terminal_error().unwrap_or_else(|| {
                 IoError::other(format!("failed waiting for rollout persist: {e}"))
             })
         })?
@@ -934,13 +992,13 @@ impl RolloutRecorder {
             .send(RolloutCmd::Flush { ack: tx })
             .await
             .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
                     IoError::other(format!("failed to queue rollout flush: {e}"))
                 })
             })?;
         rx.await.map_err(|e| {
             self.writer_task
-                .terminal_failure()
+                .terminal_error()
                 .unwrap_or_else(|| IoError::other(format!("failed waiting for rollout flush: {e}")))
         })?
     }
@@ -1034,12 +1092,12 @@ impl RolloutRecorder {
         let (tx_done, rx_done) = oneshot::channel();
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
             Ok(_) => rx_done.await.map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
                     IoError::other(format!("failed waiting for rollout shutdown: {e}"))
                 })
             })??,
             Err(e) => {
-                if let Some(err) = self.writer_task.terminal_failure() {
+                if let Some(err) = self.writer_task.terminal_error() {
                     warn!(
                         "failed to send rollout shutdown command because writer task failed: {err}"
                     );
@@ -1052,6 +1110,29 @@ impl RolloutRecorder {
             }
         };
         Ok(())
+    }
+
+    /// Permanently revoke rollout mutation authority and stop the writer actor.
+    ///
+    /// All items admitted before this command are persisted before the authority closes. The file
+    /// handle is released before the acknowledgement, and this method joins the terminal actor.
+    /// A failed drain leaves the writer active with its unwritten suffix available for retry.
+    pub async fn revoke(&self) -> std::io::Result<()> {
+        let (tx_done, rx_done) = oneshot::channel();
+        self.tx
+            .send(RolloutCmd::Revoke { ack: tx_done })
+            .await
+            .map_err(|e| {
+                self.writer_task.terminal_error().unwrap_or_else(|| {
+                    IoError::other(format!("failed to queue rollout revocation: {e}"))
+                })
+            })?;
+        rx_done.await.map_err(|e| {
+            self.writer_task.terminal_error().unwrap_or_else(|| {
+                IoError::other(format!("failed waiting for rollout revocation: {e}"))
+            })
+        })??;
+        self.writer_task.join().await
     }
 }
 
@@ -1603,11 +1684,27 @@ struct RolloutWriterState {
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
     mutation_authority: RolloutMutationAuthority,
+    lifecycle: RolloutWriterLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RolloutWriterLifecycle {
+    Active,
+    Revoked,
 }
 
 impl RolloutWriterState {
-    fn add_items(&mut self, items: Vec<RolloutItem>) {
+    fn ensure_active(&self) -> std::io::Result<()> {
+        match self.lifecycle {
+            RolloutWriterLifecycle::Active => Ok(()),
+            RolloutWriterLifecycle::Revoked => Err(revoked_recorder_error()),
+        }
+    }
+
+    fn add_items(&mut self, items: Vec<RolloutItem>) -> std::io::Result<()> {
+        self.ensure_active()?;
         self.pending_items.extend(items);
+        Ok(())
     }
 
     async fn flush_if_materialized(&mut self) {
@@ -1620,10 +1717,12 @@ impl RolloutWriterState {
     }
 
     async fn persist(&mut self) -> std::io::Result<()> {
+        self.ensure_active()?;
         self.write_pending_with_recovery("persist").await
     }
 
     async fn flush(&mut self) -> std::io::Result<()> {
+        self.ensure_active()?;
         if self.is_deferred() && self.pending_items.is_empty() {
             return Ok(());
         }
@@ -1631,10 +1730,22 @@ impl RolloutWriterState {
     }
 
     async fn shutdown(&mut self) -> std::io::Result<()> {
+        self.ensure_active()?;
         if self.is_deferred() && self.pending_items.is_empty() {
             return Ok(());
         }
         self.write_pending_with_recovery("shutdown").await
+    }
+
+    async fn revoke(&mut self) -> std::io::Result<()> {
+        self.ensure_active()?;
+        if !(self.is_deferred() && self.pending_items.is_empty()) {
+            self.write_pending_with_recovery("revoke").await?;
+        }
+        self.mutation_authority.revoke().await;
+        self.writer = None;
+        self.lifecycle = RolloutWriterLifecycle::Revoked;
+        Ok(())
     }
 
     async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
@@ -1710,13 +1821,18 @@ impl RolloutWriterState {
         let Some(session_meta) = self.meta.as_ref().cloned() else {
             return Ok(());
         };
-        write_session_meta(
-            self.writer.as_mut(),
-            &mut self.ordinal_state,
-            session_meta,
-            &self.cwd,
-        )
-        .await?;
+        let session_meta_line = build_session_meta_line(session_meta, &self.cwd).await;
+        let rollout_item = RolloutItem::SessionMeta(session_meta_line);
+        let custody = self
+            .mutation_authority
+            .admit()
+            .map_err(mutation_admission_error)?;
+        if let Some(writer) = self.writer.as_mut() {
+            let ordinal = self.ordinal_state.current()?;
+            writer.write_rollout_item(&rollout_item, ordinal).await?;
+            self.ordinal_state.advance();
+        }
+        drop(custody);
         self.meta = None;
         Ok(())
     }
@@ -1726,10 +1842,6 @@ impl RolloutWriterState {
         self.write_session_meta_if_needed().await?;
 
         self.write_pending_items_once().await?;
-
-        if let Some(writer) = self.writer.as_mut() {
-            writer.file.flush().await?;
-        }
         Ok(())
     }
 
@@ -1741,6 +1853,13 @@ impl RolloutWriterState {
         let mut written_count = 0usize;
         let mut write_result = Ok(());
         for item in &self.pending_items {
+            let custody = match self.mutation_authority.admit() {
+                Ok(custody) => custody,
+                Err(err) => {
+                    write_result = Err(mutation_admission_error(err));
+                    break;
+                }
+            };
             match self.ordinal_state.current() {
                 Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
                     Ok(()) => self.ordinal_state.advance(),
@@ -1754,6 +1873,7 @@ impl RolloutWriterState {
                     break;
                 }
             }
+            drop(custody);
             written_count += 1;
         }
 
@@ -1768,13 +1888,17 @@ impl RolloutWriterState {
 async fn rollout_writer(
     mut state: RolloutWriterState,
     mut rx: mpsc::Receiver<RolloutCmd>,
+    writer_task: &RolloutWriterTask,
 ) -> std::io::Result<()> {
     // Process rollout commands
     while let Some(cmd) = rx.recv().await {
         match cmd {
-            RolloutCmd::AddItems(items) => {
-                state.add_items(items);
-                state.flush_if_materialized().await;
+            RolloutCmd::AddItems { items, ack } => {
+                let result = state.add_items(items);
+                if result.is_ok() {
+                    state.flush_if_materialized().await;
+                }
+                let _ = ack.send(result);
             }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
@@ -1791,18 +1915,26 @@ async fn rollout_writer(
                     let _ = ack.send(Err(err));
                 }
             },
+            RolloutCmd::Revoke { ack } => match state.revoke().await {
+                Ok(()) => {
+                    writer_task.mark_revoked();
+                    let _ = ack.send(Ok(()));
+                    break;
+                }
+                Err(err) => {
+                    let _ = ack.send(Err(err));
+                }
+            },
         }
     }
 
     Ok(())
 }
 
-async fn write_session_meta(
-    mut writer: Option<&mut JsonlWriter>,
-    ordinal_state: &mut RolloutOrdinalState,
+async fn build_session_meta_line(
     session_meta: SessionMeta,
     cwd: &Path,
-) -> std::io::Result<()> {
+) -> SessionMetaLine {
     let git_info = if get_git_repo_root(cwd).is_some() {
         collect_git_info(cwd).await.map(|info| ProtocolGitInfo {
             commit_hash: info.commit_hash,
@@ -1812,18 +1944,19 @@ async fn write_session_meta(
     } else {
         None
     };
-    let session_meta_line = SessionMetaLine {
+    SessionMetaLine {
         meta: session_meta,
         git: git_info,
-    };
-
-    let rollout_item = RolloutItem::SessionMeta(session_meta_line);
-    if let Some(writer) = writer.as_mut() {
-        let ordinal = ordinal_state.current()?;
-        writer.write_rollout_item(&rollout_item, ordinal).await?;
-        ordinal_state.advance();
     }
-    Ok(())
+}
+
+fn mutation_admission_error(error: MutationAdmissionError) -> IoError {
+    match error {
+        MutationAdmissionError::AdmissionClosed => revoked_recorder_error(),
+        MutationAdmissionError::CounterOverflow => {
+            IoError::other("rollout mutation admission counter overflow")
+        }
+    }
 }
 
 /// Append one already-filtered rollout item to an existing rollout JSONL file.
@@ -2100,3 +2233,7 @@ mod tests;
 #[cfg(test)]
 #[path = "recorder_mutation_authority_tests.rs"]
 mod mutation_authority_tests;
+
+#[cfg(test)]
+#[path = "recorder_revocation_tests.rs"]
+mod revocation_tests;
