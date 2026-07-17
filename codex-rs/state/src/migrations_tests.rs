@@ -108,13 +108,12 @@ async fn configured_identity_provenance_migration_defaults_existing_and_old_bina
         .run(&pool)
         .await
         .expect("configured-identity provenance migration should apply");
-    let migrated_row: bool = sqlx::query_scalar(
-        "SELECT configured_identity_provenance FROM threads WHERE id = ?",
-    )
-    .bind("00000000-0000-0000-0000-000000000011")
-    .fetch_one(&pool)
-    .await
-    .expect("migrated provenance should load");
+    let migrated_provenance: i64 =
+        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
+            .bind("00000000-0000-0000-0000-000000000011")
+            .fetch_one(&pool)
+            .await
+            .expect("migrated provenance should load");
 
     insert_old_binary_thread(
         &pool,
@@ -122,15 +121,17 @@ async fn configured_identity_provenance_migration_defaults_existing_and_old_bina
         "/tmp/post-v45.jsonl",
     )
     .await;
-    let post_v45_old_binary_row: bool = sqlx::query_scalar(
-        "SELECT configured_identity_provenance FROM threads WHERE id = ?",
-    )
-    .bind("00000000-0000-0000-0000-000000000012")
-    .fetch_one(&pool)
-    .await
-    .expect("old-binary provenance default should load");
+    let post_v45_old_binary_provenance: i64 =
+        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
+            .bind("00000000-0000-0000-0000-000000000012")
+            .fetch_one(&pool)
+            .await
+            .expect("old-binary provenance default should load");
 
-    assert_eq!((migrated_row, post_v45_old_binary_row), (false, false));
+    assert_eq!(
+        (migrated_provenance, post_v45_old_binary_provenance),
+        (0, 0)
+    );
 }
 
 #[tokio::test]
