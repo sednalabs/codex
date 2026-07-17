@@ -70,6 +70,7 @@ async fn file_system_remote_fs_helper_respects_windows_sandbox_write_policy() ->
 
     let mut sandbox = read_only_sandbox_for_cwd(readonly_dir.clone())?;
     sandbox.windows_sandbox_level = WindowsSandboxLevel::RestrictedToken;
+    sandbox.windows_sandbox_private_desktop = true;
 
     let readable_file = readonly_dir.join("readable.txt");
     std::fs::write(&readable_file, b"readable")?;
