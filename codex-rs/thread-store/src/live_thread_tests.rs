@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -60,6 +61,7 @@ struct GatedThreadStore {
     release_gated_append: Notify,
     persist_completed: Notify,
     second_metadata_applied: Notify,
+    partial_append_once: AtomicBool,
 }
 
 impl GatedThreadStore {
@@ -74,7 +76,13 @@ impl GatedThreadStore {
             release_gated_append: Notify::new(),
             persist_completed: Notify::new(),
             second_metadata_applied: Notify::new(),
+            partial_append_once: AtomicBool::new(false),
         }
+    }
+
+    fn with_partial_append_once(self) -> Self {
+        self.partial_append_once.store(true, Ordering::SeqCst);
+        self
     }
 }
 
@@ -101,6 +109,34 @@ impl ThreadStore for GatedThreadStore {
             } else if append_index == self.gated_append_index + 1 {
                 self.next_append_persisted.notify_one();
             }
+            Ok(())
+        })
+    }
+
+    fn append_items_committed<'a>(
+        &'a self,
+        mut params: AppendThreadItemsParams,
+        committed: &'a mut usize,
+    ) -> ThreadStoreFuture<'a, ()> {
+        Box::pin(async move {
+            if self.partial_append_once.swap(false, Ordering::SeqCst) && !params.items.is_empty() {
+                let first = params.items.remove(0);
+                ThreadStore::append_items(
+                    self.inner.as_ref(),
+                    AppendThreadItemsParams {
+                        thread_id: params.thread_id,
+                        items: vec![first],
+                    },
+                )
+                .await?;
+                *committed = 1;
+                return Err(crate::ThreadStoreError::Internal {
+                    message: "injected partial append".to_string(),
+                });
+            }
+            let item_count = params.items.len();
+            self.append_items(params).await?;
+            *committed = item_count;
             Ok(())
         })
     }
@@ -392,6 +428,44 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
         !persist_overtook_append,
         "persist reached the store before append observation completed"
     );
+}
+
+#[tokio::test]
+async fn partial_append_retries_only_the_uncommitted_suffix() {
+    let home = TempDir::new().expect("temp dir");
+    let config = LocalThreadStoreConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        default_model_provider_id: "test-provider".to_string(),
+    };
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .expect("state db should initialize");
+    let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
+    let gated_store = Arc::new(GatedThreadStore::new(local_store, usize::MAX).with_partial_append_once());
+    let thread_id = ThreadId::new();
+    let live_thread = LiveThread::create(
+        gated_store,
+        create_thread_params(thread_id, home.path()),
+    )
+    .await
+    .expect("create live thread");
+    let first = compacted_item();
+    let second = compacted_item();
+
+    live_thread
+        .append_items(&[first.clone(), second.clone()])
+        .await
+        .expect("partial append should resume at the uncommitted suffix");
+
+    let history = live_thread
+        .load_history(/*include_archived*/ true)
+        .await
+        .expect("load canonical history");
+    assert_eq!(history.items, vec![first, second]);
 }
 
 fn create_thread_params(thread_id: ThreadId, cwd: &std::path::Path) -> CreateThreadParams {
