@@ -37,7 +37,10 @@ pub fn rollout_item_affects_thread_metadata(item: &RolloutItem) -> bool {
     match item {
         RolloutItem::SessionMeta(_) | RolloutItem::TurnContext(_) => true,
         RolloutItem::EventMsg(
-            EventMsg::TokenCount(_) | EventMsg::UserMessage(_) | EventMsg::ThreadGoalUpdated(_),
+            EventMsg::TokenCount(_)
+            | EventMsg::UserMessage(_)
+            | EventMsg::ThreadGoalUpdated(_)
+            | EventMsg::ThreadSettingsApplied(_),
         ) => true,
         RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
             if matches!(event.item, TurnItem::UserMessage(_)) =>
@@ -113,6 +116,9 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
             if !objective.is_empty() {
                 set_preview_if_empty(metadata, Some(objective.to_string()));
             }
+        }
+        EventMsg::ThreadSettingsApplied(_) => {
+            metadata.configured_identity_seen = true;
         }
         _ => {}
     }
@@ -528,6 +534,7 @@ mod tests {
 
         assert_eq!(metadata.model.as_deref(), Some("gpt-5"));
         assert_eq!(metadata.reasoning_effort, Some(ReasoningEffort::High));
+        assert!(!metadata.configured_identity_seen);
     }
 
     #[test]
@@ -590,6 +597,7 @@ mod tests {
             model_provider: "openai".to_string(),
             model: None,
             reasoning_effort: None,
+            configured_identity_seen: false,
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
