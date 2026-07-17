@@ -121,8 +121,7 @@ async fn thread_settings_update_without_user_turn_does_not_record_collaboration_
     assert!(
         history.history.iter().all(|item| matches!(
             item,
-            RolloutItem::SessionMeta(_)
-                | RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_))
+            RolloutItem::SessionMeta(_) | RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(_))
         )),
         "settings-only shutdown should not record turn-scoped collaboration context"
     );
