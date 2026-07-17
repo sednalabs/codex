@@ -115,15 +115,15 @@ fn wait_for_frame_count(frames_path: &Path, expected_frames: usize) -> Vec<Messa
     }
 }
 
-async fn collect_stdout_and_exit(
+async fn collect_output_and_exit(
     spawned: codex_utils_pty::SpawnedProcess,
     codex_home: &Path,
     timeout_duration: Duration,
-) -> (Vec<u8>, i32) {
+) -> (Vec<u8>, Vec<u8>, i32) {
     let codex_utils_pty::SpawnedProcess {
         session: _session,
         mut stdout_rx,
-        stderr_rx: _stderr_rx,
+        mut stderr_rx,
         exit_rx,
     } = spawned;
     let stdout_task = tokio::spawn(async move {
@@ -132,6 +132,13 @@ async fn collect_stdout_and_exit(
             stdout.extend(chunk);
         }
         stdout
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr = Vec::new();
+        while let Some(chunk) = stderr_rx.recv().await {
+            stderr.extend(chunk);
+        }
+        stderr
     });
     let exit_code = timeout(timeout_duration, exit_rx)
         .await
@@ -146,7 +153,16 @@ async fn collect_stdout_and_exit(
             )
         })
         .expect("stdout task join");
-    (stdout, exit_code)
+    let stderr = timeout(timeout_duration, stderr_task)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for stderr task\n{}",
+                sandbox_log(codex_home)
+            )
+        })
+        .expect("stderr task join");
+    (stdout, stderr, exit_code)
 }
 
 #[test]
@@ -179,8 +195,8 @@ fn legacy_non_tty_cmd_emits_output() {
         .await
         .expect("spawn legacy non-tty cmd session");
         println!("cmd spawn returned");
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
+        let (stdout, _stderr, exit_code) =
+            collect_output_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
         println!("cmd collect returned exit_code={exit_code}");
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 0, "stdout={stdout:?}");
@@ -261,8 +277,8 @@ fn legacy_non_tty_powershell_emits_output() {
         .await
         .expect("spawn legacy non-tty powershell session");
         println!("pwsh spawn returned");
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
+        let (stdout, _stderr, exit_code) =
+            collect_output_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
         println!("pwsh collect returned exit_code={exit_code}");
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 0, "stdout={stdout:?}");
@@ -543,10 +559,11 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         )
         .await
         .expect("spawn legacy delete session");
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(/*secs*/ 10))
+        let (stdout, stderr, exit_code) =
+            collect_output_and_exit(spawned, codex_home.path(), Duration::from_secs(/*secs*/ 10))
                 .await;
         let stdout = String::from_utf8_lossy(&stdout);
+        let stderr = String::from_utf8_lossy(&stderr);
 
         assert_eq!(
             (
@@ -558,7 +575,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
                 protected_git_dir.is_dir(),
             ),
             (0, false, false, false, Some("outside".to_string()), true),
-            "stdout={stdout:?}\n{}",
+            "exit_code={exit_code} stdout={stdout:?} stderr={stderr:?}\n{}",
             sandbox_log(codex_home.path())
         );
     });
@@ -663,8 +680,8 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
             .expect("send exit command");
         spawned.session.close_stdin();
 
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
+        let (stdout, _stderr, exit_code) =
+            collect_output_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 0, "stdout={stdout:?}");
         assert!(stdout.contains("ready"), "stdout={stdout:?}");
@@ -714,8 +731,8 @@ fn legacy_tty_cmd_emits_output_and_accepts_input() {
             .expect("send exit command");
         spawned.session.close_stdin();
 
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
+        let (stdout, _stderr, exit_code) =
+            collect_output_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 0, "stdout={stdout:?}");
         assert!(stdout.contains("ready"), "stdout={stdout:?}");
@@ -768,8 +785,8 @@ fn legacy_tty_cmd_default_desktop_emits_output_and_accepts_input() {
             .expect("send exit command");
         spawned.session.close_stdin();
 
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
+        let (stdout, _stderr, exit_code) =
+            collect_output_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 0, "stdout={stdout:?}");
         assert!(stdout.contains("ready"), "stdout={stdout:?}");
