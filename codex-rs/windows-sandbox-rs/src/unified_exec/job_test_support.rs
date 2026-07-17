@@ -91,7 +91,7 @@ pub(super) fn grandchild_fixture(
         powershell_single_quoted(&ticks_path)
     );
     let root_script = format!(
-        "[IO.File]::WriteAllText('{}', [string]$PID); $child = Start-Process -PassThru -FilePath '{}' -ArgumentList @('-NoProfile', '-EncodedCommand', '{}'); {root_tail}",
+        "Write-Output 'ROOT-READY'; [IO.File]::WriteAllText('{}', [string]$PID); $child = Start-Process -PassThru -FilePath '{}' -ArgumentList @('-NoProfile', '-EncodedCommand', '{}'); {root_tail}",
         powershell_single_quoted(&root_ready_path),
         powershell_single_quoted(powershell),
         powershell_encoded_command(&child_script),

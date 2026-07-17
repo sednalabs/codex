@@ -125,10 +125,7 @@ enum RunnerTerminal {
 }
 
 enum RunnerProbeEvent {
-    Output {
-        stream: OutputStream,
-        data: Vec<u8>,
-    },
+    Output { stream: OutputStream, data: Vec<u8> },
     Terminal(RunnerTerminal),
 }
 
@@ -159,10 +156,12 @@ impl RunnerProbe {
                                     return;
                                 }
                             }
-                            Err(err) => break RunnerTerminal::Error(format!(
-                                "decode runner {:?} output: {err}",
-                                payload.stream
-                            )),
+                            Err(err) => {
+                                break RunnerTerminal::Error(format!(
+                                    "decode runner {:?} output: {err}",
+                                    payload.stream
+                                ));
+                            }
                         },
                         Message::Exit { payload } => {
                             break RunnerTerminal::Exit {
