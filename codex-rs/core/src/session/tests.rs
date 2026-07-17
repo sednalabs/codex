@@ -5675,6 +5675,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
+        pending_pre_materialization_rollout_items: Mutex::new(Vec::new()),
         services,
         next_internal_sub_id: AtomicU64::new(0),
     };
@@ -7856,6 +7857,7 @@ where
         active_turn: Mutex::new(None),
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
+        pending_pre_materialization_rollout_items: Mutex::new(Vec::new()),
         services,
         next_internal_sub_id: AtomicU64::new(0),
     });
