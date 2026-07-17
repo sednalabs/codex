@@ -9,6 +9,7 @@ use codex_rollout::RolloutPersistenceTelemetry;
 use codex_rollout::measure_and_filter_rollout_items;
 use codex_rollout::persisted_rollout_items;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 use tracing::warn;
 
 use crate::AppendThreadItemsParams;
@@ -35,6 +36,7 @@ pub struct LiveThread {
     thread_id: ThreadId,
     history_mode: ThreadHistoryMode,
     thread_store: Arc<dyn ThreadStore>,
+    append_gate: Arc<Semaphore>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
 }
@@ -101,6 +103,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
+            append_gate: Arc::new(Semaphore::new(1)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -139,6 +142,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
+            append_gate: Arc::new(Semaphore::new(1)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -154,25 +158,69 @@ impl LiveThread {
         if raw_items.is_empty() {
             return Ok(());
         }
+        let _append_permit = self
+            .append_gate
+            .acquire()
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let mut committed = 0;
+        let mut append_error = None;
+        while committed < raw_items.len() {
+            let remaining = raw_items.len() - committed;
+            let mut attempt_committed = 0;
+            let result = self
+                .thread_store
+                .append_items_committed(
+                    AppendThreadItemsParams {
+                        thread_id: self.thread_id,
+                        items: raw_items[committed..].to_vec(),
+                    },
+                    &mut attempt_committed,
+                )
+                .await;
+            if attempt_committed > remaining {
+                append_error = Some(crate::ThreadStoreError::Internal {
+                    message: format!(
+                        "thread store reported invalid append progress: {attempt_committed}/{remaining}"
+                    ),
+                });
+                break;
+            }
+            committed += attempt_committed;
+            match result {
+                Ok(()) if attempt_committed == remaining => break,
+                Ok(()) => {
+                    append_error = Some(crate::ThreadStoreError::Internal {
+                        message: "thread store returned incomplete append success".to_string(),
+                    });
+                    break;
+                }
+                Err(_err) if attempt_committed > 0 && committed < raw_items.len() => continue,
+                Err(err) => {
+                    append_error = Some(err);
+                    break;
+                }
+            }
+        }
+        let committed_raw_items = &raw_items[..committed];
         let (items, measurement) = if self.persistence_telemetry.is_enabled() {
             let (items, measurement) =
-                measure_and_filter_rollout_items(raw_items, self.history_mode);
+                measure_and_filter_rollout_items(committed_raw_items, self.history_mode);
             (items, Some(measurement))
         } else {
-            (persisted_rollout_items(raw_items, self.history_mode), None)
+            (
+                persisted_rollout_items(committed_raw_items, self.history_mode),
+                None,
+            )
         };
-        self.thread_store
-            .append_items(AppendThreadItemsParams {
-                thread_id: self.thread_id,
-                items: raw_items.to_vec(),
-            })
-            .await?;
-        if let Some(measurement) = measurement.as_ref() {
+        if !committed_raw_items.is_empty()
+            && let Some(measurement) = measurement.as_ref()
+        {
             self.persistence_telemetry
-                .record_batch(raw_items, measurement);
+                .record_batch(committed_raw_items, measurement);
         }
         if items.is_empty() {
-            return Ok(());
+            return append_error.map_or(Ok(()), Err);
         }
         let update = self
             .metadata_sync
@@ -192,7 +240,7 @@ impl LiveThread {
                 .await
                 .mark_pending_update_applied(&update);
         }
-        Ok(())
+        append_error.map_or(Ok(()), Err)
     }
 
     pub async fn persist(&self) -> ThreadStoreResult<()> {
@@ -328,3 +376,7 @@ impl LiveThread {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "live_thread_tests.rs"]
+mod tests;
