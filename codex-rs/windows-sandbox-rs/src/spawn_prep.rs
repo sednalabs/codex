@@ -12,7 +12,7 @@ use crate::cap::workspace_write_root_specificity;
 use crate::deny_read_state::sync_persistent_deny_read_acls;
 use crate::env::apply_no_network_to_env;
 use crate::env::ensure_non_interactive_pager;
-use crate::env::inherit_path_env;
+use crate::env::inherit_windows_bootstrap_env;
 use crate::env::normalize_null_device_env;
 use crate::identity::SandboxCreds;
 use crate::identity::require_logon_sandbox_creds;
@@ -98,7 +98,7 @@ fn prepare_spawn_context_common(
     normalize_null_device_env(env_map);
     ensure_non_interactive_pager(env_map);
     if options.inherit_path {
-        inherit_path_env(env_map);
+        inherit_windows_bootstrap_env(env_map);
     }
     if options.add_git_safe_directory {
         inject_git_safe_directory(env_map, cwd);
@@ -362,7 +362,7 @@ pub(crate) fn prepare_elevated_spawn_context_for_permissions(
 ) -> Result<ElevatedSpawnContext> {
     normalize_null_device_env(env_map);
     ensure_non_interactive_pager(env_map);
-    inherit_path_env(env_map);
+    inherit_windows_bootstrap_env(env_map);
     inject_git_safe_directory(env_map, cwd);
 
     // Use a temp-based log dir that the sandbox user can write.
