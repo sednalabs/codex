@@ -33,8 +33,8 @@ use codex_windows_sandbox::StderrMode;
 use codex_windows_sandbox::StdinMode;
 use codex_windows_sandbox::WindowsSandboxTokenMode;
 use codex_windows_sandbox::allow_null_device;
-use codex_windows_sandbox::create_readonly_token_with_caps_and_owner_rights_from;
-use codex_windows_sandbox::create_workspace_write_token_with_caps_and_owner_rights_from;
+use codex_windows_sandbox::create_readonly_token_with_caps_and_user_from;
+use codex_windows_sandbox::create_workspace_write_token_with_caps_and_user_from;
 use codex_windows_sandbox::decode_bytes;
 use codex_windows_sandbox::encode_bytes;
 use codex_windows_sandbox::get_current_token_for_restriction;
@@ -270,13 +270,10 @@ fn spawn_ipc_process(req: &SpawnRequest) -> Result<IpcSpawnedProcess> {
     let h_token = OwnedWinHandle::new(unsafe {
         match token_mode {
             WindowsSandboxTokenMode::ReadOnlyCapability => {
-                create_readonly_token_with_caps_and_owner_rights_from(base.raw(), &cap_psid_ptrs)
+                create_readonly_token_with_caps_and_user_from(base.raw(), &cap_psid_ptrs)
             }
             WindowsSandboxTokenMode::WritableRootsCapability => {
-                create_workspace_write_token_with_caps_and_owner_rights_from(
-                    base.raw(),
-                    &cap_psid_ptrs,
-                )
+                create_workspace_write_token_with_caps_and_user_from(base.raw(), &cap_psid_ptrs)
             }
         }
     }?);

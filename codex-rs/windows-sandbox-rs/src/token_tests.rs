@@ -7,15 +7,14 @@ fn fake_ptr(value: usize) -> *mut c_void {
 }
 
 #[test]
-fn restricted_sids_include_owner_rights_without_everyone() {
+fn restricted_sids_exclude_everyone() {
     let caps = [fake_ptr(/*value*/ 0x10), fake_ptr(/*value*/ 0x20)];
-    let owner_rights = fake_ptr(/*value*/ 0x30);
+    let extras = [fake_ptr(/*value*/ 0x30)];
     let logon = fake_ptr(/*value*/ 0x40);
     let write_restricted_code = fake_ptr(/*value*/ 0x50);
     let everyone = fake_ptr(/*value*/ 0x60);
 
-    let entries =
-        build_restricted_sid_entries(&caps, &[owner_rights], logon, write_restricted_code);
+    let entries = build_restricted_sid_entries(&caps, &extras, logon, write_restricted_code);
     let restricted = entries
         .iter()
         .map(|entry| (entry.Sid, entry.Attributes))
@@ -26,7 +25,7 @@ fn restricted_sids_include_owner_rights_without_everyone() {
         vec![
             (caps[0], 0),
             (caps[1], 0),
-            (owner_rights, 0),
+            (extras[0], 0),
             (logon, 0),
             (write_restricted_code, 0),
         ]
