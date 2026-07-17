@@ -382,6 +382,28 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/`
   - `codex-rs/app-server/tests/suite/conversation_summary.rs`
 
+### Private Configured Thread Identity Provenance Contract
+
+- Keep configured-identity provenance storage out of generic `ThreadMetadata`.
+  SQLite owns the private tri-state fact, while `codex-state` exposes only the
+  typed `Unknown`, `KnownAbsent`, or `Present` enum plus three narrow
+  `StateRuntime` read/transition methods. `Unknown` must never be interpreted
+  as evidence of absence.
+- Migration `0045` defaults existing rows and old-binary-shaped inserts to
+  `Unknown`. StateRuntime permits only atomic forward transitions:
+  `Unknown -> KnownAbsent`, `Unknown -> Present`, and
+  `KnownAbsent -> Present`; mutation methods report a missing thread row
+  explicitly rather than treating it as an idempotent transition.
+- Generic thread-metadata inserts and upserts deliberately omit the private
+  column, so unrelated metadata writes cannot reset or fabricate provenance.
+- This stage does not classify rollout events, reconstruct history, store
+  configured identity values, enforce precedence, or synchronize live state.
+- Primary files:
+  - `codex-rs/state/migrations/0045_threads_configured_identity_provenance.sql`
+  - `codex-rs/state/src/migrations_tests.rs`
+  - `codex-rs/state/src/runtime/configured_identity_provenance.rs`
+  - `codex-rs/state/src/runtime/configured_identity_provenance_tests.rs`
+
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation
