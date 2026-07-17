@@ -1317,10 +1317,7 @@ impl Session {
             let flush_result = self
                 .flush_pending_pre_materialization_rollout_items(live_thread)
                 .await;
-            let shutdown_result = live_thread
-                .shutdown()
-                .await
-                .map_err(std::io::Error::other);
+            let shutdown_result = live_thread.shutdown().await.map_err(std::io::Error::other);
             flush_result.and(shutdown_result)
         } else {
             Ok(())
