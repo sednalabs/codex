@@ -534,7 +534,11 @@ fn elevated_pipe_cmd_emits_output_and_reports_terminal_result() {
     let stdout = String::from_utf8_lossy(&probe.stdout);
     let stderr = String::from_utf8_lossy(&probe.stderr);
     assert_eq!(
-        (terminal, stdout.contains("ELEVATED-CMD-READY"), stderr.is_empty()),
+        (
+            terminal,
+            stdout.contains("ELEVATED-CMD-READY"),
+            stderr.is_empty(),
+        ),
         ((0, false), true, true),
         "stdout={stdout:?}, stderr={stderr:?}\n{}",
         sandbox_log(codex_home)
