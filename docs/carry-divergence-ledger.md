@@ -299,7 +299,8 @@ docs-only refresh commit that records this snapshot.
 - Migration `0045` defaults existing rows and old-binary-shaped inserts to
   `Unknown`. StateRuntime permits only atomic forward transitions:
   `Unknown -> KnownAbsent`, `Unknown -> Present`, and
-  `KnownAbsent -> Present`.
+  `KnownAbsent -> Present`; mutation methods report a missing thread row
+  explicitly rather than treating it as an idempotent transition.
 - Generic thread-metadata inserts and upserts deliberately omit the private
   column, so unrelated metadata writes cannot reset or fabricate provenance.
 - This stage does not classify rollout events, reconstruct history, store

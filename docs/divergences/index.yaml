@@ -1743,7 +1743,7 @@
         "codex-rs/state/src/runtime/configured_identity_provenance.rs",
         "codex-rs/state/src/runtime/configured_identity_provenance_tests.rs"
       ],
-      "behavior": "Downstream stores configured-identity provenance as a private SQLite fact outside generic ThreadMetadata. Codex-state publicly exposes only the typed Unknown, KnownAbsent, or Present enum and three narrow StateRuntime read/transition methods; transitions are atomic and forward-only, while generic metadata upserts cannot overwrite the private state.",
+      "behavior": "Downstream stores configured-identity provenance as a private SQLite fact outside generic ThreadMetadata. Codex-state publicly exposes only the typed Unknown, KnownAbsent, or Present enum and three narrow StateRuntime read/transition methods; transitions are atomic and forward-only, missing rows are explicit, and generic metadata upserts cannot overwrite the private state.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1753,6 +1753,8 @@
       "tests": [
         "configured_identity_provenance_migration_defaults_existing_and_old_binary_rows_to_unknown",
         "configured_identity_provenance_transitions_monotonically",
+        "configured_identity_provenance_competing_writers_preserve_present",
+        "configured_identity_provenance_rejects_invalid_values",
         "generic_thread_metadata_upsert_preserves_configured_identity_provenance"
       ],
       "owner": "downstream",
