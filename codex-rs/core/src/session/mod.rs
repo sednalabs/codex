@@ -3642,9 +3642,10 @@ impl Session {
         let release_pending = items
             .iter()
             .any(|item| codex_rollout::is_persisted_rollout_item(item, history_mode));
-        let mut pending = self.pending_pre_materialization_rollout_items.lock().await;
-        let mut combined = release_pending.then(|| std::mem::take(&mut *pending));
-        drop(pending);
+        let mut combined = {
+            let mut pending = self.pending_pre_materialization_rollout_items.lock().await;
+            release_pending.then(|| std::mem::take(&mut *pending))
+        };
         let pending_len = combined.as_ref().map_or(0, Vec::len);
         let result = if let Some(combined) = combined.as_mut() {
             combined.extend_from_slice(items);
