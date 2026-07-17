@@ -100,9 +100,7 @@ fn start_controlled_recovery_open(
     (task, before_control, after_control)
 }
 
-async fn with_open_deadline<T>(
-    future: impl Future<Output = T>,
-) -> anyhow::Result<T> {
+async fn with_open_deadline<T>(future: impl Future<Output = T>) -> anyhow::Result<T> {
     tokio::time::timeout(OPEN_DIAGNOSTIC_DEADLINE, future)
         .await
         .map_err(|_| anyhow::anyhow!("timed out during rollout open coordination"))
@@ -157,7 +155,11 @@ fn snapshot_directory(root: &Path) -> anyhow::Result<DirectorySnapshot> {
 
 fn compress_rollout(path: &Path) -> io::Result<PathBuf> {
     let compressed_path = compressed_rollout_path(path);
-    zstd::stream::copy_encode(fs::File::open(path)?, fs::File::create(&compressed_path)?, 3)?;
+    zstd::stream::copy_encode(
+        fs::File::open(path)?,
+        fs::File::create(&compressed_path)?,
+        3,
+    )?;
     fs::remove_file(path)?;
     Ok(compressed_path)
 }
@@ -208,13 +210,8 @@ async fn plain_resume_tail_repair_custody_survives_caller_cancellation() -> anyh
     open_rollout_for_append_with_authority(unsafe_path.as_path(), authority.clone())
         .await
         .expect_err("revoked authority must deny later tail repair");
-    open_log_file_with_authority(
-        missing_path.as_path(),
-        authority,
-        || {},
-        || {},
-    )
-    .expect_err("revoked authority must deny later path creation");
+    open_log_file_with_authority(missing_path.as_path(), authority, || {}, || {})
+        .expect_err("revoked authority must deny later path creation");
     assert_eq!(snapshot_directory(home.path())?, before_denials);
     Ok(())
 }
@@ -261,7 +258,10 @@ async fn recovery_materialization_tail_repair_and_creation_are_guarded() -> anyh
         (PathBuf::from("sessions"), None),
         (PathBuf::from("sessions/2026"), None),
         (PathBuf::from("sessions/2026/07"), None),
-        (PathBuf::from("sessions/2026/07/rollout.jsonl"), Some(Vec::new())),
+        (
+            PathBuf::from("sessions/2026/07/rollout.jsonl"),
+            Some(Vec::new()),
+        ),
     ];
     assert_eq!(snapshot_directory(home.path())?, created_snapshot);
     creation_authority.revoke().await;
@@ -273,8 +273,7 @@ async fn recovery_materialization_tail_repair_and_creation_are_guarded() -> anyh
 }
 
 #[tokio::test]
-async fn admitted_recovery_error_releases_custody_without_filesystem_drift()
--> anyhow::Result<()> {
+async fn admitted_recovery_error_releases_custody_without_filesystem_drift() -> anyhow::Result<()> {
     let home = TempDir::new()?;
     let blocking_parent = home.path().join("not-a-directory");
     fs::write(&blocking_parent, b"block directory creation")?;
