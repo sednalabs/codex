@@ -158,16 +158,23 @@ pub(super) async fn append_items(
             )
         )
     }) {
-        codex_rollout::state_db::reconcile_rollout(
-            store.state_db().await.as_deref(),
-            recorder.rollout_path(),
-            store.config.default_model_provider_id.as_str(),
-            /*builder*/ None,
-            &[],
-            /*archived_only*/ None,
-            /*new_thread_memory_mode*/ None,
-        )
-        .await;
+        let state_db = store.state_db().await;
+        if let Some(state_db) = state_db.as_deref() {
+            match state_db
+                .mark_configured_identity_present(params.thread_id)
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => warn!(
+                    "state db thread disappeared while applying configured identity provenance: {}",
+                    params.thread_id
+                ),
+                Err(err) => warn!(
+                    "failed to apply configured identity provenance for thread {}: {err}",
+                    params.thread_id
+                ),
+            }
+        }
     }
     Ok(())
 }
