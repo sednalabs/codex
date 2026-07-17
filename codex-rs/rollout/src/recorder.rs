@@ -28,6 +28,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::error;
 use tracing::info;
@@ -52,6 +53,9 @@ use super::metadata;
 use super::ordinal::RolloutOrdinalState;
 use super::ordinal::ordinal_state_for_rollout;
 use super::session_index::find_thread_names_by_ids;
+use crate::command_admission::RolloutCommandAdmission;
+use crate::command_admission::RolloutCommandAdmissionError;
+use crate::command_admission::RolloutTerminalTransition;
 use crate::config::RolloutConfigView;
 use crate::state_db;
 use crate::state_db::StateDbHandle;
@@ -83,6 +87,7 @@ use codex_utils_path as path_utils;
 #[derive(Clone)]
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
+    admission: RolloutCommandAdmission,
     writer_task: Arc<RolloutWriterTask>,
     pub(crate) rollout_path: PathBuf,
 }
@@ -118,14 +123,70 @@ enum RolloutCmd {
     Flush {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
-    Shutdown {
+    Revoke {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
+}
+
+#[derive(Clone)]
+enum RevocationOutcome {
+    Revoked,
+    Failed(Arc<IoError>),
+}
+
+struct RevocationAttempt {
+    outcome: watch::Sender<Option<RevocationOutcome>>,
+}
+
+impl RevocationAttempt {
+    fn new() -> Self {
+        let (outcome, _receiver) = watch::channel(None);
+        Self { outcome }
+    }
+
+    fn complete(&self, outcome: RevocationOutcome) {
+        self.outcome.send_replace(Some(outcome));
+    }
+
+    async fn wait(&self) -> std::io::Result<()> {
+        let mut receiver = self.outcome.subscribe();
+        loop {
+            if let Some(outcome) = receiver.borrow_and_update().clone() {
+                return match outcome {
+                    RevocationOutcome::Revoked => Ok(()),
+                    RevocationOutcome::Failed(err) => Err(clone_io_error(err.as_ref())),
+                };
+            }
+            receiver.changed().await.map_err(|_| {
+                IoError::other("rollout recorder revocation outcome was dropped")
+            })?;
+        }
+    }
+}
+
+enum RolloutRecorderLifecycle {
+    Active {
+        generation: u64,
+        previous: Option<Arc<RevocationAttempt>>,
+    },
+    Revoking {
+        generation: u64,
+        attempt: Arc<RevocationAttempt>,
+        previous: Option<Arc<RevocationAttempt>>,
+    },
+    Revoked(Arc<RevocationAttempt>),
+    Failed(Arc<IoError>),
+}
+
+enum RevocationStart {
+    Initiated(Arc<RevocationAttempt>),
+    Participate(Arc<RevocationAttempt>),
 }
 
 /// Observable state for the background rollout writer task.
 struct RolloutWriterTask {
     handle: Mutex<Option<JoinHandle<()>>>,
+    lifecycle: Mutex<RolloutRecorderLifecycle>,
     terminal_failure: Mutex<Option<Arc<IoError>>>,
 }
 
@@ -134,6 +195,10 @@ impl RolloutWriterTask {
     fn new() -> Self {
         Self {
             handle: Mutex::new(None),
+            lifecycle: Mutex::new(RolloutRecorderLifecycle::Active {
+                generation: 0,
+                previous: None,
+            }),
             terminal_failure: Mutex::new(None),
         }
     }
@@ -149,11 +214,21 @@ impl RolloutWriterTask {
 
     /// Remember a terminal task failure for future recorder API calls.
     fn mark_failed(&self, err: &IoError) {
+        let err = Arc::new(clone_io_error(err));
         let mut guard = self
             .terminal_failure
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *guard = Some(Arc::new(clone_io_error(err)));
+        *guard = Some(Arc::clone(&err));
+        drop(guard);
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let RolloutRecorderLifecycle::Revoking { attempt, .. } = &*lifecycle {
+            attempt.complete(RevocationOutcome::Failed(Arc::clone(&err)));
+        }
+        *lifecycle = RolloutRecorderLifecycle::Failed(err);
     }
 
     /// Return the terminal writer-task failure, if the task exited with an error.
@@ -164,10 +239,120 @@ impl RolloutWriterTask {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.as_ref().map(|err| clone_io_error(err.as_ref()))
     }
+
+    fn active_generation(&self) -> Result<u64, IoError> {
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*lifecycle {
+            RolloutRecorderLifecycle::Active { generation, .. } => Ok(*generation),
+            RolloutRecorderLifecycle::Revoking { .. }
+            | RolloutRecorderLifecycle::Revoked(_) => Err(inactive_recorder_error("shut down")),
+            RolloutRecorderLifecycle::Failed(err) => Err(clone_io_error(err.as_ref())),
+        }
+    }
+
+    fn terminal_attempt(&self) -> Result<Option<Arc<RevocationAttempt>>, IoError> {
+        let lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*lifecycle {
+            RolloutRecorderLifecycle::Active { .. } => Ok(None),
+            RolloutRecorderLifecycle::Revoking { attempt, .. }
+            | RolloutRecorderLifecycle::Revoked(attempt) => Ok(Some(Arc::clone(attempt))),
+            RolloutRecorderLifecycle::Failed(err) => Err(clone_io_error(err.as_ref())),
+        }
+    }
+
+    fn begin_revocation(&self, expected_generation: u64) -> Result<RevocationStart, IoError> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*lifecycle {
+            RolloutRecorderLifecycle::Active {
+                generation,
+                previous,
+            } if *generation == expected_generation => {
+                let attempt = Arc::new(RevocationAttempt::new());
+                *lifecycle = RolloutRecorderLifecycle::Revoking {
+                    generation: *generation,
+                    attempt: Arc::clone(&attempt),
+                    previous: previous.clone(),
+                };
+                Ok(RevocationStart::Initiated(attempt))
+            }
+            RolloutRecorderLifecycle::Active {
+                previous: Some(attempt),
+                ..
+            }
+            | RolloutRecorderLifecycle::Revoking {
+                previous: Some(attempt),
+                ..
+            } => Ok(RevocationStart::Participate(Arc::clone(attempt))),
+            RolloutRecorderLifecycle::Active { previous: None, .. }
+            | RolloutRecorderLifecycle::Revoking { previous: None, .. } => Err(IoError::other(
+                "rollout recorder revocation generation changed without an outcome",
+            )),
+            RolloutRecorderLifecycle::Revoked(_) => Err(inactive_recorder_error("shut down")),
+            RolloutRecorderLifecycle::Failed(err) => Err(clone_io_error(err.as_ref())),
+        }
+    }
+
+    fn reopen_after_failed_revocation(&self, attempt: &Arc<RevocationAttempt>, err: IoError) {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let RolloutRecorderLifecycle::Revoking {
+            generation,
+            attempt: current,
+            ..
+        } = &*lifecycle
+            && Arc::ptr_eq(current, attempt)
+        {
+            *lifecycle = RolloutRecorderLifecycle::Active {
+                generation: generation.checked_add(1).expect("revocation generation overflow"),
+                previous: Some(Arc::clone(attempt)),
+            };
+        }
+        drop(lifecycle);
+        attempt.complete(RevocationOutcome::Failed(Arc::new(clone_io_error(&err))));
+    }
+
+    fn finish_revocation(&self, attempt: &Arc<RevocationAttempt>) {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let RolloutRecorderLifecycle::Revoking {
+            attempt: current, ..
+        } = &*lifecycle
+            && Arc::ptr_eq(current, attempt)
+        {
+            *lifecycle = RolloutRecorderLifecycle::Revoked(Arc::clone(attempt));
+            attempt.complete(RevocationOutcome::Revoked);
+        }
+    }
+
+    fn take_handle(&self) -> Option<JoinHandle<()>> {
+        self.handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 fn clone_io_error(err: &IoError) -> IoError {
     IoError::new(err.kind(), err.to_string())
+}
+
+fn inactive_recorder_error(operation: &str) -> IoError {
+    IoError::other(format!(
+        "rollout recorder is no longer active; cannot {operation}"
+    ))
 }
 
 impl RolloutRecorderParams {
@@ -872,6 +1057,7 @@ impl RolloutRecorder {
 
         Ok(Self {
             tx,
+            admission: RolloutCommandAdmission::new(),
             writer_task,
             rollout_path,
         })
@@ -885,14 +1071,8 @@ impl RolloutRecorder {
         if items.is_empty() {
             return Ok(());
         }
-        self.tx
-            .send(RolloutCmd::AddItems(items.to_vec()))
+        self.send_data_command(RolloutCmd::AddItems(items.to_vec()), "add items")
             .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout items: {e}"))
-                })
-            })
     }
 
     /// Materialize the rollout file and persist all buffered items.
@@ -901,14 +1081,8 @@ impl RolloutRecorder {
     /// and a later `persist()` or `flush()` can retry opening and writing the rollout file.
     pub async fn persist(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RolloutCmd::Persist { ack: tx })
-            .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout persist: {e}"))
-                })
-            })?;
+        self.send_data_command(RolloutCmd::Persist { ack: tx }, "persist")
+            .await?;
         rx.await.map_err(|e| {
             self.writer_task.terminal_failure().unwrap_or_else(|| {
                 IoError::other(format!("failed waiting for rollout persist: {e}"))
@@ -922,14 +1096,8 @@ impl RolloutRecorder {
     /// retrying. This returns an error only when that retry also fails or the writer task is gone.
     pub async fn flush(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RolloutCmd::Flush { ack: tx })
-            .await
-            .map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue rollout flush: {e}"))
-                })
-            })?;
+        self.send_data_command(RolloutCmd::Flush { ack: tx }, "flush")
+            .await?;
         rx.await.map_err(|e| {
             self.writer_task
                 .terminal_failure()
@@ -1019,32 +1187,93 @@ impl RolloutRecorder {
         }))
     }
 
-    /// Drain pending items before stopping the writer task.
-    ///
-    /// If draining fails, the writer stays alive so callers can continue retrying flush/shutdown.
-    pub async fn shutdown(&self) -> std::io::Result<()> {
-        let (tx_done, rx_done) = oneshot::channel();
-        match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
-            Ok(_) => rx_done.await.map_err(|e| {
-                self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed waiting for rollout shutdown: {e}"))
-                })
-            })??,
-            Err(e) => {
-                if let Some(err) = self.writer_task.terminal_failure() {
-                    warn!(
-                        "failed to send rollout shutdown command because writer task failed: {err}"
-                    );
-                    return Err(err);
-                }
-                warn!("failed to send rollout shutdown command: {e}");
-                return Err(IoError::other(format!(
-                    "failed to send rollout shutdown command: {e}"
-                )));
-            }
-        };
+    async fn send_data_command(&self, command: RolloutCmd, operation: &str) -> std::io::Result<()> {
+        let admission = self
+            .admission
+            .acquire_data()
+            .await
+            .map_err(|RolloutCommandAdmissionError::Terminal| {
+                self.writer_task
+                    .terminal_failure()
+                    .unwrap_or_else(|| inactive_recorder_error(operation))
+            })?;
+        let permit = self.tx.reserve().await.map_err(|_| {
+            self.writer_task
+                .terminal_failure()
+                .unwrap_or_else(|| IoError::other(format!("rollout recorder cannot {operation}")))
+        })?;
+        admission.commit(|| permit.send(command));
         Ok(())
     }
+
+    /// Drain pending items before stopping the writer task.
+    ///
+    /// Calls already waiting when terminal admission is published participate in the same
+    /// revocation attempt. A failed drain reopens admission so callers can retry.
+    pub async fn shutdown(&self) -> std::io::Result<()> {
+        let expected_generation = self.writer_task.active_generation()?;
+        let terminal = match self.admission.acquire_terminal().await {
+            Ok(terminal) => terminal,
+            Err(RolloutCommandAdmissionError::Terminal) => {
+                return match self.writer_task.terminal_attempt() {
+                    Ok(Some(attempt)) => attempt.wait().await,
+                    Ok(None) => Err(inactive_recorder_error("shut down")),
+                    Err(err) => Err(err),
+                };
+            }
+        };
+        let (tx_done, rx_done) = oneshot::channel();
+        let permit = self.tx.reserve().await.map_err(|_| {
+            self.writer_task
+                .terminal_failure()
+                .unwrap_or_else(|| IoError::other("rollout recorder cannot shut down"))
+        })?;
+        let attempt = match self.writer_task.begin_revocation(expected_generation)? {
+            RevocationStart::Initiated(attempt) => attempt,
+            RevocationStart::Participate(attempt) => return attempt.wait().await,
+        };
+        let transition = terminal.commit(|| permit.send(RolloutCmd::Revoke { ack: tx_done }));
+        let writer_task = Arc::clone(&self.writer_task);
+        let attempt_for_task = Arc::clone(&attempt);
+        tokio::spawn(async move {
+            complete_revocation(writer_task, attempt_for_task, transition, rx_done).await;
+        });
+        attempt.wait().await
+    }
+}
+
+async fn complete_revocation(
+    writer_task: Arc<RolloutWriterTask>,
+    attempt: Arc<RevocationAttempt>,
+    transition: RolloutTerminalTransition,
+    result: oneshot::Receiver<std::io::Result<()>>,
+) {
+    let result = match result.await {
+        Ok(result) => result,
+        Err(_) => Err(writer_task
+            .terminal_failure()
+            .unwrap_or_else(|| {
+                IoError::other("rollout recorder revoke acknowledgement was dropped")
+            })),
+    };
+    if let Err(err) = result {
+        writer_task.reopen_after_failed_revocation(&attempt, err);
+        transition.reopen();
+        return;
+    }
+    let Some(handle) = writer_task.take_handle() else {
+        let err = IoError::other("rollout recorder writer task handle was already retired");
+        writer_task.mark_failed(&err);
+        return;
+    };
+    if let Err(join_err) = handle.await {
+        writer_task.mark_failed(&IoError::other(format!(
+            "rollout recorder writer task failed to join: {join_err}"
+        )));
+        return;
+    }
+    transition.seal();
+    writer_task.finish_revocation(&attempt);
 }
 
 pub(crate) fn reject_unknown_thread_history_mode(value: &Value) -> std::io::Result<()> {
@@ -1601,7 +1830,9 @@ impl RolloutWriterState {
         if self.is_deferred() && self.pending_items.is_empty() {
             return Ok(());
         }
-        self.write_pending_with_recovery("shutdown").await
+        self.write_pending_with_recovery("shutdown").await?;
+        self.writer = None;
+        Ok(())
     }
 
     async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
@@ -1744,7 +1975,7 @@ async fn rollout_writer(
             RolloutCmd::Flush { ack } => {
                 let _ = ack.send(state.flush().await);
             }
-            RolloutCmd::Shutdown { ack } => match state.shutdown().await {
+            RolloutCmd::Revoke { ack } => match state.shutdown().await {
                 Ok(()) => {
                     let _ = ack.send(Ok(()));
                     break;

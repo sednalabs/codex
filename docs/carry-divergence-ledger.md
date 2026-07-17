@@ -915,6 +915,20 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/code_mode_description.rs`
   - `codex-rs/core/src/tools/router.rs`
 
+### Rollout Recorder Terminal Admission
+
+- Recorder clones share one command-admission authority and one owned writer
+  task lifecycle. A shutdown drains the exact admitted prefix, rejects later
+  commands, and lets callers already waiting participate in the same result.
+- Recoverable drain failures reopen admission without losing buffered history;
+  successful shutdown retires the file and task handles. Deferred empty
+  rollouts remain unmaterialized.
+- Primary files: `codex-rs/rollout/src/command_admission.rs`,
+  `codex-rs/rollout/src/recorder.rs`, and
+  `codex-rs/rollout/src/recorder_tests.rs`.
+- Preserve until upstream has behavior-equivalent cancellation-safe terminal
+  ordering and recorder clone teardown.
+
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:
