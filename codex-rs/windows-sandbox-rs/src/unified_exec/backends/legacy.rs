@@ -44,6 +44,9 @@ use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
+// Kept in sync with codex_exec_server::CODEX_FS_HELPER_ARG1 without introducing
+// a dependency cycle.
+const FS_HELPER_ARG: &str = "--codex-run-as-fs-helper";
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
 struct LegacyProcessHandles {
@@ -99,7 +102,11 @@ fn spawn_legacy_process(
                 StdinMode::Closed
             },
             StderrMode::Separate,
-            ConsoleMode::Inherit,
+            if command.get(1).is_some_and(|arg| arg == FS_HELPER_ARG) {
+                ConsoleMode::NoWindow
+            } else {
+                ConsoleMode::Inherit
+            },
             use_private_desktop,
             logs_base_dir,
         )?;
