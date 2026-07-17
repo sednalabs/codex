@@ -25,8 +25,7 @@ const DEADLINE: Duration = Duration::from_secs(10);
 async fn cancellation_before_commit_keeps_attempt_and_writer_active() {
     let admission = RolloutCommandAdmission::new();
     let data = deadline(admission.acquire_data()).await.unwrap();
-    let (cmd_tx, mut cmd_rx) =
-        mpsc::unbounded_channel::<oneshot::Sender<io::Result<()>>>();
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<oneshot::Sender<io::Result<()>>>();
     let writer = tokio::spawn(async move {
         if let Some(ack) = cmd_rx.recv().await {
             let _ = ack.send(Ok(()));
