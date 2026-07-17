@@ -847,8 +847,12 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     );
 
     let server = start_mock_server().await;
-    let (test, sandbox_policy) =
-        unified_exec_network_denial_test(&server, /*allow_local_binding*/ true).await?;
+    let (test, sandbox_policy) = unified_exec_network_denial_test(
+        &server,
+        /*allow_local_binding*/ true,
+        /*enforce_managed_network*/ true,
+    )
+    .await?;
 
     let call_id = "uexec-network-denied";
     let args = json!({
@@ -896,8 +900,12 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     );
 
     let server = start_mock_server().await;
-    let (test, sandbox_policy) =
-        unified_exec_network_denial_test(&server, /*allow_local_binding*/ true).await?;
+    let (test, sandbox_policy) = unified_exec_network_denial_test(
+        &server,
+        /*allow_local_binding*/ true,
+        /*enforce_managed_network*/ true,
+    )
+    .await?;
 
     let call_id = "uexec-short-network-denied";
     let args = json!({
@@ -941,12 +949,16 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     skip_if_sandbox!(Ok(()));
     skip_if_remote!(
         Ok(()),
-        "fixture requires a managed-network proxy endpoint reachable from the target process"
+        "fixture requires direct access to the local listener"
     );
 
     let server = start_mock_server().await;
-    let (test, permission_profile) =
-        unified_exec_network_denial_test(&server, /*allow_local_binding*/ false).await?;
+    let (test, permission_profile) = unified_exec_network_denial_test(
+        &server,
+        /*allow_local_binding*/ false,
+        /*enforce_managed_network*/ false,
+    )
+    .await?;
     assert_eq!(
         test.config.permissions.windows_sandbox_mode,
         Some(WindowsSandboxModeToml::Elevated)
@@ -962,23 +974,12 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
 
     let call_id = "uexec-windows-direct-loopback-bypass";
     let port = server.address().port();
-    let runtime_proxy = test
-        .session_configured
-        .network_proxy
-        .as_ref()
-        .context("managed network proxy should be active")?;
-    let http_proxy_addr = runtime_proxy
-        .http_addr
-        .parse::<std::net::SocketAddr>()
-        .context("parse managed HTTP proxy address")?;
-    let socks_proxy_addr = runtime_proxy
-        .socks_addr
-        .parse::<std::net::SocketAddr>()
-        .context("parse managed SOCKS proxy address")?;
-    assert_ne!(port, http_proxy_addr.port());
-    assert_ne!(port, socks_proxy_addr.port());
+    assert!(
+        test.session_configured.network_proxy.is_none(),
+        "unrestricted-network control should not enforce the managed proxy"
+    );
     let command = format!(
-        "$socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp); $socket.Blocking = $false; try {{ try {{ $socket.Connect([Net.IPAddress]::Loopback, {port}) }} catch [Net.Sockets.SocketException] {{ $pending = @([Net.Sockets.SocketError]::WouldBlock, [Net.Sockets.SocketError]::InProgress, [Net.Sockets.SocketError]::AlreadyInProgress); if ($_.Exception.SocketErrorCode -notin $pending) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }} }}; if ($socket.Poll(3000000, [Net.Sockets.SelectMode]::SelectWrite) -and $socket.Connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0 }} finally {{ $socket.Close(0); $socket.Dispose() }}"
+        "curl.exe --noproxy '*' --silent --show-error --connect-timeout 1 --max-time 3 'http://127.0.0.1:{port}/' | Out-Null; if ($LASTEXITCODE -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0"
     );
     let args = json!({
         "cmd": command,
@@ -998,15 +999,15 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
         Duration::from_secs(/*secs*/ 90),
     )
     .await;
-    assert_eq!(end_event.status, ExecCommandStatus::Completed);
-    assert_eq!(end_event.exit_code, 0);
+    assert_eq!(end_event.status, ExecCommandStatus::Failed);
+    assert_eq!(end_event.exit_code, 7);
     assert!(
-        end_event.aggregated_output.contains("DIRECT-BLOCKED"),
-        "elevated proxy firewall should block direct loopback access: {end_event:?}"
+        end_event.aggregated_output.contains("DIRECT-CONNECTED"),
+        "elevated unrestricted-network control should reach loopback: {end_event:?}"
     );
     assert!(
-        !end_event.aggregated_output.contains("DIRECT-CONNECTED"),
-        "sandboxed process bypassed the managed proxy: {end_event:?}"
+        !end_event.aggregated_output.contains("DIRECT-BLOCKED"),
+        "unrestricted-network control unexpectedly blocked loopback: {end_event:?}"
     );
 
     if !turn_completed {
@@ -1023,6 +1024,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
 async fn unified_exec_network_denial_test(
     server: &wiremock::MockServer,
     allow_local_binding: bool,
+    enforce_managed_network: bool,
 ) -> Result<(TestCodex, PermissionProfile)> {
     use codex_config::Constrained;
     use codex_config::test_support::CloudConfigBundleFixture;
@@ -1060,30 +1062,32 @@ allow_local_binding = {allow_local_binding}
         /*exclude_slash_tmp*/ false,
     );
     let permission_profile = permission_profile_for_config.clone();
-    let mut builder = test_codex()
-        .with_home(home)
-        .with_cloud_config_bundle(managed_network_requirements)
-        .with_config(move |config| {
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("test config should allow feature update");
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-            config
-                .permissions
-                .set_permission_profile(permission_profile_for_config)
-                .expect("set permission profile");
-            #[cfg(target_os = "windows")]
-            {
-                config.permissions.windows_sandbox_mode = Some(WindowsSandboxModeToml::Elevated);
-                config.permissions.windows_sandbox_private_desktop = false;
-            }
-        });
+    let mut builder = test_codex().with_home(home);
+    if enforce_managed_network {
+        builder = builder.with_cloud_config_bundle(managed_network_requirements);
+    }
+    let mut builder = builder.with_config(move |config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+        config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
+        config
+            .permissions
+            .set_permission_profile(permission_profile_for_config)
+            .expect("set permission profile");
+        #[cfg(target_os = "windows")]
+        {
+            config.permissions.windows_sandbox_mode = Some(WindowsSandboxModeToml::Elevated);
+            config.permissions.windows_sandbox_private_desktop = false;
+        }
+    });
     let test = builder.build_with_auto_env(server).await?;
-    assert!(
+    assert_eq!(
         test.config.permissions.network.is_some(),
-        "expected managed network proxy config to be present"
+        enforce_managed_network,
+        "managed network proxy enforcement should match the requested control"
     );
 
     Ok((test, permission_profile))
