@@ -265,12 +265,7 @@ fn spawn_pipe_backed_grandchild(
     timeout_ms: u64,
 ) -> (GrandchildFixture, RunnerTransport) {
     let fixture = grandchild_fixture(cwd, powershell, "Start-Sleep -Seconds 30");
-    let transport = spawn_pipe_backed_command(
-        cwd,
-        codex_home,
-        fixture.command.clone(),
-        timeout_ms,
-    );
+    let transport = spawn_pipe_backed_command(cwd, codex_home, fixture.command.clone(), timeout_ms);
     (fixture, transport)
 }
 
