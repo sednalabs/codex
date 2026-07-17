@@ -265,6 +265,21 @@ fn spawn_pipe_backed_grandchild(
     timeout_ms: u64,
 ) -> (GrandchildFixture, RunnerTransport) {
     let fixture = grandchild_fixture(cwd, powershell, "Start-Sleep -Seconds 30");
+    let transport = spawn_pipe_backed_command(
+        cwd,
+        codex_home,
+        fixture.command.clone(),
+        timeout_ms,
+    );
+    (fixture, transport)
+}
+
+fn spawn_pipe_backed_command(
+    cwd: &Path,
+    codex_home: &Path,
+    command: Vec<String>,
+    timeout_ms: u64,
+) -> RunnerTransport {
     let permission_profile = PermissionProfile::workspace_write();
     let workspace_roots = workspace_roots_for(cwd);
     let mut env_map = HashMap::new();
@@ -279,7 +294,7 @@ fn spawn_pipe_backed_grandchild(
         codex_home,
         cwd,
         &mut env_map,
-        &fixture.command,
+        &command,
         /*read_roots_override*/ None,
         /*read_roots_include_platform_defaults*/ false,
         /*write_roots_override*/ None,
@@ -295,7 +310,7 @@ fn spawn_pipe_backed_grandchild(
         )
     });
     let spawn_request = SpawnRequest {
-        command: fixture.command.clone(),
+        command,
         cwd: cwd.to_path_buf(),
         env: env_map,
         permission_profile,
@@ -320,8 +335,7 @@ fn spawn_pipe_backed_grandchild(
             "spawn elevated runner transport: {err:#}\n{}",
             sandbox_log(codex_home)
         )
-    });
-    (fixture, transport)
+    })
 }
 
 async fn wait_for_spawned_grandchild(
@@ -491,6 +505,40 @@ fn elevated_control_transport_eof_stops_grandchild() {
     assert_ne!(exit_code, 0);
     assert!(!timed_out);
     assert_grandchild_stopped(&fixture);
+}
+
+#[test]
+fn elevated_pipe_cmd_emits_output_and_reports_terminal_result() {
+    let _guard = windows_process_test_guard();
+    stage_windows_sandbox_helpers().expect("stage elevated sandbox helpers");
+    let cwd = sandbox_cwd();
+    let codex_home = elevated_test_codex_home();
+    let system_root = std::env::var_os("SystemRoot").expect("SystemRoot should be set on Windows");
+    let cmd = PathBuf::from(system_root).join("System32\\cmd.exe");
+    let transport = spawn_pipe_backed_command(
+        &cwd,
+        codex_home,
+        vec![
+            cmd.display().to_string(),
+            "/d".to_string(),
+            "/q".to_string(),
+            "/c".to_string(),
+            "echo ELEVATED-CMD-READY".to_string(),
+        ],
+        /*timeout_ms*/ 5_000,
+    );
+
+    let (_pipe_write, pipe_read) = transport.into_files();
+    let mut probe = RunnerProbe::start(pipe_read);
+    let terminal = probe.wait_for_terminal_result();
+    let stdout = String::from_utf8_lossy(&probe.stdout);
+    let stderr = String::from_utf8_lossy(&probe.stderr);
+    assert_eq!(
+        (terminal, stdout.contains("ELEVATED-CMD-READY"), stderr.is_empty()),
+        ((0, false), true, true),
+        "stdout={stdout:?}, stderr={stderr:?}\n{}",
+        sandbox_log(codex_home)
+    );
 }
 
 #[test]
