@@ -1572,6 +1572,7 @@
         "codex-rs/sandboxing/src/policy_transforms_tests.rs",
         "codex-rs/sandboxing/src/windows.rs",
         "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/acl.rs",
         "codex-rs/windows-sandbox-rs/src/token.rs",
         "codex-rs/windows-sandbox-rs/src/token_tests.rs",
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs"
@@ -1588,6 +1589,10 @@
         "codex-rs/core/src/exec_tests.rs": [
           "windows_restricted_token_supports_full_read_split_write_read_carveouts"
         ],
+        "codex-rs/windows-sandbox-rs/src/acl.rs": [
+          "allow_null_device",
+          "to_wide(r\"\\\\.\\NUL\")"
+        ],
         "codex-rs/windows-sandbox-rs/src/token.rs": [
           "WRITE_RESTRICTED_CODE_SID",
           "build_restricted_sid_entries",
@@ -1603,7 +1608,7 @@
           "legacy_tty_cmd_default_desktop_emits_output_and_accepts_input"
         ]
       },
-      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible restricted token appends S-1-5-33 after the logon SID for child-runtime initialization, excludes Everyone from the restricting SID set, and retains Everyone on the unchanged default DACL for IPC. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
+      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible restricted token appends S-1-5-33 after the logon SID and grants the active capability SID access to the correctly addressed \\\\.\\NUL device for child-runtime initialization, excludes Everyone from the restricting SID set, and retains Everyone on the unchanged default DACL for IPC. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1617,17 +1622,25 @@
         "windows_restricted_token_supports_full_read_split_write_read_carveouts",
         "restricted_sids_exclude_everyone",
         "default_dacl_keeps_everyone_for_ipc_compatibility",
+        "file_system_remote_fs_helper_respects_windows_sandbox_write_policy",
         "legacy_workspace_write_delete_is_limited_to_writable_roots",
         "legacy_tty_cmd_emits_output_and_accepts_input",
-        "legacy_tty_cmd_default_desktop_emits_output_and_accepts_input"
+        "legacy_tty_cmd_default_desktop_emits_output_and_accepts_input",
+        "elevated_control_transport_eof_stops_grandchild",
+        "elevated_non_tty_root_exit_stops_grandchild",
+        "elevated_non_tty_termination_stops_grandchild",
+        "elevated_tty_root_exit_stops_grandchild",
+        "elevated_tty_termination_stops_grandchild",
+        "elevated_pipe_timeout_stops_grandchild_and_reports_terminal_result"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The first 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. The second appends S-1-5-33 after the logon SID, retains its LocalSid allocation through token creation, and restores private- and default-desktop ConPTY cmd coverage. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
+      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The first 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. The second appends S-1-5-33 after the logon SID and retains its LocalSid allocation through token creation. Hosted proof then exposed an older over-escaped raw NUL-device path that made every intended scoped ACL grant a silent no-op; the corrected Win32 path restores filesystem-helper, elevated lifecycle, and private/default-desktop compatibility without broadening the restricting set. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, the scoped device ACL, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "windows-sandbox-policy-adapter",
       "hotspot_files": [
         "codex-rs/protocol/src/permissions.rs",
         "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/acl.rs",
         "codex-rs/windows-sandbox-rs/src/token.rs"
       ],
       "extraction_target": "upstream protected-metadata and special-path boundary equivalence"

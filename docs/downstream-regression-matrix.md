@@ -334,8 +334,10 @@ provider metadata on resume.
 | Python Code Quality corrections for timeout, exec, and dead-binding control flow                                                                                                                                                                                                                                                                                                 | GitHub Code Quality main evaluation; `codex.downstream-divergence-audit`                                                                                                                                                                                         | Findings `C277`, `C287`, `C288`, and `C331` close after the post-merge evaluation; downstream divergence audit remains green                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 The Windows filesystem boundary compatibility row also requires S-1-5-33 after
-the logon restricting SID, with Everyone excluded and the IPC DACL unchanged.
-Hosted Windows coverage includes
+the logon restricting SID, a scoped capability ACL on the correctly addressed
+`\\.\NUL` device, Everyone excluded, and the IPC DACL unchanged. Hosted Windows
+coverage includes `file_system_remote_fs_helper_respects_windows_sandbox_write_policy`,
+the elevated grandchild lifecycle and timeout tests,
 `legacy_tty_cmd_emits_output_and_accepts_input` and
 `legacy_tty_cmd_default_desktop_emits_output_and_accepts_input` so private- and
 default-desktop child initialization remain executable regressions.

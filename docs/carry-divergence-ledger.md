@@ -187,18 +187,23 @@ docs-only refresh commit that records this snapshot.
 - The compatible restricted token keeps the Everyone SID on its default DACL
   for IPC compatibility, but excludes Everyone from the restricting SID set.
   Adding Everyone to both sets makes the write restriction ineffective.
-- The S-1-5-33 write-restricted code SID is appended after the logon SID in the
+- The S-1-5-33 write-restricted code SID remains after the logon SID in the
   restricting set, with its `LocalSid` allocation retained through token
-  creation. This preserves Windows child-runtime initialization without
-  changing the IPC DACL or widening the filesystem boundary.
+  creation. Child-runtime compatibility also depends on granting the active
+  capability SID access to the real `\\.\NUL` device; a formerly over-escaped
+  raw path silently skipped that scoped ACL grant. Neither mechanism changes
+  the IPC DACL or widens the filesystem boundary.
 - Hosted Windows guardrails:
   `slash_tmp_permission_path_is_unix_only`,
   `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
   `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
   `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
   `legacy_workspace_write_delete_is_limited_to_writable_roots`,
+  `file_system_remote_fs_helper_respects_windows_sandbox_write_policy`,
   `legacy_tty_cmd_emits_output_and_accepts_input`,
   `legacy_tty_cmd_default_desktop_emits_output_and_accepts_input`,
+  the `elevated_*_stops_grandchild` lifecycle family,
+  `elevated_pipe_timeout_stops_grandchild_and_reports_terminal_result`,
   `restricted_sids_exclude_everyone`, and
   `default_dacl_keeps_everyone_for_ipc_compatibility`.
 - Primary files:
@@ -207,6 +212,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/sandboxing/src/policy_transforms_tests.rs`
   - `codex-rs/sandboxing/src/windows.rs`
   - `codex-rs/core/src/exec_tests.rs`
+  - `codex-rs/windows-sandbox-rs/src/acl.rs`
   - `codex-rs/windows-sandbox-rs/src/token.rs`
   - `codex-rs/windows-sandbox-rs/src/token_tests.rs`
   - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`

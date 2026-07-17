@@ -579,7 +579,8 @@ User-visible behavior:
 - The `/tmp` special permission root resolves only on Unix; Windows policy
   construction does not reinterpret it as a drive-root path.
 - The compatible restricted token appends the S-1-5-33 write-restricted code
-  SID after the logon SID so Windows child runtimes can initialize.
+  SID after the logon SID and grants its active capability SID access to the
+  correctly addressed `\\.\NUL` device so Windows child runtimes can initialize.
 - Everyone remains excluded from the restricting SID set while retained on the
   unchanged default DACL needed for child-process pipes and IPC.
 - Proxy-enforced Windows commands use one effective elevated-backend decision
