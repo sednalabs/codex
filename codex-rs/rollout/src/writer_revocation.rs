@@ -42,7 +42,9 @@ struct Shared {
 }
 
 enum Lifecycle {
-    Active { attempts: u64 },
+    Active {
+        attempts: u64,
+    },
     Revoking {
         result: watch::Receiver<Option<RevocationOutcome>>,
     },
