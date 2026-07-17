@@ -9,7 +9,6 @@ use codex_rollout::RolloutPersistenceTelemetry;
 use codex_rollout::measure_and_filter_rollout_items;
 use codex_rollout::persisted_rollout_items;
 use tokio::sync::Mutex;
-use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tracing::warn;
 
@@ -23,7 +22,6 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadMetadataPatch;
 use crate::ThreadStore;
-use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::UpdateThreadMetadataParams;
 use crate::thread_metadata_sync::ThreadMetadataSync;
@@ -38,8 +36,7 @@ pub struct LiveThread {
     thread_id: ThreadId,
     history_mode: ThreadHistoryMode,
     thread_store: Arc<dyn ThreadStore>,
-    // Keep canonical writes and their derived metadata projection ordered across cloned handles.
-    persistence_operation_semaphore: Arc<Semaphore>,
+    append_gate: Arc<Semaphore>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
 }
@@ -106,49 +103,10 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
-            persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
+            append_gate: Arc::new(Semaphore::new(1)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
-    }
-
-    /// Create a child thread with inherited model context already durable.
-    ///
-    /// The boundary belongs in session metadata before the copied prefix is written so history
-    /// projection can distinguish inherited context from the child's own records immediately.
-    pub async fn create_with_inherited_model_context(
-        thread_store: Arc<dyn ThreadStore>,
-        mut params: CreateThreadParams,
-        inherited_model_context: &[RolloutItem],
-    ) -> ThreadStoreResult<Self> {
-        let persisted_prefix_item_count =
-            persisted_rollout_items(inherited_model_context, params.history_mode).len();
-        params.subagent_history_start_ordinal = Some(
-            u64::try_from(persisted_prefix_item_count)
-                .map_err(|_| ThreadStoreError::Internal {
-                    message: "inherited model context is too large".to_string(),
-                })?
-                .checked_add(1)
-                .ok_or_else(|| ThreadStoreError::Internal {
-                    message: "inherited model context is too large".to_string(),
-                })?,
-        );
-        let live_thread = Self::create(thread_store, params).await?;
-        let append_result = {
-            let _operation_permit = live_thread.acquire_persistence_operation().await?;
-            live_thread
-                .persist_appended_items(inherited_model_context)
-                .await
-        };
-        if let Err(err) = append_result {
-            if let Err(discard_err) = live_thread.discard().await {
-                warn!(
-                    "failed to discard thread persistence after inherited context append failed: {discard_err}"
-                );
-            }
-            return Err(err);
-        }
-        Ok(live_thread)
     }
 
     pub async fn resume(
@@ -184,7 +142,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
-            persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
+            append_gate: Arc::new(Semaphore::new(1)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -196,10 +154,73 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
-        let items = self.persist_appended_items(raw_items).await?;
-        if items.is_empty() {
+        // Empty appends are intentionally ignored rather than represented as zero-sized batches.
+        if raw_items.is_empty() {
             return Ok(());
+        }
+        let _append_permit = self
+            .append_gate
+            .acquire()
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        let mut committed = 0;
+        let mut append_error = None;
+        while committed < raw_items.len() {
+            let remaining = raw_items.len() - committed;
+            let mut attempt_committed = 0;
+            let result = self
+                .thread_store
+                .append_items_committed(
+                    AppendThreadItemsParams {
+                        thread_id: self.thread_id,
+                        items: raw_items[committed..].to_vec(),
+                    },
+                    &mut attempt_committed,
+                )
+                .await;
+            if attempt_committed > remaining {
+                append_error = Some(crate::ThreadStoreError::Internal {
+                    message: format!(
+                        "thread store reported invalid append progress: {attempt_committed}/{remaining}"
+                    ),
+                });
+                break;
+            }
+            committed += attempt_committed;
+            match result {
+                Ok(()) if attempt_committed == remaining => break,
+                Ok(()) => {
+                    append_error = Some(crate::ThreadStoreError::Internal {
+                        message: "thread store returned incomplete append success".to_string(),
+                    });
+                    break;
+                }
+                Err(_err) if attempt_committed > 0 && committed < raw_items.len() => continue,
+                Err(err) => {
+                    append_error = Some(err);
+                    break;
+                }
+            }
+        }
+        let committed_raw_items = &raw_items[..committed];
+        let (items, measurement) = if self.persistence_telemetry.is_enabled() {
+            let (items, measurement) =
+                measure_and_filter_rollout_items(committed_raw_items, self.history_mode);
+            (items, Some(measurement))
+        } else {
+            (
+                persisted_rollout_items(committed_raw_items, self.history_mode),
+                None,
+            )
+        };
+        if !committed_raw_items.is_empty()
+            && let Some(measurement) = measurement.as_ref()
+        {
+            self.persistence_telemetry
+                .record_batch(committed_raw_items, measurement);
+        }
+        if items.is_empty() {
+            return append_error.map_or(Ok(()), Err);
         }
         let update = self
             .metadata_sync
@@ -219,59 +240,27 @@ impl LiveThread {
                 .await
                 .mark_pending_update_applied(&update);
         }
-        Ok(())
-    }
-
-    async fn persist_appended_items(
-        &self,
-        raw_items: &[RolloutItem],
-    ) -> ThreadStoreResult<Vec<RolloutItem>> {
-        // Empty appends are intentionally ignored rather than represented as zero-sized batches.
-        if raw_items.is_empty() {
-            return Ok(Vec::new());
-        }
-        let (items, measurement) = if self.persistence_telemetry.is_enabled() {
-            let (items, measurement) =
-                measure_and_filter_rollout_items(raw_items, self.history_mode);
-            (items, Some(measurement))
-        } else {
-            (persisted_rollout_items(raw_items, self.history_mode), None)
-        };
-        self.thread_store
-            .append_items(AppendThreadItemsParams {
-                thread_id: self.thread_id,
-                items: raw_items.to_vec(),
-            })
-            .await?;
-        if let Some(measurement) = measurement.as_ref() {
-            self.persistence_telemetry
-                .record_batch(raw_items, measurement);
-        }
-        Ok(items)
+        append_error.map_or(Ok(()), Err)
     }
 
     pub async fn persist(&self) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
         self.thread_store.persist_thread(self.thread_id).await?;
         self.flush_pending_metadata_update().await
     }
 
     pub async fn flush(&self) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
         self.thread_store.flush_thread(self.thread_id).await?;
         self.flush_pending_metadata_update_for_existing_history()
             .await
     }
 
     pub async fn shutdown(&self) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
         self.flush_pending_metadata_update_for_existing_history()
             .await?;
         self.thread_store.shutdown_thread(self.thread_id).await
     }
 
     pub async fn discard(&self) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
         self.thread_store.discard_thread(self.thread_id).await
     }
 
@@ -306,7 +295,6 @@ impl LiveThread {
         mode: ThreadMemoryMode,
         include_archived: bool,
     ) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
         self.flush_pending_metadata_update().await?;
         self.thread_store
             .update_thread_metadata(UpdateThreadMetadataParams {
@@ -326,7 +314,6 @@ impl LiveThread {
         patch: ThreadMetadataPatch,
         include_archived: bool,
     ) -> ThreadStoreResult<StoredThread> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
         self.flush_pending_metadata_update().await?;
         self.thread_store
             .update_thread_metadata(UpdateThreadMetadataParams {
@@ -352,16 +339,6 @@ impl LiveThread {
             .live_rollout_path(self.thread_id)
             .await
             .map(Some)
-    }
-
-    async fn acquire_persistence_operation(&self) -> ThreadStoreResult<OwnedSemaphorePermit> {
-        self.persistence_operation_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| ThreadStoreError::Internal {
-                message: "thread persistence operation semaphore unexpectedly closed".to_string(),
-            })
     }
 
     async fn flush_pending_metadata_update(&self) -> ThreadStoreResult<()> {
@@ -399,3 +376,7 @@ impl LiveThread {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "live_thread_tests.rs"]
+mod tests;
