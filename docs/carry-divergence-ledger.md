@@ -311,6 +311,25 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime/configured_identity_provenance.rs`
   - `codex-rs/state/src/runtime/configured_identity_provenance_tests.rs`
 
+### Thread Settings Rollout Custody
+
+- Keep `ThreadSettingsApplied` evidence ordered in authoritative rollout history without making a
+  settings-only update eagerly materialize a new local rollout. Core retains those events until
+  the first durable rollout item or an explicit flush, materialization, or shutdown boundary.
+- New complete histories carry an internal custody generation in `SessionMeta`. Older histories,
+  partial history without its canonical first metadata item, and forks whose immediate source
+  lacks the marker remain unproven rather than implying that configured identity was absent.
+- This stage does not project provenance into SQLite, backfill historical rows, repair archive
+  metadata, or change generic `ThreadStore::append_items` metadata behavior.
+- Primary files:
+  - `codex-rs/core/src/session/`
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/rollout/src/recorder.rs`
+  - `codex-rs/thread-store/src/in_memory.rs`
+  - `codex-rs/thread-store/src/local/create_thread.rs`
+  - `codex-rs/thread-store/src/types.rs`
+  - `codex-rs/core/tests/suite/sqlite_state.rs`
+
 ### Phase-2 Memory Attestation And Prepared-Input Fingerprinting
 
 - Downstream phase-2 memory consolidation remains fail-closed once attestation

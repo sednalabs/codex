@@ -444,6 +444,10 @@ impl InMemoryThreadStore {
             history_mode: params.history_mode,
             multi_agent_version: params.multi_agent_version,
             context_window: Some(SessionContextWindow::new(params.initial_window_id.clone())),
+            thread_settings_custody_generation: params
+                .extra_config
+                .as_ref()
+                .and_then(|config| config.thread_settings_custody_generation),
             ..SessionMeta::default()
         };
         state

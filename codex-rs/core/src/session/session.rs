@@ -25,6 +25,8 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
+const THREAD_SETTINGS_CUSTODY_GENERATION: u32 = 1;
+
 /// Context for an initialized model agent
 ///
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
@@ -46,6 +48,7 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) input_queue: InputQueue,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
+    pub(super) pending_pre_materialization_rollout_items: Mutex<Vec<RolloutItem>>,
     pub(crate) services: SessionServices,
     pub(super) next_internal_sub_id: AtomicU64,
 }
@@ -612,6 +615,26 @@ impl Session {
                     roots
                 }
             };
+        let thread_settings_custody_generation = match &initial_history {
+            InitialHistory::New | InitialHistory::Cleared => {
+                Some(THREAD_SETTINGS_CUSTODY_GENERATION)
+            }
+            InitialHistory::Forked(items) => items
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta) => Some(&meta.meta),
+                    _ => None,
+                })
+                .and_then(|meta| meta.thread_settings_custody_generation),
+            InitialHistory::Resumed(_) => None,
+        };
+        let extra_config = thread_settings_custody_generation
+            .map(|generation| {
+                let mut extra_config = config.extra_config.clone().unwrap_or_default();
+                extra_config.thread_settings_custody_generation = Some(generation);
+                extra_config
+            })
+            .or_else(|| config.extra_config.clone());
         let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
@@ -631,7 +654,7 @@ impl Session {
                         let params = CreateThreadParams {
                             session_id,
                             thread_id,
-                            extra_config: config.extra_config.clone(),
+                            extra_config: extra_config.clone(),
                             forked_from_id,
                             parent_thread_id,
                             source: session_source,
@@ -1204,6 +1227,7 @@ impl Session {
                 active_turn: Mutex::new(None),
                 input_queue: InputQueue::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
+                pending_pre_materialization_rollout_items: Mutex::new(Vec::new()),
                 services,
                 next_internal_sub_id: AtomicU64::new(0),
             });

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
@@ -11,12 +12,14 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
@@ -31,6 +34,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
+use core_test_support::submit_thread_settings;
 use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
@@ -73,9 +77,17 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
     }
 
     let db = test.codex.state_db().expect("state db enabled");
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("pre-materialization-model".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
     assert!(
         !rollout_path.exists(),
-        "fresh thread rollout should not be materialized before first user message"
+        "settings-only update should preserve lazy rollout materialization"
     );
 
     let initial_metadata = db.get_thread(thread_id).await?;
@@ -102,6 +114,88 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
         rollout_path.exists(),
         "rollout should be materialized after first user message"
     );
+    let InitialHistory::Resumed(history) =
+        RolloutRecorder::get_rollout_history(&rollout_path).await?
+    else {
+        panic!("materialized rollout should load as resumed history");
+    };
+    let session_meta = history
+        .history
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta) => Some(&meta.meta),
+            _ => None,
+        })
+        .expect("session metadata");
+    let settings_position = history
+        .history
+        .iter()
+        .position(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                    if event.thread_settings.model == "pre-materialization-model"
+            )
+        })
+        .expect("pre-materialization settings event");
+    let turn_position = history
+        .history
+        .iter()
+        .position(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+        .expect("first turn boundary");
+    assert_eq!(
+        (
+            session_meta.thread_settings_custody_generation,
+            settings_position < turn_position,
+        ),
+        (Some(1), true)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_only_shutdown_preserves_evidence_for_resume() -> Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    let rollout_path = test.codex.rollout_path().expect("rollout path");
+
+    submit_thread_settings(
+        &test.codex,
+        ThreadSettingsOverrides {
+            model: Some("settings-only-resume-model".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert!(
+        !rollout_path.exists(),
+        "settings-only update should remain lazy before a durability boundary"
+    );
+
+    let home = Arc::clone(&test.home);
+    test.codex.shutdown_and_wait().await?;
+    assert!(
+        rollout_path.exists(),
+        "graceful shutdown should preserve deferred settings evidence"
+    );
+
+    let mut resume_builder = test_codex();
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    let resumed_settings = resumed
+        .session_configured
+        .initial_messages
+        .as_ref()
+        .and_then(|messages| {
+            messages.iter().find_map(|message| match message {
+                EventMsg::ThreadSettingsApplied(event) => Some(&event.thread_settings),
+                _ => None,
+            })
+        })
+        .expect("resumed settings evidence");
+    assert_eq!(resumed_settings.model, "settings-only-resume-model");
+    resumed.codex.shutdown_and_wait().await?;
 
     Ok(())
 }
@@ -376,6 +470,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
                     history_mode: Default::default(),
                     multi_agent_version: None,
                     context_window: None,
+                    thread_settings_custody_generation: None,
                 },
                 git: None,
             };

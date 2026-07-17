@@ -651,9 +651,7 @@ pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
 
     // Gracefully flush and shutdown thread persistence on session end so tests
     // that inspect durable state do not race with the background writer.
-    if let Some(live_thread) = sess.live_thread()
-        && let Err(e) = live_thread.shutdown().await
-    {
+    if let Err(e) = sess.shutdown_rollout().await {
         warn!("failed to shutdown thread persistence: {e}");
         let event = Event {
             id: sub_id.clone(),
@@ -866,9 +864,7 @@ pub(super) async fn submission_loop(
     if !shutdown_received {
         shutdown_session_runtime(&sess).await;
         emit_thread_stop_lifecycle(sess.as_ref()).await;
-        if let Some(live_thread) = sess.live_thread()
-            && let Err(err) = live_thread.shutdown().await
-        {
+        if let Err(err) = sess.shutdown_rollout().await {
             warn!("failed to shutdown thread persistence after submission channel closed: {err}");
         }
     }

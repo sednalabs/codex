@@ -3132,6 +3132,11 @@ pub struct SessionMeta {
     /// Initial context-window identity for consumers that tail rollout JSONL before compaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<SessionContextWindow>,
+    /// Internal generation proving that thread-settings events are completely captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub thread_settings_custody_generation: Option<u32>,
 }
 
 impl Default for SessionMeta {
@@ -3159,6 +3164,7 @@ impl Default for SessionMeta {
             history_mode: ThreadHistoryMode::default(),
             multi_agent_version: None,
             context_window: None,
+            thread_settings_custody_generation: None,
         }
     }
 }
@@ -5927,7 +5933,13 @@ mod tests {
             "base_instructions": null
         }))?;
 
-        assert_eq!(session_meta.history_mode, ThreadHistoryMode::Legacy);
+        assert_eq!(
+            (
+                session_meta.history_mode,
+                session_meta.thread_settings_custody_generation,
+            ),
+            (ThreadHistoryMode::Legacy, None)
+        );
         let serialized = serde_json::to_value(&session_meta)?;
         assert_eq!(serialized["history_mode"], json!("legacy"));
         let mut unknown = serialized;

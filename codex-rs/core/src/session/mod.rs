@@ -1295,6 +1295,8 @@ impl Session {
     /// Flush rollout writes and return the final durability-barrier result.
     pub(crate) async fn flush_rollout(&self) -> std::io::Result<()> {
         if let Some(live_thread) = self.live_thread() {
+            self.flush_pending_pre_materialization_rollout_items(live_thread)
+                .await?;
             live_thread.flush().await.map_err(std::io::Error::other)
         } else {
             Ok(())
@@ -1303,7 +1305,21 @@ impl Session {
 
     pub(crate) async fn try_ensure_rollout_materialized(&self) -> std::io::Result<()> {
         if let Some(live_thread) = self.live_thread() {
+            self.flush_pending_pre_materialization_rollout_items(live_thread)
+                .await?;
             live_thread.persist().await.map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn shutdown_rollout(&self) -> std::io::Result<()> {
+        if let Some(live_thread) = self.live_thread() {
+            self.flush_pending_pre_materialization_rollout_items(live_thread)
+                .await?;
+            live_thread
+                .shutdown()
+                .await
+                .map_err(std::io::Error::other)?;
         }
         Ok(())
     }
@@ -2054,6 +2070,12 @@ impl Session {
                 true
             }
         };
+        if !persist {
+            self.pending_pre_materialization_rollout_items
+                .lock()
+                .await
+                .push(RolloutItem::EventMsg(event.msg.clone()));
+        }
         self.send_event_raw_with_persistence(event, persist).await;
     }
 
@@ -3610,11 +3632,55 @@ impl Session {
     }
 
     pub(crate) async fn persist_rollout_items(&self, items: &[RolloutItem]) {
-        if let Some(live_thread) = self.live_thread()
-            && let Err(e) = live_thread.append_items(items).await
-        {
+        let Some(live_thread) = self.live_thread() else {
+            return;
+        };
+        let history_mode = {
+            let state = self.state.lock().await;
+            state.session_configuration.history_mode
+        };
+        let release_pending = items
+            .iter()
+            .any(|item| codex_rollout::is_persisted_rollout_item(item, history_mode));
+        let mut pending = self.pending_pre_materialization_rollout_items.lock().await;
+        let mut combined = release_pending.then(|| std::mem::take(&mut *pending));
+        drop(pending);
+        let pending_len = combined.as_ref().map_or(0, Vec::len);
+        let result = if let Some(combined) = combined.as_mut() {
+            combined.extend_from_slice(items);
+            live_thread.append_items(combined.as_slice()).await
+        } else {
+            live_thread.append_items(items).await
+        };
+        if let Err(e) = result {
+            if let Some(mut failed_pending) = combined {
+                failed_pending.truncate(pending_len);
+                let mut pending = self.pending_pre_materialization_rollout_items.lock().await;
+                failed_pending.append(&mut *pending);
+                *pending = failed_pending;
+            }
             error!("failed to record rollout items: {e:#}");
         }
+    }
+
+    async fn flush_pending_pre_materialization_rollout_items(
+        &self,
+        live_thread: &LiveThread,
+    ) -> std::io::Result<()> {
+        let mut items = {
+            let mut pending = self.pending_pre_materialization_rollout_items.lock().await;
+            std::mem::take(&mut *pending)
+        };
+        if items.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = live_thread.append_items(items.as_slice()).await {
+            let mut pending = self.pending_pre_materialization_rollout_items.lock().await;
+            items.append(&mut *pending);
+            *pending = items;
+            return Err(std::io::Error::other(err));
+        }
+        Ok(())
     }
 
     pub(crate) async fn clone_history(&self) -> ContextManager {

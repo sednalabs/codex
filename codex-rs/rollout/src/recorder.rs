@@ -103,6 +103,7 @@ pub enum RolloutRecorderParams {
         multi_agent_version: Option<MultiAgentVersion>,
         history_mode: ThreadHistoryMode,
         initial_window_id: Option<String>,
+        thread_settings_custody_generation: Option<u32>,
     },
     Resume {
         path: PathBuf,
@@ -196,6 +197,7 @@ impl RolloutRecorderParams {
             multi_agent_version: None,
             history_mode: Default::default(),
             initial_window_id: None,
+            thread_settings_custody_generation: None,
         }
     }
 
@@ -251,6 +253,17 @@ impl RolloutRecorderParams {
         } = &mut self
         {
             *window_id = Some(initial_window_id);
+        }
+        self
+    }
+
+    pub fn with_thread_settings_custody_generation(mut self, generation: Option<u32>) -> Self {
+        if let Self::Create {
+            thread_settings_custody_generation,
+            ..
+        } = &mut self
+        {
+            *thread_settings_custody_generation = generation;
         }
         self
     }
@@ -774,6 +787,7 @@ impl RolloutRecorder {
                 multi_agent_version,
                 history_mode,
                 initial_window_id,
+                thread_settings_custody_generation,
             } => {
                 let ordinal_state = RolloutOrdinalState::for_new_rollout(history_mode);
                 let log_file_info = precompute_log_file_info(config, conversation_id)?;
@@ -815,6 +829,7 @@ impl RolloutRecorder {
                     history_mode,
                     multi_agent_version,
                     context_window: initial_window_id.map(SessionContextWindow::new),
+                    thread_settings_custody_generation,
                 };
 
                 RolloutWriterState {

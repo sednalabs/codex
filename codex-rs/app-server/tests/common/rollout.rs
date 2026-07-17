@@ -208,6 +208,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
         history_mode: Default::default(),
         multi_agent_version: None,
         context_window: None,
+        thread_settings_custody_generation: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,
@@ -298,6 +299,7 @@ pub fn create_fake_rollout_with_text_elements(
         history_mode: Default::default(),
         multi_agent_version: None,
         context_window: None,
+        thread_settings_custody_generation: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,
