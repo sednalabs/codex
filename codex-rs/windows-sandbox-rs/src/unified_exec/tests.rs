@@ -488,12 +488,9 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
             (&temp_file, &temp_root),
             (&tmp_file, &tmp_root),
         ] {
-            let mut root_sids = root_capability_sids(
-                codex_home.path(),
-                workspace.as_path(),
-                [root.clone()],
-            )
-            .expect("derive exact root capability SID");
+            let mut root_sids =
+                root_capability_sids(codex_home.path(), workspace.as_path(), [root.clone()])
+                    .expect("derive exact root capability SID");
             let root_sid = root_sids.pop().expect("one root capability SID");
             assert!(root_sids.is_empty(), "expected one root capability SID");
             assert_eq!(root_sid.root.as_path(), root.as_path());
