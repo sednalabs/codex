@@ -1768,6 +1768,49 @@
       "extraction_target": "upstream private thread identity-provenance state contract"
     },
     {
+      "id": "thread-settings-rollout-custody",
+      "title": "Thread settings rollout custody",
+      "status": "live",
+      "category": "thread-metadata",
+      "surface": [
+        "core thread-settings producer",
+        "authoritative rollout history"
+      ],
+      "files": [
+        "codex-rs/core/src/session/handlers.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/tests/suite/sqlite_state.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/rollout/src/recorder.rs",
+        "codex-rs/thread-store/src/in_memory.rs",
+        "codex-rs/thread-store/src/local/create_thread.rs",
+        "codex-rs/thread-store/src/types.rs"
+      ],
+      "behavior": "Downstream retains ThreadSettingsApplied events while a new local rollout remains lazy, releases them in order before the first durable item, and preserves them at explicit flush, materialization, and shutdown boundaries. An internal SessionMeta generation marks histories produced under this complete-custody contract; missing metadata or a missing generation remains unproven.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub blocking-ci codex-core integration and codex-protocol tests",
+      "tests": [
+        "new_thread_is_recorded_in_state_db",
+        "settings_only_shutdown_preserves_evidence_for_resume",
+        "session_meta_defaults_legacy_history_mode"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve lazy creation and event ordering together. Do not infer configured-identity absence from pre-contract, partial, or unavailable history. SQLite projection, historical backfill, archive repair, and generic thread-store metadata updates remain separate authorities.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "extraction_target": "upstream lazy thread-settings history custody contract"
+    },
+    {
       "id": "mcp-direct-app-tool-reconciliation",
       "title": "Direct and app-backed MCP tool catalog reconciliation",
       "status": "live",

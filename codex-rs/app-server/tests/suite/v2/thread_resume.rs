@@ -2438,6 +2438,7 @@ stream_max_retries = 0
         history_mode: Default::default(),
         multi_agent_version: None,
         context_window: None,
+        thread_settings_custody_generation: None,
     };
     std::fs::write(
         &rollout_path,

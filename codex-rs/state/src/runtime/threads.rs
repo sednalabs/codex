@@ -2285,6 +2285,7 @@ mod tests {
                 history_mode: Default::default(),
                 multi_agent_version: None,
                 context_window: None,
+                thread_settings_custody_generation: None,
             },
             git: None,
         })];
@@ -2350,6 +2351,7 @@ mod tests {
                 history_mode: Default::default(),
                 multi_agent_version: None,
                 context_window: None,
+                thread_settings_custody_generation: None,
             },
             git: Some(GitInfo {
                 commit_hash: Some(codex_git_utils::GitSha::new("rollout-sha")),
