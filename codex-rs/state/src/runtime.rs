@@ -63,6 +63,7 @@ use tracing::warn;
 
 mod agent_jobs;
 mod backfill;
+mod configured_identity_provenance;
 mod extension_storage;
 mod external_agent_config_imports;
 mod goals;
@@ -77,6 +78,7 @@ mod test_support;
 mod threads;
 pub mod usage;
 
+pub use configured_identity_provenance::ConfiguredIdentityProvenance;
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
