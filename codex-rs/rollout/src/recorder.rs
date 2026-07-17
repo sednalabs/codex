@@ -128,14 +128,8 @@ enum RolloutCmd {
     },
 }
 
-#[derive(Clone)]
-enum RevocationOutcome {
-    Revoked,
-    Failed(Arc<IoError>),
-}
-
 struct RevocationAttempt {
-    outcome: watch::Sender<Option<RevocationOutcome>>,
+    outcome: watch::Sender<Option<Result<(), Arc<IoError>>>>,
 }
 
 impl RevocationAttempt {
@@ -144,7 +138,7 @@ impl RevocationAttempt {
         Self { outcome }
     }
 
-    fn complete(&self, outcome: RevocationOutcome) {
+    fn complete(&self, outcome: Result<(), Arc<IoError>>) {
         self.outcome.send_replace(Some(outcome));
     }
 
@@ -152,35 +146,21 @@ impl RevocationAttempt {
         let mut receiver = self.outcome.subscribe();
         loop {
             if let Some(outcome) = receiver.borrow_and_update().clone() {
-                return match outcome {
-                    RevocationOutcome::Revoked => Ok(()),
-                    RevocationOutcome::Failed(err) => Err(clone_io_error(err.as_ref())),
-                };
+                return outcome.map_err(|err| clone_io_error(err.as_ref()));
             }
-            receiver.changed().await.map_err(|_| {
-                IoError::other("rollout recorder revocation outcome was dropped")
-            })?;
+            receiver
+                .changed()
+                .await
+                .map_err(|_| IoError::other("rollout recorder revocation outcome was dropped"))?;
         }
     }
 }
 
 enum RolloutRecorderLifecycle {
-    Active {
-        generation: u64,
-        previous: Option<Arc<RevocationAttempt>>,
-    },
-    Revoking {
-        generation: u64,
-        attempt: Arc<RevocationAttempt>,
-        previous: Option<Arc<RevocationAttempt>>,
-    },
+    Active(u64, Option<Arc<RevocationAttempt>>),
+    Revoking(u64, Arc<RevocationAttempt>),
     Revoked(Arc<RevocationAttempt>),
     Failed(Arc<IoError>),
-}
-
-enum RevocationStart {
-    Initiated(Arc<RevocationAttempt>),
-    Participate(Arc<RevocationAttempt>),
 }
 
 /// Observable state for the background rollout writer task.
@@ -195,10 +175,7 @@ impl RolloutWriterTask {
     fn new() -> Self {
         Self {
             handle: Mutex::new(None),
-            lifecycle: Mutex::new(RolloutRecorderLifecycle::Active {
-                generation: 0,
-                previous: None,
-            }),
+            lifecycle: Mutex::new(RolloutRecorderLifecycle::Active(0, None)),
             terminal_failure: Mutex::new(None),
         }
     }
@@ -225,8 +202,8 @@ impl RolloutWriterTask {
             .lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let RolloutRecorderLifecycle::Revoking { attempt, .. } = &*lifecycle {
-            attempt.complete(RevocationOutcome::Failed(Arc::clone(&err)));
+        if let RolloutRecorderLifecycle::Revoking(_, attempt) = &*lifecycle {
+            attempt.complete(Err(Arc::clone(&err)));
         }
         *lifecycle = RolloutRecorderLifecycle::Failed(err);
     }
@@ -246,9 +223,10 @@ impl RolloutWriterTask {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &*lifecycle {
-            RolloutRecorderLifecycle::Active { generation, .. } => Ok(*generation),
-            RolloutRecorderLifecycle::Revoking { .. }
-            | RolloutRecorderLifecycle::Revoked(_) => Err(inactive_recorder_error("shut down")),
+            RolloutRecorderLifecycle::Active(generation, _) => Ok(*generation),
+            RolloutRecorderLifecycle::Revoking(_, _) | RolloutRecorderLifecycle::Revoked(_) => {
+                Err(inactive_recorder_error("shut down"))
+            }
             RolloutRecorderLifecycle::Failed(err) => Err(clone_io_error(err.as_ref())),
         }
     }
@@ -259,67 +237,60 @@ impl RolloutWriterTask {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &*lifecycle {
-            RolloutRecorderLifecycle::Active { .. } => Ok(None),
-            RolloutRecorderLifecycle::Revoking { attempt, .. }
+            RolloutRecorderLifecycle::Active(_, Some(attempt))
+            | RolloutRecorderLifecycle::Revoking(_, attempt)
             | RolloutRecorderLifecycle::Revoked(attempt) => Ok(Some(Arc::clone(attempt))),
+            RolloutRecorderLifecycle::Active(_, None) => Ok(None),
             RolloutRecorderLifecycle::Failed(err) => Err(clone_io_error(err.as_ref())),
         }
     }
 
-    fn begin_revocation(&self, expected_generation: u64) -> Result<RevocationStart, IoError> {
+    fn begin_revocation(
+        &self,
+        expected_generation: u64,
+    ) -> Result<Result<Arc<RevocationAttempt>, Arc<RevocationAttempt>>, IoError> {
         let mut lifecycle = self
             .lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &*lifecycle {
-            RolloutRecorderLifecycle::Active {
-                generation,
-                previous,
-            } if *generation == expected_generation => {
+            RolloutRecorderLifecycle::Active(generation, _)
+                if *generation == expected_generation =>
+            {
                 let attempt = Arc::new(RevocationAttempt::new());
-                *lifecycle = RolloutRecorderLifecycle::Revoking {
-                    generation: *generation,
-                    attempt: Arc::clone(&attempt),
-                    previous: previous.clone(),
-                };
-                Ok(RevocationStart::Initiated(attempt))
+                *lifecycle = RolloutRecorderLifecycle::Revoking(
+                    *generation,
+                    Arc::clone(&attempt),
+                );
+                Ok(Ok(attempt))
             }
-            RolloutRecorderLifecycle::Active {
-                previous: Some(attempt),
-                ..
-            }
-            | RolloutRecorderLifecycle::Revoking {
-                previous: Some(attempt),
-                ..
-            } => Ok(RevocationStart::Participate(Arc::clone(attempt))),
-            RolloutRecorderLifecycle::Active { previous: None, .. }
-            | RolloutRecorderLifecycle::Revoking { previous: None, .. } => Err(IoError::other(
+            RolloutRecorderLifecycle::Active(_, Some(attempt)) => Ok(Err(Arc::clone(attempt))),
+            RolloutRecorderLifecycle::Active(_, None) => Err(IoError::other(
                 "rollout recorder revocation generation changed without an outcome",
             )),
+            RolloutRecorderLifecycle::Revoking(_, _) => {
+                Err(inactive_recorder_error("shut down"))
+            }
             RolloutRecorderLifecycle::Revoked(_) => Err(inactive_recorder_error("shut down")),
             RolloutRecorderLifecycle::Failed(err) => Err(clone_io_error(err.as_ref())),
         }
     }
 
-    fn reopen_after_failed_revocation(&self, attempt: &Arc<RevocationAttempt>, err: IoError) {
+    fn activate_after_failed_revocation(&self, attempt: &Arc<RevocationAttempt>) {
         let mut lifecycle = self
             .lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let RolloutRecorderLifecycle::Revoking {
-            generation,
-            attempt: current,
-            ..
-        } = &*lifecycle
+        if let RolloutRecorderLifecycle::Revoking(generation, current) = &*lifecycle
             && Arc::ptr_eq(current, attempt)
         {
-            *lifecycle = RolloutRecorderLifecycle::Active {
-                generation: generation.checked_add(1).expect("revocation generation overflow"),
-                previous: Some(Arc::clone(attempt)),
-            };
+            *lifecycle = RolloutRecorderLifecycle::Active(
+                generation
+                    .checked_add(1)
+                    .expect("revocation generation overflow"),
+                Some(Arc::clone(attempt)),
+            );
         }
-        drop(lifecycle);
-        attempt.complete(RevocationOutcome::Failed(Arc::new(clone_io_error(&err))));
     }
 
     fn finish_revocation(&self, attempt: &Arc<RevocationAttempt>) {
@@ -327,13 +298,11 @@ impl RolloutWriterTask {
             .lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let RolloutRecorderLifecycle::Revoking {
-            attempt: current, ..
-        } = &*lifecycle
+        if let RolloutRecorderLifecycle::Revoking(_, current) = &*lifecycle
             && Arc::ptr_eq(current, attempt)
         {
             *lifecycle = RolloutRecorderLifecycle::Revoked(Arc::clone(attempt));
-            attempt.complete(RevocationOutcome::Revoked);
+            attempt.complete(Ok(()));
         }
     }
 
@@ -1188,15 +1157,13 @@ impl RolloutRecorder {
     }
 
     async fn send_data_command(&self, command: RolloutCmd, operation: &str) -> std::io::Result<()> {
-        let admission = self
-            .admission
-            .acquire_data()
-            .await
-            .map_err(|RolloutCommandAdmissionError::Terminal| {
+        let admission = self.admission.acquire_data().await.map_err(
+            |RolloutCommandAdmissionError::Terminal| {
                 self.writer_task
                     .terminal_failure()
                     .unwrap_or_else(|| inactive_recorder_error(operation))
-            })?;
+            },
+        )?;
         let permit = self.tx.reserve().await.map_err(|_| {
             self.writer_task
                 .terminal_failure()
@@ -1229,8 +1196,8 @@ impl RolloutRecorder {
                 .unwrap_or_else(|| IoError::other("rollout recorder cannot shut down"))
         })?;
         let attempt = match self.writer_task.begin_revocation(expected_generation)? {
-            RevocationStart::Initiated(attempt) => attempt,
-            RevocationStart::Participate(attempt) => return attempt.wait().await,
+            Ok(attempt) => attempt,
+            Err(attempt) => return attempt.wait().await,
         };
         let transition = terminal.commit(|| permit.send(RolloutCmd::Revoke { ack: tx_done }));
         let writer_task = Arc::clone(&self.writer_task);
@@ -1248,18 +1215,30 @@ async fn complete_revocation(
     transition: RolloutTerminalTransition,
     result: oneshot::Receiver<std::io::Result<()>>,
 ) {
-    let result = match result.await {
-        Ok(result) => result,
-        Err(_) => Err(writer_task
-            .terminal_failure()
-            .unwrap_or_else(|| {
-                IoError::other("rollout recorder revoke acknowledgement was dropped")
-            })),
-    };
-    if let Err(err) = result {
-        writer_task.reopen_after_failed_revocation(&attempt, err);
-        transition.reopen();
-        return;
+    match result.await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => {
+            writer_task.activate_after_failed_revocation(&attempt);
+            transition.reopen();
+            attempt.complete(Err(Arc::new(clone_io_error(&err))));
+            return;
+        }
+        Err(_) => {
+            let err = match writer_task.take_handle() {
+                Some(handle) => match handle.await {
+                    Ok(()) => writer_task.terminal_failure().unwrap_or_else(|| {
+                        IoError::other("rollout recorder revoke acknowledgement was dropped")
+                    }),
+                    Err(join_err) => IoError::other(format!(
+                        "rollout recorder writer task failed to join: {join_err}"
+                    )),
+                },
+                None => IoError::other("rollout recorder writer task handle was already retired"),
+            };
+            transition.seal();
+            writer_task.mark_failed(&err);
+            return;
+        }
     }
     let Some(handle) = writer_task.take_handle() else {
         let err = IoError::other("rollout recorder writer task handle was already retired");

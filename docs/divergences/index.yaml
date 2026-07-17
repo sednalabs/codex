@@ -1902,8 +1902,7 @@
       "guardrail_lane": "GitHub blocking-ci rollout crate tests",
       "tests": [
         "shutdown_accepts_an_exact_prefix_and_waiting_clones_share_revocation",
-        "failed_shutdown_reopens_admission_and_retries_the_whole_history",
-        "empty_deferred_shutdown_does_not_materialize_the_rollout"
+        "failed_shutdown_reopens_admission_and_retries_the_whole_history"
       ],
       "owner": "downstream",
       "notes": "Preserve until upstream provides equivalent cancellation-safe recorder teardown and clone-visible terminal ordering.",

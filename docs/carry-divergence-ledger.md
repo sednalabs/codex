@@ -917,15 +917,11 @@ docs-only refresh commit that records this snapshot.
 
 ### Rollout Recorder Terminal Admission
 
-- Recorder clones share one command-admission authority and one owned writer
-  task lifecycle. A shutdown drains the exact admitted prefix, rejects later
-  commands, and lets callers already waiting participate in the same result.
-- Recoverable drain failures reopen admission without losing buffered history;
-  successful shutdown retires the file and task handles. Deferred empty
-  rollouts remain unmaterialized.
-- Primary files: `codex-rs/rollout/src/command_admission.rs`,
-  `codex-rs/rollout/src/recorder.rs`, and
-  `codex-rs/rollout/src/recorder_tests.rs`.
+- Recorder clones share one command-admission authority and writer lifecycle.
+  Shutdown drains the admitted prefix, shares existing waiters, reopens only
+  after explicit drain failure, otherwise seals terminal failure, and leaves
+  empty deferred rollouts unmaterialized. Coverage lives with
+  `codex-rs/rollout/src/{command_admission,recorder}.rs`.
 - Preserve until upstream has behavior-equivalent cancellation-safe terminal
   ordering and recorder clone teardown.
 

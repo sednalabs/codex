@@ -20,10 +20,10 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
 use pretty_assertions::assert_eq;
-use std::future::Future;
-use std::future::poll_fn;
 use std::fs;
 use std::fs::File;
+use std::future::Future;
+use std::future::poll_fn;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -40,6 +40,34 @@ fn test_config(codex_home: &Path) -> RolloutConfig {
         model_provider_id: "test-provider".to_string(),
         generate_memories: true,
     }
+}
+
+async fn assert_inactive_error(
+    operation: &str,
+    result: impl Future<Output = std::io::Result<()>>,
+) {
+    let error = result.await.expect_err("terminal recorder command");
+    assert_eq!(
+        error.to_string(),
+        format!("rollout recorder is no longer active; cannot {operation}")
+    );
+}
+
+async fn deferred_recorder(codex_home: &Path) -> std::io::Result<RolloutRecorder> {
+    RolloutRecorder::new(
+        &test_config(codex_home),
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await
 }
 
 fn paginated_session_meta_item(thread_id: ThreadId, cwd: &Path) -> RolloutItem {
@@ -65,6 +93,10 @@ fn agent_message_item(message: &str) -> RolloutItem {
         phase: None,
         memory_citation: None,
     }))
+}
+
+fn json_value(value: impl serde::Serialize) -> std::io::Result<serde_json::Value> {
+    serde_json::to_value(value).map_err(std::io::Error::other)
 }
 
 fn write_paginated_rollout(
@@ -506,7 +538,10 @@ async fn shutdown_accepts_an_exact_prefix_and_waiting_clones_share_revocation()
         .await
         .expect("active data admission");
     let permit = recorder.tx.reserve().await.expect("open writer channel");
-    let accepted = vec![agent_message_item("accepted-1"), agent_message_item("accepted-2")];
+    let accepted = [
+        agent_message_item("accepted-1"),
+        agent_message_item("accepted-2"),
+    ];
     let first_recorder = recorder.clone();
     let second_recorder = recorder.clone();
     let mut first_shutdown = Box::pin(first_recorder.shutdown());
@@ -523,89 +558,77 @@ async fn shutdown_accepts_an_exact_prefix_and_waiting_clones_share_revocation()
     first_result?;
     second_result?;
 
-    assert_eq!(
-        recorder
-            .record_canonical_items(&[agent_message_item("rejected")])
-            .await
-            .expect_err("post-terminal add should fail")
-            .to_string(),
-        "rollout recorder is no longer active; cannot add items"
-    );
-    for (operation, error) in [
-        ("persist", recorder.persist().await.expect_err("terminal persist")),
-        ("flush", recorder.flush().await.expect_err("terminal flush")),
-        ("shut down", recorder.shutdown().await.expect_err("fresh shutdown")),
-    ] {
-        assert_eq!(
-            error.to_string(),
-            format!("rollout recorder is no longer active; cannot {operation}")
-        );
-    }
+    assert_inactive_error(
+        "add items",
+        recorder.record_canonical_items(&[agent_message_item("rejected")]),
+    )
+    .await;
+    assert_inactive_error("persist", recorder.persist()).await;
+    assert_inactive_error("flush", recorder.flush()).await;
+    assert_inactive_error("shut down", recorder.shutdown()).await;
     recorder.record_canonical_items(&[]).await?;
     let (history, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
-    assert_eq!(history, accepted);
+    assert_eq!(json_value(history)?, json_value(accepted)?);
     fs::remove_file(&rollout_path)?;
     Ok(())
 }
 
-#[tokio::test]
-async fn failed_shutdown_reopens_admission_and_retries_the_whole_history()
--> std::io::Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_shutdown_reopens_admission_and_retries_the_whole_history() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
-    let recorder = RolloutRecorder::new(
-        &test_config(home.path()),
-        RolloutRecorderParams::new(
-            ThreadId::new(),
-            /*forked_from_id*/ None,
-            /*parent_thread_id*/ None,
-            SessionSource::Exec,
-            /*thread_source*/ None,
-            "test_originator".to_string(),
-            BaseInstructions::default(),
-            Vec::new(),
-        ),
-    )
-    .await?;
+    let recorder = deferred_recorder(home.path()).await?;
     let rollout_path = recorder.rollout_path().to_path_buf();
     let before = agent_message_item("before-failed-drain");
     let after = agent_message_item("after-failed-drain");
-    recorder.record_canonical_items(std::slice::from_ref(&before)).await?;
+    recorder
+        .record_canonical_items(std::slice::from_ref(&before))
+        .await?;
     let blocker = home.path().join("sessions");
     File::create(&blocker)?;
-    recorder.shutdown().await.expect_err("blocked drain should fail");
+    let data = recorder
+        .admission
+        .acquire_data()
+        .await
+        .expect("active data admission");
+    let first_recorder = recorder.clone();
+    let second_recorder = recorder.clone();
+    let mut first_shutdown = Box::pin(first_recorder.shutdown());
+    let mut second_shutdown = Box::pin(second_recorder.shutdown());
+    poll_fn(|cx| {
+        assert!(first_shutdown.as_mut().poll(cx).is_pending());
+        assert!(second_shutdown.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    data.commit(|| {});
+    let first_result = async {
+        let err = first_shutdown.await.expect_err("blocked drain should fail");
+        assert!(!recorder.admission.is_terminal());
+        err.to_string()
+    };
+    let second_result = async {
+        let err = second_shutdown.await.expect_err("blocked drain should fail");
+        assert!(!recorder.admission.is_terminal());
+        err.to_string()
+    };
+    let (first_error, second_error) = tokio::join!(first_result, second_result);
+    assert_eq!(first_error, second_error);
     assert!(!rollout_path.exists());
 
-    recorder.record_canonical_items(std::slice::from_ref(&after)).await?;
+    recorder
+        .record_canonical_items(std::slice::from_ref(&after))
+        .await?;
     fs::remove_file(blocker)?;
     recorder.shutdown().await?;
     let (history, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
     let session_meta = history.first().cloned().expect("session metadata");
     assert!(matches!(&session_meta, RolloutItem::SessionMeta(_)));
-    assert_eq!(history, vec![session_meta, before, after]);
+    assert_eq!(json_value(history)?, json_value([session_meta, before, after])?);
     fs::remove_file(&rollout_path)?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn empty_deferred_shutdown_does_not_materialize_the_rollout() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let recorder = RolloutRecorder::new(
-        &test_config(home.path()),
-        RolloutRecorderParams::new(
-            ThreadId::new(),
-            /*forked_from_id*/ None,
-            /*parent_thread_id*/ None,
-            SessionSource::Exec,
-            /*thread_source*/ None,
-            "test_originator".to_string(),
-            BaseInstructions::default(),
-            Vec::new(),
-        ),
-    )
-    .await?;
-    let rollout_path = recorder.rollout_path().to_path_buf();
-    recorder.shutdown().await?;
-    assert!(!rollout_path.exists());
+    let empty_recorder = deferred_recorder(home.path()).await?;
+    let empty_path = empty_recorder.rollout_path().to_path_buf();
+    empty_recorder.shutdown().await?;
+    assert!(!empty_path.exists());
     Ok(())
 }
 
