@@ -525,13 +525,22 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
             source,
         }
     })?;
+    let is_file_system_helper = request
+        .command
+        .get(1)
+        .is_some_and(|arg| arg == "--codex-run-as-fs-helper");
     let Some(program) = request.command.first_mut() else {
         return Err(SandboxTransformError::WindowsSandboxPreparation(
             "sandbox command was empty".to_string(),
         ));
     };
     let source = std::path::PathBuf::from(&program);
-    let helper = codex_windows_sandbox::resolve_exe_for_launch(source.as_path(), codex_home);
+    // Diagnostic: keep the filesystem helper at its configured path to isolate relocation.
+    let helper = if is_file_system_helper {
+        source
+    } else {
+        codex_windows_sandbox::resolve_exe_for_launch(source.as_path(), codex_home)
+    };
     *program = helper.to_string_lossy().into_owned();
 
     let inner_command = std::mem::take(&mut request.command);
