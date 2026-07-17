@@ -1314,14 +1314,17 @@ impl Session {
 
     pub(crate) async fn shutdown_rollout(&self) -> std::io::Result<()> {
         if let Some(live_thread) = self.live_thread() {
-            self.flush_pending_pre_materialization_rollout_items(live_thread)
-                .await?;
-            live_thread
+            let flush_result = self
+                .flush_pending_pre_materialization_rollout_items(live_thread)
+                .await;
+            let shutdown_result = live_thread
                 .shutdown()
                 .await
-                .map_err(std::io::Error::other)?;
+                .map_err(std::io::Error::other);
+            flush_result.and(shutdown_result)
+        } else {
+            Ok(())
         }
-        Ok(())
     }
 
     pub(crate) async fn ensure_rollout_materialized(&self) {
