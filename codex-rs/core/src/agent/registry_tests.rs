@@ -27,7 +27,12 @@ fn cold_status_text_stays_compact_when_json_escaped() {
     assert_eq!(message.len(), COLD_STATUS_MAX_BYTES);
     assert!(message.ends_with(COLD_STATUS_TRUNCATION_MARKER));
     assert!(message.contains('\0'));
-    assert!(serde_json::to_vec(&status).expect("serialize cold status").len() < 1024);
+    assert!(
+        serde_json::to_vec(&status)
+            .expect("serialize cold status")
+            .len()
+            < 1024
+    );
 }
 
 #[test]
