@@ -449,6 +449,7 @@ native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-browser-computer-use command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
     cargo test --locked -p codex-browser-computer-use browser_provider_response_preserves_native_image --lib -- --test-threads=1
     cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_native_browser_result_forwards_screenshot_as_input_image --exact
 
 # Focused native computer-use operator diagnostics slice.
 native-computer-use-doctor-targeted:

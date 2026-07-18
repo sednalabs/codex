@@ -12,6 +12,8 @@ use codex_features::CurrentTimeSource;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
+use codex_protocol::computer_use::ComputerUseOutputContentItem;
+use codex_protocol::computer_use::ComputerUseResponse;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -3177,6 +3179,175 @@ image(imageItem);
     assert_eq!(
         items[1].get("detail").and_then(Value::as_str),
         Some("original")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_native_browser_result_forwards_screenshot_as_input_image() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    const SCREENSHOT_DATA_URL: &str = concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/",
+        "iZk9HQAAAABJRU5ErkJggg=="
+    );
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
+    let base_test = builder.build_with_auto_env(&server).await?;
+    let new_thread = base_test
+        .thread_manager
+        .start_thread_with_tools(
+            base_test.config.clone(),
+            vec![DynamicToolSpec {
+                namespace: None,
+                name: "browser_observe".to_string(),
+                description: "Capture a native browser screenshot.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+                persist_on_resume: true,
+                capability: None,
+            }],
+        )
+        .await?;
+    let mut test = base_test;
+    test.codex = new_thread.thread;
+    test.session_configured = new_thread.session_configured;
+
+    let code = r#"
+const result = await tools.browser_observe({ scope: "viewport" });
+const screenshot = result.content.find((item) => item.type === "input_image");
+if (!screenshot) {
+  throw new Error("browser_observe did not return an input_image item");
+}
+text(JSON.stringify({
+  contentTypes: result.content.map((item) => item.type),
+  imageDetail: screenshot.detail,
+  success: result.success,
+}));
+image(screenshot);
+"#;
+
+    let first_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let second_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let respond_to_browser = async {
+        let request = wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::ComputerUseCallRequest(request) => Some(request.clone()),
+            _ => None,
+        })
+        .await;
+        let expected_arguments = serde_json::json!({ "scope": "viewport" });
+        assert_eq!(
+            (
+                request.adapter.as_str(),
+                request.tool.as_str(),
+                &request.arguments,
+            ),
+            ("browser", "browser_observe", &expected_arguments),
+        );
+        test.codex
+            .notify_computer_use_response(
+                &request.call_id,
+                ComputerUseResponse {
+                    content_items: vec![
+                        ComputerUseOutputContentItem::InputText {
+                            text: "Browser observation for https://example.test/".to_string(),
+                        },
+                        ComputerUseOutputContentItem::InputImage {
+                            image_url: SCREENSHOT_DATA_URL.to_string(),
+                            detail: Some("high".to_string()),
+                        },
+                    ],
+                    success: true,
+                    error: None,
+                },
+            )
+            .await;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::try_join!(
+        test.submit_turn("use exec to observe the browser and forward its screenshot"),
+        respond_to_browser,
+    )?;
+
+    let first_request = first_mock.single_request().body_json();
+    let exec_description = first_request
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find_map(|tool| {
+                if tool.get("name").and_then(Value::as_str) == Some("exec") {
+                    tool.get("description").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+        })
+        .expect("exec description should be present");
+    assert!(
+        exec_description.contains(
+            "Native computer-use tools return a typed `{ content, success }` object"
+        )
+    );
+    assert!(exec_description.contains("browser_observe(args:"));
+    assert!(exec_description.contains("image_url: string"));
+    assert!(exec_description.contains("success: boolean"));
+
+    let request = second_mock.single_request();
+    let items = custom_tool_output_items(&request, "call-1");
+    let (_, success) = custom_tool_output_body_and_success(&request, "call-1");
+    assert_ne!(success, Some(false));
+    assert_eq!(items.len(), 3);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&items, /*index*/ 0),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(text_item(&items, /*index*/ 1))?,
+        serde_json::json!({
+            "contentTypes": ["input_text", "input_image"],
+            "imageDetail": "high",
+            "success": true,
+        }),
+    );
+    assert!(!text_item(&items, /*index*/ 1).contains("data:image"));
+    assert_eq!(
+        items[2],
+        serde_json::json!({
+            "type": "input_image",
+            "image_url": SCREENSHOT_DATA_URL,
+            "detail": "high",
+        }),
     );
 
     Ok(())

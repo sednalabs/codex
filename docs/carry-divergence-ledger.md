@@ -836,6 +836,9 @@ docs-only refresh commit that records this snapshot.
   model as native image content items. Provider artifact paths are kept for
   diagnostics, audit, or replay; they are not the normal model-facing visual
   channel.
+- Nested code-mode calls retain native computer-use responses as a typed
+  `{ content, success }` object. Callers forward an `input_image` item with
+  `image(...)` and never serialize the complete image-bearing result to text.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.
@@ -865,6 +868,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tools/src/desktop_tool.rs`
   - `codex-rs/core-plugins/src/lib.rs`
   - `codex-rs/core/src/tools/handlers/computer_use.rs`
+  - `codex-rs/core/src/tools/handlers/computer_use_code_mode.rs`
+  - `codex-rs/code-mode-protocol/src/description.rs`
+  - `codex-rs/core/tests/suite/code_mode.rs`
   - `codex-rs/tools/src/tool_search.rs`
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
