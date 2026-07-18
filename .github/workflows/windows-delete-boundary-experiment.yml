@@ -11,26 +11,14 @@ permissions:
 
 jobs:
   proof:
-    name: ${{ matrix.mode }}
+    name: Full Windows sandbox unit suite
     runs-on: windows-2022
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        mode:
-          - write-restricted-without-everyone
-          - write-restricted-with-everyone
-          - full-restriction-without-everyone
-          - full-restriction-with-everyone
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-
-      - name: Configure token variant
-        shell: pwsh
-        run: python .github/scripts/configure_windows_token_experiment.py '${{ matrix.mode }}'
 
       - name: Prepare Bazel CI
         uses: ./.github/actions/prepare-bazel-ci
@@ -38,9 +26,7 @@ jobs:
           target: x86_64-pc-windows-gnullvm
           cache-scope: windows-delete-boundary-experiment
 
-      - name: Run normalized deletion proof
-        id: proof
-        continue-on-error: true
+      - name: Run Windows sandbox unit suite
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
@@ -56,15 +42,5 @@ jobs:
             --skip_incompatible_explicit_targets \
             --local_test_jobs=1 \
             --test_output=errors \
-            --test_arg=legacy_workspace_write_delete_is_limited_to_writable_roots \
             -- \
             //codex-rs/windows-sandbox-rs:windows-sandbox-rs-unit-tests
-
-      - name: Record result
-        if: always()
-        shell: bash
-        run: |
-          printf '### %s\n\nProof outcome: `%s`\n' \
-            '${{ matrix.mode }}' \
-            '${{ steps.proof.outcome }}' \
-            >> "${GITHUB_STEP_SUMMARY}"
