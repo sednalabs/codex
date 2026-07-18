@@ -1153,6 +1153,13 @@
             "null"
           ]
         },
+        "canAcceptDirectInput": {
+          "description": "Whether the app server accepts direct turn input for this loaded thread.\n`None` means the capability is unavailable, such as for an unloaded stored thread.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "cliVersion": {
           "description": "Version of the CLI that created the thread.",
           "type": "string"
@@ -2355,9 +2362,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "audio"
-              ],
+              "const": "audio",
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -2378,16 +2383,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localAudio"
-              ],
+              "const": "localAudio",
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"

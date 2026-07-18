@@ -328,12 +328,7 @@ impl StateRuntime {
                     "failed to open memories db at {}: {err}",
                     memories_path.display()
                 );
-                close_sqlite_pools(&[
-                    pool.as_ref(),
-                    logs_pool.as_ref(),
-                    goals_pool.as_ref(),
-                ])
-                .await;
+                close_sqlite_pools(&[pool.as_ref(), logs_pool.as_ref(), goals_pool.as_ref()]).await;
                 return Err(err);
             }
         };

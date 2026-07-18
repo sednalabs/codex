@@ -94,16 +94,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_audio"
-              ],
+              "const": "input_audio",
               "title": "InputAudioContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "audio_url",
-            "type"
+            "type",
+            "audio_url"
           ],
           "title": "InputAudioContentItem",
           "type": "object"
@@ -196,16 +194,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_audio"
-              ],
+              "const": "input_audio",
               "title": "InputAudioFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "audio_url",
-            "type"
+            "type",
+            "audio_url"
           ],
           "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"

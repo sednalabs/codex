@@ -86,7 +86,7 @@
       "description": "Read the committed installed connector runtime snapshot.",
       "properties": {
         "forceRefresh": {
-          "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool snapshot first.",
+          "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool\nsnapshot first.",
           "type": "boolean"
         },
         "threadId": {
@@ -674,16 +674,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_audio"
-              ],
+              "const": "input_audio",
               "title": "InputAudioContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "audio_url",
-            "type"
+            "type",
+            "audio_url"
           ],
           "title": "InputAudioContentItem",
           "type": "object"
@@ -1254,16 +1252,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_audio"
-              ],
+              "const": "input_audio",
               "title": "InputAudioFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "audio_url",
-            "type"
+            "type",
+            "audio_url"
           ],
           "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
@@ -4767,12 +4763,16 @@
             "null"
           ]
         },
-        "codexResponseHandoffPrefix": {
-          "description": "Optional prefix added to automatic V1 or V3 Codex commentary sent through the selected\nBidi handoff wire event when `codexResponsesAsItems` is not true. Final answers are sent\nwithout the prefix.",
-          "type": [
-            "string",
-            "null"
-          ]
+        "codexResponseHandoffMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodexResponseHandoffMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selects how automatic Codex responses are routed in Frameless Bidi sessions. Omitted values\ndefault to `thinking`. Realtime V1 and V2 ignore this setting."
         },
         "codexResponseItemPrefix": {
           "description": "Optional prefix added to automatic Codex response items when `codexResponsesAsItems` is true.",
@@ -5126,6 +5126,39 @@
       "required": [
         "threadId",
         "numTurns"
+      ],
+      "type": "object"
+    },
+    "ThreadSearchOccurrencesParams": {
+      "description": "Parameters for searching visible message occurrences within one paginated thread.",
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor returned by a previous call for the same thread and search term.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional occurrence page size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "description": "Case-insensitive literal substring to find in visible user messages and final assistant\nmessages.",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "searchTerm"
       ],
       "type": "object"
     },
@@ -6054,9 +6087,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "audio"
-              ],
+              "const": "audio",
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -6077,16 +6108,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localAudio"
-              ],
+              "const": "localAudio",
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"
@@ -7013,15 +7042,17 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
-          "const": "app/installed"
+          "const": "app/installed",
+          "title": "App/installedRequestMethod",
+          "type": "string"
         },
         "params": {
           "$ref": "#/$defs/AppsInstalledParams"
         }
       },
       "required": [
-        "id",
         "method",
+        "id",
         "params"
       ],
       "title": "App/installedRequest",

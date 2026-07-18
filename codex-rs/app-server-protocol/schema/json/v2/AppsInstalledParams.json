@@ -1,9 +1,9 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Read the committed installed connector runtime snapshot.",
   "properties": {
     "forceRefresh": {
-      "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool snapshot first.",
+      "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool\nsnapshot first.",
       "type": "boolean"
     },
     "threadId": {

@@ -340,7 +340,7 @@
         "SessionEnd": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/ConfiguredHookMatcherGroup"
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
           },
           "type": "array"
         },
