@@ -12,6 +12,8 @@ use codex_features::CurrentTimeSource;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
+use codex_protocol::computer_use::ComputerUseOutputContentItem;
+use codex_protocol::computer_use::ComputerUseResponse;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
@@ -3177,6 +3179,252 @@ image(imageItem);
     assert_eq!(
         items[1].get("detail").and_then(Value::as_str),
         Some("original")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_native_browser_result_forwards_screenshot_as_input_image() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    run_code_mode_native_browser_image_case(/*browser_success*/ true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_failed_native_browser_result_forwards_input_image() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    run_code_mode_native_browser_image_case(/*browser_success*/ false).await
+}
+
+async fn run_code_mode_native_browser_image_case(browser_success: bool) -> Result<()> {
+    let response_text = if browser_success {
+        "Browser observation for https://example.test/"
+    } else {
+        "Browser observation failed after preserving the current viewport."
+    };
+
+    const SCREENSHOT_DATA_URL: &str = concat!(
+        "data:image/png;base64,",
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/",
+        "iZk9HQAAAABJRU5ErkJggg=="
+    );
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+        let _ = config.features.enable(Feature::CodeModeOnly);
+    });
+    let base_test = builder.build_with_auto_env(&server).await?;
+    let new_thread = base_test
+        .thread_manager
+        .start_thread_with_tools(
+            base_test.config.clone(),
+            vec![DynamicToolSpec {
+                namespace: None,
+                name: "browser_observe".to_string(),
+                description: "Capture a native browser screenshot.".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false,
+                }),
+                defer_loading: false,
+                persist_on_resume: true,
+                capability: None,
+            }],
+        )
+        .await?;
+    let mut test = base_test;
+    test.codex = new_thread.thread;
+    test.session_configured = new_thread.session_configured;
+    let selected_environment = test.executor_environment().selection().clone();
+
+    let code = r#"
+const result = await tools.browser_observe({ scope: "viewport" });
+const screenshot = result.content.find((item) => item.type === "input_image");
+if (!screenshot) {
+  throw new Error("browser_observe did not return an input_image item");
+}
+text(JSON.stringify({
+  contentTypes: result.content.map((item) => item.type),
+  imageDetail: screenshot.detail,
+  inputText: result.content.find((item) => item.type === "input_text")?.text,
+  success: result.success,
+}));
+image(screenshot);
+"#;
+
+    let first_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let second_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    // Keep a single consumer on the thread event stream. The submit_turn helpers
+    // also drain events, so racing one against ComputerUseCallRequest can lose
+    // the request and turn this regression into a timeout-based flaky test.
+    let cwd = test.config.cwd.clone();
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "use exec to observe the browser and forward its screenshot".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
+                    cwd,
+                    vec![selected_environment],
+                )),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: test.session_configured.model.clone(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    let request = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ComputerUseCallRequest(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+    let expected_arguments = serde_json::json!({ "scope": "viewport" });
+    assert_eq!(
+        (
+            request.adapter.as_str(),
+            request.tool.as_str(),
+            &request.arguments,
+        ),
+        ("browser", "browser_observe", &expected_arguments),
+    );
+    test.codex
+        .notify_computer_use_response(
+            &request.call_id,
+            ComputerUseResponse {
+                content_items: vec![
+                    ComputerUseOutputContentItem::InputText {
+                        text: response_text.to_string(),
+                    },
+                    ComputerUseOutputContentItem::InputImage {
+                        image_url: SCREENSHOT_DATA_URL.to_string(),
+                        detail: Some("high".to_string()),
+                    },
+                ],
+                success: browser_success,
+                error: (!browser_success)
+                    .then(|| "browser observation failed after capture".to_string()),
+            },
+        )
+        .await;
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) => event.turn_id == turn_id,
+        _ => false,
+    })
+    .await;
+
+    let first_request = first_mock.single_request().body_json();
+    let exec_description = first_request
+        .get("tools")
+        .and_then(Value::as_array)
+        .and_then(|tools| {
+            tools.iter().find_map(|tool| {
+                if tool.get("name").and_then(Value::as_str) == Some("exec") {
+                    tool.get("description").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+        })
+        .expect("exec description should be present");
+    assert!(
+        exec_description
+            .contains("Native computer-use tools return a typed `{ content, success }` object")
+    );
+    let browser_section = exec_description
+        .split_once("### `browser_observe`\n")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split("\n\n### `").next())
+        .expect("exec description should contain a browser_observe section");
+    let browser_declaration = browser_section
+        .split_once("exec tool declaration:\n```ts\n")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("\n```").map(|(declaration, _)| declaration))
+        .expect("browser_observe section should contain a TypeScript declaration");
+    assert!(browser_declaration.starts_with("declare const tools: { browser_observe(args: {"));
+    let (_, browser_output) = browser_declaration
+        .rsplit_once("): Promise<")
+        .expect("browser_observe declaration should contain an output type");
+    assert_eq!(
+        browser_output,
+        concat!(
+            "{ content: Array<",
+            "{ text: string; type: \"input_text\"; } | ",
+            "{ detail?: \"auto\" | \"low\" | \"high\" | \"original\"; ",
+            "image_url: string; type: \"input_image\"; }",
+            ">; success: boolean; }>; };",
+        ),
+    );
+
+    let request = second_mock.single_request();
+    let items = custom_tool_output_items(&request, "call-1");
+    let (_, success) = custom_tool_output_body_and_success(&request, "call-1");
+    assert_ne!(success, Some(false));
+    assert_eq!(items.len(), 3);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&items, /*index*/ 0),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(text_item(&items, /*index*/ 1))?,
+        serde_json::json!({
+            "contentTypes": ["input_text", "input_image"],
+            "imageDetail": "high",
+            "inputText": response_text,
+            "success": browser_success,
+        }),
+    );
+    assert!(!text_item(&items, /*index*/ 1).contains("data:image"));
+    assert_eq!(
+        items[2],
+        serde_json::json!({
+            "type": "input_image",
+            "image_url": SCREENSHOT_DATA_URL,
+            "detail": "high",
+        }),
     );
 
     Ok(())
