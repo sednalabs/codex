@@ -385,12 +385,14 @@ impl InstalledAppsFixture {
             .expect("connector tool should have metadata")
             .0
             .insert("_codex_apps".to_string(), json!({ "synthetic_link": true }));
+        let mut duplicate_alpha = connector_tool("alpha", "Duplicate Alpha Tool Name")?;
+        duplicate_alpha.name = "connector_alpha_duplicate".into();
         let state = Arc::new(InstalledAppsServerState {
             tools: Mutex::new(vec![
                 connector_tool("alpha", "Alpha Tool Name")?,
                 connector_tool("blocked", "Policy Blocked Tool Name")?,
                 connector_tool("disabled", "Locally Disabled Tool Name")?,
-                connector_tool("alpha", "Duplicate Alpha Tool Name")?,
+                duplicate_alpha,
                 connector_tool("", "Empty Connector ID")?,
                 Tool::new(
                     "missing_connector_id",

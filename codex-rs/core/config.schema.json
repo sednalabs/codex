@@ -3520,17 +3520,13 @@
       "description": "Working directory to use when resuming or forking a session.",
       "oneOf": [
         {
+          "const": "current",
           "description": "Use the directory where Codex was launched.",
-          "enum": [
-            "current"
-          ],
           "type": "string"
         },
         {
+          "const": "session",
           "description": "Use the latest working directory recorded in the selected session.",
-          "enum": [
-            "session"
-          ],
           "type": "string"
         }
       ]
@@ -4152,13 +4148,16 @@
           "type": "boolean"
         },
         "resume_cwd": {
-          "allOf": [
+          "default": null,
+          "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ.",
+          "oneOf": [
             {
               "$ref": "#/definitions/ResumeCwdMode"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "default": null,
-          "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ."
+          ]
         },
         "session_picker_view": {
           "default": null,
