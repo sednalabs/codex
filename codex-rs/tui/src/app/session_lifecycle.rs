@@ -5,6 +5,8 @@
 //! cache used for multi-agent navigation.
 
 use super::*;
+use crate::app_server_session::source_agent_path;
+use crate::app_server_session::thread_blocks_direct_input;
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
@@ -16,20 +18,33 @@ impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         self.backfill_loaded_subagent_threads(app_server).await;
         // V2 subagents are identified by canonical paths observed from activity events or loaded
-        // thread metadata. Prefer local buffered turn state for liveness, and fall back to
-        // thread/read only when no local event channel exists.
+        // thread metadata. A buffered active turn is positive liveness evidence; a completed
+        // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
         let path_backed_thread_ids: Vec<_> = self
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id)
             .into_iter()
             .map(|(thread_id, _)| thread_id)
             .collect();
-        for thread_id in path_backed_thread_ids {
+        for thread_id in path_backed_thread_ids.iter().copied() {
             if let Some(channel) = self.thread_event_channels.get(&thread_id)
                 && channel.attachment() == ThreadEventAttachment::Live
             {
-                let is_running = channel.store.lock().await.active_turn_id().is_some();
-                self.agent_navigation.set_running(thread_id, is_running);
+                let (has_active_turn, has_terminal_snapshot) = {
+                    let store = channel.store.lock().await;
+                    (
+                        store.active_turn_id().is_some(),
+                        store
+                            .turns
+                            .last()
+                            .is_some_and(|turn| !matches!(turn.status, TurnStatus::InProgress)),
+                    )
+                };
+                if has_active_turn {
+                    self.agent_navigation.mark_running(thread_id);
+                } else if has_terminal_snapshot {
+                    self.agent_navigation.mark_stopped(thread_id);
+                }
             } else {
                 self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                     .await;
@@ -65,7 +80,6 @@ impl App {
                 .add_to_history(super::agent_status_feed::AgentStatusHistoryCell::new(
                     entries,
                 ));
-            return;
         }
 
         let mut thread_ids = self.agent_navigation.tracked_thread_ids();
@@ -75,7 +89,9 @@ impl App {
             }
         }
         for thread_id in thread_ids {
-            if self.side_threads.contains_key(&thread_id) {
+            if path_backed_thread_ids.contains(&thread_id)
+                || self.side_threads.contains_key(&thread_id)
+            {
                 continue;
             }
             if !self
@@ -112,11 +128,19 @@ impl App {
                 }
                 let id = thread_id;
                 let is_primary = self.primary_thread_id == Some(thread_id);
-                let name = format_agent_picker_item_name(
-                    entry.agent_nickname.as_deref(),
-                    entry.agent_role.as_deref(),
-                    is_primary,
-                );
+                let name = entry
+                    .agent_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|agent_path| !is_primary && !agent_path.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| {
+                        format_agent_picker_item_name(
+                            entry.agent_nickname.as_deref(),
+                            entry.agent_role.as_deref(),
+                            is_primary,
+                        )
+                    });
                 let uuid = thread_id.to_string();
                 SelectionItem {
                     name: name.clone(),
@@ -190,6 +214,12 @@ impl App {
         self.sync_active_agent_label();
     }
 
+    /// Persists the app-server's authoritative ownership flag and updates the active composer.
+    pub(super) fn mark_primary_thread_parent_owned(&mut self, thread_id: ThreadId) {
+        self.agent_navigation.mark_parent_owned(thread_id);
+        self.chat_widget.set_parent_owned_thread();
+    }
+
     /// Marks a cached picker thread closed and recomputes the contextual footer label.
     ///
     /// Closing a thread is not the same as removing it: users can still inspect finished agent
@@ -211,6 +241,8 @@ impl App {
             .await
         {
             Ok(thread) => {
+                let is_parent_owned = thread_blocks_direct_input(&thread);
+                let agent_path = source_agent_path(&thread.source);
                 let is_running = matches!(
                     thread.status,
                     codex_app_server_protocol::ThreadStatus::Active { .. }
@@ -233,7 +265,16 @@ impl App {
                     }),
                     is_closed,
                 );
-                self.agent_navigation.set_running(thread_id, is_running);
+                if is_parent_owned {
+                    self.agent_navigation.mark_parent_owned(thread_id);
+                }
+                self.agent_navigation.set_agent_path(thread_id, agent_path);
+                if is_running {
+                    self.agent_navigation.mark_running(thread_id);
+                } else {
+                    self.agent_navigation
+                        .set_running(thread_id, /*is_running*/ false);
+                }
                 true
             }
             Err(err) => {
@@ -284,7 +325,12 @@ impl App {
             .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
             .await
         {
-            Ok(started) => (started.session, started.turns, true),
+            Ok(started) => {
+                if started.blocks_direct_input {
+                    self.agent_navigation.mark_parent_owned(thread_id);
+                }
+                (started.session, started.turns, true)
+            }
             Err(resume_err) => {
                 tracing::warn!(
                     thread_id = %thread_id,
@@ -375,7 +421,6 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
-
         let mut is_replay_only = self
             .agent_navigation
             .get(&thread_id)
@@ -404,7 +449,6 @@ impl App {
                 .add_error_message(format!("Agent thread {thread_id} is no longer available."));
             return Ok(());
         }
-
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
         self.active_thread_id = None;
@@ -425,6 +469,7 @@ impl App {
             &mut snapshot,
         )
         .await;
+        let blocks_direct_input = self.agent_navigation.is_parent_owned(thread_id);
 
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
@@ -435,6 +480,9 @@ impl App {
             /*initial_user_message*/ None,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        if blocks_direct_input {
+            self.chat_widget.set_parent_owned_thread();
+        }
 
         self.reset_for_thread_switch(tui)?;
         self.replay_thread_snapshot(snapshot, !is_replay_only);
@@ -525,6 +573,9 @@ impl App {
             .set_queue_submissions_until_session_configured(/*queue*/ false);
         match result {
             Ok(started) => {
+                if started.blocks_direct_input {
+                    self.mark_primary_thread_parent_owned(started.session.thread_id);
+                }
                 self.enqueue_primary_thread_session(started.session, started.turns)
                     .await?;
                 self.chat_widget.maybe_send_next_queued_input();
@@ -631,6 +682,9 @@ impl App {
             initial_user_message,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        if started.blocks_direct_input {
+            self.mark_primary_thread_parent_owned(started.session.thread_id);
+        }
         self.enqueue_primary_thread_session_with_presentation(
             started.session,
             started.turns,
@@ -700,6 +754,9 @@ impl App {
 
         for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
             let agent_path = thread.agent_path;
+            if thread.blocks_direct_input {
+                self.agent_navigation.mark_parent_owned(thread.thread_id);
+            }
             self.upsert_agent_picker_thread(
                 thread.thread_id,
                 thread.agent_nickname,

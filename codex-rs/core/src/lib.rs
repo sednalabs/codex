@@ -7,6 +7,7 @@
 
 mod apply_patch;
 mod apps;
+mod audio_preparation;
 pub use codex_login as auth;
 mod capacity_retry;
 mod client;
