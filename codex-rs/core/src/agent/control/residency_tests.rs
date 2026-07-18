@@ -12,6 +12,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
@@ -74,14 +75,13 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         &first.thread,
         AgentStatus::Completed(Some("stale generation".to_string())),
     );
-    assert_eq!(registry.cold_status(first.thread_id, None), None);
+    assert_eq!(
+        registry.cold_status(first.thread_id, /*live_thread*/ None),
+        None
+    );
 
     let error_message = "\u{00e9}".repeat(3000);
-    mark_thread_status(
-        first.thread.as_ref(),
-        AgentStatus::Errored(error_message),
-    )
-    .await;
+    mark_thread_status(first.thread.as_ref(), AgentStatus::Errored(error_message)).await;
 
     let second_slot = control
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
@@ -92,8 +92,7 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
-    let expected_status =
-        AgentStatus::Errored(format!("{}...[truncated]", "\u{00e9}".repeat(57)));
+    let expected_status = AgentStatus::Errored(format!("{}...[truncated]", "\u{00e9}".repeat(57)));
     assert_eq!(control.get_status(first.thread_id).await, expected_status);
     let status_rx = control
         .subscribe_status(first.thread_id)
@@ -302,6 +301,10 @@ async fn spawn_v2_subagent(
 
 async fn mark_thread_status(thread: &CodexThread, status: AgentStatus) {
     let turn = thread.session.new_default_turn().await;
+    thread
+        .session
+        .persist_rollout_items(&[RolloutItem::TurnContext(turn.to_turn_context_item())])
+        .await;
     let event = match status {
         AgentStatus::Completed(last_agent_message) => EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: turn.sub_id.clone(),
@@ -328,10 +331,7 @@ async fn mark_thread_status(thread: &CodexThread, status: AgentStatus) {
         }),
         status => panic!("unsupported fixture status: {status:?}"),
     };
-    thread
-        .session
-        .send_event(turn.as_ref(), event)
-        .await;
+    thread.session.send_event(turn.as_ref(), event).await;
     clear_active_turn(thread).await;
 }
 
