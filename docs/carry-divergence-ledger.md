@@ -184,16 +184,25 @@ docs-only refresh commit that records this snapshot.
 - Explicit read-only carveouts and pre-existing protected metadata remain the
   enforceable boundary. Keep those assertions holistic rather than restoring
   removed setup-side-effect tests or persistent sentinel directories.
-- The compatible restricted token keeps the Everyone SID on its default DACL
-  for IPC compatibility, but excludes Everyone from the restricting SID set.
-  Adding Everyone to both sets makes the write restriction ineffective.
+- The compatible restricted token keeps the Everyone SID on both its default
+  DACL and restricting SID set for loader and IPC compatibility, but no longer
+  uses `WRITE_RESTRICTED`. Full restricted-SID checks prevent `DELETE` and
+  `FILE_DELETE_CHILD` from bypassing the capability boundary while existing
+  capability grants and deny ACEs preserve writable-root and protected-child
+  behavior.
+- Hosted comparison run `29628256459` proved the distinction: retaining
+  `WRITE_RESTRICTED` with Everyone started successfully but deleted both hostile
+  protected targets, full restriction without Everyone failed during process
+  startup, and only full restriction with Everyone satisfied the normalized
+  six-field deletion contract. Run `29628486469` then passed the complete
+  Windows sandbox unit target with that production shape.
 - Hosted Windows guardrails:
   `slash_tmp_permission_path_is_unix_only`,
   `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
   `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
   `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
   `legacy_workspace_write_delete_is_limited_to_writable_roots`, plus
-  `restricted_sids_exclude_everyone` and
+  `restricted_sids_keep_everyone_for_loader_compatibility` and
   `default_dacl_keeps_everyone_for_ipc_compatibility`.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`
