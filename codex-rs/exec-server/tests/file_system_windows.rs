@@ -70,6 +70,9 @@ async fn file_system_remote_fs_helper_respects_windows_sandbox_write_policy() ->
 
     let mut sandbox = read_only_sandbox_for_cwd(readonly_dir.clone())?;
     sandbox.windows_sandbox_level = WindowsSandboxLevel::RestrictedToken;
+    // The gnullvm test binary is re-entered as the helper and needs a desktop
+    // whose DACL explicitly admits the restricted logon SID during DLL startup.
+    sandbox.windows_sandbox_private_desktop = true;
 
     let readable_file = readonly_dir.join("readable.txt");
     std::fs::write(&readable_file, b"readable")?;
