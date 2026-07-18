@@ -240,9 +240,10 @@ docs-only refresh commit that records this snapshot.
   must reach the canonical Windows session spawner unchanged.
 - PowerShell `-NoProfile` startup, spawn-failure metrics, tool telemetry, and
   turn metadata follow the effective backend, not only the configured level.
-- The direct-loopback denial fixture uses a cancellation-token connect so a
-  WFP-blocked socket terminates within the unified-exec yield rather than
-  depending on a potentially blocking socket close.
+- The direct-loopback denial fixture uses native `curl.exe` with explicit
+  direct routing and hard connect/overall deadlines so a WFP-blocked socket
+  terminates within the unified-exec yield. Distinct connected, expected-denial,
+  and probe-error exits prevent a missing or broken probe from passing.
 - Hosted guardrails:
   `windows_proxy_enforcement_uses_elevated_backend`,
   `windows_spawn_failure_metric_uses_effective_backend`,

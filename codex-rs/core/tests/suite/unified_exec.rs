@@ -978,13 +978,13 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
-        "$client = [Net.Sockets.TcpClient]::new(); $cts = [Threading.CancellationTokenSource]::new(500); try {{ $client.ConnectAsync([Net.IPAddress]::Loopback, {port}, $cts.Token).AsTask().GetAwaiter().GetResult(); $connected = $client.Connected }} catch {{ $connected = $false }}; if ($connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0"
+        "$curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; if (-not (Test-Path -LiteralPath $curl)) {{ Write-Output 'DIRECT-PROBE-ERROR:no-curl'; exit 9 }}; & $curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent --output NUL 'http://127.0.0.1:{port}/'; $code = $LASTEXITCODE; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
     );
     let args = json!({
         "cmd": command,
         "shell": "powershell",
         "login": false,
-        "yield_time_ms": 1_000,
+        "yield_time_ms": 5_000,
     });
     let response_mock =
         mount_unified_exec_network_denial_responses(&server, call_id, &args).await?;

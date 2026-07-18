@@ -1071,9 +1071,10 @@ async fn http_response_body_streams_share_queued_byte_budget() -> Result<()> {
     })
     .await?;
     let client = server.connect_client().await?;
+    let byte_budget_deadline = Instant::now() + BYTE_BUDGET_TEST_TIMEOUT;
 
-    let (_response, mut first_stream) = timeout(
-        TEST_TIMEOUT,
+    let (_response, mut first_stream) = timeout_at(
+        byte_budget_deadline,
         client.http_request_stream(HttpRequestParams {
             method: "GET".to_string(),
             url: "https://example.test/mcp/shared-budget-one".to_string(),
@@ -1087,8 +1088,8 @@ async fn http_response_body_streams_share_queued_byte_budget() -> Result<()> {
     )
     .await
     .context("first streamed http/request should return headers")??;
-    let (_response, mut second_stream) = timeout(
-        TEST_TIMEOUT,
+    let (_response, mut second_stream) = timeout_at(
+        byte_budget_deadline,
         client.http_request_stream(HttpRequestParams {
             method: "GET".to_string(),
             url: "https://example.test/mcp/shared-budget-two".to_string(),
@@ -1105,8 +1106,8 @@ async fn http_response_body_streams_share_queued_byte_budget() -> Result<()> {
 
     // This terminal notification is ordered after both streams contend for the
     // budget, so neither stream is drained before the overflow is observed.
-    let (_response, mut barrier_stream) = timeout(
-        TEST_TIMEOUT,
+    let (_response, mut barrier_stream) = timeout_at(
+        byte_budget_deadline,
         client.http_request_stream(HttpRequestParams {
             method: "GET".to_string(),
             url: "https://example.test/mcp/shared-budget-barrier".to_string(),
@@ -1121,7 +1122,7 @@ async fn http_response_body_streams_share_queued_byte_budget() -> Result<()> {
     .await
     .context("barrier http/request should return headers")??;
     assert_eq!(
-        timeout(TEST_TIMEOUT, barrier_stream.recv())
+        timeout_at(byte_budget_deadline, barrier_stream.recv())
             .await
             .context("barrier body stream should finish")??,
         None
@@ -1129,7 +1130,7 @@ async fn http_response_body_streams_share_queued_byte_budget() -> Result<()> {
 
     let mut failed_stream_bytes = 0;
     let error = loop {
-        match timeout(TEST_TIMEOUT, second_stream.recv())
+        match timeout_at(byte_budget_deadline, second_stream.recv())
             .await
             .context("second body stream should finish")?
         {
@@ -1147,7 +1148,7 @@ async fn http_response_body_streams_share_queued_byte_budget() -> Result<()> {
     );
 
     let mut surviving_stream_bytes = 0;
-    while let Some(chunk) = timeout(TEST_TIMEOUT, first_stream.recv())
+    while let Some(chunk) = timeout_at(byte_budget_deadline, first_stream.recv())
         .await
         .context("first body stream should finish")??
     {
