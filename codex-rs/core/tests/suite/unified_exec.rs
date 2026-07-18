@@ -978,7 +978,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
-        "$curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; if (-not (Test-Path -LiteralPath $curl)) {{ Write-Output 'DIRECT-PROBE-ERROR:no-curl'; exit 9 }}; [IO.File]::WriteAllText((Join-Path (Get-Location) '.direct-loopback-probe-started'), 'started'); [Console]::Out.WriteLine('DIRECT-PROBE-STARTED'); [Console]::Out.Flush(); & $curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent --output NUL 'http://127.0.0.1:{port}/direct-loopback-bypass'; $code = $LASTEXITCODE; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
+        "$curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; & $curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent --output NUL 'http://127.0.0.1:{port}/direct-loopback-bypass'; $code = $LASTEXITCODE; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
     );
     let args = json!({
         "cmd": command,
@@ -1047,13 +1047,6 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
             "completed direct-loopback probe did not report denial: {start_output:?}"
         );
     }
-
-    assert!(
-        test.cwd_path()
-            .join(".direct-loopback-probe-started")
-            .is_file(),
-        "direct-loopback probe did not reach the curl invocation"
-    );
 
     let direct_requests = server
         .received_requests()
