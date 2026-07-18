@@ -978,7 +978,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
-        "$ErrorActionPreference = 'Stop'; $curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; if (-not (Test-Path -LiteralPath $curl)) {{ Write-Output 'DIRECT-PROBE-ERROR:no-curl'; exit 9 }}; $info = [Diagnostics.ProcessStartInfo]::new($curl); foreach ($arg in @('--noproxy','*','--connect-timeout','1','--max-time','2','--silent','--output','NUL','http://127.0.0.1:{port}/')) {{ [void]$info.ArgumentList.Add($arg) }}; $process = [Diagnostics.Process]::Start($info); if ($null -eq $process) {{ Write-Output 'DIRECT-PROBE-ERROR:no-process'; exit 9 }}; if (-not $process.WaitForExit(3000)) {{ Write-Output 'DIRECT-PROBE-STAGE:timeout'; $process.Kill(); Write-Output 'DIRECT-PROBE-STAGE:terminated'; if (-not $process.WaitForExit(3000)) {{ Write-Output 'DIRECT-PROBE-ERROR:kill-timeout'; exit 9 }}; Write-Output 'DIRECT-BLOCKED'; exit 0 }}; $code = $process.ExitCode; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
+        "$curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; if (-not (Test-Path -LiteralPath $curl)) {{ Write-Output 'DIRECT-PROBE-ERROR:no-curl'; exit 9 }}; Write-Output 'DIRECT-PROBE-STARTED'; & $curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent --output NUL 'http://127.0.0.1:{port}/'; $code = $LASTEXITCODE; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
     );
     let args = json!({
         "cmd": command,
@@ -991,30 +991,71 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
 
     submit_unified_exec_turn(&test, "exercise direct loopback bypass", permission_profile).await?;
 
-    let (end_event, turn_completed) = wait_for_unified_exec_end_with_timeout(
-        &test,
-        call_id,
-        &response_mock,
-        Duration::from_secs(/*secs*/ 90),
-    )
-    .await;
-    assert_eq!(
-        end_event.status,
-        ExecCommandStatus::Completed,
-        "elevated proxy firewall command failed: {end_event:?}"
-    );
-    assert_eq!(
-        end_event.exit_code, 0,
-        "elevated proxy firewall command returned a nonzero exit: {end_event:?}"
+    let start_output = wait_for_raw_unified_exec_output(&test, call_id).await?;
+    assert!(
+        start_output.output.contains("DIRECT-PROBE-STARTED"),
+        "direct-loopback probe did not start: {start_output:?}"
     );
     assert!(
-        end_event.aggregated_output.contains("DIRECT-BLOCKED"),
-        "elevated proxy firewall should block direct loopback access: {end_event:?}"
+        !start_output.output.contains("DIRECT-CONNECTED"),
+        "sandboxed process bypassed the managed proxy: {start_output:?}"
     );
     assert!(
-        !end_event.aggregated_output.contains("DIRECT-CONNECTED"),
-        "sandboxed process bypassed the managed proxy: {end_event:?}"
+        !start_output.output.contains("DIRECT-PROBE-ERROR"),
+        "direct-loopback probe failed unexpectedly: {start_output:?}"
     );
+
+    let mut turn_completed = false;
+    if let Some(process_id) = start_output.process_id.as_deref() {
+        let process_id = process_id
+            .parse::<i32>()
+            .context("parse direct-loopback background process id")?;
+        let terminated = tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 15),
+            test.codex.terminate_background_terminal(process_id),
+        )
+        .await
+        .context("timed out terminating direct-loopback background process")?;
+        assert!(
+            terminated,
+            "direct-loopback background process was not registered"
+        );
+
+        let (end_event, completed) = wait_for_unified_exec_end_with_timeout(
+            &test,
+            call_id,
+            &response_mock,
+            Duration::from_secs(/*secs*/ 30),
+        )
+        .await;
+        turn_completed = completed;
+        assert!(
+            end_event.process_id.is_some(),
+            "managed termination should retain the background process id: {end_event:?}"
+        );
+        assert!(
+            end_event.aggregated_output.contains("DIRECT-PROBE-STARTED"),
+            "terminated probe should retain its start marker: {end_event:?}"
+        );
+        assert!(
+            !end_event.aggregated_output.contains("DIRECT-CONNECTED"),
+            "sandboxed background process bypassed the managed proxy: {end_event:?}"
+        );
+        assert!(
+            !end_event.aggregated_output.contains("DIRECT-PROBE-ERROR"),
+            "terminated probe failed unexpectedly: {end_event:?}"
+        );
+    } else {
+        assert_eq!(
+            start_output.exit_code,
+            Some(0),
+            "completed direct-loopback denial returned a nonzero exit: {start_output:?}"
+        );
+        assert!(
+            start_output.output.contains("DIRECT-BLOCKED"),
+            "completed direct-loopback probe did not report denial: {start_output:?}"
+        );
+    }
 
     if !turn_completed {
         wait_for_event(&test.codex, |event| {

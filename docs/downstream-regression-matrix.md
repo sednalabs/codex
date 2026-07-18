@@ -352,9 +352,9 @@ that thread-history migration `0002` remains isolated from the state ledger.
 Windows hosted harness note:
 
 - The deletion characterization uses PowerShell 7, and the direct-loopback
-  denial probe uses a supervised native `curl.exe` child with explicit direct
-  routing and bounded child termination so both finish under the restricted
-  hosted lifecycle.
+  denial probe uses native `curl.exe` with explicit direct routing, then cleans
+  up a WFP-stalled command through Codex's registered background-terminal path
+  so both finish under the restricted hosted lifecycle.
 - Exact `0xc0000142` while re-entering the Bazel gnullvm test executable proves
   that the filesystem helper reached the sandbox wrapper, but it is not a
   substitute for the read and denied-write assertions on MSVC and other
