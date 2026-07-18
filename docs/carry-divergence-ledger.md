@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-18`
-- downstream integration code tree: `a3d035e7e7be5bb76ae2a68358d4ee8874a2f211`
+- downstream integration code tree: `185b077e882f9cc2ea3973eba5608d2c8c3aed63`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`): `82b294c73c902a4c51f789ba68bb599f0065616f`
 - `upstream/main`: `82b294c73c902a4c51f789ba68bb599f0065616f`
-- downstream branch vs `upstream/main`: `1809` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1811` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1571` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1573` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -809,6 +809,10 @@ docs-only refresh commit that records this snapshot.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.
+- Occurrence search continues to index only user messages and final agent
+  messages. Its exhaustive `ThreadItem` classification explicitly excludes
+  `ComputerUseCall` alongside other tool-call items, preserving the upstream
+  search contract without dropping downstream enum coverage at compile time.
 - Runtime providers own Android sessions, browser sessions, screenshots,
   viewport capture, UI digests, input execution, and provider-side build
   installation. Solar Gravity Lab is a proving and consumer app, not the
@@ -837,6 +841,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
   - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/thread-store/src/local/thread_history/search.rs`
   - `codex-rs/tui/src/android_computer_use_provider.rs`
   - `codex-rs/browser-computer-use/src/lib.rs`
   - `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`
