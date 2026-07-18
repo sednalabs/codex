@@ -368,8 +368,8 @@ for a removed crate path.
   `tool_catalog_cache` ownership: raw complete snapshots publish before local
   filtering, and the removed `codex_apps_cache.rs` path must stay absent.
 - Installed-app fixtures may expose multiple uniquely named MCP tools for one
-  connector identity so app-runtime deduplication remains covered; they must
-  not use duplicate MCP wire tool names, which the complete-catalogue boundary
+  connector identity so app-runtime deduplication remains covered; they must not
+  use duplicate MCP wire tool names, which the complete-catalogue boundary
   intentionally rejects before publishing a snapshot.
 - Upstream cache-safety checks
   `tool_catalog_cache_bypasses_remote_sourced_environment_variables`,

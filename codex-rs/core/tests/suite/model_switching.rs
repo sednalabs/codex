@@ -795,10 +795,14 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
         tx: tokio::sync::watch::Sender<u64>,
     }
 
-    #[async_trait::async_trait]
     impl codex_extension_api::ThreadLifecycleContributor<Config> for ThreadIdleCounter {
-        async fn on_thread_idle(&self, _input: codex_extension_api::ThreadIdleInput<'_>) {
-            self.tx.send_modify(|count| *count += 1);
+        fn on_thread_idle<'a>(
+            &'a self,
+            _input: codex_extension_api::ThreadIdleInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.tx.send_modify(|count| *count += 1);
+            })
         }
     }
 
