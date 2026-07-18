@@ -486,7 +486,7 @@ build-policy-sanity:
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:
     cargo test --locked -p codex-tools code_mode_ --lib -- --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict suite::code_mode::code_mode_native_browser_result_forwards_screenshot_as_input_image suite::code_mode::code_mode_failed_native_browser_result_forwards_input_image --exact
 
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
