@@ -3346,9 +3346,7 @@ image(screenshot);
         .map(|(_, tail)| tail)
         .and_then(|tail| tail.split_once("\n```").map(|(declaration, _)| declaration))
         .expect("browser_observe section should contain a TypeScript declaration");
-    assert!(
-        browser_declaration.starts_with("declare const tools: { browser_observe(args: {")
-    );
+    assert!(browser_declaration.starts_with("declare const tools: { browser_observe(args: {"));
     let (_, browser_output) = browser_declaration
         .rsplit_once("): Promise<")
         .expect("browser_observe declaration should contain an output type");
