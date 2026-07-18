@@ -3273,50 +3273,85 @@ image(screenshot);
     )
     .await;
 
-    let respond_to_browser = async {
-        let request = wait_for_event_match(&test.codex, |event| match event {
-            EventMsg::ComputerUseCallRequest(request) => Some(request.clone()),
-            _ => None,
+    // Keep a single consumer on the thread event stream. The submit_turn helpers
+    // also drain events, so racing one against ComputerUseCallRequest can lose
+    // the request and turn this regression into a timeout-based flaky test.
+    let cwd = test.config.cwd.clone();
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "use exec to observe the browser and forward its screenshot".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
+                    cwd,
+                    vec![selected_environment],
+                )),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
+                    mode: codex_protocol::config_types::ModeKind::Default,
+                    settings: codex_protocol::config_types::Settings {
+                        model: test.session_configured.model.clone(),
+                        reasoning_effort: None,
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
         })
-        .await;
-        let expected_arguments = serde_json::json!({ "scope": "viewport" });
-        assert_eq!(
-            (
-                request.adapter.as_str(),
-                request.tool.as_str(),
-                &request.arguments,
-            ),
-            ("browser", "browser_observe", &expected_arguments),
-        );
-        test.codex
-            .notify_computer_use_response(
-                &request.call_id,
-                ComputerUseResponse {
-                    content_items: vec![
-                        ComputerUseOutputContentItem::InputText {
-                            text: response_text.to_string(),
-                        },
-                        ComputerUseOutputContentItem::InputImage {
-                            image_url: SCREENSHOT_DATA_URL.to_string(),
-                            detail: Some("high".to_string()),
-                        },
-                    ],
-                    success: browser_success,
-                    error: (!browser_success)
-                        .then(|| "browser observation failed after capture".to_string()),
-                },
-            )
-            .await;
-        Ok::<(), anyhow::Error>(())
-    };
+        .await?;
 
-    tokio::try_join!(
-        test.submit_turn_with_environments(
-            "use exec to observe the browser and forward its screenshot",
-            Some(vec![selected_environment]),
+    let turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    let request = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ComputerUseCallRequest(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+    let expected_arguments = serde_json::json!({ "scope": "viewport" });
+    assert_eq!(
+        (
+            request.adapter.as_str(),
+            request.tool.as_str(),
+            &request.arguments,
         ),
-        respond_to_browser,
-    )?;
+        ("browser", "browser_observe", &expected_arguments),
+    );
+    test.codex
+        .notify_computer_use_response(
+            &request.call_id,
+            ComputerUseResponse {
+                content_items: vec![
+                    ComputerUseOutputContentItem::InputText {
+                        text: response_text.to_string(),
+                    },
+                    ComputerUseOutputContentItem::InputImage {
+                        image_url: SCREENSHOT_DATA_URL.to_string(),
+                        detail: Some("high".to_string()),
+                    },
+                ],
+                success: browser_success,
+                error: (!browser_success)
+                    .then(|| "browser observation failed after capture".to_string()),
+            },
+        )
+        .await;
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) => event.turn_id == turn_id,
+        _ => false,
+    })
+    .await;
 
     let first_request = first_mock.single_request().body_json();
     let exec_description = first_request
