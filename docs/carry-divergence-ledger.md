@@ -240,10 +240,12 @@ docs-only refresh commit that records this snapshot.
   must reach the canonical Windows session spawner unchanged.
 - PowerShell `-NoProfile` startup, spawn-failure metrics, tool telemetry, and
   turn metadata follow the effective backend, not only the configured level.
-- The direct-loopback denial fixture uses native `curl.exe` with explicit
-  direct routing and hard connect/overall deadlines so a WFP-blocked socket
-  terminates within the unified-exec yield. Distinct connected, expected-denial,
-  and probe-error exits prevent a missing or broken probe from passing.
+- The direct-loopback denial fixture uses a supervised native `curl.exe` child
+  with explicit direct routing and connect/overall deadlines. Because a
+  WFP-blocked connect can outlive curl's own deadline, the PowerShell parent
+  bounds and terminates the child tree before returning the expected denial.
+  Distinct connected, expected-denial, and probe-error exits prevent a missing
+  or broken probe from passing.
 - Hosted guardrails:
   `windows_proxy_enforcement_uses_elevated_backend`,
   `windows_spawn_failure_metric_uses_effective_backend`,
