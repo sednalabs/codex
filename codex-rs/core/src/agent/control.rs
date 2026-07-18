@@ -6,6 +6,7 @@ use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
@@ -16,6 +17,7 @@ use crate::session_prefix::format_inter_agent_completion_message;
 use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
+use crate::thread_manager::RemoveThreadIfSameResult;
 use crate::thread_manager::ResumeThreadWithHistoryOptions;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_rollout_truncation::truncate_rollout_to_last_n_fork_turns;
@@ -247,12 +249,9 @@ impl AgentControl {
         state: &Arc<ThreadManagerState>,
         input: Vec<UserInput>,
     ) -> CodexResult<String> {
-        self.handle_thread_request_result(
-            agent_id,
-            state,
-            state.send_op(agent_id, input.into()).await,
-        )
-        .await
+        let (thread, result) = state.send_op_with_thread(agent_id, input.into()).await;
+        self.handle_thread_request_result(agent_id, state, thread.as_ref(), result)
+            .await
     }
 
     pub(crate) async fn send_inter_agent_communication(
@@ -293,14 +292,11 @@ impl AgentControl {
     ) -> CodexResult<String> {
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
+        let (thread, result) = state
+            .send_op_with_thread(agent_id, Op::InterAgentCommunication { communication })
+            .await;
         let result = self
-            .handle_thread_request_result(
-                agent_id,
-                state,
-                state
-                    .send_op(agent_id, Op::InterAgentCommunication { communication })
-                    .await,
-            )
+            .handle_thread_request_result(agent_id, state, thread.as_ref(), result)
             .await;
         if let (Some(communication), Ok(communication_id)) =
             (communication_for_log, result.as_ref())
@@ -318,24 +314,35 @@ impl AgentControl {
     /// Interrupt the current task for an existing agent thread.
     pub(crate) async fn interrupt_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-        self.handle_thread_request_result(
-            agent_id,
-            &state,
-            state.send_op(agent_id, Op::Interrupt).await,
-        )
-        .await
+        let (thread, result) = state.send_op_with_thread(agent_id, Op::Interrupt).await;
+        self.handle_thread_request_result(agent_id, &state, thread.as_ref(), result)
+            .await
     }
 
     async fn handle_thread_request_result(
         &self,
         agent_id: ThreadId,
         state: &Arc<ThreadManagerState>,
+        expected_thread: Option<&Arc<CodexThread>>,
         result: CodexResult<String>,
     ) -> CodexResult<String> {
-        if matches!(result, Err(CodexErr::InternalAgentDied)) {
-            let _ = state.remove_thread(&agent_id).await;
-            self.forget_v2_residency(agent_id);
-            self.state.release_spawned_thread(agent_id);
+        if matches!(result, Err(CodexErr::InternalAgentDied))
+            && let Some(expected_thread) = expected_thread
+        {
+            let registry = Arc::clone(&self.state);
+            let removal = state
+                .remove_thread_if_same(&agent_id, expected_thread, || {
+                    if registry
+                        .cold_status(agent_id, Some(expected_thread))
+                        .is_none()
+                    {
+                        registry.release_spawned_thread(agent_id);
+                    }
+                })
+                .await;
+            if removal == RemoveThreadIfSameResult::Removed {
+                self.forget_v2_residency(agent_id);
+            }
         }
         result
     }
@@ -343,13 +350,28 @@ impl AgentControl {
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
     pub(crate) async fn get_status(&self, agent_id: ThreadId) -> AgentStatus {
         let Ok(state) = self.upgrade() else {
-            // No agent available if upgrade fails.
-            return AgentStatus::NotFound;
+            return self
+                .state
+                .cold_status(agent_id, /*live_thread*/ None)
+                .unwrap_or(AgentStatus::NotFound);
         };
-        let Ok(thread) = state.get_thread(agent_id).await else {
-            return AgentStatus::NotFound;
+        let thread = match state.get_thread(agent_id).await {
+            Ok(thread) => thread,
+            Err(_) => {
+                let cold_status = self.state.cold_status(agent_id, /*live_thread*/ None);
+                match state.get_thread(agent_id).await {
+                    Ok(thread) => thread,
+                    Err(_) => return cold_status.unwrap_or(AgentStatus::NotFound),
+                }
+            }
         };
-        thread.agent_status().await
+        if let Some(status) = self.state.cold_status(agent_id, Some(&thread)) {
+            return status;
+        }
+        let status = thread.agent_status().await;
+        self.state
+            .cold_status(agent_id, Some(&thread))
+            .unwrap_or(status)
     }
 
     pub(crate) fn register_session_root(
@@ -439,8 +461,29 @@ impl AgentControl {
         agent_id: ThreadId,
     ) -> CodexResult<watch::Receiver<AgentStatus>> {
         let state = self.upgrade()?;
-        let thread = state.get_thread(agent_id).await?;
-        Ok(thread.subscribe_status())
+        let thread = match state.get_thread(agent_id).await {
+            Ok(thread) => thread,
+            Err(err) => {
+                let cold_status = self.state.cold_status(agent_id, /*live_thread*/ None);
+                match state.get_thread(agent_id).await {
+                    Ok(thread) => thread,
+                    Err(_) => {
+                        return cold_status
+                            .map(|status| watch::channel(status).1)
+                            .ok_or(err);
+                    }
+                }
+            }
+        };
+        if let Some(status) = self.state.cold_status(agent_id, Some(&thread)) {
+            return Ok(watch::channel(status).1);
+        }
+        let status = thread.subscribe_status();
+        Ok(self
+            .state
+            .cold_status(agent_id, Some(&thread))
+            .map(|status| watch::channel(status).1)
+            .unwrap_or(status))
     }
 
     pub(crate) async fn format_environment_context_subagents(
@@ -516,10 +559,10 @@ impl AgentControl {
             let Some(thread_id) = metadata.agent_id else {
                 continue;
             };
-            let Ok(thread) = state.get_thread(thread_id).await else {
+            let agent_status = self.get_status(thread_id).await;
+            if agent_status == AgentStatus::NotFound {
                 continue;
-            };
-            let agent_status = thread.agent_status().await;
+            }
             status_by_thread_id.insert(thread_id, agent_status.clone());
             if resolved_prefix
                 .as_ref()
@@ -959,6 +1002,7 @@ impl AgentControl {
             agent_path,
             agent_nickname,
             agent_role,
+            ..Default::default()
         })
     }
 

@@ -11,6 +11,7 @@ use crate::config::ConfigBuilder;
 use crate::context::ContextualUserFragment;
 use crate::context::SubagentNotification;
 use crate::init_state_db;
+use crate::thread_manager::RemoveThreadIfSameResult;
 use crate::thread_manager::StartThreadOptions;
 use assert_matches::assert_matches;
 use codex_extension_api::ExtensionDataInit;
@@ -733,12 +734,26 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .expect("child metadata should be readable");
     assert_eq!(stored_child.history_mode, ThreadHistoryMode::Paginated);
 
-    assert!(
-        harness
-            .manager
-            .remove_thread(&spawned_agent.thread_id)
-            .await
-            .is_some()
+    let registered_metadata = harness
+        .control
+        .get_agent_metadata(spawned_agent.thread_id)
+        .expect("registered child metadata");
+    let cold_status = AgentStatus::Completed(Some("child persisted".to_string()));
+    let manager_state = harness.control.upgrade().expect("thread manager state");
+    let removal = manager_state
+        .remove_thread_if_same(&spawned_agent.thread_id, &child_thread, || {
+            harness.control.state.publish_cold_status_if_current(
+                spawned_agent.thread_id,
+                &registered_metadata,
+                &child_thread,
+                cold_status.clone(),
+            );
+        })
+        .await;
+    assert_eq!(removal, RemoveThreadIfSameResult::Removed);
+    assert_eq!(
+        harness.control.get_status(spawned_agent.thread_id).await,
+        cold_status
     );
     match harness.manager.get_thread(spawned_agent.thread_id).await {
         Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, spawned_agent.thread_id),
@@ -764,6 +779,10 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         "persisted model provider `{}` is not configured",
         original_config.model_provider_id
     )));
+    assert_eq!(
+        harness.control.get_status(spawned_agent.thread_id).await,
+        cold_status
+    );
     conflicting_resume_config.model_provider.base_url =
         Some("http://runtime-provider.invalid/v1".to_string());
     conflicting_resume_config.model_provider.supports_websockets = false;
@@ -778,6 +797,30 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .get_thread(spawned_agent.thread_id)
         .await
         .expect("reloaded child thread should exist");
+    assert_eq!(
+        harness
+            .control
+            .state
+            .cold_status(spawned_agent.thread_id, Some(&reloaded_thread)),
+        None
+    );
+    let stale_error = harness
+        .control
+        .handle_thread_request_result(
+            spawned_agent.thread_id,
+            &manager_state,
+            Some(&child_thread),
+            Err(CodexErr::InternalAgentDied),
+        )
+        .await
+        .expect_err("stale request cleanup should retain the replacement");
+    assert_matches!(stale_error, CodexErr::InternalAgentDied);
+    let current_thread = harness
+        .manager
+        .get_thread(spawned_agent.thread_id)
+        .await
+        .expect("replacement should remain registered");
+    assert!(Arc::ptr_eq(&current_thread, &reloaded_thread));
     let reloaded_config = reloaded_thread.config_snapshot().await;
     assert_eq!(
         (

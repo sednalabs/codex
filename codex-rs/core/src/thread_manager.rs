@@ -1264,18 +1264,48 @@ impl ThreadManagerState {
 
     /// Send an operation to a thread by ID.
     pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {
-        let thread = self.get_thread(thread_id).await?;
+        self.send_op_with_thread(thread_id, op).await.1
+    }
+
+    pub(crate) async fn send_op_with_thread(
+        &self,
+        thread_id: ThreadId,
+        op: Op,
+    ) -> (Option<Arc<CodexThread>>, CodexResult<String>) {
+        let thread = match self.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(err) => return (None, Err(err)),
+        };
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
         {
             log.push((thread_id, op.clone()));
         }
-        thread.submit(op).await
+        let result = thread.submit(op).await;
+        (Some(thread), result)
     }
 
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.threads.write().await.remove(thread_id)
+    }
+
+    pub(crate) async fn remove_thread_if_same(
+        &self,
+        thread_id: &ThreadId,
+        expected: &Arc<CodexThread>,
+        on_removed: impl FnOnce(),
+    ) -> RemoveThreadIfSameResult {
+        let mut threads = self.threads.write().await;
+        match threads.get(thread_id) {
+            Some(thread) if Arc::ptr_eq(thread, expected) => {
+                threads.remove(thread_id);
+                on_removed();
+                RemoveThreadIfSameResult::Removed
+            }
+            Some(_) => RemoveThreadIfSameResult::Replaced,
+            None => RemoveThreadIfSameResult::Missing,
+        }
     }
 
     pub(crate) async fn effective_multi_agent_version_for_spawn(
@@ -1830,6 +1860,13 @@ impl ThreadManagerState {
             .map(|thread| thread.session.services.rollout_thread_trace.clone())
             .unwrap_or_else(codex_rollout_trace::ThreadTraceContext::disabled)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoveThreadIfSameResult {
+    Removed,
+    Missing,
+    Replaced,
 }
 
 fn stored_thread_to_initial_history(

@@ -644,6 +644,51 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_v2_residency_route_stays_on_multi_agent_orchestration_lane(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                "codex-rs/core/src/agent/control.rs",
+                "codex-rs/core/src/agent/control/residency.rs",
+                "codex-rs/core/src/agent/control/residency_tests.rs",
+                "codex-rs/core/src/agent/control/spawn.rs",
+                "codex-rs/core/src/agent/control_tests.rs",
+                "codex-rs/core/src/agent/registry.rs",
+                "codex-rs/core/src/agent/registry_tests.rs",
+                "codex-rs/core/src/thread_manager.rs",
+                "codex-rs/core/tests/suite/agent_execution.rs",
+                ".github/scripts/test_ci_planners.py",
+                ".github/validation-lanes.json",
+                "docs/carry-divergence-ledger.md",
+                "docs/divergences/index.yaml",
+                "docs/downstream-regression-matrix.md",
+                "docs/downstream.md",
+                "justfile",
+            ],
+            self.routes,
+        )
+        self.assertEqual(lanes, ["codex.core-multi-agent-orchestration-targeted"])
+
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "core-multi-agent-orchestration-targeted"
+            ]
+        )
+        self.assertEqual(recipe.count("cargo nextest run"), 2)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 2)
+        self.assertEqual(recipe.count("--no-tests=fail"), 2)
+        for test_name in (
+            "agent::control::residency::tests::"
+            "residency_slot_reservation_unloads_oldest_idle_v2_agent",
+            "agent::control::residency::tests::"
+            "interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction",
+            "agent::control::residency::tests::"
+            "ephemeral_v2_agent_is_not_evicted_without_reloadable_history",
+            "agent::registry::tests::cold_status_text_stays_compact_when_json_escaped",
+            "agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
+            "suite::agent_execution::v2_evicted_completed_agent_keeps_final_status",
+        ):
+            self.assertIn(test_name, recipe)
+
     def test_openai_models_route_stays_out_of_app_server_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/protocol/src/openai_models.rs"],
