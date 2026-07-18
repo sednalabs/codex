@@ -5,6 +5,7 @@ use crate::agent::registry::AgentMetadata;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
+use crate::init_state_db;
 use crate::thread_manager::ThreadManagerState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
@@ -125,11 +126,16 @@ async fn interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction
     let temp_home = tempfile::tempdir().expect("create temp home");
     config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
     config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
-    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+    let _ = config.features.enable(Feature::Sqlite);
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
         config.codex_home.to_path_buf(),
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
     );
     let root = manager
         .start_thread(config.clone())
@@ -154,6 +160,12 @@ async fn interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction
             ..Default::default()
         });
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
+    let stored_metadata = state_db
+        .get_thread(first.thread_id)
+        .await
+        .expect("read indexed first-agent metadata")
+        .expect("first-agent metadata should be indexed");
+    assert_eq!(stored_metadata.model.as_deref(), Some("gpt-5.5"));
 
     let second_slot = control
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
