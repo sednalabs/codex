@@ -427,6 +427,15 @@ rather than the provider's raw dynamic schema.
    `ComputerUseCallResponse`, and passes the resulting content to the model as
    function-call output.
 
+When a native computer-use tool is invoked through code mode, Codex projects
+the response as a typed `{ content, success }` object. The `content` array keeps
+each `input_text` and `input_image` item intact. Code-mode callers must pass the
+selected `input_image` item to `image(...)`; they must not serialize the whole
+result through `text(...)`, because that would turn the inline image data into
+model-facing text instead of a native image input. The same typed result is
+retained when `success` is false, so provider diagnostics and a failure-time
+screenshot can both remain available to the caller.
+
 If no selected environment exists, Codex returns a failed native response
 without sending an external client request. If the client does not answer before
 the computer-use timeout, Codex unregisters the pending response and returns a
