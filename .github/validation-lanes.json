@@ -1933,6 +1933,41 @@
       ]
     },
     {
+      "route_id": "core-v2-residency",
+      "lane_ids": [
+        "codex.core-multi-agent-orchestration-targeted"
+      ],
+      "allowed_paths": [
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/residency.rs",
+        "codex-rs/core/src/agent/control/residency_tests.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/agent/registry.rs",
+        "codex-rs/core/src/agent/registry_tests.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/suite/agent_execution.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "justfile"
+      ],
+      "required_any_paths": [
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/residency.rs",
+        "codex-rs/core/src/agent/control/residency_tests.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/agent/registry.rs",
+        "codex-rs/core/src/agent/registry_tests.rs",
+        "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/tests/suite/agent_execution.rs"
+      ]
+    },
+    {
       "route_id": "core-subagent-model-pinning",
       "lane_ids": [
         "codex.core-subagent-model-pinning-targeted"

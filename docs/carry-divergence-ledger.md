@@ -593,13 +593,32 @@ docs-only refresh commit that records this snapshot.
   Legacy rows with no
   indexed model identity retain their rollout model and effort, while a
   populated indexed model makes an absent indexed effort an intentional clear.
+- Capacity-triggered V2 residency eviction first materializes and shuts down an
+  unloadable quiescent thread, then removes only the exact `Arc<CodexThread>` it
+  examined. A concurrently installed replacement is never removed by a stale
+  eviction attempt.
+- The evicted identity retains only a bounded `Completed`, `Errored`, or
+  `Interrupted` status behind the current registry generation. Status queries
+  and newly created subscriptions expose that cold snapshot, failed reloads
+  keep it, and a successful reload clears it. Bridging an already-open cold
+  subscription across reload belongs to the serialized lifecycle follow-up.
+  This is a manual port of the useful mechanism from draft upstream PR #30154
+  onto the current tree, extended to keep interrupted identities observable and
+  reloadable.
+- Eviction fails closed for ephemeral V2 sessions without a durable rollout;
+  capacity pressure leaves that runtime resident rather than manufacturing a
+  cold identity that persisted-history reload cannot restore.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.4-mini` with low reasoning for bounded monitored-wait seams.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
   - `codex-rs/core/src/agent/control.rs`
+  - `codex-rs/core/src/agent/control/residency.rs`
+  - `codex-rs/core/src/agent/control/residency_tests.rs`
   - `codex-rs/core/src/agent/control/spawn.rs`
   - `codex-rs/core/src/agent/control_tests.rs`
+  - `codex-rs/core/src/agent/registry.rs`
+  - `codex-rs/core/src/agent/registry_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/agent/role_tests.rs`
   - `codex-rs/config/src/config_toml.rs`
@@ -617,6 +636,8 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
+  - `codex-rs/core/src/thread_manager.rs`
+  - `codex-rs/core/tests/suite/agent_execution.rs`
   - `codex-rs/core/tests/suite/spawn_agent_description.rs`
   - `codex-rs/core/tests/suite/multi_agent_resume.rs`
   - `codex-rs/core/tests/suite/subagent_notifications.rs`
@@ -954,10 +975,13 @@ docs-only refresh commit that records this snapshot.
   down the previous snapshot. Downstream catalogue pagination, OAuth backend,
   safety policy, and environment-scoped projection continue through this
   upstream-owned runtime rather than a second manager mirror.
-- Centralized ownership does not by itself unload terminal threads retained by
-  `ThreadManager`. The tracked residency follow-up must call
-  `shutdown_and_wait()` before generation-fenced registry removal so cloned MCP
-  resource clients cannot keep stale server processes alive indefinitely.
+- Centralized ownership does not by itself unload quiescent threads retained by
+  `ThreadManager`. Capacity-triggered V2 residency eviction now calls
+  `shutdown_and_wait()` before generation-fenced, thread-instance-checked
+  removal so cloned MCP resource clients do not survive that eviction path.
+  Timed idle eviction remains follow-up work and must retain the capacity path's
+  existing active-turn and pending-mailbox guards; idle timestamps,
+  configuration, and operator observability remain outside this bounded slice.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - Preserve this carry until upstream issue #26094 is resolved by behavior that
