@@ -244,8 +244,9 @@ docs-only refresh commit that records this snapshot.
   routing and connect/overall deadlines. Because a WFP-blocked connect can
   outlive curl's own deadline, the fixture requires a start marker, observes the
   bounded unified-exec yield, and terminates only the registered background
-  session through Codex's process manager. Distinct connected, expected-denial,
-  and probe-error outcomes prevent a missing or broken probe from passing.
+  session through Codex's process manager. The unique non-proxy endpoint must
+  record zero direct requests. Distinct connected, expected-denial, and
+  probe-error outcomes prevent a missing or broken probe from passing.
 - Hosted guardrails:
   `windows_proxy_enforcement_uses_elevated_backend`,
   `windows_spawn_failure_metric_uses_effective_backend`,

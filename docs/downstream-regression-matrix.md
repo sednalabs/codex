@@ -354,7 +354,7 @@ Windows hosted harness note:
 - The deletion characterization uses PowerShell 7, and the direct-loopback
   denial probe uses native `curl.exe` with explicit direct routing, then cleans
   up a WFP-stalled command through Codex's registered background-terminal path
-  so both finish under the restricted hosted lifecycle.
+  and requires zero requests at the unique non-proxy endpoint.
 - Exact `0xc0000142` while re-entering the Bazel gnullvm test executable proves
   that the filesystem helper reached the sandbox wrapper, but it is not a
   substitute for the read and denied-write assertions on MSVC and other
