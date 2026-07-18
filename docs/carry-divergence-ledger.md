@@ -243,7 +243,7 @@ docs-only refresh commit that records this snapshot.
 - The direct-loopback denial fixture uses a supervised native `curl.exe` child
   with explicit direct routing and connect/overall deadlines. Because a
   WFP-blocked connect can outlive curl's own deadline, the PowerShell parent
-  bounds and terminates the child tree before returning the expected denial.
+  bounds and terminates the child process before returning the expected denial.
   Distinct connected, expected-denial, and probe-error exits prevent a missing
   or broken probe from passing.
 - Hosted guardrails:
