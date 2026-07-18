@@ -393,6 +393,7 @@ impl Session {
             codex.turn.reasoning_effort = %reasoning_effort,
             codex.turn.token_usage.input_tokens = field::Empty,
             codex.turn.token_usage.cached_input_tokens = field::Empty,
+            codex.turn.token_usage.cache_write_input_tokens = field::Empty,
             codex.turn.token_usage.non_cached_input_tokens = field::Empty,
             codex.turn.token_usage.output_tokens = field::Empty,
             codex.turn.token_usage.reasoning_output_tokens = field::Empty,
@@ -456,9 +457,13 @@ impl Session {
     ///
     /// This helper generates a fresh sub-id for the synthetic turn before delegating to the
     /// explicit-sub-id variant.
-    pub(crate) async fn maybe_start_turn_for_pending_work(self: &Arc<Self>) {
-        self.maybe_start_turn_for_pending_work_with_sub_id(uuid::Uuid::new_v4().to_string())
-            .await;
+    pub(crate) fn maybe_start_turn_for_pending_work(self: &Arc<Self>) -> BoxFuture<'static, ()> {
+        let session = Arc::clone(self);
+        Box::pin(async move {
+            session
+                .maybe_start_turn_for_pending_work_with_sub_id(uuid::Uuid::new_v4().to_string())
+                .await;
+        })
     }
 
     /// Starts a regular turn with the provided sub-id when pending work should wake an idle
@@ -666,6 +671,9 @@ impl Session {
                 cached_input_tokens: (total_token_usage.cached_input_tokens
                     - token_usage_at_turn_start.cached_input_tokens)
                     .max(0),
+                cache_write_input_tokens: (total_token_usage.cache_write_input_tokens
+                    - token_usage_at_turn_start.cache_write_input_tokens)
+                    .max(0),
                 output_tokens: (total_token_usage.output_tokens
                     - token_usage_at_turn_start.output_tokens)
                     .max(0),
@@ -684,6 +692,10 @@ impl Session {
             current_span.record(
                 "codex.turn.token_usage.cached_input_tokens",
                 turn_token_usage.cached_input(),
+            );
+            current_span.record(
+                "codex.turn.token_usage.cache_write_input_tokens",
+                turn_token_usage.cache_write_input_tokens,
             );
             current_span.record(
                 "codex.turn.token_usage.non_cached_input_tokens",
@@ -722,6 +734,11 @@ impl Session {
                 TURN_TOKEN_USAGE_METRIC,
                 turn_token_usage.cached_input(),
                 &[("token_type", "cached_input"), tmp_mem],
+            );
+            self.services.session_telemetry.histogram(
+                TURN_TOKEN_USAGE_METRIC,
+                turn_token_usage.cache_write_input_tokens,
+                &[("token_type", "cache_write_input"), tmp_mem],
             );
             self.services.session_telemetry.histogram(
                 TURN_TOKEN_USAGE_METRIC,
@@ -824,6 +841,9 @@ impl Session {
         // thread writers may not flush it without another explicit barrier.
         if let Err(err) = self.flush_rollout().await {
             warn!("failed to flush rollout after emitting terminal turn event: {err}");
+        }
+        if cleared_active_turn {
+            self.maybe_start_turn_for_pending_work().await;
         }
     }
 

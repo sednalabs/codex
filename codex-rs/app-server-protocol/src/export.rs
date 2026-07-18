@@ -1,6 +1,7 @@
 use crate::ClientNotification;
 use crate::ClientRequest;
 use crate::ServerNotification;
+use crate::ServerNotificationEnvelope;
 use crate::ServerRequest;
 use crate::experimental_api::experimental_fields;
 use crate::export_client_notification_schemas;
@@ -44,10 +45,13 @@ const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
 const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
 const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "EnvironmentShellInfo",
+    "EnvironmentStatusKind",
     "PathUri",
     "RemoteControlClient",
     "RemoteControlClientsListOrder",
     "ThreadBackgroundTerminal",
+    "ThreadSearchOccurrence",
+    "ThreadSearchTextRange",
 ];
 const SPECIAL_DEFINITIONS: &[&str] = &[
     "ClientNotification",
@@ -58,7 +62,8 @@ const SPECIAL_DEFINITIONS: &[&str] = &[
 const FLAT_V2_SHARED_DEFINITIONS: &[&str] = &["ClientRequest", "ServerNotification"];
 const V1_CLIENT_REQUEST_METHODS: &[&str] =
     &["getConversationSummary", "gitDiffToRemote", "getAuthStatus"];
-const EXCLUDED_SERVER_NOTIFICATION_METHODS_FOR_JSON: &[&str] = &["rawResponseItem/completed"];
+const EXCLUDED_SERVER_NOTIFICATION_METHODS_FOR_JSON: &[&str] =
+    &["rawResponseItem/completed", "rawResponse/completed"];
 
 #[derive(Clone)]
 pub struct GeneratedSchema {
@@ -130,6 +135,7 @@ pub fn generate_ts_with_options(
     ServerRequest::export_all(&ts_config)?;
     export_server_responses(out_dir)?;
     ServerNotification::export_all(&ts_config)?;
+    ServerNotificationEnvelope::export_all(&ts_config)?;
 
     if !options.experimental_api {
         filter_experimental_ts(out_dir)?;
@@ -1071,7 +1077,11 @@ fn build_schema_bundle(schemas: Vec<GeneratedSchema>) -> Result<Value> {
     root.insert("type".to_string(), Value::String("object".into()));
     root.insert("definitions".to_string(), Value::Object(definitions));
 
-    Ok(Value::Object(root))
+    let mut bundle = Value::Object(root);
+    rewrite_ref_prefix(&mut bundle, "#/$defs/", "#/definitions/");
+    ensure_no_ref_prefix(&bundle, "#/$defs/", "full")?;
+    ensure_referenced_definitions_present(&bundle, "full")?;
+    Ok(bundle)
 }
 
 fn drain_schema_definitions(schema: &mut Map<String, Value>) -> Vec<(String, Value)> {
@@ -1251,45 +1261,40 @@ fn first_ref_with_prefix(value: &Value, prefix: &str) -> Option<String> {
 }
 
 fn ensure_referenced_definitions_present(schema: &Value, label: &str) -> Result<()> {
-    let definitions = schema
+    schema
         .get("definitions")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("expected definitions map in {label} schema"))?;
     let mut missing = HashSet::new();
-    collect_missing_definitions(schema, definitions, &mut missing);
+    collect_missing_definitions(schema, schema, &mut missing);
     if missing.is_empty() {
         return Ok(());
     }
-    let mut missing_names: Vec<String> = missing.into_iter().collect();
-    missing_names.sort();
+    let mut missing_references: Vec<String> = missing.into_iter().collect();
+    missing_references.sort();
     Err(anyhow!(
-        "{label} schema missing definitions: {}",
-        missing_names.join(", ")
+        "{label} schema has unresolved definition references: {}",
+        missing_references.join(", ")
     ))
 }
 
-fn collect_missing_definitions(
-    value: &Value,
-    definitions: &Map<String, Value>,
-    missing: &mut HashSet<String>,
-) {
+fn collect_missing_definitions(value: &Value, schema: &Value, missing: &mut HashSet<String>) {
     match value {
         Value::Object(obj) => {
             if let Some(Value::String(reference)) = obj.get("$ref")
-                && let Some(suffix) = local_definition_ref_suffix(reference)
+                && local_definition_ref_suffix(reference).is_some()
+                && let Some(pointer) = reference.strip_prefix('#')
+                && schema.pointer(pointer).is_none()
             {
-                let name = suffix.split('/').next().unwrap_or(suffix);
-                if !definitions.contains_key(name) {
-                    missing.insert(name.to_string());
-                }
+                missing.insert(reference.clone());
             }
             for child in obj.values() {
-                collect_missing_definitions(child, definitions, missing);
+                collect_missing_definitions(child, schema, missing);
             }
         }
         Value::Array(items) => {
             for child in items {
-                collect_missing_definitions(child, definitions, missing);
+                collect_missing_definitions(child, schema, missing);
             }
         }
         _ => {}
@@ -1356,6 +1361,7 @@ where
             strip_v1_client_request_variants_from_json_schema(&mut schema_value);
         } else if file_stem == "ServerNotification" {
             strip_v1_server_notification_variants_from_json_schema(&mut schema_value);
+            add_server_notification_emitted_at_to_json_schema(&mut schema_value)?;
         }
         enforce_numbered_definition_collision_overrides(file_stem, &mut schema_value);
         annotate_schema(&mut schema_value, Some(file_stem));
@@ -1386,6 +1392,25 @@ where
         logical_name: logical_name.to_string(),
         value: schema_value,
     })
+}
+
+fn add_server_notification_emitted_at_to_json_schema(schema: &mut Value) -> Result<()> {
+    let schema = schema
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("expected ServerNotification schema to be an object"))?;
+    schema.insert(
+        "properties".to_string(),
+        serde_json::json!({
+            "emittedAtMs": {
+                "description": "Unix timestamp (in milliseconds) when app-server emitted this notification.",
+                "format": "int64",
+                "type": "integer"
+            }
+        }),
+    );
+    // Keep this optional in generated client schemas for compatibility with
+    // older app-server versions. New servers still always emit it.
+    Ok(())
 }
 
 fn enforce_numbered_definition_collision_overrides(schema_name: &str, schema: &mut Value) {
@@ -2561,6 +2586,70 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn build_schema_bundle_rewrites_draft_2020_refs_to_draft_7() -> Result<()> {
+        let bundle = build_schema_bundle(vec![GeneratedSchema {
+            namespace: None,
+            logical_name: "Draft2020Envelope".to_string(),
+            in_v1_dir: false,
+            value: serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "Draft2020Envelope",
+                "type": "object",
+                "properties": {
+                    "helper": { "$ref": "#/$defs/Helper" }
+                },
+                "required": ["helper"],
+                "$defs": {
+                    "Helper": { "type": "string" }
+                }
+            }),
+        }])?;
+
+        assert_eq!(
+            bundle,
+            serde_json::json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "title": "CodexAppServerProtocol",
+                "type": "object",
+                "definitions": {
+                    "Draft2020Envelope": {
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "title": "Draft2020Envelope",
+                        "type": "object",
+                        "properties": {
+                            "helper": { "$ref": "#/definitions/Helper" }
+                        },
+                        "required": ["helper"]
+                    },
+                    "Helper": { "type": "string" }
+                }
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn referenced_definitions_check_rejects_missing_namespaced_target() {
+        let schema = serde_json::json!({
+            "definitions": {
+                "Envelope": { "$ref": "#/definitions/v2/MissingType" },
+                "v2": {
+                    "ExistingType": { "type": "string" }
+                }
+            }
+        });
+
+        let error = ensure_referenced_definitions_present(&schema, "test")
+            .expect_err("reject unresolved namespaced reference");
+
+        assert_eq!(
+            error.to_string(),
+            "test schema has unresolved definition references: #/definitions/v2/MissingType"
+        );
     }
 
     #[test]

@@ -2,15 +2,24 @@
 
 use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
+use crate::acl::path_mask_allows;
 use crate::ipc_framed::Message;
 use crate::ipc_framed::decode_bytes;
 use crate::ipc_framed::read_frame;
+use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
 use crate::run_windows_sandbox_capture;
+use crate::spawn_prep::legacy_session_capability_roots;
+use crate::spawn_prep::root_capability_sids;
+use crate::token::get_current_token_for_restriction;
+use crate::winutil::string_from_sid_bytes;
+use crate::winutil::to_wide;
+use anyhow::Result;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::ProcessDriver;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Seek;
@@ -31,6 +40,27 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+use windows_sys::Win32::Foundation::GetLastError;
+use windows_sys::Win32::Foundation::HLOCAL;
+use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Security::ACL;
+use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
+use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
+use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
+use windows_sys::Win32::Security::CopySid;
+use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::GetLengthSid;
+use windows_sys::Win32::Security::GetSecurityDescriptorDacl;
+use windows_sys::Win32::Security::GetTokenInformation;
+use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::TOKEN_USER;
+use windows_sys::Win32::Security::TokenUser;
+use windows_sys::Win32::Storage::FileSystem::DELETE;
+use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
 
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -71,6 +101,117 @@ fn sandbox_home(name: &str) -> TempDir {
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).expect("create sandbox home");
     tempfile::TempDir::new_in(&path).expect("create sandbox home tempdir")
+}
+
+fn current_user_sid() -> Result<Vec<u8>> {
+    unsafe {
+        let token = get_current_token_for_restriction()?;
+        let result = (|| {
+            let mut needed = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+            anyhow::ensure!(needed >= std::mem::size_of::<TOKEN_USER>() as u32);
+
+            let mut token_user_bytes = vec![0; needed as usize];
+            let ok = GetTokenInformation(
+                token,
+                TokenUser,
+                token_user_bytes.as_mut_ptr() as *mut c_void,
+                needed,
+                &mut needed,
+            );
+            anyhow::ensure!(
+                ok != 0,
+                "GetTokenInformation(TokenUser) failed: {}",
+                GetLastError()
+            );
+            let token_user =
+                std::ptr::read_unaligned(token_user_bytes.as_ptr() as *const TOKEN_USER);
+            let sid_len = GetLengthSid(token_user.User.Sid);
+            anyhow::ensure!(sid_len != 0, "GetLengthSid failed: {}", GetLastError());
+
+            let mut sid = vec![0; sid_len as usize];
+            let copied = CopySid(
+                sid_len,
+                sid.as_mut_ptr() as *mut c_void,
+                token_user.User.Sid,
+            );
+            anyhow::ensure!(copied != 0, "CopySid failed: {}", GetLastError());
+            Ok(sid)
+        })();
+        let _ = CloseHandle(token);
+        result
+    }
+}
+
+fn replace_with_restrictive_test_dacl(path: &Path, current_user_sid: &[u8]) -> Result<()> {
+    let current_user_sid = string_from_sid_bytes(current_user_sid).map_err(anyhow::Error::msg)?;
+    let sddl = to_wide(format!(
+        "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{current_user_sid})"
+    ));
+    unsafe {
+        let mut security_descriptor = std::ptr::null_mut();
+        let converted = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut security_descriptor,
+            std::ptr::null_mut(),
+        );
+        anyhow::ensure!(
+            converted != 0,
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW failed: {}",
+            GetLastError()
+        );
+
+        let result = (|| {
+            let mut dacl_present = 0;
+            let mut dacl_defaulted = 0;
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let found = GetSecurityDescriptorDacl(
+                security_descriptor,
+                &mut dacl_present,
+                &mut dacl,
+                &mut dacl_defaulted,
+            );
+            anyhow::ensure!(found != 0 && dacl_present != 0 && !dacl.is_null());
+
+            let mut path_wide = to_wide(path);
+            let status = SetNamedSecurityInfoW(
+                path_wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                dacl,
+                std::ptr::null_mut(),
+            );
+            anyhow::ensure!(
+                status == ERROR_SUCCESS,
+                "SetNamedSecurityInfoW failed: {status}"
+            );
+            Ok(())
+        })();
+        let _ = LocalFree(security_descriptor as HLOCAL);
+        result
+    }
+}
+
+fn declared_windows_test_root(name: &str) -> (TempDir, Vec<u8>) {
+    let base = std::env::var_os("TEST_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // Outside Bazel, use Windows' process temp directory. The unique
+            // child is ACL-normalized before any test fixtures are created.
+            std::env::temp_dir()
+        });
+    fs::create_dir_all(&base).expect("create declared Windows test temp base");
+    let test_root = tempfile::Builder::new()
+        .prefix(&format!("codex-{name}-"))
+        .tempdir_in(base)
+        .expect("create declared Windows test root");
+    let current_user_sid = current_user_sid().expect("resolve current test user SID");
+    replace_with_restrictive_test_dacl(test_root.path(), &current_user_sid)
+        .expect("normalize test root DACL");
+    (test_root, current_user_sid)
 }
 
 fn sandbox_log(codex_home: &Path) -> String {
@@ -455,12 +596,16 @@ fn legacy_capture_powershell_emits_output() {
 }
 
 #[test]
-fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
+fn legacy_write_restricted_deletion_limitation_is_explicit() {
+    let Some(pwsh) = pwsh_path() else {
+        eprintln!("skipping deletion characterization: PowerShell 7 is not installed");
+        return;
+    };
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
-        // Keep writable roots out of USERPROFILE exclusions such as AppData.
-        let test_root = TempDir::new_in(sandbox_cwd()).expect("create legacy delete test root");
+        let (test_root, mut current_user_sid) =
+            declared_windows_test_root("legacy-delete-writable-roots");
         let codex_home = sandbox_home("legacy-delete-writable-roots");
         let workspace = test_root.path().join("workspace");
         let temp_root = test_root.path().join("temp");
@@ -480,21 +625,6 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         fs::write(&temp_file, "temp").expect("seed TEMP file");
         fs::write(&tmp_file, "tmp").expect("seed TMP file");
         fs::write(&outside_file, "outside").expect("seed outside file");
-
-        let script = workspace.join("delete-fixtures.cmd");
-        fs::write(
-            &script,
-            concat!(
-                "@echo off\r\n",
-                "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
-                "del /f /q \"%TEMP_DELETE%\"\r\n",
-                "del /f /q \"%TMP_DELETE%\"\r\n",
-                "del /f /q \"%OUTSIDE_DELETE%\"\r\n",
-                "rmdir \"%PROTECTED_GIT_DIR%\"\r\n",
-                "exit /b 0\r\n",
-            ),
-        )
-        .expect("write delete script");
 
         let env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
@@ -522,15 +652,80 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
         ]);
 
         let permission_profile = PermissionProfile::workspace_write();
+        let permissions =
+            ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
+                &permission_profile,
+                workspace_roots_for(workspace.as_path()).as_slice(),
+            )
+            .expect("resolve legacy delete permissions");
+        let capability_roots = legacy_session_capability_roots(
+            &permissions,
+            workspace.as_path(),
+            &env_map,
+            codex_home.path(),
+        );
+        let capability_sids = root_capability_sids(
+            codex_home.path(),
+            workspace.as_path(),
+            capability_roots,
+        )
+        .expect("resolve legacy delete capability SIDs");
+        let user_sid = current_user_sid.as_mut_ptr() as *mut c_void;
+        assert_eq!(
+            (
+                path_mask_allows(
+                    test_root.path(),
+                    &[user_sid],
+                    FILE_ALL_ACCESS,
+                    /*require_all_bits*/ true,
+                )
+                .expect("read normalized test root DACL"),
+                capability_sids.iter().all(|capability| {
+                    !path_mask_allows(
+                        &outside_file,
+                        &[capability.sid.as_ptr()],
+                        DELETE,
+                        /*require_all_bits*/ false,
+                    )
+                    .expect("read outside file DACL")
+                }),
+                capability_sids.iter().all(|capability| {
+                    !path_mask_allows(
+                        &outside_root,
+                        &[capability.sid.as_ptr()],
+                        FILE_DELETE_CHILD,
+                        /*require_all_bits*/ false,
+                    )
+                    .expect("read outside directory DACL")
+                }),
+            ),
+            (true, true, true),
+            "test fixture must grant its owner full control without granting deletion authority to sandbox capability SIDs"
+        );
         let spawned = spawn_windows_sandbox_session_legacy(
             &permission_profile,
             workspace_roots_for(workspace.as_path()).as_slice(),
             codex_home.path(),
             vec![
-                "C:\\Windows\\System32\\cmd.exe".to_string(),
-                "/d".to_string(),
-                "/c".to_string(),
-                script.display().to_string(),
+                pwsh.display().to_string(),
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                concat!(
+                    "Remove-Item -LiteralPath $env:WORKSPACE_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:TEMP_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:TMP_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:OUTSIDE_DELETE -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "Remove-Item -LiteralPath $env:PROTECTED_GIT_DIR -Recurse -Force ",
+                    "-ErrorAction SilentlyContinue; ",
+                    "exit 0",
+                )
+                .to_string(),
             ],
             workspace.as_path(),
             env_map,
@@ -548,6 +743,10 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
                 .await;
         let stdout = String::from_utf8_lossy(&stdout);
 
+        // WRITE_RESTRICTED does not apply restricting SIDs to standalone
+        // DELETE/FILE_DELETE_CHILD checks. Keep this normalized fixture as a
+        // characterization until launch dependencies have explicit capability
+        // read access and the legacy token can safely use full restriction.
         assert_eq!(
             (
                 exit_code,
@@ -557,7 +756,7 @@ fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
                 fs::read_to_string(&outside_file).ok(),
                 protected_git_dir.is_dir(),
             ),
-            (0, false, false, false, Some("outside".to_string()), true),
+            (0, false, false, false, None, false),
             "stdout={stdout:?}\n{}",
             sandbox_log(codex_home.path())
         );

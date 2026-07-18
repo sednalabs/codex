@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX;
 use async_channel::bounded;
@@ -44,11 +45,10 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let (session, ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
-    let codex = Arc::new(Codex {
+    let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events,
         agent_status,
-        session: Arc::clone(&session),
         session_loop_termination: completed_session_loop_termination(),
     });
 
@@ -69,7 +69,8 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
 
     let cancel = CancellationToken::new();
     let forward = tokio::spawn(forward_events(
-        Arc::clone(&codex),
+        Arc::clone(&io),
+        Arc::clone(&session),
         tx_out.clone(),
         session,
         ctx,
@@ -144,18 +145,18 @@ async fn forward_events_forwards_token_count() {
     let (tx_sub, _rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
     let (session, ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
-    let codex = Arc::new(Codex {
+    let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events,
         agent_status,
-        session: Arc::clone(&session),
         session_loop_termination: completed_session_loop_termination(),
     });
 
     let (tx_out, rx_out) = bounded(1);
     let cancel = CancellationToken::new();
     let forward = tokio::spawn(forward_events(
-        Arc::clone(&codex),
+        Arc::clone(&io),
+        Arc::clone(&session),
         tx_out,
         session,
         ctx,
@@ -195,17 +196,15 @@ async fn forward_ops_preserves_submission_trace_context() {
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let (session, _ctx, _rx_evt) = crate::session::tests::make_session_and_context_with_rx().await;
-    let codex = Arc::new(Codex {
+    let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events,
         agent_status,
-        session,
         session_loop_termination: completed_session_loop_termination(),
     });
     let (tx_ops, rx_ops) = bounded(1);
     let cancel = CancellationToken::new();
-    let forward = tokio::spawn(forward_ops(Arc::clone(&codex), rx_ops, cancel));
+    let forward = tokio::spawn(forward_ops(Arc::clone(&io), rx_ops, cancel));
 
     let submission = Submission {
         id: "sub-1".to_string(),
@@ -267,16 +266,19 @@ async fn handle_request_permissions_uses_tool_call_id_for_round_trip() {
         crate::session::tests::make_session_and_context_with_rx().await;
     *parent_session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
     let parent_ctx_mut = Arc::get_mut(&mut parent_ctx).expect("single turn context ref");
-    parent_ctx_mut.environments.turn_environments[0].environment_id = "remote".to_string();
+    let TurnEnvironmentState::Ready(environment) = &mut parent_ctx_mut.environments.environments[0]
+    else {
+        panic!("expected ready primary environment");
+    };
+    environment.environment_id = "remote".to_string();
 
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let codex = Arc::new(Codex {
+    let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events_child,
         agent_status,
-        session: Arc::clone(&parent_session),
         session_loop_termination: completed_session_loop_termination(),
     });
 
@@ -298,13 +300,13 @@ async fn handle_request_permissions_uses_tool_call_id_for_round_trip() {
     let request_cwd = delegated_cwd.clone();
 
     let handle = tokio::spawn({
-        let codex = Arc::clone(&codex);
+        let io = Arc::clone(&io);
         let parent_session = Arc::clone(&parent_session);
         let parent_ctx = Arc::clone(&parent_ctx);
         let cancel_token = cancel_token.clone();
         async move {
             handle_request_permissions(
-                codex.as_ref(),
+                io.as_ref(),
                 &parent_session,
                 &parent_ctx,
                 RequestPermissionsEvent {
@@ -377,23 +379,22 @@ async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_f
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_agent_status_tx, agent_status) = watch::channel(AgentStatus::PendingInit);
-    let codex = Arc::new(Codex {
+    let io = Arc::new(SessionIo {
         tx_sub,
         rx_event: rx_events_child,
         agent_status,
-        session: Arc::clone(&parent_session),
         session_loop_termination: completed_session_loop_termination(),
     });
 
     let cancel_token = CancellationToken::new();
     let handle = tokio::spawn({
-        let codex = Arc::clone(&codex);
+        let io = Arc::clone(&io);
         let parent_session = Arc::clone(&parent_session);
         let parent_ctx = Arc::clone(&parent_ctx);
         let cancel_token = cancel_token.clone();
         async move {
             handle_exec_approval(
-                codex.as_ref(),
+                io.as_ref(),
                 "child-turn-1".to_string(),
                 &parent_session,
                 &parent_ctx,

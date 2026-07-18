@@ -139,7 +139,7 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -212,6 +212,10 @@ jobs:
           bazel_test_args=(
             test
             --skip_incompatible_explicit_targets
+            # Windows sandbox identities, ACLs, and firewall rules are
+            # host-global; overlapping local test actions can invalidate one
+            # another's policy assertions.
+            --local_test_jobs=1
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}

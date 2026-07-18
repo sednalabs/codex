@@ -99,10 +99,11 @@
         "codex-rs/state/src/runtime/usage.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql",
         "codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql",
+        "codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, and final provider model identity metadata through the usage-ledger extension storage namespace for downstream audit workflows and completed-thread model display precedence.",
+      "behavior": "Sessions record per-thread usage, provider, tool, spawn, final provider model identity, and distinct prompt-cache write token metadata through the usage-ledger extension storage namespace for downstream audit workflows, fork accounting, and completed-thread model display precedence.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -113,10 +114,12 @@
         "extension_storage_migrations_use_namespace_versions",
         "usage_logger_* focused table-contract tests",
         "usage_logger_records_provider_final_model_identity",
-        "status_surfaces_prefer_turn_completed_provider_model_identity"
+        "status_surfaces_prefer_turn_completed_provider_model_identity",
+        "rollout_resume_state_prefers_latest_turn_context",
+        "configured_resume_cwd_skips_prompt"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Core turn completion captures terminal ResponseEvent::ServerModelIdentity values so app-server, TUI, and usage-ledger consumers receive provider-confirmed identity instead of None. Prompt-cache write tokens remain a separate provider-call and fork-snapshot dimension while non-cached input retains upstream's input-minus-cache-read meaning. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
@@ -207,50 +210,93 @@
     },
     {
       "id": "subagent-orchestration-override-preservation",
-      "title": "Sub-agent orchestration override preservation",
+      "title": "Sub-agent selection compatibility and orchestration visibility",
       "status": "live",
       "category": "subagents",
       "surface": [
         "spawn overrides",
         "agent inventory",
-        "blocking waits"
+        "blocking waits",
+        "agents role schema",
+        "agents tool namespace"
       ],
       "files": [
         "codex-rs/core/src/agent/builtins/awaiter.toml",
+        "codex-rs/core/src/agent/builtins/terminal-babysitter.toml",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
         "codex-rs/core/src/agent/role.rs",
+        "codex-rs/core/src/agent/role_tests.rs",
+        "codex-rs/config/src/config_toml.rs",
+        "codex-rs/core/config.schema.json",
+        "codex-rs/core/src/codex_delegate.rs",
+        "codex-rs/core/src/config/mod.rs",
+        "codex-rs/core/src/config/schema_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/tools/spec_plan.rs",
-        "codex-rs/core/src/tools/tool_runtime_capabilities.rs"
+        "codex-rs/core/src/tools/tool_runtime_capabilities.rs",
+        "codex-rs/core/tests/suite/spawn_agent_description.rs",
+        "codex-rs/core/tests/suite/multi_agent_resume.rs",
+        "codex-rs/core/tests/suite/subagent_notifications.rs",
+        "codex-rs/thread-store/src/local/read_thread.rs",
+        ".github/scripts/test_ci_planners.py",
+        "justfile"
       ],
-      "behavior": "Downstream preserves explicit spawn overrides while richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Upstream owns configured-default and explicit child model/reasoning selection, role precedence, and final compatibility validation. Downstream preserves flattened named-role schema support under Schemars 1.2, runtime provider/summary/verbosity context across unrelated role reload, compatibility with incomplete reasoning-support metadata and unspecified MultiAgentV2 backend assignments, richer requested/effective spawn diagnostics, the configurable agents namespace, pre-cancelled launch semantics, task-message-free descendant diagnostics, and complete indexed agent-path/model/provider/reasoning/role identity across cold V2 descendant reloads. Full-history V2 forks preserve context while applying configured or explicit model precedence, and only reject an explicit agent type. The built-in terminal-babysitter role locks gpt-5.4-mini with low reasoning for monitored waits. A populated indexed model makes an absent indexed effort an intentional clear, while legacy rows with no indexed model identity retain rollout model and effort. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.core-subagent-surface-targeted",
+      "guardrail_lane": "codex.core-subagent-model-pinning-targeted; codex.core-subagent-surface-targeted; codex.core-subagent-inspect-tree-fallback-targeted",
       "tests": [
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
-        "multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview",
+        "apply_role_preserves_unspecified_keys",
+        "spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort",
+        "spawn_agent_reasoning_effort_accepts_empty_support_metadata",
+        "multi_agent_v2_spawn_accepts_child_model_without_backend_assignment",
+        "multi_agent_v2_spawn_rejects_child_model_from_different_backend",
+        "multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override",
+        "multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override",
+        "spawn_agent_uses_configured_subagent_defaults",
+        "spawn_agent_preserves_configured_defaults_through_unrelated_role",
+        "spawn_agent_rejects_reasoning_effort_unsupported_by_role_model",
+        "spawned_full_history_v2_child_uses_model_precedence_without_dropping_context",
+        "read_thread_keeps_complete_indexed_identity_during_rollout_overlay",
+        "ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
+        "cold_root_resume_restores_agent_identity_and_reloads_target_on_followup",
+        "cold_root_resume_restores_agent_identity_and_role_on_followup",
+        "multi_agent_v2_list_agents_returns_completed_status",
         "multi_agent_v2_list_agents_filters_by_relative_path_prefix",
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
+        "inspect_agent_tree_without_state_db_points_to_subagent_tail",
         "completion_rule_distinguishes_any_from_all",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
+        "config_schema_matches_fixture",
+        "config_schema_allows_named_agent_roles",
+        "configured_agent_roles_control_spawn_agent_type",
+        "run_codex_thread_interactive_respects_pre_cancelled_spawn",
         "spawn_agent_description_lists_visible_models_and_reasoning_efforts",
         "wait_agent_output_omits_capability_owned_fields_without_provider",
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while isolating downstream inventory and wait behavior behind tool-runtime capability declarations. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while avoiding a downstream duplicate of upstream's child selection pipeline. The Schemars 1.2 adapter keeps flattened named roles schema-valid, V2 description tests follow the effective configured namespace, and pre-cancelled delegates abort before session spawn. Full-history forks accept configured or explicit model/reasoning selection while rejecting agent_type changes. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/config/mod.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
         "codex-rs/core/src/tools/handlers/inspect_agent_tree.rs",
@@ -310,7 +356,7 @@
         "codex-rs/core/src/session/turn_context.rs",
         "codex-rs/core/src/thread_manager.rs"
       ],
-      "behavior": "Session environment updates validate unknown or duplicate ids before mutating state, retarget sticky cwd selections when the legacy fallback cwd changes, refresh runtime turn-environment selections for default turns, keep steered user input ahead of mailbox deferral, and preserve implicit active-turn tails from legacy user-event-only history.",
+      "behavior": "Session environment updates validate unknown or duplicate ids before mutating state, retain upstream explicit selected-environment cwd and workspace-root semantics, refresh runtime turn-environment selections for default turns, keep steered user input ahead of mailbox deferral, and preserve implicit active-turn tails from legacy user-event-only history.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -318,7 +364,7 @@
       },
       "guardrail_lane": "core-runtime-surface-smoke; codex.blocking-waits-core-targeted",
       "tests": [
-        "cwd_update_rewrites_sticky_environment_cwd",
+        "environment_settings_preserve_explicit_primary_cwd",
         "default_turn_honors_empty_stored_thread_environments",
         "duplicate_turn_environment_returns_error_without_mutating_session",
         "unknown_turn_environment_returns_error",
@@ -326,7 +372,7 @@
         "legacy_user_event_only_tail_is_mid_turn"
       ],
       "owner": "downstream",
-      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, and legacy replay/fork boundaries.",
+      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, and legacy replay/fork boundaries. The 2026-07-15 sync adopted upstream sticky explicit-environment cwd behavior and workspace roots rather than retaining the superseded fallback-cwd rewrite implementation shape.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "session-runtime-state",
       "hotspot_files": [
@@ -435,6 +481,51 @@
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "tool runtime wait and terminal-outcome capabilities"
+    },
+    {
+      "id": "unified-exec-source-owned-final-transcript",
+      "title": "Source-owned unified-exec final transcript",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "unified-exec final command transcripts under delta backpressure",
+        "source output completion ordering"
+      ],
+      "files": [
+        "codex-rs/core/src/unified_exec/process.rs",
+        "codex-rs/core/src/unified_exec/async_watcher.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/src/unified_exec/process_manager_tests.rs",
+        "codex-rs/core/src/unified_exec/process_output_tests.rs",
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        ".github/validation-lanes.json",
+        "justfile"
+      ],
+      "behavior": "Unified exec records source output in a bounded, non-draining final transcript before updating the drainable response buffer or publishing best-effort delta events. Final command events wait for bounded source closure and delta-stream ordering, and exec-server exit events start that bound even when inherited descriptors delay the source-closed event. A lagging delta receiver therefore cannot silently remove output or corrupt omission accounting in ExecCommandEnd while a descendant-held stream cannot suppress finalization indefinitely.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.blocking-waits-unified-exec-targeted; rust-ci-full",
+      "tests": [
+        "source_transcript_preserves_exec_end_when_delta_receiver_lags",
+        "failed_initial_end_for_unstored_process_prefers_source_transcript",
+        "failed_exec_end_uses_fallback_when_source_transcript_is_empty",
+        "unified_exec_formats_large_output_summary",
+        "unified_exec_full_lifecycle_with_background_end_event",
+        "unified_exec_end_event_is_bounded_when_descendant_holds_output_open"
+      ],
+      "owner": "downstream",
+      "notes": "The final transcript remains intentionally bounded: it retains the configured head and tail and inserts an explicit marker for omitted middle bytes. Source closure uses the established exec I/O drain timeout so inherited descriptors or abnormal backend teardown cannot hang finalization; exec-server Exited starts that timeout without waiting indefinitely for Closed. Chunks recorded before that deadline remain authoritative; output produced only after the deadline is intentionally outside the completed transcript. Preserve this direct fix only until upstream has equivalent source-owned bounded aggregation, bounded source-close ordering, and regression coverage.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/core/src/unified_exec/process.rs",
+        "codex-rs/core/src/unified_exec/async_watcher.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs"
+      ],
+      "extraction_target": "upstreamable unified-exec final transcript fix"
     },
     {
       "id": "review-and-history-accounting-alignment",
@@ -671,51 +762,80 @@
         "thread session continuity",
         "queued turn handling",
         "status indicator lifecycle labels",
-        "usage summaries"
+        "usage summaries",
+        "selected-turn clipboard feedback",
+        "macOS realtime WebRTC voice transport"
       ],
       "files": [
         "codex-rs/Cargo.lock",
+        "codex-rs/realtime-webrtc/BUILD.bazel",
+        "codex-rs/realtime-webrtc/Cargo.toml",
+        "codex-rs/realtime-webrtc/src/lib.rs",
+        "codex-rs/realtime-webrtc/src/native.rs",
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
         "codex-rs/tui/src/multi_agents.rs",
         "codex-rs/tui/Cargo.toml",
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/bottom_pane/status_line_setup.rs",
         "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/interaction.rs",
         "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/transcript.rs",
         "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/history_cell/plans.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
         "codex-rs/tui/src/status/card.rs",
         "codex-rs/tui/src/status/rate_limits.rs"
       ],
-      "behavior": "Per-thread session state, queued interaction semantics, and active-turn status labels stay stable across the TUI surfaces, including showing \"Compacting context\" while a context compaction item is running.",
+      "behavior": "Per-thread session state, queued interaction semantics, active-turn status labels, and selected-turn clipboard success or failure feedback stay stable across the TUI surfaces. Selected-turn copy reads finalized raw markdown from source-backed transcript cells inside the selected prompt boundary instead of maintaining a parallel rollback cache, and active status shows \"Compacting context\" while a context compaction item is running. The isolated codex-realtime-webrtc crate retains the macOS offer/answer, audio-track, and local-level transport used by downstream realtime voice while unsupported targets fail explicitly.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.tui-agent-usage-totals-targeted",
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted; codex.tui-transcript-viewport-targeted; GitHub blocking-ci Bazel macOS release and clippy jobs",
       "tests": [
         "live_app_server_context_compaction_start_updates_status_header",
-        "status_snapshot_distinguishes_session_and_thread_token_usage"
+        "status_snapshot_distinguishes_session_and_thread_token_usage",
+        "transcript_turn_copy_includes_user_prompt_and_agent_markdown",
+        "transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown",
+        "transcript_turn_copy_source_supports_proposed_plan",
+        "transcript_turn_copy_source_requires_finalized_markdown",
+        "transcript_overlay_footer_status_snapshot"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, and the carried non-Linux realtime voice platform split aligned. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The voice split includes the target-specific TUI cpal dependency and Cargo lock graph required by hosted macOS/Windows builds.",
+      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, selected-turn CopyStatus feedback, and the carried non-Linux realtime voice platform split aligned. After upstream replaced rollback with source-preserving forks, selected-turn copy deliberately follows finalized AgentMarkdownCell and ProposedPlanCell source within the selected prompt boundary; do not restore the removed ordinal cache, rollback truncation, or rollback-only error state. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The voice split includes the isolated codex-realtime-webrtc crate, target-specific TUI cpal dependency, and Cargo/Bazel lock graph required by hosted macOS/Windows builds.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tui-contributor-slot",
       "hotspot_files": [
         "codex-rs/Cargo.lock",
+        "codex-rs/realtime-webrtc/BUILD.bazel",
+        "codex-rs/realtime-webrtc/Cargo.toml",
+        "codex-rs/realtime-webrtc/src/lib.rs",
+        "codex-rs/realtime-webrtc/src/native.rs",
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app_backtrack.rs",
         "codex-rs/tui/Cargo.toml",
         "codex-rs/tui/src/bottom_pane/mod.rs",
         "codex-rs/tui/src/bottom_pane/textarea.rs",
         "codex-rs/tui/src/audio_device.rs",
         "codex-rs/tui/src/bottom_pane/chat_composer.rs",
         "codex-rs/tui/src/chatwidget.rs",
+        "codex-rs/tui/src/chatwidget/interaction.rs",
         "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/transcript.rs",
         "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+        "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/history_cell/plans.rs",
+        "codex-rs/tui/src/pager_overlay.rs",
         "codex-rs/tui/src/voice.rs"
       ],
-      "extraction_target": "TUI status/session contributor slots"
+      "extraction_target": "TUI status/session contributor slots plus an isolated realtime voice transport seam"
     },
     {
       "id": "tui-transcript-compact-mode",
@@ -1013,6 +1133,7 @@
         ".github/scripts/",
         ".github/validation-lanes.json",
         ".github/workflows/",
+        "codex-rs/core/tests/suite/exec_policy.rs",
         "scripts/resolve_sedna_release_version",
         "scripts/dispatch-frontier-max-wave.sh",
         "scripts/dispatch-validation-lab-snapshot.sh",
@@ -1021,7 +1142,7 @@
         "scripts/dispatch_sedna_release",
         "tools/argument-comment-lint/list-bazel-targets.sh"
       ],
-      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration.",
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration. Host-local shell-safety and approval-event fixtures explicitly skip Docker remote replay while retaining normal hosted test coverage.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1037,15 +1158,18 @@
         "test_workflow_ci_route_accepts_plan_fingerprint_helper_alone",
         "test_rust_ci_full_nextest_archive_is_reused_by_test_families",
         "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
+        "granular_complex_forced_rm_denial_explains_why_the_command_was_rejected",
+        "granular_complex_forced_rm_requests_approval_when_allowed",
         "check_workflow_policy.py public/operator boundary checks"
       ],
       "owner": "downstream",
-      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Downstream dependency-policy validation preserves upstream's current quick-xml advisory shape: the direct workspace dependency is on the fixed line, and the remaining trusted transitive plist/syntect and wayland-scanner/arboard paths keep synchronized RustSec exceptions in deny.toml and .cargo/audit.toml until those upstream crates can use quick-xml >=0.41.0. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, build default-feature ci-test archives with debug info disabled and symbols stripped, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. Default features keep the shared archive aligned with the non-sandbox V8 release artifact, while v8-canary owns explicit sandbox and non-sandbox runtime proof. The remote_tests Docker remote-env setup builds its Codex binary in an isolated temporary Cargo target directory and removes those host-side build artifacts before replaying the shared archive, preserving extraction headroom for the large nextest payload. rust-ci-full keeps remote_tests on a 45-minute hosted budget so long setup does not masquerade as a product failure. Remote replay excludes host-only compact/resume and hook fixtures; Guardian local-proxy fixtures use host-native cwd selections; the large-output summary remains host-only until exec-server replay preserves bounded head, tail, and omission metadata before core subscribes. Direct-runtime permission profiles stay on the bubblewrap/seccomp enforcement path when legacy Landlock is configured so sandbox validation fails safely instead of weakening policy. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, keep the link-heavy native computer-use tool-registry lane as a singleton batch, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, argument-comment lint retries once on the same narrow Cargo metadata/fetch failure class, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
+      "notes": "Documents the downstream CI expansion that exercises extra lanes and housekeeping scripts. The sedna-sync-upstream job mints a short-lived GitHub App installation token for the privileged upstream-main mirror write because that branch can include workflow files. Public workflow policy checks keep host-local deployment outside Actions and require release-install verification to stay dry-run-only. After upstream grouped PR-blocking checks behind reusable leaf workflows, downstream preserves that topology and carries merge_group plus upstream-main triggers on blocking-ci.yml rather than restoring direct triggers on each child workflow. Cargo-deny installs the carried Rust toolchain so the dependency-policy check does not rewrite Cargo.lock while evaluating the downstream toolchain line. The workspace JWT dependency uses jsonwebtoken with aws_lc_rs so hosted Cargo/Bazel locked builds do not pull the RustCrypto RSA graph. Downstream dependency-policy validation preserves upstream's current quick-xml advisory shape: the direct workspace dependency is on the fixed line, and the remaining trusted transitive plist/syntect and wayland-scanner/arboard paths keep synchronized RustSec exceptions in deny.toml and .cargo/audit.toml until those upstream crates can use quick-xml >=0.41.0. Hosted nextest archive builders reclaim common Linux runner disk headroom, skip archive-job sccache, build default-feature ci-test archives with debug info disabled and symbols stripped, and stay archive-only so tests run in the archive-consuming jobs; archive-consuming tests and remote_tests install bubblewrap and reclaim hosted disk before extracting the archive so sandbox and remote replay failures are not runner packaging artifacts. Default features keep the shared archive aligned with the non-sandbox V8 release artifact, while v8-canary owns explicit sandbox and non-sandbox runtime proof. The remote_tests Docker remote-env setup builds its Codex binary in an isolated temporary Cargo target directory and removes those host-side build artifacts before replaying the shared archive, preserving extraction headroom for the large nextest payload. rust-ci-full keeps remote_tests on a 45-minute hosted budget so long setup does not masquerade as a product failure. Remote replay excludes host-only compact/resume, hook, and forced-rm shell-safety/approval fixtures; Guardian local-proxy fixtures use host-native cwd selections; the large-output summary remains host-only until exec-server replay preserves bounded head, tail, and omission metadata before core subscribes. Direct-runtime permission profiles stay on the bubblewrap/seccomp enforcement path when legacy Landlock is configured so sandbox validation fails safely instead of weakening policy. The rust-ci-full summary parser records final nextest retry statuses so persistent TRY 2 FAIL/TIMEOUT lines are visible while flakes that pass on retry are not blockers. Validation-lab Rust batches reclaim target artifacts before the first lane as well as between later lanes when disk falls below the safety floor, keep the link-heavy native computer-use tool-registry lane as a singleton batch, retry once on narrow Cargo registry transport failures such as crates.io HTTP/2 or EOF download flakes, argument-comment lint retries once on the same narrow Cargo metadata/fetch failure class, TUI carry smoke uses the same hosted test stack floor as core carry smoke, repo-wide argument-comment lint excludes the V8 proof-of-concept from cold hosted frontier linting, and hosted macOS V8 staging plus Bazel clippy and release-build verification bound Bazel client fanout so frontier and checkpoint validation stay GitHub-hosted instead of falling back to local compute.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "operator-workflow",
       "hotspot_files": [
         ".github/validation-lanes.json",
-        ".github/workflows/"
+        ".github/workflows/",
+        "codex-rs/core/tests/suite/exec_policy.rs"
       ],
       "extraction_target": "operator-owned validation and CI workflow layer"
     },
@@ -1111,6 +1235,7 @@
         "browser observe/step function tools",
         "desktop observe/step function tools",
         "native screenshot and browser viewport image output",
+        "per-step refreshed environment selection",
         "app-server computer-use client bridge",
         "TUI and rollout projection"
       ],
@@ -1208,6 +1333,7 @@
         "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
         "native_computer_use_check_reports_android_browser_and_desktop_config_files",
         "computer_use_call_times_out_and_unregisters_pending_response",
+        "selected_computer_use_environment_uses_refreshed_step_snapshot",
         "computer_use_started_and_completed_translate_to_thread_events"
       ],
       "owner": "downstream",
@@ -1390,7 +1516,11 @@
         "codex-rs/tui/Cargo.toml",
         "codex-rs/agent-graph-store/",
         "codex-rs/ext/",
-        "codex-rs/external-agent-sessions/",
+        "codex-rs/external-agent-migration/src/sessions/export.rs",
+        "codex-rs/external-agent-migration/src/sessions/ledger.rs",
+        "codex-rs/external-agent-migration/src/sessions/ledger_tests.rs",
+        "codex-rs/external-agent-migration/src/sessions/mod.rs",
+        "codex-rs/external-agent-migration/src/sessions/records.rs",
         "codex-rs/file-watcher/",
         "codex-rs/memories/write/",
         "codex-rs/thread-manager-sample/"
@@ -1411,10 +1541,13 @@
         "bwrap_bootstrap_policy_adds_helper_and_minimal_runtime_roots",
         "code_mode_only_guides_all_tools_search_and_calls_deferred_app_tools",
         "usage_limit_error_emits_rate_limit_event",
-        "responses_websocket_usage_limit_error_emits_rate_limit_event"
+        "responses_websocket_usage_limit_error_emits_rate_limit_event",
+        "completed_imports_do_not_read_source_files",
+        "completed_import_refreshes_existing_record_metadata",
+        "reads_session_import_in_one_pass"
       ],
       "owner": "downstream",
-      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only. Plugin app declarations are validated against the authenticated ChatGPT app projection; unauthenticated plugin projections may omit apps and are not evidence that downstream plugin/app carry can be removed. Code-mode `ALL_TOOLS` metadata for namespaced MCP/app tools remains short-name plus module metadata, while calls route through the fully qualified callable registry name. Thread-manager snapshots preserve implicit legacy user-message tails as active mid-turn state, and multi-agent spawn normalization treats an empty reasoning-support list as unknown rather than unsupported when explicit requested or role-derived reasoning effort is present. Restricted filesystem profiles keep configured runtime helper executables readable, including codex_linux_sandbox_exe, so archived hosted test runs can re-enter the sandbox helper from extracted test binaries; the Linux bwrap launch path also adds the helper directory and :minimal system runtime roots to the outer bootstrap filesystem view before re-entering the inner seccomp stage.",
+      "notes": "Covers the wide cross-section of runtime tooling that stays downstream-only. Plugin app declarations are validated against the authenticated ChatGPT app projection; unauthenticated plugin projections may omit apps and are not evidence that downstream plugin/app carry can be removed. Code-mode `ALL_TOOLS` metadata for namespaced MCP/app tools remains short-name plus module metadata, while calls route through the fully qualified callable registry name. Thread-manager snapshots preserve implicit legacy user-message tails as active mid-turn state, and multi-agent spawn normalization treats an empty reasoning-support list as unknown rather than unsupported when explicit requested or role-derived reasoning effort is present. Restricted filesystem profiles keep configured runtime helper executables readable, including codex_linux_sandbox_exe, so archived hosted test runs can re-enter the sandbox helper from extracted test binaries; the Linux bwrap launch path also adds the helper directory and :minimal system runtime roots to the outer bootstrap filesystem view before re-entering the inner seccomp stage. External-agent session import carry now lives under the upstream codex-external-agent-migration sessions module; the registry covers only the five files with retained ledger, source-hash, and record-shape differences so adjacent upstream-owned migration code remains visible to the audit.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-capability-adapter",
       "hotspot_files": [
@@ -1424,6 +1557,304 @@
         "codex-rs/protocol/src/protocol.rs"
       ],
       "extraction_target": "domain-specific runtime capability adapters"
+    },
+    {
+      "id": "windows-sandbox-generated-default-normalization",
+      "title": "Windows filesystem boundary compatibility after generated-default retirement",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "Windows workspace-write policy",
+        "protected metadata and explicit carveout boundaries"
+      ],
+      "files": [
+        "codex-rs/protocol/src/permissions.rs",
+        "codex-rs/sandboxing/src/policy_transforms.rs",
+        "codex-rs/sandboxing/src/policy_transforms_tests.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/token.rs",
+        "codex-rs/windows-sandbox-rs/src/token_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs"
+      ],
+      "required_markers": {
+        "codex-rs/protocol/src/permissions.rs": [
+          "FileSystemSpecialPath::SlashTmp",
+          "if !cfg!(unix)"
+        ],
+        "codex-rs/sandboxing/src/policy_transforms.rs": [
+          "FileSystemSpecialPath::SlashTmp",
+          "if !cfg!(unix)"
+        ],
+        "codex-rs/core/src/exec_tests.rs": [
+          "windows_restricted_token_supports_full_read_split_write_read_carveouts"
+        ],
+        "codex-rs/windows-sandbox-rs/src/token.rs": [
+          "build_restricted_sid_entries",
+          "build_default_dacl_sids"
+        ],
+        "codex-rs/windows-sandbox-rs/src/token_tests.rs": [
+          "restricted_sids_exclude_everyone",
+          "default_dacl_keeps_everyone_for_ipc_compatibility"
+        ],
+        "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs": [
+          "legacy_write_restricted_deletion_limitation_is_explicit"
+        ]
+      },
+      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible legacy token excludes Everyone from the restricting SID set, retains it on the default DACL for IPC, and uses WRITE_RESTRICTED for launch compatibility. Standalone DELETE and FILE_DELETE_CHILD checks remain an explicit legacy-backend limitation until bounded capability-SID read access makes full restriction safe. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "5a85351dfe04ae2930858e54ecccba9e239b7ccd"
+      },
+      "guardrail_lane": "GitHub-hosted Bazel Windows tests",
+      "tests": [
+        "filesystem_policy_blocks_protected_metadata_path_writes_by_default",
+        "missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement",
+        "slash_tmp_permission_path_is_unix_only",
+        "windows_restricted_token_supports_full_read_split_write_read_carveouts",
+        "restricted_sids_exclude_everyone",
+        "default_dacl_keeps_everyone_for_ipc_compatibility",
+        "legacy_write_restricted_deletion_limitation_is_explicit"
+      ],
+      "owner": "downstream",
+      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. Hosted full-restriction experiments exposed missing launch/runtime read capabilities and an Everyone-write bypass, so the compatible WRITE_RESTRICTED shape is retained and its deletion limitation is characterized rather than misreported as containment. The executable characterization uses PowerShell 7. Exact gnullvm test-binary status 0xc0000142 proves wrapper traversal only; MSVC and other release-shaped targets retain the read and denied-write assertions. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "windows-sandbox-policy-adapter",
+      "hotspot_files": [
+        "codex-rs/protocol/src/permissions.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/token.rs"
+      ],
+      "extraction_target": "upstream protected-metadata and special-path boundary equivalence"
+    },
+    {
+      "id": "windows-proxy-effective-backend-selection",
+      "title": "Proxy-aware Windows sandbox backend selection",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "Windows managed-network enforcement",
+        "unified-exec Windows process launch",
+        "Windows PowerShell launch policy"
+      ],
+      "files": [
+        "codex-rs/windows-sandbox-rs/src/lib.rs",
+        "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs",
+        "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/sandboxing/src/manager.rs",
+        "codex-rs/core/src/sandboxing/mod.rs",
+        "codex-rs/core/src/exec.rs",
+        "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/src/sandbox_tags.rs",
+        "codex-rs/core/src/sandbox_tags_tests.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/core/src/tools/sandboxing.rs",
+        "codex-rs/core/src/tools/runtimes/mod.rs",
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs",
+        "codex-rs/core/src/tools/runtimes/shell.rs",
+        "codex-rs/core/src/tools/runtimes/unified_exec.rs",
+        "codex-rs/core/tests/suite/unified_exec.rs",
+        "codex-rs/core/tests/suite/windows_sandbox.rs"
+      ],
+      "required_markers": {
+        "codex-rs/windows-sandbox-rs/src/lib.rs": [
+          "pub fn windows_sandbox_uses_elevated_backend"
+        ],
+        "codex-rs/sandboxing/src/windows.rs": [
+          "pub fn resolve_windows_sandbox_filesystem_overrides"
+        ],
+        "codex-rs/core/src/unified_exec/process_manager.rs": [
+          "spawn_windows_sandbox_session_for_level"
+        ],
+        "codex-rs/core/src/sandbox_tags_tests.rs": [
+          "proxy_enforced_restricted_token_uses_windows_elevated_tag"
+        ],
+        "codex-rs/core/src/tools/runtimes/mod_tests.rs": [
+          "proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides"
+        ],
+        "codex-rs/core/tests/suite/unified_exec.rs": [
+          "unified_exec_proxy_blocks_direct_loopback_bypass_on_windows"
+        ]
+      },
+      "behavior": "A managed network proxy selects the elevated Windows sandbox backend even when the configured mode is unelevated. Direct and unified-exec launch paths share the same selector and filesystem-override resolver, PowerShell startup, failure metrics, tool telemetry, and turn metadata use the effective backend, and the elevated firewall prevents direct loopback connections outside the proxy ports.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "4bc2c723efc6445ea833e2ffd1b11e48298fb8f4"
+      },
+      "guardrail_lane": "GitHub-hosted core unit tests and Bazel Windows tests",
+      "tests": [
+        "windows_proxy_enforcement_uses_elevated_backend",
+        "windows_spawn_failure_metric_uses_effective_backend",
+        "proxy_enforced_restricted_token_uses_windows_elevated_tag",
+        "proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides",
+        "inserts_no_profile_for_proxy_selected_elevated_windows_sandbox",
+        "unified_exec_proxy_blocks_direct_loopback_bypass_on_windows"
+      ],
+      "owner": "downstream",
+      "notes": "Upstream commit 4bc2c723ef selected the elevated backend for proxy-enforced direct exec, but unified exec, override preparation, PowerShell startup, and metric attribution still followed the configured level. Preserve the shared effective-backend decision until upstream carries the complete launch contract.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "windows-sandbox-policy-adapter",
+      "hotspot_files": [
+        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs"
+      ],
+      "extraction_target": "upstream proxy-aware Windows launch contract"
+    },
+    {
+      "id": "app-server-command-cwd-windows-sandbox-mode",
+      "title": "Command-cwd Windows sandbox mode",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "app-server command/exec permission profiles",
+        "trusted project-local Windows sandbox configuration"
+      ],
+      "files": [
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/command_exec.rs",
+        "codex-rs/app-server/README.md"
+      ],
+      "required_markers": {
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs": [
+          "WindowsSandboxLevel::from_config(&config)"
+        ],
+        "codex-rs/app-server/tests/suite/v2/command_exec.rs": [
+          "command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode"
+        ]
+      },
+      "behavior": "When command/exec selects a permissionProfile, the trusted project resolved from the command cwd supplies the Windows sandbox level together with its permission profile, workspace roots, and network policy instead of inheriting the app-server process's global Windows mode.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "8e8fd94c602a1c6c59171fe1f16982710bc476c3"
+      },
+      "guardrail_lane": "GitHub blocking-ci Bazel tests on Unix and Windows",
+      "tests": [
+        "command_exec_permission_profile_project_roots_use_command_cwd",
+        "command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode"
+      ],
+      "owner": "downstream",
+      "notes": "This restores the upstream command-cwd reload behavior introduced by 8e8fd94c60 and regressed by 4bc2c723ef. Without it, a project that explicitly selects the unelevated sandbox can be executed with the app-server's unrelated global mode, including disabled sandboxing.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/app-server/src/request_processors/command_exec_processor.rs"
+      ],
+      "extraction_target": "restore upstream command-cwd Windows sandbox selection"
+    },
+    {
+      "id": "external-agent-migration-repository-containment",
+      "title": "External-agent migration path containment",
+      "status": "live",
+      "category": "security",
+      "surface_type": "runtime-policy",
+      "surface": [
+        "repository-scoped external-agent import",
+        "migration target symlink handling",
+        "home-scoped memory import destinations"
+      ],
+      "files": [
+        ".github/scripts/test_ci_planners.py",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+        "codex-rs/external-agent-migration/Cargo.toml",
+        "codex-rs/external-agent-migration/src/detect/mod.rs",
+        "codex-rs/external-agent-migration/src/hooks_common.rs",
+        "codex-rs/external-agent-migration/src/lib_tests.rs",
+        "codex-rs/external-agent-migration/src/memory_import.rs",
+        "codex-rs/external-agent-migration/src/memory_import_tests.rs",
+        "codex-rs/external-agent-migration/src/migration_source.rs",
+        "codex-rs/external-agent-migration/src/scope.rs",
+        "codex-rs/external-agent-migration/src/scope_tests.rs",
+        "codex-rs/external-agent-migration/src/service.rs",
+        "codex-rs/external-agent-migration/src/service_tests.rs",
+        "codex-rs/external-agent-migration/src/service_tests/containment.rs",
+        "codex-rs/external-agent-migration/src/service_tests/general/config_import.rs",
+        "codex-rs/external-agent-migration/src/service_tests/general/detection.rs",
+        "codex-rs/external-agent-migration/src/service_tests/general/repo_import.rs",
+        "codex-rs/external-agent-migration/src/service_tests/plugins/basics.rs",
+        "codex-rs/external-agent-migration/src/service_tests/plugins/marketplaces.rs",
+        "codex-rs/external-agent-migration/src/source/cla.rs",
+        "codex-rs/external-agent-migration/src/source/cur.rs",
+        "codex-rs/external-agent-migration/src/subagents.rs",
+        "codex-rs/external-agent-migration/src/utils.rs",
+        "justfile"
+      ],
+      "required_markers": {
+        "codex-rs/external-agent-migration/src/service_tests.rs": [
+          "#[path = \"service_tests/containment.rs\"]",
+          "mod containment;"
+        ],
+        "codex-rs/external-agent-migration/src/scope_tests.rs": [
+          "detect_repo_canonicalizes_relative_cwd",
+          "detect_repo_canonicalizes_without_windows_verbatim_prefix"
+        ],
+        "codex-rs/external-agent-migration/src/service_tests/containment.rs": [
+          "detect_repo_rejects_symlinked_local_settings",
+          "import_repo_hooks_rejects_symlinked_target_parent"
+        ],
+        "codex-rs/external-agent-migration/src/memory_import_tests.rs": [
+          "projects_needing_import_rejects_symlinked_stale_memory_project",
+          "projects_needing_import_rejects_symlinked_stale_project_scope"
+        ],
+        "codex-rs/external-agent-migration/src/utils.rs": [
+          "ensure_migration_path_rejects_parent_after_missing_component"
+        ],
+        "codex-rs/app-server/tests/suite/v2/external_agent_config.rs": [
+          "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation"
+        ]
+      },
+      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, every resource entry, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them. Only directories with a regular non-symlink scope.json marker are managed; ordinary metadata and unmarked directories are ignored.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "c61390d3acc273e711b0e90feaa9dadd43b5a792",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.external-agent-migration-containment-targeted; rust-ci-full; CodeQL Advanced",
+      "tests": [
+        "detect_repo_canonicalizes_relative_cwd",
+        "detect_repo_canonicalizes_symlinked_nested_cwd_before_containment_checks",
+        "detect_repo_canonicalizes_without_windows_verbatim_prefix",
+        "detect_repo_rejects_symlinked_local_settings",
+        "detect_repo_rejects_symlinked_mcp_source",
+        "import_repo_config_rejects_symlinked_local_settings",
+        "import_repo_mcp_rejects_symlinked_source_files",
+        "import_repo_hooks_rejects_symlinked_local_settings",
+        "import_repo_hooks_rejects_symlinked_script_root",
+        "import_repo_skills_rejects_symlinked_source_root",
+        "import_repo_skills_rejects_symlinked_destination_root",
+        "import_repo_hooks_rejects_symlinked_target_file",
+        "import_repo_hooks_rejects_symlinked_target_parent",
+        "subagent_import_skips_dangling_symlink_target",
+        "rejects_memory_project_keys_that_are_not_single_components",
+        "rejects_symlinked_memory_destination_ancestors",
+        "projects_needing_import_rejects_symlinked_stale_memory_project",
+        "projects_needing_import_rejects_symlinked_stale_project_scope",
+        "rejects_symlinked_memory_instructions_before_project_mutation",
+        "rejects_symlinked_memory_resource_and_scope_leaves",
+        "ensure_migration_path_rejects_parent_after_missing_component",
+        "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation",
+        "removes_project_resources_when_the_source_project_disappears"
+      ],
+      "owner": "downstream",
+      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. Marker-based ownership affects future detection; one-time backfill of unchanged pre-marker imports is tracked separately and is not an automatic sync mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "filesystem-containment",
+      "hotspot_files": [
+        "codex-rs/external-agent-migration/src/scope.rs",
+        "codex-rs/external-agent-migration/src/service.rs",
+        "codex-rs/external-agent-migration/src/memory_import.rs",
+        "codex-rs/external-agent-migration/src/utils.rs"
+      ],
+      "extraction_target": "upstream external-agent migration containment"
     },
     {
       "id": "shell-tool-mcp-project",
@@ -1528,6 +1959,7 @@
         "scripts/stage_npm_packages.py",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "codex-rs/exec-server/tests/http_client.rs",
         "scripts/list-bazel-clippy-targets.sh",
         "defs.bzl",
         "patches/",
@@ -1550,13 +1982,13 @@
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
+      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted",
+      "guardrail_lane": "codex.build-policy-sanity; codex.sdk-python-targeted; blocking-ci macOS Bazel tests",
       "tests": [
         "bash -n scripts/install/install.sh",
         "test_custom_repository_and_tag_prefix_drive_latest_urls",
@@ -1566,13 +1998,15 @@
         "codex.sdk-python-targeted",
         "test_stage_runtime_release_rejects_archive_path_traversal",
         "test_stage_runtime_release_rejects_archive_links",
+        "http_response_body_stream_enforces_queued_byte_budget",
+        "http_response_body_streams_share_queued_byte_budget",
         "system_proxy_cache_key_preserves_url_specific_pac_decisions",
         "managed_ca_certificate_path_uses_matching_content_hash",
         "environment_id_fallback_has_cwd_prefix",
         "returns thread events"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The Windows direct-loopback fixture observes a bounded native curl attempt, cleans up a WFP-stalled command through Codex's registered background-terminal path, and requires zero requests at its unique non-proxy endpoint while preserving distinct connected, denied, and probe-error outcomes. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction. The exec-server stress-test deadlines are test-only and may be dropped when upstream uses readiness-based completion conditions or equivalent cold-run-safe bounds.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [
@@ -1814,11 +2248,20 @@
       "title": "Complete MCP tool catalogue collection and refresh",
       "status": "live",
       "category": "tool-catalog",
-      "surface": ["paginated tools/list", "notifications/tools/list_changed"],
+      "surface": [
+        "paginated tools/list",
+        "notifications/tools/list_changed",
+        "connector and regular MCP catalogue caches"
+      ],
       "files": [
         "codex-rs/rmcp-client/src/rmcp_client.rs",
+        "codex-rs/connectors/src/connector_runtime/mod.rs",
+        "codex-rs/codex-mcp/src/connection_manager.rs",
         "codex-rs/codex-mcp/src/rmcp_client.rs",
         "codex-rs/codex-mcp/src/rmcp_client_tests.rs",
+        "codex-rs/codex-mcp/src/tool_catalog_cache.rs",
+        "codex-rs/app-server/tests/suite/v2/mcp_server_status.rs",
+        "codex-rs/core/tests/suite/mcp_tool_cache.rs",
         "codex-rs/core/tests/suite/rmcp_client.rs",
         "docs/carry-divergence-ledger.md",
         "docs/downstream-regression-matrix.md",
@@ -1832,22 +2275,27 @@
           "streamable_http_discovers_and_calls_later_page_tool"
         ]
       },
-      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure.",
+      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-test-progressive",
       "tests": [
         "streamable_http_discovers_and_calls_later_page_tool",
         "list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot",
-        "complete_tool_walk_rejects_cursor_cycles"
+        "complete_tool_walk_rejects_cursor_cycles",
+        "tool_catalog_cache_bypasses_remote_sourced_environment_variables",
+        "mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools",
+        "regular_mcp_definition_cache_preserves_live_session_state"
       ],
       "owner": "downstream",
-      "notes": "Preserve until upstream issue #26094 is closed by behavior equivalent to this bounded complete-snapshot contract; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [
         "codex-rs/rmcp-client/src/rmcp_client.rs",
-        "codex-rs/codex-mcp/src/rmcp_client.rs"
+        "codex-rs/connectors/src/connector_runtime/mod.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/tool_catalog_cache.rs"
       ],
       "extraction_target": "upstream MCP complete-catalogue collection and refresh"
     },

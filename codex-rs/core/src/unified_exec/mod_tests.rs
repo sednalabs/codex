@@ -1,6 +1,7 @@
 use super::head_tail_buffer::HeadTailBuffer;
 use super::*;
 use crate::codex_thread::BackgroundTerminalInfo;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::exec::ExecCapturePolicy;
 use crate::exec::ExecExpiration;
 use crate::sandboxing::ExecRequest;
@@ -552,67 +553,6 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-#[ignore] // Ignored while we have a better way to test this.
-async fn requests_with_large_timeout_are_capped() -> anyhow::Result<()> {
-    let (session, turn) = test_session_and_turn().await;
-
-    let result = exec_command(
-        &session,
-        &turn,
-        "echo codex",
-        /*yield_time_ms*/ 120_000,
-        /*workdir*/ None,
-    )
-    .await?;
-
-    assert!(result.process_id.is_some());
-    assert!(
-        result
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains("codex")
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore] // Ignored while we have a better way to test this.
-async fn completed_commands_do_not_persist_sessions() -> anyhow::Result<()> {
-    let (session, turn) = test_session_and_turn().await;
-    let result = exec_command(
-        &session,
-        &turn,
-        "echo codex",
-        /*yield_time_ms*/ 2_500,
-        /*workdir*/ None,
-    )
-    .await?;
-
-    assert!(
-        result.process_id.is_some(),
-        "completed command should report a process id"
-    );
-    assert!(
-        result
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains("codex")
-    );
-
-    assert!(
-        session
-            .services
-            .unified_exec_manager
-            .process_store
-            .lock()
-            .await
-            .processes
-            .is_empty()
-    );
-
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reusing_completed_process_returns_unknown_process() -> anyhow::Result<()> {
     skip_if_sandbox!(Ok(()));
@@ -892,8 +832,10 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
 
     let remote_test_env = remote_test_env().await?;
     let (_, mut turn) = make_session_and_context().await;
-    turn.environments.turn_environments[0].environment =
-        Arc::new(remote_test_env.environment().clone());
+    let TurnEnvironmentState::Ready(environment) = &mut turn.environments.environments[0] else {
+        panic!("expected ready primary environment");
+    };
+    environment.environment = Arc::new(remote_test_env.environment().clone());
 
     #[allow(deprecated)]
     let cwd = turn.cwd.clone();

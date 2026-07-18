@@ -1,5 +1,7 @@
 use anyhow::Result;
 use codex_config::types::Personality;
+use codex_core::config::Config;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::manager::RefreshStrategy;
@@ -37,6 +39,8 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
+use std::time::Duration;
 use wiremock::MockServer;
 
 fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> Op {
@@ -477,17 +481,21 @@ async fn null_service_tier_override_is_omitted_from_http_turn_with_catalog_defau
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<()> {
+async fn model_change_from_multimodal_to_text_strips_prior_media_content() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
-    let image_model_slug = "test-image-model";
+    let multimodal_model_slug = "test-multimodal-model";
     let text_model_slug = "test-text-only-model";
-    let image_model = test_model_info(
-        image_model_slug,
-        "Test Image Model",
-        "supports image input",
-        default_input_modalities(),
+    let multimodal_model = test_model_info(
+        multimodal_model_slug,
+        "Test Multimodal Model",
+        "supports image and audio input",
+        vec![
+            InputModality::Text,
+            InputModality::Image,
+            InputModality::Audio,
+        ],
     );
     let text_model = test_model_info(
         text_model_slug,
@@ -498,7 +506,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
     mount_models_once(
         &server,
         ModelsResponse {
-            models: vec![image_model, text_model],
+            models: vec![multimodal_model, text_model],
         },
     )
     .await;
@@ -512,7 +520,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
-            config.model = Some(image_model_slug.to_string());
+            config.model = Some(multimodal_model_slug.to_string());
         });
     let test = builder.build(&server).await?;
     let models_manager = test.thread_manager.get_models_manager();
@@ -533,12 +541,15 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
                     image_url: image_url.clone(),
                     detail: None,
                 },
+                UserInput::Audio {
+                    audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                },
                 UserInput::Text {
                     text: "first turn".to_string(),
                     text_elements: Vec::new(),
                 },
             ],
-            image_model_slug.to_string(),
+            multimodal_model_slug.to_string(),
         ))
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -563,11 +574,19 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
         !first_request.message_input_image_urls("user").is_empty(),
         "first request should include the uploaded image"
     );
+    assert_eq!(
+        first_request.message_input_audio_urls("user"),
+        vec!["data:audio/wav;base64,YXVkaW8=".to_string()]
+    );
 
     let second_request = requests.last().expect("expected second request");
     assert!(
         second_request.message_input_image_urls("user").is_empty(),
         "second request should strip unsupported image content"
+    );
+    assert!(
+        second_request.message_input_audio_urls("user").is_empty(),
+        "second request should strip unsupported audio content"
     );
     let second_user_texts = second_request.message_input_texts("user");
     assert!(
@@ -575,6 +594,12 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
             .iter()
             .any(|text| text == "image content omitted because you do not support image input"),
         "second request should include the image-omitted placeholder text"
+    );
+    assert!(
+        second_user_texts
+            .iter()
+            .any(|text| text == "audio content omitted because you do not support audio input"),
+        "second request should include the audio-omitted placeholder text"
     );
     Ok(())
 }
@@ -787,6 +812,21 @@ async fn model_change_from_generated_image_to_text_preserves_prior_generated_ima
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_rollback_after_generated_image_drops_entire_image_turn_history() -> Result<()> {
+    struct ThreadIdleCounter {
+        tx: tokio::sync::watch::Sender<u64>,
+    }
+
+    impl codex_extension_api::ThreadLifecycleContributor<Config> for ThreadIdleCounter {
+        fn on_thread_idle<'a>(
+            &'a self,
+            _input: codex_extension_api::ThreadIdleInput<'a>,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                self.tx.send_modify(|count| *count += 1);
+            })
+        }
+    }
+
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
@@ -818,7 +858,11 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
     )
     .await;
 
+    let (thread_idle_tx, mut thread_idle_rx) = tokio::sync::watch::channel(0_u64);
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleCounter { tx: thread_idle_tx }));
     let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(move |config| {
             config.model = Some(image_model_slug.to_string());
@@ -832,6 +876,7 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
         )
         .await;
 
+    let idle_count_before_turn = *thread_idle_rx.borrow();
     test.codex
         .submit(read_only_user_turn(
             &test,
@@ -844,13 +889,39 @@ async fn thread_rollback_after_generated_image_drops_entire_image_turn_history()
         .await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    test.codex
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *thread_idle_rx.borrow_and_update() <= idle_count_before_turn {
+            thread_idle_rx
+                .changed()
+                .await
+                .expect("thread idle counter should remain available");
+        }
+    })
+    .await
+    .expect("timed out waiting for the image turn to become idle");
+
+    let rollback_id = test
+        .codex
         .submit(Op::ThreadRollback { num_turns: 1 })
         .await?;
-    wait_for_event(&test.codex, |ev| {
-        matches!(ev, EventMsg::ThreadRolledBack(_))
+    let rollback_event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = test.codex.next_event().await?;
+            if event.id != rollback_id {
+                continue;
+            }
+            match event.msg {
+                EventMsg::ThreadRolledBack(event) => return Ok(event),
+                EventMsg::Error(error) => {
+                    anyhow::bail!("thread rollback failed: {}", error.message);
+                }
+                _ => {}
+            }
+        }
     })
-    .await;
+    .await
+    .expect("timed out waiting for thread rollback")?;
+    assert_eq!(rollback_event.num_turns, 1);
 
     test.codex
         .submit(read_only_user_turn(

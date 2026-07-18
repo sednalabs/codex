@@ -395,9 +395,14 @@ fn resolve_permission_path(path: &FileSystemPath, cwd: &Path) -> Option<Absolute
                     AbsolutePathBuf::from_absolute_path(PathBuf::from(tmpdir)).ok()
                 }
             }
-            FileSystemSpecialPath::SlashTmp => AbsolutePathBuf::from_absolute_path("/tmp")
-                .ok()
-                .filter(|path| path.as_path().is_dir()),
+            FileSystemSpecialPath::SlashTmp => {
+                if !cfg!(unix) {
+                    return None;
+                }
+                AbsolutePathBuf::from_absolute_path("/tmp")
+                    .ok()
+                    .filter(|path| path.as_path().is_dir())
+            }
             FileSystemSpecialPath::Minimal | FileSystemSpecialPath::Unknown { .. } => None,
         },
     }

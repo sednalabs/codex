@@ -1146,6 +1146,24 @@
         },
         {
           "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_audio",
+              "title": "InputAudioContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "audio_url"
+          ],
+          "title": "InputAudioContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "text": {
               "type": "string"
             },
@@ -1274,6 +1292,21 @@
       ],
       "type": "string"
     },
+    "EnvironmentConnectionNotification": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "environmentId"
+      ],
+      "type": "object"
+    },
     "ErrorNotification": {
       "properties": {
         "error": {
@@ -1339,6 +1372,12 @@
           "type": "string"
         },
         "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subErrorType": {
           "type": [
             "string",
             "null"
@@ -1434,6 +1473,7 @@
         "SUBAGENTS",
         "HOOKS",
         "COMMANDS",
+        "MEMORY",
         "SESSIONS"
       ],
       "type": "string"
@@ -1604,9 +1644,13 @@
               "type": "string"
             },
             "subpath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
               ]
             }
           },
@@ -1652,9 +1696,13 @@
               "type": "string"
             },
             "subpath": {
-              "type": [
-                "string",
-                "null"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LegacyAppPathString"
+                },
+                {
+                  "type": "null"
+                }
               ]
             }
           },
@@ -1766,6 +1814,24 @@
             "image_url"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_audio",
+              "title": "InputAudioFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "audio_url"
+          ],
+          "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
         },
         {
@@ -2199,6 +2265,7 @@
         "preCompact",
         "postCompact",
         "sessionStart",
+        "sessionEnd",
         "userPromptSubmit",
         "subagentStart",
         "subagentStop",
@@ -2771,12 +2838,6 @@
             "string",
             "null"
           ]
-        },
-        "templateId": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -3338,6 +3399,13 @@
               "type": "null"
             }
           ]
+        },
+        "spendControlReached": {
+          "description": "Backend-reported spend-control state. `None` is unavailable, not a sparse-update recovery.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -3368,6 +3436,36 @@
       ],
       "type": "object"
     },
+    "RawResponseCompletedNotification": {
+      "description": "Internal-only notification containing the exact usage from one upstream\nResponses API completion.",
+      "properties": {
+        "responseId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsageBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "responseId"
+      ],
+      "type": "object"
+    },
     "RawResponseItemCompletedNotification": {
       "properties": {
         "item": {
@@ -3390,7 +3488,8 @@
     "RealtimeConversationVersion": {
       "enum": [
         "v1",
-        "v2"
+        "v2",
+        "v3"
       ],
       "type": "string"
     },
@@ -4626,6 +4725,24 @@
       "description": "Notification emitted when watched local skill files change.\n\nTreat this as an invalidation signal and re-run `skills/list` with the\nclient's current parameters when refreshed skill metadata is needed.",
       "type": "object"
     },
+    "SleepItem": {
+      "description": "Display item emitted by the interruptible `clock.sleep` tool.",
+      "properties": {
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "durationMs"
+      ],
+      "type": "object"
+    },
     "SpendControlLimitSnapshot": {
       "properties": {
         "limit": {
@@ -4871,6 +4988,13 @@
           "description": "Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "canAcceptDirectInput": {
+          "description": "Whether the app server accepts direct turn input for this loaded thread.\n`None` means the capability is unavailable, such as for an unloaded stored thread.",
+          "type": [
+            "boolean",
             "null"
           ]
         },
@@ -5800,15 +5924,8 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/SleepItem",
           "properties": {
-            "durationMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "id": {
-              "type": "string"
-            },
             "type": {
               "const": "sleep",
               "title": "SleepThreadItemType",
@@ -5816,9 +5933,7 @@
             }
           },
           "required": [
-            "type",
-            "id",
-            "durationMs"
+            "type"
           ],
           "title": "SleepThreadItem",
           "type": "object"
@@ -6353,6 +6468,11 @@
     },
     "TokenUsageBreakdown": {
       "properties": {
+        "cacheWriteInputTokens": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "cachedInputTokens": {
           "format": "int64",
           "type": "integer"
@@ -6723,6 +6843,42 @@
         },
         {
           "properties": {
+            "type": {
+              "const": "audio",
+              "title": "AudioUserInputType",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "title": "AudioUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "localAudio",
+              "title": "LocalAudioUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "LocalAudioUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
             "name": {
               "type": "string"
             },
@@ -6896,6 +7052,15 @@
         },
         "query": {
           "type": "string"
+        },
+        "results": {
+          "default": null,
+          "description": "Structured search results returned out-of-band by standalone web search.\n\nThese stay as opaque JSON at the extension/app-server boundary so new\nresult fields and result types can pass through without a Codex release.",
+          "items": true,
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [
@@ -7157,6 +7322,42 @@
         "params"
       ],
       "title": "Thread/goal/clearedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/environment/connected",
+          "title": "Thread/environment/connectedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/EnvironmentConnectionNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/environment/connectedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "const": "thread/environment/disconnected",
+          "title": "Thread/environment/disconnectedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/EnvironmentConnectionNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/environment/disconnectedNotification",
       "type": "object"
     },
     {
@@ -8193,5 +8394,12 @@
       "type": "object"
     }
   ],
+  "properties": {
+    "emittedAtMs": {
+      "description": "Unix timestamp (in milliseconds) when app-server emitted this notification.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
   "title": "ServerNotification"
 }

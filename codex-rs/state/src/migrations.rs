@@ -102,6 +102,27 @@ async fn repair_migration_version(
         return Ok(());
     }
 
+    let legacy_migration_needs_repair = sqlx::query_scalar::<_, i64>(
+        r#"
+SELECT 1
+FROM _sqlx_migrations
+WHERE version = ?
+  AND checksum = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM _sqlx_migrations WHERE version = ?
+  )
+        "#,
+    )
+    .bind(legacy_version)
+    .bind(current_migration.checksum.as_ref())
+    .bind(current_migration.version)
+    .fetch_optional(pool)
+    .await?
+    .is_some();
+    if !legacy_migration_needs_repair {
+        return Ok(());
+    }
+
     sqlx::query(
         r#"
 UPDATE _sqlx_migrations

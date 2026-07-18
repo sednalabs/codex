@@ -115,6 +115,7 @@
         "preCompact",
         "postCompact",
         "sessionStart",
+        "sessionEnd",
         "userPromptSubmit",
         "subagentStart",
         "subagentStop",
@@ -665,6 +666,13 @@
           "description": "Version of the locally materialized plugin package when available.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "mustShowInstallationInterstitial": {
+          "default": null,
+          "type": [
+            "boolean",
             "null"
           ]
         },

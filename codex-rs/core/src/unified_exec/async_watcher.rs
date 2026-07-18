@@ -1,10 +1,8 @@
-use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
-use tokio::time::Sleep;
 
 use super::UnifiedExecContext;
 use super::process::UnifiedExecProcess;
@@ -24,8 +22,6 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecOutputStream;
 use codex_utils_path_uri::PathUri;
 
-pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
-
 /// Upper bound for a single ExecCommandOutputDelta chunk emitted by unified exec.
 ///
 /// The unified exec output buffer already caps *retained* output (see
@@ -34,17 +30,13 @@ pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
 /// process arbitrarily large delta payloads.
 const UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES: usize = 8192;
 
-/// Spawn a background task that continuously reads from the PTY, appends to the
-/// shared transcript, and emits ExecCommandOutputDelta events on UTF‑8
-/// boundaries.
-pub(crate) fn start_streaming_output(
-    process: &UnifiedExecProcess,
-    context: &UnifiedExecContext,
-    transcript: Arc<Mutex<HeadTailBuffer>>,
-) {
+/// Spawn a background task that continuously reads process output and emits
+/// best-effort ExecCommandOutputDelta events on UTF-8 boundaries. The process
+/// owns the authoritative final transcript before output reaches this stream.
+pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &UnifiedExecContext) {
     let mut receiver = process.output_receiver();
     let output_drained = process.output_drained_notify();
-    let exit_token = process.cancellation_token();
+    let (output_closed, output_closed_notify) = process.output_completion_handles();
 
     let session_ref = Arc::clone(&context.session);
     let turn_ref = Arc::clone(&context.turn);
@@ -55,25 +47,12 @@ pub(crate) fn start_streaming_output(
 
         let mut pending = Vec::<u8>::new();
         let mut emitted_deltas: usize = 0;
-
-        let mut grace_sleep: Option<Pin<Box<Sleep>>> = None;
+        let source_closed =
+            UnifiedExecProcess::wait_for_output_closed_handles(output_closed, output_closed_notify);
+        tokio::pin!(source_closed);
 
         loop {
             tokio::select! {
-                _ = exit_token.cancelled(), if grace_sleep.is_none() => {
-                    let deadline = Instant::now() + TRAILING_OUTPUT_GRACE;
-                    grace_sleep.replace(Box::pin(tokio::time::sleep_until(deadline)));
-                }
-
-                _ = async {
-                    if let Some(sleep) = grace_sleep.as_mut() {
-                        sleep.as_mut().await;
-                    }
-                }, if grace_sleep.is_some() => {
-                    output_drained.notify_one();
-                    break;
-                }
-
                 received = receiver.recv() => {
                     let chunk = match received {
                         Ok(chunk) => chunk,
@@ -81,14 +60,12 @@ pub(crate) fn start_streaming_output(
                             continue;
                         },
                         Err(RecvError::Closed) => {
-                            output_drained.notify_one();
                             break;
                         }
                     };
 
                     process_chunk(
                         &mut pending,
-                        &transcript,
                         &call_id,
                         &session_ref,
                         &turn_ref,
@@ -96,8 +73,29 @@ pub(crate) fn start_streaming_output(
                         chunk,
                     ).await;
                 }
+                _ = &mut source_closed => break,
             }
         }
+
+        loop {
+            match receiver.try_recv() {
+                Ok(chunk) => {
+                    process_chunk(
+                        &mut pending,
+                        &call_id,
+                        &session_ref,
+                        &turn_ref,
+                        &mut emitted_deltas,
+                        chunk,
+                    )
+                    .await;
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        output_drained.notify_one();
     });
 }
 
@@ -116,11 +114,10 @@ pub(crate) fn spawn_exit_watcher(
     started_at: Instant,
 ) {
     let exit_token = process.cancellation_token();
-    let output_drained = process.output_drained_notify();
 
     tokio::spawn(async move {
         exit_token.cancelled().await;
-        output_drained.notified().await;
+        process.wait_for_output_completion().await;
 
         let duration = Instant::now().saturating_duration_since(started_at);
         if let Some(message) = process.failure_message() {
@@ -158,7 +155,6 @@ pub(crate) fn spawn_exit_watcher(
 
 async fn process_chunk(
     pending: &mut Vec<u8>,
-    transcript: &Arc<Mutex<HeadTailBuffer>>,
     call_id: &str,
     session_ref: &Arc<Session>,
     turn_ref: &Arc<TurnContext>,
@@ -167,11 +163,6 @@ async fn process_chunk(
 ) {
     pending.extend_from_slice(&chunk);
     while let Some(prefix) = split_valid_utf8_prefix(pending) {
-        {
-            let mut guard = transcript.lock().await;
-            guard.push_chunk(prefix.to_vec());
-        }
-
         if *emitted_deltas >= MAX_EXEC_OUTPUT_DELTAS_PER_CALL {
             continue;
         }
@@ -250,11 +241,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     message: String,
     duration: Duration,
 ) {
-    let stdout = if fallback_output.is_empty() {
-        resolve_aggregated_output(&transcript, fallback_output).await
-    } else {
-        fallback_output
-    };
+    let stdout = resolve_aggregated_output(&transcript, fallback_output).await;
     let aggregated_output = if stdout.is_empty() {
         message.clone()
     } else {

@@ -37,6 +37,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -135,7 +136,7 @@ pub(crate) async fn run_compact_task(
         trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
-        collaboration_mode_kind: turn_context.collaboration_mode.mode,
+        collaboration_mode_kind: turn_context.mode,
     });
     sess.send_event(&turn_context, start_event).await;
     run_compact_task_inner(
@@ -418,6 +419,7 @@ pub(crate) struct CompactionAnalyticsDetails {
     pub(crate) retained_image_count: Option<usize>,
     pub(crate) compaction_summary_tokens: Option<i64>,
     pub(crate) cached_input_tokens: Option<i64>,
+    pub(crate) cache_write_input_tokens: Option<i64>,
 }
 
 impl CompactionAnalyticsAttempt {
@@ -455,6 +457,7 @@ impl CompactionAnalyticsAttempt {
             retained_image_count,
             compaction_summary_tokens,
             cached_input_tokens,
+            cache_write_input_tokens,
         } = details;
         let active_context_tokens_before =
             active_context_tokens_before.unwrap_or(self.active_context_tokens_before);
@@ -478,6 +481,7 @@ impl CompactionAnalyticsAttempt {
                 retained_image_count,
                 compaction_summary_tokens,
                 cached_input_tokens,
+                cache_write_input_tokens,
                 started_at: self.started_at,
                 completed_at: now_unix_seconds(),
                 duration_ms: Some(
@@ -504,7 +508,7 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
                     pieces.push(text.as_str());
                 }
             }
-            ContentItem::InputImage { .. } => {}
+            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => {}
         }
     }
     if pieces.is_empty() {
@@ -722,12 +726,21 @@ async fn drain_to_completed(
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
             }
-            Ok(ResponseEvent::Completed { token_usage, .. }) => {
+            Ok(ResponseEvent::Completed {
+                response_id,
+                token_usage,
+                ..
+            }) => {
+                sess.send_event(
+                    turn_context,
+                    EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                        response_id,
+                        token_usage: token_usage.clone(),
+                    }),
+                )
+                .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
-                    .await;
-                if let Some(token_usage) = token_usage.as_ref() {
-                    sess.record_rollout_budget_usage(token_usage)?;
-                }
+                    .await?;
                 return Ok(());
             }
             Ok(_) => continue,

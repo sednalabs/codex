@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-12`
-- downstream branch `main` code tree: `a86d2c53a68eabb436bb641d1553db49c44f527f`
-- comparison basis: `mirror`
-- mirror branch `upstream-main` (`origin/upstream-main`): `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- `upstream/main`: `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
-- downstream branch vs `upstream/main`: `1665` downstream ahead, `0` upstream ahead
+- Audited on: `2026-07-18`
+- downstream integration code tree: `7bd2859b6b53f9202a3cf8efba4d625fa81a2701`
+- comparison basis: `upstream/main`
+- mirror branch `upstream-main` (`origin/upstream-main`): `56395bddaf26eb2829387ca6a417bf9128e5b239`
+- `upstream/main`: `56395bddaf26eb2829387ca6a417bf9128e5b239`
+- downstream branch vs `upstream/main`: `1823` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only commits at audit time: `1461` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1582` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -58,9 +58,10 @@ docs-only refresh commit that records this snapshot.
   and the non-sandbox V8 release artifact; explicit sandbox coverage remains in
   `v8-canary`. The `remote_tests` replay job keeps a 45-minute hosted budget so
   long archive download and remote-environment setup time does not masquerade
-  as a product failure. Remote replay skips host-only compact/resume and hook
-  fixtures, while Guardian's local proxy fixtures use a host-native cwd. The
-  large-output summary remains host-only until exec-server replay preserves
+  as a product failure. Remote replay skips host-only compact/resume, hook, and
+  forced-`rm` shell-safety/approval fixtures, while Guardian's local proxy
+  fixtures use a host-native cwd. The large-output summary remains host-only
+  until exec-server replay preserves
   bounded head, tail, and omission metadata before core subscribes. The
   `codex.skill-loader-fixture-hermeticity-targeted` lane pins the two
   skill-loader fixture assertions that suppress or ignore ambient parent
@@ -135,6 +136,12 @@ docs-only refresh commit that records this snapshot.
 - Windows hosted setup prefers a real Dev Drive but falls back to an existing
   secondary or system volume when the runner image lacks Dev Drive formatting,
   so validation does not fail before the requested command starts.
+- Windows Bazel shards serialize local test actions because sandbox identities,
+  ACLs, and firewall rules are host-global; concurrent policy tests can
+  otherwise invalidate one another and create false allow/deny results. The
+  Bazel CI wrapper applies its selected rc config before explicit caller flags,
+  so the workflow's `--local_test_jobs=1` limit cannot be silently reset by the
+  Windows cross-build config.
 - Helper-backed local validation and release flows may be used when configured,
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
@@ -164,6 +171,120 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/Cargo.lock`
   - `docs/contributing.md`
   - `docs/downstream.md`
+
+### Windows Filesystem Boundary Compatibility
+
+- The 2026-07-16 sync adopts upstream commit `5a85351dfe`, which retires the
+  `GeneratedDefault` provenance and its setup-time metadata normalization.
+  Downstream no longer claims that either Windows backend can reserve absent
+  `.git`, `.agents`, or `.codex` child names without filesystem interception.
+- The `/tmp` special root remains Unix-only. Treating root-relative `/tmp` as a
+  Windows drive path would create a split writable-root policy that the legacy
+  restricted-token backend cannot enforce.
+- Explicit read-only carveouts and pre-existing protected metadata remain the
+  enforceable boundary. Keep those assertions holistic rather than restoring
+  removed setup-side-effect tests or persistent sentinel directories.
+- The compatible legacy token keeps Everyone on its default DACL for IPC, but
+  excludes Everyone from the restricting SID set and retains `WRITE_RESTRICTED`
+  so existing launch and runtime dependencies remain readable. This preserves
+  the pre-existing backend behavior; it does not make capability-SID deny ACEs
+  authoritative for standalone `DELETE` or `FILE_DELETE_CHILD` checks.
+- Hosted comparison run `29628256459` proved the remaining limitation:
+  `WRITE_RESTRICTED` started successfully but deleted both normalized hostile
+  targets, while full restriction without Everyone could not start the process.
+  Full restriction with Everyone passed that fixture and the complete Windows
+  sandbox unit target in run `29628486469`, but review found that any path which
+  grants Everyone write access would also satisfy the restricting check. The
+  merged-head run `29636964666` additionally proved that full restriction breaks
+  PowerShell and gnullvm runtime loading without explicit capability-SID read
+  access. Those runs are diagnostic evidence, not proof that either incomplete
+  full-restriction shape is safe to ship.
+- A durable full-restriction design must provision the exact active capability
+  SIDs with synchronous read/execute access to bounded launch and runtime
+  dependencies, must not derive those roots from ambient `PATH`, and must avoid
+  stale capability ACEs widening later policies. Until then, the normalized
+  deletion fixture deliberately characterizes the legacy limitation rather than
+  claiming containment.
+- Hosted Windows guardrails:
+  `slash_tmp_permission_path_is_unix_only`,
+  `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
+  `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
+  `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
+  `legacy_write_restricted_deletion_limitation_is_explicit`, plus
+  `restricted_sids_exclude_everyone` and
+  `default_dacl_keeps_everyone_for_ipc_compatibility`.
+- The deletion characterization uses PowerShell 7, which adjacent
+  restricted-token tests prove can initialize under the compatible token.
+  Bazel's gnullvm test executable can still fail during helper re-entry with
+  exact status `0xc0000142`; that status proves the wrapper was reached but
+  does not replace the read and denied-write assertions on MSVC and other
+  release-shaped targets.
+- Primary files:
+  - `codex-rs/protocol/src/permissions.rs`
+  - `codex-rs/sandboxing/src/policy_transforms.rs`
+  - `codex-rs/sandboxing/src/policy_transforms_tests.rs`
+  - `codex-rs/sandboxing/src/windows.rs`
+  - `codex-rs/core/src/exec_tests.rs`
+  - `codex-rs/windows-sandbox-rs/src/token.rs`
+  - `codex-rs/windows-sandbox-rs/src/token_tests.rs`
+  - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`
+  - `codex-rs/exec-server/tests/file_system_windows.rs`
+
+### Windows Proxy-Aware Backend Selection
+
+- A managed network proxy is an effective elevated-backend requirement on
+  Windows, regardless of whether the configured sandbox level is elevated or
+  restricted token.
+- Direct exec and unified exec share the same backend selector and filesystem
+  override resolver. The prepared deny-read/write and split-root overrides
+  must reach the canonical Windows session spawner unchanged.
+- PowerShell `-NoProfile` startup, spawn-failure metrics, tool telemetry, and
+  turn metadata follow the effective backend, not only the configured level.
+- The direct-loopback denial fixture runs native `curl.exe` with explicit direct
+  routing and connect/overall deadlines. Because a WFP-blocked connect can
+  outlive curl's own deadline, the fixture makes curl its first potentially
+  blocking operation, observes the bounded unified-exec yield, and terminates
+  only the registered background session through Codex's process manager. The
+  unique non-proxy endpoint must record zero direct requests. Distinct
+  connected, expected-denial, and probe-error outcomes prevent a missing or
+  broken probe from passing.
+- Hosted guardrails:
+  `windows_proxy_enforcement_uses_elevated_backend`,
+  `windows_spawn_failure_metric_uses_effective_backend`,
+  `proxy_enforced_restricted_token_uses_windows_elevated_tag`,
+  `proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides`,
+  `inserts_no_profile_for_proxy_selected_elevated_windows_sandbox`, and
+  `unified_exec_proxy_blocks_direct_loopback_bypass_on_windows`.
+- Upstream provenance: `4bc2c723ef` introduced proxy-selected elevation for
+  direct exec. Preserve this completion carry until unified exec and adjacent
+  launch policy use the same effective-backend contract upstream.
+- Primary files:
+  - `codex-rs/windows-sandbox-rs/src/lib.rs`
+  - `codex-rs/sandboxing/src/windows.rs`
+  - `codex-rs/core/src/sandboxing/mod.rs`
+  - `codex-rs/core/src/exec.rs`
+  - `codex-rs/core/src/sandbox_tags.rs`
+  - `codex-rs/core/src/unified_exec/process_manager.rs`
+  - `codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs`
+
+### App-Server Command-Cwd Windows Sandbox Mode
+
+- `command/exec` with `permissionProfile` reloads the trusted project selected
+  by the command `cwd`; its Windows sandbox mode travels with its permission
+  profile, workspace roots, and network policy.
+- Do not replace that reloaded mode with the app-server process's global mode.
+  A global disabled mode must not silently disable a command project's explicit
+  unelevated sandbox.
+- Hosted guardrails:
+  `command_exec_permission_profile_project_roots_use_command_cwd` and
+  `command_exec_permission_profile_uses_command_cwd_windows_sandbox_mode`.
+- Upstream provenance: `8e8fd94c60` introduced the command-cwd reload behavior;
+  `4bc2c723ef` accidentally dropped the selected level while changing proxy
+  handling. Keep the restoration until upstream restores it.
+- Primary files:
+  - `codex-rs/app-server/src/request_processors/command_exec_processor.rs`
+  - `codex-rs/app-server/tests/suite/v2/command_exec.rs`
+  - `codex-rs/app-server/README.md`
 
 ### Python Code Quality Corrections
 
@@ -200,6 +321,11 @@ docs-only refresh commit that records this snapshot.
   reproduce the downstream per-turn ledger, provider/token metadata, and
   billing-turn reporting semantics before the canonical source of truth can
   move out of this repository.
+- The 2026-07-18 sync adopts upstream's `SqliteConfig` as the single connection
+  factory for state, logs, goals, memories, and the downstream usage database.
+  Downstream extension migrations, generalized state-migration repair, usage
+  telemetry, storage mapping, and failure-path pool cleanup remain additive
+  behavior around that upstream-owned connection seam.
 - Primary files:
   - `codex-rs/core/src/session/session.rs`
   - `codex-rs/state/src/runtime.rs`
@@ -226,11 +352,21 @@ docs-only refresh commit that records this snapshot.
   captures terminal `ResponseEvent::ServerModelIdentity` values so app-server,
   TUI, and usage-ledger consumers receive provider-confirmed identity instead
   of falling back to `None`.
+- Provider calls and fork snapshots retain upstream's prompt-cache write token
+  count as a distinct accounting dimension. The existing non-cached input
+  total remains input minus cache reads, matching upstream telemetry semantics;
+  cache-write usage is stored alongside it rather than silently collapsed.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
   live effective model first so sub-agent status does not regress to the
   parent/session model.
+- The 2026-07-18 sync adopts upstream `tui.resume_cwd`, including remembered
+  current/session directory choices, explicit `--cd` precedence, remote
+  workspace rejection, and persistence-error handling. The same
+  `session_resume` module retains downstream model and reasoning-effort
+  recovery; future syncs must preserve both behaviors rather than selecting
+  one side of that additive seam.
 - Primary files:
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/session/turn_context.rs`
@@ -244,6 +380,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
+  - `codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
@@ -303,6 +440,10 @@ docs-only refresh commit that records this snapshot.
   explicitly rather than treating it as an idempotent transition.
 - Generic thread-metadata inserts and upserts deliberately omit the private
   column, so unrelated metadata writes cannot reset or fabricate provenance.
+- Provenance and collision-repair fixtures use upstream's on-disk
+  `SqliteConfig` test topology. The writer-slot guard holds `BEGIN IMMEDIATE`
+  through a writable pool while generalized repair reads through a separate
+  read-only pool, proving a no-op repair does not need the writer slot.
 - This stage does not classify rollout events, reconstruct history, store
   configured identity values, enforce precedence, or synchronize live state.
 - Primary files:
@@ -335,6 +476,10 @@ docs-only refresh commit that records this snapshot.
   for databases that already recorded the old version. The current example is
   preserving upstream `0040_threads_history_mode.sql` while moving downstream
   visible-thread sort indexes to `0044_threads_visible_sort_indexes.sql`.
+- Upstream `thread_history_migrations/0002_thread_items_item_type.sql` belongs
+  to the separate rebuildable `thread_history_1.sqlite` migrator. It does not
+  collide with downstream state migration `0045`, and must not trigger state
+  migration renumbering or checksum repair.
 - Primary files:
   - `codex-rs/memories/write/src/phase2.rs`
   - `codex-rs/memories/write/src/phase2_attestation.rs`
@@ -361,19 +506,43 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
 
-### Sub-agent orchestration override preservation, inventory metadata, and wait joins
+### Sub-agent selection compatibility, inventory metadata, and wait joins
 
-- Upstream already supports explicit `spawn_agent(model=..., reasoning_effort=...)` child overrides; the live carry divergence is preserving those requests across role reload unless the role explicitly locks the fields.
+- Upstream owns configured default and explicit
+  `spawn_agent(model=..., reasoning_effort=...)` child selection, applies role
+  settings after that selection, and validates the final effective model and
+  reasoning pair.
+- The 2026-07-16 sync adopts upstream's unified `[agents]` configuration,
+  canonical `max_concurrent_threads_per_session` key, legacy `max_threads`
+  normalization, flattened role declarations, and conditional `agent_type`
+  exposure when roles are configured. Configured default sub-agent model and
+  reasoning settings are now active upstream behavior rather than downstream
+  carry.
+- Downstream's Schemars 1.2 adapter intentionally leaves schema-only
+  `deny_unknown_fields` off the flattened `AgentsToml` object so arbitrary
+  `[agents.<role>]` keys remain validated as `AgentRoleToml`. A semantic schema
+  regression locks that role-valued `additionalProperties` contract instead of
+  relying only on generated-fixture equality.
 - Spawn-agent tool guidance should follow upstream's authorization wording that
   a user request or applicable `AGENTS.md`/skill instruction can authorize
   delegation, and should keep upstream's warning that `model` overrides are
   exceptional. Downstream additionally keeps the guardrail that requests for
   depth, thoroughness, research, investigation, or detailed codebase analysis
   do not by themselves authorize spawning.
-- Keep downstream itineraries that explicitly call `spawn_agent(model=..., reasoning_effort=...)` aligned with the requested model/economy, even when a role is applied.
-- Roles still control locked models when they explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity`, so downstream policy remains defendable.
-- Carry also preserves the requested `model_reasoning_summary`, so the summary the child asked for survives role reload unless a role or active profile explicitly locks it, and active-profile overrides that set these fields retain precedence across the split role/spawn path.
-- `core/src/agent/role.rs` is now back on the upstream-native layered reload shape with resolved active-profile materialization; the remaining downstream delta is the deliberate sticky spawn-time override policy for model, reasoning effort, reasoning summary, and verbosity when the role does not own those fields.
+- Keep downstream itineraries that explicitly request a child model/economy
+  aligned with the upstream selection and role precedence pipeline.
+- Roles remain authoritative when they set `model`, `model_provider`,
+  `model_reasoning_effort`, or `model_verbosity`.
+- The remaining role carry preserves the resolved runtime provider object plus
+  `model_reasoning_summary` and verbosity when a role does not replace them.
+  Downstream also treats an empty supported-reasoning list as unknown rather
+  than rejecting an otherwise selectable model.
+- Models whose MultiAgentV2 backend assignment is unspecified remain selectable;
+  a known, different backend still fails closed. The targeted role regression
+  proves the provider object, reasoning summary, and verbosity together rather
+  than checking only the selected model slug.
+- `core/src/agent/role.rs` stays on the upstream-native layered reload shape;
+  downstream no longer carries a duplicate model/reasoning selection pipeline.
 - The live tool-contract schema in
   `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` and
   `codex-rs/core/src/tools/spec_plan.rs`, plus the regression suite in
@@ -383,6 +552,20 @@ docs-only refresh commit that records this snapshot.
   metadata, wait summaries, and `agent/control.rs`.
 - The historical `spawn_approval` argument was unused by both spawn handlers;
   the upstream removal is retained rather than carried as a phantom contract.
+- MultiAgentV2 keeps the configurable `agents` namespace and the shared usage
+  hint that distinguishes direct agent tool calls from `functions.exec` tools.
+  This is intentional downstream routing behavior, not a reason to retain old
+  handler implementations. Description tests derive the effective namespace
+  from configuration rather than hard-coding either upstream or downstream
+  defaults.
+- A delegate whose cancellation token is already cancelled returns
+  `TurnAborted` before allocating channels or spawning a child session; the
+  subsequent cancellation-aware spawn remains responsible for races after
+  that initial boundary.
+- The 2026-07-15 sync adopts upstream's removal of `last_task_message` and
+  `last_task_message_preview` from `list_agents` and `inspect_agent_tree`.
+  Descendant counts, status, role, nickname, and live/stale structure remain,
+  but inventory output does not expose instruction content.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
 - V2 requires `task_name`; when no effective reasoning effort is known it
   serializes `null` rather than manufacturing a `medium` value. Wait completion
@@ -400,17 +583,46 @@ docs-only refresh commit that records this snapshot.
   outcome state. The v2 schema also permits omitting `targets` when the caller
   intentionally wants a current-turn input-activity wait, including mailbox
   delivery or user steering, or timeout.
-- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer.
+- Full-history forks preserve conversation and agent identity while accepting
+  configured or explicit child model/reasoning selection; only `agent_type`
+  remains invalid for that fork shape.
+- Cold V2 descendant reloads preserve the child's indexed agent path, model,
+  provider, and reasoning effort rather than inheriting the resumed root's
+  selection. Rollout previews may supply history and display context, but
+  cannot overwrite the complete indexed identity used to reload the child.
+  Legacy rows with no
+  indexed model identity retain their rollout model and effort, while a
+  populated indexed model makes an absent indexed effort an intentional clear.
+- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.4-mini` with low reasoning for bounded monitored-wait seams.
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
+  - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
+  - `codex-rs/core/src/agent/control.rs`
+  - `codex-rs/core/src/agent/control/spawn.rs`
+  - `codex-rs/core/src/agent/control_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
+  - `codex-rs/core/src/agent/role_tests.rs`
+  - `codex-rs/config/src/config_toml.rs`
+  - `codex-rs/core/config.schema.json`
+  - `codex-rs/core/src/codex_delegate.rs`
+  - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/config/schema_tests.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_common.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
+  - `codex-rs/core/tests/suite/spawn_agent_description.rs`
+  - `codex-rs/core/tests/suite/multi_agent_resume.rs`
+  - `codex-rs/core/tests/suite/subagent_notifications.rs`
+  - `codex-rs/thread-store/src/local/read_thread.rs`
+  - `.github/scripts/test_ci_planners.py`
+  - `justfile`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
 
@@ -428,19 +640,28 @@ docs-only refresh commit that records this snapshot.
 - Session environment updates validate duplicate and unknown environment ids
   before mutating stored session state.
 - When a session cwd/environment update changes the legacy fallback cwd,
-  sticky environment selections retarget to that cwd instead of retaining stale
-  path selections.
+  the current upstream explicit-environment cwd and workspace-root semantics
+  are authoritative. The superseded fallback-cwd rewrite implementation is not
+  carried merely because it previously conflicted.
 - Default turns refresh runtime `ThreadEnvironments` from stored selections so
   explicit empty or non-fallback stored environments are honored.
 - Mailbox deferral must not overtake explicit steered user input, while
   response-only queued items may still defer after an answer boundary.
 - Legacy active turns that only contain `UserMessageEvent` tails are still
   treated as mid-turn so replay/fork state does not discard the active start.
+- Upstream `PermissionsState` owns permission-instruction diffing and retained
+  fragment matching. Downstream custom realtime-start instructions remain the
+  earlier world-state contribution relative to permissions, including remote
+  compaction and resume reconstruction, so adopting upstream ownership does not
+  silently replace the configured realtime wording.
 - Primary files:
+  - `codex-rs/core/src/context/world_state/permissions.rs`
   - `codex-rs/core/src/session/input_queue.rs`
   - `codex-rs/core/src/session/mod.rs`
   - `codex-rs/core/src/session/session.rs`
   - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/session/world_state.rs`
+  - `codex-rs/core/tests/suite/compact_remote.rs`
   - `codex-rs/core/src/thread_manager.rs`
 
 ### Blocking Unified-Exec Waits And Compaction-Aware Turn Completion
@@ -510,6 +731,36 @@ docs-only refresh commit that records this snapshot.
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
+### Source-Owned Unified-Exec Final Transcript
+
+- Unified exec records each source output chunk in a bounded, non-draining
+  final transcript before offering it to the drainable response buffer or the
+  best-effort delta broadcast.
+- Normal command completion waits for the local stdout/stderr sources or the
+  exec-server event source to close, then drains already-published delta
+  messages before emitting `ExecCommandEnd`.
+- Source draining is bounded by the established exec I/O drain timeout so a
+  daemonized descendant or broken backend cannot suppress the final event.
+  Chunks recorded before that deadline remain authoritative; output produced
+  only after the deadline is intentionally outside the completed transcript.
+- Exec-server exit events start that bounded drain immediately even when
+  inherited descriptors delay the later source-closed event.
+- The bounded transcript intentionally retains a head and tail and represents
+  discarded middle bytes with an omission marker; this carry prevents delta
+  lag from silently losing final output or corrupting that accounting.
+- Drop this direct upstream fix when upstream provides equivalent source-owned
+  bounded final aggregation, bounded source-close ordering, and regression
+  coverage.
+- Primary files:
+  - `codex-rs/core/src/unified_exec/process.rs`
+  - `codex-rs/core/src/unified_exec/async_watcher.rs`
+  - `codex-rs/core/src/unified_exec/process_manager.rs`
+  - `codex-rs/core/src/unified_exec/process_manager_tests.rs`
+  - `codex-rs/core/src/unified_exec/process_output_tests.rs`
+  - `codex-rs/core/tests/suite/unified_exec.rs`
+  - `justfile`
+  - `.github/validation-lanes.json`
+
 ### App-Server Remote Control Account Wake
 
 - Remote-control enrollment waits must wake when cached ChatGPT auth changes
@@ -550,6 +801,9 @@ docs-only refresh commit that records this snapshot.
   formatting.
 - App-server API v2 owns `item/computerUse/call`, response forwarding, and
   `ThreadItem::ComputerUseCall` start/completion projection.
+- Dispatch resolves the primary environment from the refreshed per-step
+  snapshot, not the frozen turn-start snapshot, so a provider that becomes
+  ready after turn creation is immediately available to native computer-use.
 - The active TUI session renders native computer-use items from live protocol
   events. Computer-use events are transient, so thread history and snapshots do
   not replay them after resume. The TUI provider registry handles Android and
@@ -585,6 +839,10 @@ docs-only refresh commit that records this snapshot.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.
+- Occurrence search continues to index only user messages and final agent
+  messages. Its exhaustive `ThreadItem` classification explicitly excludes
+  `ComputerUseCall` alongside other tool-call items, preserving the upstream
+  search contract without dropping downstream enum coverage at compile time.
 - Runtime providers own Android sessions, browser sessions, screenshots,
   viewport capture, UI digests, input execution, and provider-side build
   installation. Solar Gravity Lab is a proving and consumer app, not the
@@ -613,6 +871,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-protocol/src/protocol/common.rs`
   - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
   - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/thread-store/src/local/thread_history/search.rs`
   - `codex-rs/tui/src/android_computer_use_provider.rs`
   - `codex-rs/browser-computer-use/src/lib.rs`
   - `codex-rs/browser-computer-use/src/browser_playwright_provider.mjs`
@@ -677,6 +936,28 @@ docs-only refresh commit that records this snapshot.
 - Tool-list change notifications advance a generation. Codex discards and
   retries a walk that crosses generations, atomically swaps only a complete
   replacement, and retains the last complete snapshot when refresh fails.
+- The 2026-07-15 sync re-homes this contract on upstream's
+  `connector_runtime` and `tool_catalog_cache` ownership. Startup, hard-refresh,
+  and list-changed fetches publish the raw complete catalogue to the applicable
+  shared cache before per-client filtering; the removed `codex_apps_cache.rs`
+  implementation is not carried.
+- Upstream commits `3307ea8b63` and `1bbdb32789` are adopted as complementary
+  cache safety: a server can disable shared tool-catalog caching, remotely
+  sourced environment variables bypass that cache, and cached definitions do
+  not substitute stale process metadata or output for the live connection.
+  These guarantees narrow the carry but do not replace downstream's bounded
+  pagination and atomic `list_changed` refresh contract.
+- The 2026-07-18 sync also adopts upstream commit `f24e695470`'s thread-level
+  `McpRuntime` ownership. `McpRuntime` is the sole owner of live connections;
+  immutable `McpRuntimeSnapshot` values pair projected config with the
+  connection set used by an in-flight step, so refresh must not eagerly shut
+  down the previous snapshot. Downstream catalogue pagination, OAuth backend,
+  safety policy, and environment-scoped projection continue through this
+  upstream-owned runtime rather than a second manager mirror.
+- Centralized ownership does not by itself unload terminal threads retained by
+  `ThreadManager`. The tracked residency follow-up must call
+  `shutdown_and_wait()` before generation-fenced registry removal so cloned MCP
+  resource clients cannot keep stale server processes alive indefinitely.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - Preserve this carry until upstream issue #26094 is resolved by behavior that
@@ -684,9 +965,18 @@ docs-only refresh commit that records this snapshot.
   happy-path page walk.
 - Primary files:
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/connectors/src/connector_runtime/mod.rs`
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/runtime.rs`
+  - `codex-rs/codex-mcp/src/resource_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client_tests.rs`
+  - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
+  - `codex-rs/app-server/tests/suite/v2/mcp_server_status.rs`
+  - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
+  - `codex-rs/core/src/session/mcp.rs`
+  - `codex-rs/core/src/state/service.rs`
 
 ### MCP Server Safety Policy Extensions
 
@@ -802,6 +1092,14 @@ docs-only refresh commit that records this snapshot.
 - Active-turn status labels preserve downstream operator cues, including
   showing `Compacting context` while context compaction is running instead of
   falling back to generic `Working`.
+- Selected-turn copy keeps `CopyStatus` success/error feedback in the
+  transcript overlay footer, including clipboard failures and expiry/replacement
+  behavior, so copy actions never fail silently. The copied payload remains
+  `## User\n\n<prompt>\n\n## Assistant\n\n<markdown>` and takes the last
+  finalized source-backed assistant or proposed-plan markdown before the next
+  visible prompt. After upstream moved retry safety to source-preserving forks,
+  this path intentionally reads canonical transcript cells and carries no
+  ordinal cache, rollback truncation, or rollback-only error state.
 - Bottom-pane transient views run their pre-draw tick and completion path so
   request-user-input overlays and other timed active views can redraw,
   auto-resolve, and pop through the same active-view seam instead of stalling
@@ -813,8 +1111,10 @@ docs-only refresh commit that records this snapshot.
   though upstream removed that surface; Linux keeps explicit unavailable stubs,
   so syncs should preserve the platform split instead of deleting
   `audio_device.rs` or the Linux `voice` stub as stale code. The non-Linux
-  split also depends on the target-scoped `cpal` entry in
-  `codex-rs/tui/Cargo.toml` and its `codex-rs/Cargo.lock` graph.
+  split also depends on the isolated `codex-realtime-webrtc` crate, the
+  target-scoped `cpal` entry in `codex-rs/tui/Cargo.toml`, and their Cargo and
+  Bazel dependency graphs. The WebRTC crate is an intentional macOS transport
+  boundary, not an orphan left behind by upstream's removal.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - Upgradeable legacy models stay visible in the model picker even when ordinary
@@ -826,9 +1126,14 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/app.rs`
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/tui/src/app/event_dispatch.rs`
+  - `codex-rs/tui/src/app_backtrack.rs`
   - `codex-rs/tui/src/app_event.rs`
   - `codex-rs/tui/Cargo.toml`
   - `codex-rs/Cargo.lock`
+  - `codex-rs/realtime-webrtc/BUILD.bazel`
+  - `codex-rs/realtime-webrtc/Cargo.toml`
+  - `codex-rs/realtime-webrtc/src/lib.rs`
+  - `codex-rs/realtime-webrtc/src/native.rs`
   - `codex-rs/tui/src/audio_device.rs`
   - `codex-rs/tui/src/bottom_pane/mod.rs`
   - `codex-rs/tui/src/bottom_pane/textarea.rs`
@@ -840,10 +1145,16 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/bottom_pane/slash_commands.rs`
   - `codex-rs/tui/src/bottom_pane/status_line_setup.rs`
   - `codex-rs/tui/src/chatwidget.rs`
+  - `codex-rs/tui/src/chatwidget/interaction.rs`
+  - `codex-rs/tui/src/chatwidget/transcript.rs`
   - `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
   - `codex-rs/tui/src/chatwidget/protocol.rs`
   - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
+  - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/history_cell/plans.rs`
+  - `codex-rs/tui/src/pager_overlay.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
   - `docs/config.md`
@@ -937,6 +1248,104 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/code_mode_description.rs`
   - `codex-rs/core/src/tools/router.rs`
 
+### External-Agent Session Import Compatibility
+
+- Upstream consolidated the former downstream session-import crate into
+  `codex-external-agent-migration::sessions`. Preserve the imported-session
+  ledger, source-content SHA-256 identity, and single-pass record parsing while
+  using the upstream module and package layout.
+- The workspace uses `sha2` 0.11, so content hashes retain the downstream
+  explicit hexadecimal encoder rather than relying on the older digest
+  formatting implementation. Callers inside the consolidated module must
+  resolve that helper through the `sessions` module, not the crate root.
+- `codex.external-agent-session-migration-targeted` is the focused hosted
+  guardrail for future upstream moves. The divergence registry deliberately
+  lists only the five session files that remain different from upstream so
+  adjacent upstream-owned migration code is not hidden from the audit.
+- Primary files:
+  - `codex-rs/external-agent-migration/src/sessions/export.rs`
+  - `codex-rs/external-agent-migration/src/sessions/ledger.rs`
+  - `codex-rs/external-agent-migration/src/sessions/ledger_tests.rs`
+  - `codex-rs/external-agent-migration/src/sessions/mod.rs`
+  - `codex-rs/external-agent-migration/src/sessions/records.rs`
+  - `.github/validation-lanes.json`
+  - `justfile`
+
+### External-Agent Migration Path Containment
+
+- Repository-scoped external-agent detection and import canonicalize the
+  project selected by the trusted local app-server client before deriving
+  migration paths. Static source and destination components under that root
+  must not be symlinks, including settings leaves, MCP configuration leaves,
+  hook scripts, and dangling target leaves.
+- This fail-closed check applies to configuration, MCP settings, subagents,
+  hooks, commands, skills, and instruction-file imports. Home-scoped imports
+  retain their separate source-root behavior, while shared target-leaf checks
+  avoid overwriting symlink entries in either scope. It does not claim
+  handle-relative protection against concurrent replacement of an already
+  checked repository path.
+- Upstream MEMORY migration remains home-scoped, but its client-selected project
+  keys must be exactly one normal path component. Before memory detection or
+  import mutates the workspace, the memory root, extension/resource ancestors,
+  project root, `scope.json`, Markdown resource leaves, and `instructions.md`
+  are checked beneath `CODEX_HOME` and rejected when any existing component is
+  a symlink. This preserves stale-project removal without allowing absolute or
+  parent-relative selections to escape the extension workspace.
+- A resource directory is managed only when it contains a regular, non-symlink
+  `scope.json` marker. Ordinary files and unmarked metadata directories are
+  ignored, but every directory entry and candidate marker is symlink-preflighted
+  before its type is used, so stale project-root and marker symlinks fail closed.
+- The marker rule affects future detection. A one-time backfill for unchanged
+  imports that predate the marker is an explicit follow-up, not an automatic
+  mutation performed by this sync.
+- The focused lane covers both the extracted migration-crate denial tests and
+  the app-server request boundary.
+  `projects_needing_import_rejects_symlinked_stale_memory_project` proves stale
+  owned projects are preflighted before detection offers them. In particular,
+  `projects_needing_import_rejects_symlinked_stale_project_scope` proves a real
+  project directory cannot redirect its ownership marker, while
+  `external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation`
+  proves a rejected stale-project selection cannot initialize or rewrite the
+  memory workspace before the containment error is reported.
+- Recursive copy helpers skip symlink entries and refuse symlinked target
+  directories. Empty-text target checks use `symlink_metadata`, so an empty or
+  dangling symlink is protected rather than treated as an overwritable file.
+- Upstream's closed draft containment change covered an empty leaf target but
+  did not cover exact repository settings/MCP leaves, source roots, or
+  destination-ancestor symlinks. Keep this carry until upstream has equivalent
+  detection-and-import containment.
+- Primary files:
+  - `.github/scripts/test_ci_planners.py`
+  - `.github/validation-lanes.json`
+  - `.github/workflows/sedna-heavy-tests.yml`
+  - `codex-rs/app-server/tests/suite/v2/external_agent_config.rs`
+  - `codex-rs/external-agent-migration/Cargo.toml`
+  - `codex-rs/external-agent-migration/src/detect/mod.rs`
+  - `codex-rs/external-agent-migration/src/hooks_common.rs`
+  - `codex-rs/external-agent-migration/src/lib_tests.rs`
+  - `codex-rs/external-agent-migration/src/memory_import.rs`
+  - `codex-rs/external-agent-migration/src/memory_import_tests.rs`
+  - `codex-rs/external-agent-migration/src/migration_source.rs`
+  - `codex-rs/external-agent-migration/src/scope.rs`
+  - `codex-rs/external-agent-migration/src/scope_tests.rs`
+  - `codex-rs/external-agent-migration/src/service.rs`
+  - `codex-rs/external-agent-migration/src/service_tests.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/containment.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/general/config_import.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/general/detection.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/general/repo_import.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/plugins/basics.rs`
+  - `codex-rs/external-agent-migration/src/service_tests/plugins/marketplaces.rs`
+  - `codex-rs/external-agent-migration/src/source/cla.rs`
+  - `codex-rs/external-agent-migration/src/source/cur.rs`
+  - `codex-rs/external-agent-migration/src/subagents.rs`
+  - `codex-rs/external-agent-migration/src/utils.rs`
+  - `justfile`
+- Hosted guardrails:
+  - `codex.external-agent-migration-containment-targeted`
+  - `rust-ci-full`
+  - `CodeQL Advanced`
+
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:
@@ -959,6 +1368,10 @@ docs-only refresh commit that records this snapshot.
   keeping generated app-server schemas on the current public shape, such as
   `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
   app-server/protocol maintenance rather than as standalone behavior.
+- The removed config template-interpolation module is deliberately not carry.
+  Effective config now follows upstream's authoritative layer-stack
+  materialization; old interpolation helpers and their tests must not be
+  resurrected during later syncs.
 
 ## Historical Carry Commits Now Upstream-Equivalent
 

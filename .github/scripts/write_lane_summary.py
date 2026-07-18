@@ -8,7 +8,9 @@ import json
 import re
 from pathlib import Path
 
-ERROR_RE = re.compile(r"(^error:|^thread '.*' panicked|\bFAILED\b|failures:|error\[|panic\b)")
+ERROR_RE = re.compile(
+    r"(^error:|^thread '.*' panicked|\bFAILED\b|failures:|error\[|\bpanic(?:!|:|\s+at\b))"
+)
 PATH_RE = re.compile(r"(/home/\S+|/Users/\S+)")
 WHITESPACE_RE = re.compile(r"\s+")
 SCHEMA_CONTENT_DRIFT_RE = re.compile(

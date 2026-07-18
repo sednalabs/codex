@@ -138,6 +138,7 @@ async fn spawn_v2_subagent(
             config,
             control.clone(),
             SessionSource::SubAgent(SubAgentSource::Other(label.to_string())),
+            /*history_mode*/ None,
             Some(parent_thread_id),
             /*forked_from_thread_id*/ None,
             Some(ThreadSource::Subagent),
@@ -151,9 +152,8 @@ async fn spawn_v2_subagent(
 }
 
 async fn mark_thread_completed(thread: &CodexThread) {
-    let turn = thread.codex.session.new_default_turn().await;
+    let turn = thread.session.new_default_turn().await;
     thread
-        .codex
         .session
         .send_event(
             turn.as_ref(),
@@ -175,9 +175,8 @@ async fn mark_thread_completed(thread: &CodexThread) {
 }
 
 async fn mark_thread_interrupted(thread: &CodexThread) {
-    let turn = thread.codex.session.new_default_turn().await;
+    let turn = thread.session.new_default_turn().await;
     thread
-        .codex
         .session
         .send_event(
             turn.as_ref(),
@@ -195,5 +194,5 @@ async fn mark_thread_interrupted(thread: &CodexThread) {
 
 async fn clear_active_turn(thread: &CodexThread) {
     // The fixture has no task runner to clear the turn after the terminal event.
-    *thread.codex.session.active_turn.lock().await = None;
+    *thread.session.active_turn.lock().await = None;
 }

@@ -1379,11 +1379,6 @@ impl TranscriptOverlay {
     pub(crate) fn is_done(&self) -> bool {
         self.is_done
     }
-
-    #[cfg(test)]
-    pub(crate) fn committed_cell_count(&self) -> usize {
-        self.cells.len()
-    }
 }
 
 enum PromptSelectionDirection {

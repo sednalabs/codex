@@ -168,8 +168,12 @@ impl ChatWidget {
                 && !self.bottom_pane.is_task_running()
                 && self.bottom_pane.no_modal_or_popup_active() =>
             {
-                self.cycle_collaboration_mode();
-                self.refresh_plan_mode_nudge();
+                if self.blocks_direct_input {
+                    self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+                } else {
+                    self.cycle_collaboration_mode();
+                    self.refresh_plan_mode_nudge();
+                }
             }
             _ => {
                 let had_modal_or_popup = !self.bottom_pane.no_modal_or_popup_active();
@@ -261,24 +265,16 @@ impl ChatWidget {
         self.copy_last_agent_markdown_with(crate::clipboard_copy::copy_to_clipboard)
     }
 
-    pub(crate) fn copy_agent_turn_markdown_for_overlay(
+    pub(crate) fn copy_transcript_turn_markdown_for_overlay(
         &mut self,
-        user_turn_count: usize,
         user_prompt: &str,
+        agent_markdown: Option<&str>,
     ) -> CopyStatus {
-        self.copy_agent_turn_markdown_with(
-            user_turn_count,
+        self.copy_transcript_turn_markdown_with(
             user_prompt,
+            agent_markdown,
             crate::clipboard_copy::copy_to_clipboard,
         )
-    }
-
-    pub(crate) fn truncate_agent_copy_history_to_user_turn_count(
-        &mut self,
-        user_turn_count: usize,
-    ) {
-        self.transcript
-            .truncate_copy_history_to_user_turn_count(user_turn_count);
     }
 
     /// Inner implementation with an injectable clipboard backend for testing.
@@ -290,23 +286,17 @@ impl ChatWidget {
             Some(markdown) if !markdown.is_empty() => {
                 self.copy_markdown_result(&markdown, "Copied last message to clipboard", copy_fn)
             }
-            _ if self.transcript.copy_history_evicted_by_rollback => CopyStatus::Error(format!(
-                "Cannot copy that response after rewinding. Only the most recent {MAX_AGENT_COPY_HISTORY} responses are available to /copy."
-            )),
             _ => CopyStatus::Error("No agent response to copy".into()),
         }
     }
 
-    pub(super) fn copy_agent_turn_markdown_with(
+    pub(super) fn copy_transcript_turn_markdown_with(
         &mut self,
-        user_turn_count: usize,
         user_prompt: &str,
+        agent_markdown: Option<&str>,
         copy_fn: impl FnOnce(&str) -> Result<Option<crate::clipboard_copy::ClipboardLease>, String>,
     ) -> CopyStatus {
-        match self
-            .transcript
-            .agent_markdown_for_user_turn(user_turn_count)
-        {
+        match agent_markdown {
             Some(markdown) if !markdown.is_empty() => {
                 let markdown = format!("## User\n\n{user_prompt}\n\n## Assistant\n\n{markdown}");
                 self.copy_markdown_result(&markdown, "Copied selected turn to clipboard", copy_fn)
@@ -452,7 +442,7 @@ impl ChatWidget {
                 self.quit_shortcut_expires_at = None;
                 self.quit_shortcut_key = None;
                 self.bottom_pane.clear_quit_shortcut_hint();
-                if self.submit_op(AppCommand::interrupt_and_restore_prompt_if_no_output()) {
+                if self.submit_op(AppCommand::interrupt()) {
                     self.pause_active_goal_for_interrupt();
                 }
             } else {
@@ -470,9 +460,7 @@ impl ChatWidget {
 
         self.arm_quit_shortcut(key);
 
-        if self.is_cancellable_work_active()
-            && self.submit_op(AppCommand::interrupt_and_restore_prompt_if_no_output())
-        {
+        if self.is_cancellable_work_active() && self.submit_op(AppCommand::interrupt()) {
             self.pause_active_goal_for_interrupt();
         }
     }

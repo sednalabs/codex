@@ -18,6 +18,7 @@ pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+const SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1: &str = "Agent type override for the new agent. Omit to inherit the parent agent type with a full-history fork; otherwise, `default` is used.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
 const SPAWN_AGENT_MODEL_ASSERTION_DESCRIPTION: &str = "Optional exact model assertion. The spawn is rejected before child creation and prompt delivery if the model selected after role and profile resolution differs.";
@@ -30,6 +31,7 @@ const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 pub struct SpawnAgentToolOptions {
     pub available_models: Vec<ModelPreset>,
     pub agent_type_description: String,
+    pub expose_agent_type: bool,
     pub hide_agent_type_model_reasoning: bool,
     pub expose_spawn_agent_model_overrides: bool,
     pub multi_agent_version: MultiAgentVersion,
@@ -41,6 +43,7 @@ impl Default for SpawnAgentToolOptions {
         Self {
             available_models: Vec::new(),
             agent_type_description: String::new(),
+            expose_agent_type: true,
             hide_agent_type_model_reasoning: false,
             expose_spawn_agent_model_overrides: false,
             multi_agent_version: MultiAgentVersion::Disabled,
@@ -75,6 +78,9 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
     let return_value_description =
         "Returns the spawned agent id plus the user-facing nickname when available.";
     let mut properties = spawn_agent_common_properties_v1(&options.agent_type_description);
+    if !options.expose_agent_type {
+        properties.remove("agent_type");
+    }
     if options.hide_agent_type_model_reasoning {
         hide_spawn_agent_metadata_options(&mut properties);
     }
@@ -106,8 +112,10 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
         && !options.hide_agent_type_model_reasoning)
         .then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
     let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
-    if options.hide_agent_type_model_reasoning {
+    if !options.expose_agent_type {
         properties.remove("agent_type");
+    }
+    if options.hide_agent_type_model_reasoning {
         properties.remove("service_tier");
     }
     if !options.expose_spawn_agent_model_overrides {
@@ -622,19 +630,8 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
                 "allOf": [agent_status_output_schema()]
             }),
         ),
-        (
-            "last_task_message".to_string(),
-            json!({
-                "type": ["string", "null"],
-                "description": "Most recent user or inter-agent instruction received by the agent, when available."
-            }),
-        ),
     ]);
-    let mut agent_required = vec![
-        "agent_name".to_string(),
-        "agent_status".to_string(),
-        "last_task_message".to_string(),
-    ];
+    let mut agent_required = vec!["agent_name".to_string(), "agent_status".to_string()];
     if include_active_descendants {
         agent_properties.insert(
             "has_active_subagents".to_string(),
@@ -742,8 +739,7 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "nickname": { "type": ["string", "null"] },
                         "role": { "type": ["string", "null"] },
                         "direct_child_count": { "type": "number" },
-                        "descendant_count": { "type": "number" },
-                        "last_task_message_preview": { "type": ["string", "null"] }
+                        "descendant_count": { "type": "number" }
                     },
                     "required": [
                         "agent_name",
@@ -753,8 +749,7 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "nickname",
                         "role",
                         "direct_child_count",
-                        "descendant_count",
-                        "last_task_message_preview"
+                        "descendant_count"
                     ],
                     "additionalProperties": false
                 }
@@ -892,7 +887,8 @@ fn create_collab_input_items_schema() -> JsonSchema {
         (
             "type".to_string(),
             JsonSchema::string(Some(
-                "Input item type: text, image, local_image, skill, or mention.".to_string(),
+                "Input item type: text, image, local_image, audio, local_audio, skill, or mention."
+                    .to_string(),
             )),
         ),
         (
@@ -904,9 +900,13 @@ fn create_collab_input_items_schema() -> JsonSchema {
             JsonSchema::string(Some("Image URL when type is image.".to_string())),
         ),
         (
+            "audio_url".to_string(),
+            JsonSchema::string(Some("Audio data URL when type is audio.".to_string())),
+        ),
+        (
             "path".to_string(),
             JsonSchema::string(Some(
-                "Path when type is local_image/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."
+                "Path when type is local_image/local_audio/skill, or structured mention target such as app://<connector-id> or plugin://<plugin-name>@<marketplace-name> when type is mention."
                     .to_string(),
             )),
         ),
@@ -961,7 +961,9 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
         ("items".to_string(), create_collab_input_items_schema()),
         (
             "agent_type".to_string(),
-            JsonSchema::string(Some(agent_type_description.to_string())),
+            JsonSchema::string(Some(format!(
+                "{SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1}\n{agent_type_description}"
+            ))),
         ),
         (
             "fork_context".to_string(),
@@ -1003,7 +1005,9 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         ),
         (
             "agent_type".to_string(),
-            JsonSchema::string(Some(agent_type_description.to_string())),
+            JsonSchema::string(Some(format!(
+                "Agent type override for the new agent. Omit unless explicitly asked. Set `fork_turns` to `none` or a positive integer when an explicit override is needed.\n{agent_type_description}"
+            ))),
         ),
         (
             "fork_turns".to_string(),
@@ -1098,7 +1102,7 @@ fn spawn_agent_tool_description_v2(
 You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}
-The `fork_turns` field is optional. Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns.
+The `fork_turns` field is optional. Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns. Passing `fork_turns="none"` carries no surrounding context, while `fork_turns="all"` carries all surrounding context.
 Only call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message."#

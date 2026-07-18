@@ -82,6 +82,23 @@
       ],
       "type": "string"
     },
+    "AppsInstalledParams": {
+      "description": "Read the committed installed connector runtime snapshot.",
+      "properties": {
+        "forceRefresh": {
+          "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool\nsnapshot first.",
+          "type": "boolean"
+        },
+        "threadId": {
+          "description": "Optional loaded thread id used to evaluate effective app configuration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "AppsListParams": {
       "description": "EXPERIMENTAL - list available apps/connectors.",
       "properties": {
@@ -113,6 +130,26 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "AppsReadParams": {
+      "description": "EXPERIMENTAL - read metadata for specific apps/connectors.",
+      "properties": {
+        "appIds": {
+          "description": "App ids to read. The server accepts at most 100 ids and deduplicates repeated ids while\npreserving their first-request order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "includeTools": {
+          "description": "When true, include display-only public tool summaries in the returned metadata.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "appIds"
+      ],
       "type": "object"
     },
     "AskForApproval": {
@@ -243,6 +280,14 @@
         "version"
       ],
       "type": "object"
+    },
+    "CodexResponseHandoffMode": {
+      "enum": [
+        "thinking",
+        "commentary",
+        "bemTags"
+      ],
+      "type": "string"
     },
     "CollaborationMode": {
       "description": "Collaboration mode for a Codex session.",
@@ -625,6 +670,24 @@
         },
         {
           "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_audio",
+              "title": "InputAudioContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "audio_url"
+          ],
+          "title": "InputAudioContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "text": {
               "type": "string"
             },
@@ -756,6 +819,19 @@
       ],
       "type": "object"
     },
+    "EnvironmentStatusParams": {
+      "description": "Parameters for reading the current status of one configured environment.",
+      "properties": {
+        "environmentId": {
+          "description": "Environment id to inspect.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
     "ExperimentalFeatureEnablementSetParams": {
       "properties": {
         "enablement": {
@@ -814,6 +890,20 @@
         "includeHome": {
           "description": "If true, include detection under the user's home directory.",
           "type": "boolean"
+        },
+        "migrationSource": {
+          "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource`\nto select the migration source.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -826,8 +916,15 @@
           },
           "type": "array"
         },
+        "migrationSource": {
+          "description": "Migration-source selector used to produce the migration items. Pass the same value to\ndetection and import; missing or unrecognized values use the default source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
-          "description": "Source product that produced the migration items. Missing means unspecified.",
+          "description": "Optional identifier for the product that initiated the import.",
           "type": [
             "string",
             "null"
@@ -881,6 +978,7 @@
         "SUBAGENTS",
         "HOOKS",
         "COMMANDS",
+        "MEMORY",
         "SESSIONS"
       ],
       "type": "string"
@@ -1146,6 +1244,24 @@
             "image_url"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_audio",
+              "title": "InputAudioFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "audio_url"
+          ],
+          "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
         },
         {
@@ -1822,6 +1938,12 @@
           },
           "type": "array"
         },
+        "memory": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "plugins": {
           "default": [],
           "items": {
@@ -2192,7 +2314,8 @@
     "PluginShareUpdateDiscoverability": {
       "enum": [
         "UNLISTED",
-        "PRIVATE"
+        "PRIVATE",
+        "LISTED"
       ],
       "type": "string"
     },
@@ -2427,7 +2550,8 @@
     "RealtimeConversationVersion": {
       "enum": [
         "v1",
-        "v2"
+        "v2",
+        "v3"
       ],
       "type": "string"
     },
@@ -4018,6 +4142,13 @@
             "null"
           ]
         },
+        "beforeTurnId": {
+          "description": "Optional turn id to fork before, excluding that turn and all later turns.\nCannot be combined with `last_turn_id`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "config": {
           "additionalProperties": true,
           "type": [
@@ -4030,6 +4161,10 @@
             "string",
             "null"
           ]
+        },
+        "deferGoalContinuation": {
+          "description": "When true, carry the source thread's current goal into the fork without\nstarting its initial automatic continuation. The next explicit turn owns\nthe goal lifecycle, and normal automatic continuation resumes after it.",
+          "type": "boolean"
         },
         "developerInstructions": {
           "type": [
@@ -4628,12 +4763,16 @@
             "null"
           ]
         },
-        "codexResponseHandoffPrefix": {
-          "description": "Optional prefix added to automatic V1 Codex commentary sent with\n`conversation.handoff.append` when `codexResponsesAsItems` is not true. Final answers are\nsent without the prefix.",
-          "type": [
-            "string",
-            "null"
-          ]
+        "codexResponseHandoffMode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodexResponseHandoffMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selects how automatic Codex responses are routed in Frameless Bidi sessions. Omitted values\ndefault to `thinking`. Realtime V1 and V2 ignore this setting."
         },
         "codexResponseItemPrefix": {
           "description": "Optional prefix added to automatic Codex response items when `codexResponsesAsItems` is true.",
@@ -4987,6 +5126,39 @@
       "required": [
         "threadId",
         "numTurns"
+      ],
+      "type": "object"
+    },
+    "ThreadSearchOccurrencesParams": {
+      "description": "Parameters for searching visible message occurrences within one paginated thread.",
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor returned by a previous call for the same thread and search term.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Optional occurrence page size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "description": "Case-insensitive literal substring to find in visible user messages and final assistant\nmessages.",
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId",
+        "searchTerm"
       ],
       "type": "object"
     },
@@ -5542,6 +5714,16 @@
         },
         "environmentId": {
           "type": "string"
+        },
+        "runtimeWorkspaceRoots": {
+          "description": "Environment-native runtime workspace roots. Omitted defaults to `cwd`.",
+          "items": {
+            "$ref": "#/$defs/LegacyAppPathString"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "required": [
@@ -5900,6 +6082,42 @@
             "path"
           ],
           "title": "LocalImageUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "audio",
+              "title": "AudioUserInputType",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "title": "AudioUserInput",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "type": {
+              "const": "localAudio",
+              "title": "LocalAudioUserInputType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "title": "LocalAudioUserInput",
           "type": "object"
         },
         {
@@ -6780,6 +6998,28 @@
           "$ref": "#/$defs/RequestId"
         },
         "method": {
+          "const": "app/read",
+          "title": "App/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AppsReadParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "App/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
           "const": "app/list",
           "title": "App/listRequestMethod",
           "type": "string"
@@ -6794,6 +7034,28 @@
         "params"
       ],
       "title": "App/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "app/installed",
+          "title": "App/installedRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AppsInstalledParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "App/installedRequest",
       "type": "object"
     },
     {

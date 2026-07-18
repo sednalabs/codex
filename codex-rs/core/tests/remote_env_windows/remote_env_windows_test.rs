@@ -176,9 +176,13 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
             let environments = TurnEnvironmentSelections::new(
                 test.config.cwd.clone(),
-                vec![TurnEnvironmentSelection {
-                    environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-                    cwd: PathUri::parse("file:///C:/codex-home")?,
+                vec![{
+                    let cwd = PathUri::parse("file:///C:/codex-home")?;
+                    TurnEnvironmentSelection {
+                        environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
+                        cwd: cwd.clone(),
+                        workspace_roots: vec![cwd],
+                    }
                 }],
             );
 
@@ -382,6 +386,7 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
                     environments: Some(vec![TurnEnvironmentParams {
                         environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
                         cwd: serde_json::from_value::<LegacyAppPathString>(json!(NATIVE_CWD))?,
+                        runtime_workspace_roots: None,
                     }]),
                     ..Default::default()
                 })
@@ -396,8 +401,9 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
             let host_cwd = codex_home.path().to_path_buf().abs();
             // TODO(anp): Return the selected environment's native cwd from thread/start.
             assert_eq!(response.cwd, host_cwd);
-            // TODO(anp): Derive runtime workspace roots from the selected remote environment.
-            assert_eq!(response.runtime_workspace_roots, vec![host_cwd]);
+            // Selected-environment roots are scoped to that environment rather than
+            // projected through the legacy top-level response field.
+            assert!(response.runtime_workspace_roots.is_empty());
             assert_eq!(
                 response.instruction_sources,
                 vec![LegacyAppPathString::from_path_uri(
@@ -479,13 +485,9 @@ async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Resul
                     .map(str::trim),
                 Some(r"<cwd>C:\windows</cwd>"),
             );
-            let host_workspace_roots = format!(
-                "<workspace_roots><root>{}</root></workspace_roots>",
-                codex_home.path().display()
-            );
-            // TODO(anp): Derive model-visible workspace roots from the selected remote environment
-            // and render them using its native path convention.
-            assert!(environment_context.contains(&host_workspace_roots));
+            let remote_workspace_roots =
+                format!("<workspace_roots><root>{NATIVE_CWD}</root></workspace_roots>");
+            assert!(environment_context.contains(&remote_workspace_roots));
 
             Ok(())
         })

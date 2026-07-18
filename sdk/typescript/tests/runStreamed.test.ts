@@ -53,6 +53,7 @@ describe("Codex", () => {
           thread_id: expect.any(String),
           turn_id: expect.any(String),
           usage: {
+            cache_write_input_tokens: 0,
             cached_input_tokens: 12,
             input_tokens: 42,
             output_tokens: 5,

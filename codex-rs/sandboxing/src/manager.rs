@@ -8,11 +8,7 @@ use crate::landlock::create_linux_sandbox_command_args_for_permission_profile;
 use crate::policy_transforms::effective_permission_profile;
 use crate::policy_transforms::should_require_platform_sandbox;
 #[cfg(target_os = "windows")]
-use crate::resolve_windows_elevated_filesystem_overrides;
-#[cfg(target_os = "windows")]
-use crate::resolve_windows_restricted_token_filesystem_overrides;
-#[cfg(target_os = "windows")]
-use crate::windows_sandbox_uses_elevated_backend;
+use crate::resolve_windows_sandbox_filesystem_overrides;
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -540,23 +536,13 @@ fn wrap_windows_sandbox_exec_request_for_direct_spawn(
 
     let inner_command = std::mem::take(&mut request.command);
     let proxy_enforced = request.network.is_some();
-    let use_elevated =
-        windows_sandbox_uses_elevated_backend(request.windows_sandbox_level, proxy_enforced);
-    let overrides = if use_elevated {
-        resolve_windows_elevated_filesystem_overrides(
-            request.sandbox,
-            &request.permission_profile,
-            &native_sandbox_policy_cwd,
-            use_elevated,
-        )
-    } else {
-        resolve_windows_restricted_token_filesystem_overrides(
-            request.sandbox,
-            &request.permission_profile,
-            &native_sandbox_policy_cwd,
-            request.windows_sandbox_level,
-        )
-    }
+    let overrides = resolve_windows_sandbox_filesystem_overrides(
+        request.sandbox,
+        &request.permission_profile,
+        &native_sandbox_policy_cwd,
+        request.windows_sandbox_level,
+        proxy_enforced,
+    )
     .map_err(SandboxTransformError::WindowsSandboxPreparation)?;
     let empty_paths: &[AbsolutePathBuf] = &[];
     let read_roots_override = overrides
