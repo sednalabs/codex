@@ -7594,10 +7594,8 @@
           "type": "string"
         },
         {
+          "const": "audio",
           "description": "Audio attachments included in user turns.",
-          "enum": [
-            "audio"
-          ],
           "type": "string"
         }
       ]
