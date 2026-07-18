@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-18`
-- downstream integration code tree: `3cbe959dad6cd498cd93affacb48cf973775a611`
+- downstream integration code tree: `d0011e30bdda76804eb69d9ab5509a47c9f8f5af`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `82b294c73c902a4c51f789ba68bb599f0065616f`
-- `upstream/main`: `82b294c73c902a4c51f789ba68bb599f0065616f`
-- downstream branch vs `upstream/main`: `1813` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `2895d82b5e449407712439ba4f89954f3fa0c7e3`
+- `upstream/main`: `2895d82b5e449407712439ba4f89954f3fa0c7e3`
+- downstream branch vs `upstream/main`: `1815` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1575` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1576` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -337,6 +337,12 @@ docs-only refresh commit that records this snapshot.
   falling back to configured session metadata; active/running threads keep the
   live effective model first so sub-agent status does not regress to the
   parent/session model.
+- The 2026-07-18 sync adopts upstream `tui.resume_cwd`, including remembered
+  current/session directory choices, explicit `--cd` precedence, remote
+  workspace rejection, and persistence-error handling. The same
+  `session_resume` module retains downstream model and reasoning-effort
+  recovery; future syncs must preserve both behaviors rather than selecting
+  one side of that additive seam.
 - Primary files:
   - `codex-rs/core/src/session/turn.rs`
   - `codex-rs/core/src/session/turn_context.rs`
