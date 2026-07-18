@@ -647,7 +647,7 @@ pub fn parse_subagent_notification_response_item(
     for content_item in content {
         let text = match content_item {
             ContentItem::InputText { text } | ContentItem::OutputText { text } => text,
-            ContentItem::InputImage { .. } => return None,
+            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => return None,
         };
         let item = parse_subagent_notification_fragment(text)?;
         if parsed.replace(item).is_some() {
@@ -866,6 +866,21 @@ mod tests {
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: "hello world".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        assert_eq!(parse_subagent_notification_response_item(&item), None);
+    }
+
+    #[test]
+    fn parse_subagent_notification_response_item_rejects_audio_content() {
+        let item = ResponseItem::Message {
+            id: Some(ResponseItemId::from_server("msg-1".to_string())),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputAudio {
+                audio_url: "data:audio/wav;base64,AAAA".to_string(),
             }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
