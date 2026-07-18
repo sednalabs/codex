@@ -450,9 +450,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "audio"
-              ],
+              "const": "audio",
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -473,16 +471,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localAudio"
-              ],
+              "const": "localAudio",
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"

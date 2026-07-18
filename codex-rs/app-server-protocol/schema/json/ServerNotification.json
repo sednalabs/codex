@@ -1146,6 +1146,24 @@
         },
         {
           "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_audio",
+              "title": "InputAudioContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "audio_url"
+          ],
+          "title": "InputAudioContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "text": {
               "type": "string"
             },
@@ -1796,6 +1814,24 @@
             "image_url"
           ],
           "title": "InputImageFunctionCallOutputContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audio_url": {
+              "type": "string"
+            },
+            "type": {
+              "const": "input_audio",
+              "title": "InputAudioFunctionCallOutputContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "audio_url"
+          ],
+          "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
         },
         {
@@ -4955,6 +4991,13 @@
             "null"
           ]
         },
+        "canAcceptDirectInput": {
+          "description": "Whether the app server accepts direct turn input for this loaded thread.\n`None` means the capability is unavailable, such as for an unloaded stored thread.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "cliVersion": {
           "description": "Version of the CLI that created the thread.",
           "type": "string"
@@ -6801,9 +6844,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "audio"
-              ],
+              "const": "audio",
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -6824,16 +6865,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localAudio"
-              ],
+              "const": "localAudio",
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"

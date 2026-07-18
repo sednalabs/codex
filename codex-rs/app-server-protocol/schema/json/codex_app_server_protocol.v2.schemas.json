@@ -950,11 +950,11 @@
       "type": "object"
     },
     "AppsInstalledParams": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Read the committed installed connector runtime snapshot.",
       "properties": {
         "forceRefresh": {
-          "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool snapshot first.",
+          "description": "When true and Apps are permitted, refresh and publish the hosted connector runtime tool\nsnapshot first.",
           "type": "boolean"
         },
         "threadId": {
@@ -969,7 +969,7 @@
       "type": "object"
     },
     "AppsInstalledResponse": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The installed connectors in one committed runtime snapshot.",
       "properties": {
         "apps": {
@@ -2151,15 +2151,17 @@
               "$ref": "#/definitions/RequestId"
             },
             "method": {
-              "const": "app/installed"
+              "const": "app/installed",
+              "title": "App/installedRequestMethod",
+              "type": "string"
             },
             "params": {
               "$ref": "#/definitions/AppsInstalledParams"
             }
           },
           "required": [
-            "id",
             "method",
+            "id",
             "params"
           ],
           "title": "App/installedRequest",
@@ -4991,16 +4993,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_audio"
-              ],
+              "const": "input_audio",
               "title": "InputAudioContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "audio_url",
-            "type"
+            "type",
+            "audio_url"
           ],
           "title": "InputAudioContentItem",
           "type": "object"
@@ -6524,16 +6524,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "input_audio"
-              ],
+              "const": "input_audio",
               "title": "InputAudioFunctionCallOutputContentItemType",
               "type": "string"
             }
           },
           "required": [
-            "audio_url",
-            "type"
+            "type",
+            "audio_url"
           ],
           "title": "InputAudioFunctionCallOutputContentItem",
           "type": "object"
@@ -7601,18 +7599,18 @@
       "description": "Installed connector runtime state.",
       "properties": {
         "callable": {
-          "description": "Whether the connector is enabled and has a non-synthetic, model-visible tool allowed by effective MCP and app/tool policy in the committed runtime snapshot.",
+          "description": "Whether the connector is enabled and has a non-synthetic, model-visible tool allowed by\neffective MCP and app/tool policy in the committed runtime snapshot.",
           "type": "boolean"
         },
         "enabled": {
-          "description": "Effective enabled state after applying global, workspace, local, and managed configuration at read time.",
+          "description": "Effective enabled state after applying global, workspace, local, and managed configuration\nat read time.",
           "type": "boolean"
         },
         "id": {
           "type": "string"
         },
         "runtimeName": {
-          "description": "Best-effort name carried by the runtime tool catalog. Canonical app metadata remains owned by `app/read`.",
+          "description": "Best-effort name carried by the runtime tool catalog. Canonical app metadata remains owned\nby `app/read`.",
           "type": [
             "string",
             "null"
@@ -7620,9 +7618,9 @@
         }
       },
       "required": [
-        "callable",
+        "id",
         "enabled",
-        "id"
+        "callable"
       ],
       "type": "object"
     },
@@ -18534,9 +18532,7 @@
         {
           "properties": {
             "type": {
-              "enum": [
-                "audio"
-              ],
+              "const": "audio",
               "title": "AudioUserInputType",
               "type": "string"
             },
@@ -18557,16 +18553,14 @@
               "type": "string"
             },
             "type": {
-              "enum": [
-                "localAudio"
-              ],
+              "const": "localAudio",
               "title": "LocalAudioUserInputType",
               "type": "string"
             }
           },
           "required": [
-            "path",
-            "type"
+            "type",
+            "path"
           ],
           "title": "LocalAudioUserInput",
           "type": "object"
