@@ -1253,6 +1253,9 @@
         "codex-rs/core/src/tools/handlers/computer_use_code_mode.rs",
         "codex-rs/code-mode-protocol/src/description.rs",
         "codex-rs/core/tests/suite/code_mode.rs",
+        ".github/validation-lanes.json",
+        ".github/scripts/test_ci_planners.py",
+        "justfile",
         "codex-rs/tools/src/tool_search.rs",
         "codex-rs/app-server/src/computer_use.rs",
         "codex-rs/app-server/src/bespoke_event_handling.rs",
@@ -1289,7 +1292,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.app-server-computer-use-targeted; codex.native-computer-use-tool-registry-targeted; codex.build-policy-sanity",
+      "guardrail_lane": "codex.app-server-computer-use-targeted; codex.native-computer-use-tool-registry-targeted; codex.code-mode-declaration-targeted; codex.build-policy-sanity",
       "tests": [
         "computer_use_call_round_trip_sends_client_response_to_model",
         "thread_resume_injects_native_android_tools_into_model_requests",

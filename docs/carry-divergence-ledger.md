@@ -871,6 +871,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/tools/handlers/computer_use_code_mode.rs`
   - `codex-rs/code-mode-protocol/src/description.rs`
   - `codex-rs/core/tests/suite/code_mode.rs`
+  - `.github/validation-lanes.json`
+  - `.github/scripts/test_ci_planners.py`
+  - `justfile`
   - `codex-rs/tools/src/tool_search.rs`
   - `codex-rs/app-server/src/computer_use.rs`
   - `codex-rs/app-server/src/bespoke_event_handling.rs`
