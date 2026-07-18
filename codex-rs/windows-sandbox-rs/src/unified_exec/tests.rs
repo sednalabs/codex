@@ -597,6 +597,10 @@ fn legacy_capture_powershell_emits_output() {
 
 #[test]
 fn legacy_write_restricted_deletion_limitation_is_explicit() {
+    let Some(pwsh) = pwsh_path() else {
+        eprintln!("skipping deletion characterization: PowerShell 7 is not installed");
+        return;
+    };
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
@@ -703,7 +707,7 @@ fn legacy_write_restricted_deletion_limitation_is_explicit() {
             workspace_roots_for(workspace.as_path()).as_slice(),
             codex_home.path(),
             vec![
-                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe".to_string(),
+                pwsh.display().to_string(),
                 "-NoLogo".to_string(),
                 "-NoProfile".to_string(),
                 "-NonInteractive".to_string(),

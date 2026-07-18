@@ -978,7 +978,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
-        "$socket = [Net.Sockets.Socket]::new([Net.Sockets.AddressFamily]::InterNetwork, [Net.Sockets.SocketType]::Stream, [Net.Sockets.ProtocolType]::Tcp); try {{ $connect = $socket.ConnectAsync([Net.IPAddress]::Loopback, {port}); $completed = [Threading.Tasks.Task]::WhenAny($connect, [Threading.Tasks.Task]::Delay(3000)).GetAwaiter().GetResult(); $connected = [object]::ReferenceEquals($completed, $connect) -and $connect.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion -and $socket.Connected }} finally {{ $socket.Dispose() }}; if ($connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0"
+        "$client = [Net.Sockets.TcpClient]::new(); $cts = [Threading.CancellationTokenSource]::new(500); try {{ $client.ConnectAsync([Net.IPAddress]::Loopback, {port}, $cts.Token).AsTask().GetAwaiter().GetResult(); $connected = $client.Connected }} catch {{ $connected = $false }}; if ($connected) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; Write-Output 'DIRECT-BLOCKED'; exit 0"
     );
     let args = json!({
         "cmd": command,

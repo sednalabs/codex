@@ -213,6 +213,12 @@ docs-only refresh commit that records this snapshot.
   `legacy_write_restricted_deletion_limitation_is_explicit`, plus
   `restricted_sids_exclude_everyone` and
   `default_dacl_keeps_everyone_for_ipc_compatibility`.
+- The deletion characterization uses PowerShell 7, which adjacent
+  restricted-token tests prove can initialize under the compatible token.
+  Bazel's gnullvm test executable can still fail during helper re-entry with
+  exact status `0xc0000142`; that status proves the wrapper was reached but
+  does not replace the read and denied-write assertions on MSVC and other
+  release-shaped targets.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`
   - `codex-rs/sandboxing/src/policy_transforms.rs`
@@ -222,6 +228,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/windows-sandbox-rs/src/token.rs`
   - `codex-rs/windows-sandbox-rs/src/token_tests.rs`
   - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`
+  - `codex-rs/exec-server/tests/file_system_windows.rs`
 
 ### Windows Proxy-Aware Backend Selection
 
@@ -233,6 +240,9 @@ docs-only refresh commit that records this snapshot.
   must reach the canonical Windows session spawner unchanged.
 - PowerShell `-NoProfile` startup, spawn-failure metrics, tool telemetry, and
   turn metadata follow the effective backend, not only the configured level.
+- The direct-loopback denial fixture uses a cancellation-token connect so a
+  WFP-blocked socket terminates within the unified-exec yield rather than
+  depending on a potentially blocking socket close.
 - Hosted guardrails:
   `windows_proxy_enforcement_uses_elevated_backend`,
   `windows_spawn_failure_metric_uses_effective_backend`,
