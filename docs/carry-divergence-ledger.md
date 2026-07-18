@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-17`
-- downstream integration code tree: `c4e2b7ff14345b39f13681280f666d21bfd61514`
+- Audited on: `2026-07-18`
+- downstream integration code tree: `8ac903698df6afcc68d17aecc4b93c431da88f03`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `315195492c80fdade38e917c18f9584efd599304`
-- `upstream/main`: `315195492c80fdade38e917c18f9584efd599304`
-- downstream branch vs `upstream/main`: `1780` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `6bd3f5e3db8275c10c7e4bbcc1342c32a89b7eee`
+- `upstream/main`: `6bd3f5e3db8275c10c7e4bbcc1342c32a89b7eee`
+- downstream branch vs `upstream/main`: `1799` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1549` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1562` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -288,6 +288,11 @@ docs-only refresh commit that records this snapshot.
   reproduce the downstream per-turn ledger, provider/token metadata, and
   billing-turn reporting semantics before the canonical source of truth can
   move out of this repository.
+- The 2026-07-18 sync adopts upstream's `SqliteConfig` as the single connection
+  factory for state, logs, goals, memories, and the downstream usage database.
+  Downstream extension migrations, generalized state-migration repair, usage
+  telemetry, storage mapping, and failure-path pool cleanup remain additive
+  behavior around that upstream-owned connection seam.
 - Primary files:
   - `codex-rs/core/src/session/session.rs`
   - `codex-rs/state/src/runtime.rs`
@@ -396,6 +401,10 @@ docs-only refresh commit that records this snapshot.
   explicitly rather than treating it as an idempotent transition.
 - Generic thread-metadata inserts and upserts deliberately omit the private
   column, so unrelated metadata writes cannot reset or fabricate provenance.
+- Provenance and collision-repair fixtures use upstream's on-disk
+  `SqliteConfig` test topology. The writer-slot guard holds `BEGIN IMMEDIATE`
+  through a writable pool while generalized repair reads through a separate
+  read-only pool, proving a no-op repair does not need the writer slot.
 - This stage does not classify rollout events, reconstruct history, store
   configured identity values, enforce precedence, or synchronize live state.
 - Primary files:
@@ -428,6 +437,10 @@ docs-only refresh commit that records this snapshot.
   for databases that already recorded the old version. The current example is
   preserving upstream `0040_threads_history_mode.sql` while moving downstream
   visible-thread sort indexes to `0044_threads_visible_sort_indexes.sql`.
+- Upstream `thread_history_migrations/0002_thread_items_item_type.sql` belongs
+  to the separate rebuildable `thread_history_1.sqlite` migrator. It does not
+  collide with downstream state migration `0045`, and must not trigger state
+  migration renumbering or checksum repair.
 - Primary files:
   - `codex-rs/memories/write/src/phase2.rs`
   - `codex-rs/memories/write/src/phase2_attestation.rs`
@@ -882,6 +895,17 @@ docs-only refresh commit that records this snapshot.
   not substitute stale process metadata or output for the live connection.
   These guarantees narrow the carry but do not replace downstream's bounded
   pagination and atomic `list_changed` refresh contract.
+- The 2026-07-18 sync also adopts upstream commit `f24e695470`'s thread-level
+  `McpRuntime` ownership. `McpRuntime` is the sole owner of live connections;
+  immutable `McpRuntimeSnapshot` values pair projected config with the
+  connection set used by an in-flight step, so refresh must not eagerly shut
+  down the previous snapshot. Downstream catalogue pagination, OAuth backend,
+  safety policy, and environment-scoped projection continue through this
+  upstream-owned runtime rather than a second manager mirror.
+- Centralized ownership does not by itself unload terminal threads retained by
+  `ThreadManager`. The tracked residency follow-up must call
+  `shutdown_and_wait()` before generation-fenced registry removal so cloned MCP
+  resource clients cannot keep stale server processes alive indefinitely.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - Preserve this carry until upstream issue #26094 is resolved by behavior that
@@ -891,12 +915,16 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/connectors/src/connector_runtime/mod.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/runtime.rs`
+  - `codex-rs/codex-mcp/src/resource_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client_tests.rs`
   - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
   - `codex-rs/app-server/tests/suite/v2/mcp_server_status.rs`
   - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
+  - `codex-rs/core/src/session/mcp.rs`
+  - `codex-rs/core/src/state/service.rs`
 
 ### MCP Server Safety Policy Extensions
 
