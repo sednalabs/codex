@@ -978,7 +978,7 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
     assert_ne!(port, http_proxy_addr.port());
     assert_ne!(port, socks_proxy_addr.port());
     let command = format!(
-        "$curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; if (-not (Test-Path -LiteralPath $curl)) {{ Write-Output 'DIRECT-PROBE-ERROR:no-curl'; exit 9 }}; & $curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent --output NUL 'http://127.0.0.1:{port}/'; $code = $LASTEXITCODE; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
+        "$ErrorActionPreference = 'Stop'; $curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; if (-not (Test-Path -LiteralPath $curl)) {{ Write-Output 'DIRECT-PROBE-ERROR:no-curl'; exit 9 }}; $process = Start-Process -FilePath $curl -ArgumentList @('--noproxy','*','--connect-timeout','1','--max-time','2','--silent','--output','NUL','http://127.0.0.1:{port}/') -NoNewWindow -PassThru; if (-not $process.WaitForExit(3000)) {{ $process.Kill($true); $process.WaitForExit(); Write-Output 'DIRECT-BLOCKED'; exit 0 }}; $code = $process.ExitCode; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
     );
     let args = json!({
         "cmd": command,
