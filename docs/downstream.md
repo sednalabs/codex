@@ -79,17 +79,17 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-17`):
+Current downstream audit baseline (validated on `2026-07-18`):
 
 - downstream integration code tree:
-  `c4e2b7ff14345b39f13681280f666d21bfd61514`
+  `7bd2859b6b53f9202a3cf8efba4d625fa81a2701`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `315195492c80fdade38e917c18f9584efd599304`
+  `56395bddaf26eb2829387ca6a417bf9128e5b239`
 - `upstream/main`:
-  `315195492c80fdade38e917c18f9584efd599304`
+  `56395bddaf26eb2829387ca6a417bf9128e5b239`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1780` downstream ahead
+  `0` upstream ahead, `1823` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -309,6 +309,16 @@ User-visible behavior:
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. Those completion fields are tool-output-only; canonical transcript items retain identities and status snapshots without duplicating timeout, mailbox, or pending outcome state. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
+- When V2 reaches its resident-thread capacity, it may evict the least-recently
+  used quiescent child after a clean shutdown. Completed and errored identities
+  retain final outcomes, while an interrupted identity retains its resumable
+  state; all three use a compact cold status for `list_agents` and direct agent
+  tools, remain reloadable from persisted history, and cannot be deleted by a
+  stale eviction racing with a replacement thread instance. A later serialized
+  lifecycle slice owns cross-reload subscription and cold-mailbox continuity.
+- Ephemeral V2 children have no reloadable persisted history, so they are not
+  eligible for cold eviction; capacity pressure fails closed and leaves the
+  existing runtime resident.
 - Roles that explicitly set `model`, `model_provider`, `model_reasoning_effort`, or `model_verbosity` continue to be authoritative, even when a child requests a different setting.
 - Full-history forks keep their conversation and agent identity while accepting
   configured or explicit child model/reasoning selection; they still reject an
@@ -321,6 +331,9 @@ Primary files:
 - `codex-rs/core/src/agent/role_tests.rs`
 - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
 - `codex-rs/core/src/agent/control.rs`
+- `codex-rs/core/src/agent/control/residency.rs`
+- `codex-rs/core/src/agent/registry.rs`
+- `codex-rs/core/src/thread_manager.rs`
 - `codex-rs/config/src/config_toml.rs`
 - `codex-rs/core/config.schema.json`
 - `codex-rs/core/src/codex_delegate.rs`
