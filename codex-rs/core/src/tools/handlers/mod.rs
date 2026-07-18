@@ -3,6 +3,7 @@ pub(crate) mod agent_jobs_spec;
 pub(crate) mod apply_patch;
 pub(crate) mod apply_patch_spec;
 mod computer_use;
+mod computer_use_code_mode;
 mod current_time;
 #[allow(dead_code, unused_imports)]
 mod dynamic;

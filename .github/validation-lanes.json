@@ -2211,6 +2211,7 @@
         "codex.tui-native-computer-use-targeted",
         "codex.exec-native-computer-use-targeted",
         "codex.native-computer-use-tool-registry-targeted",
+        "codex.code-mode-declaration-targeted",
         "codex.native-computer-use-doctor-targeted"
       ],
       "allowed_paths": [
@@ -2222,8 +2223,12 @@
         "codex-rs/app-server-protocol/src/**",
         "codex-rs/core/src/thread_manager.rs",
         "codex-rs/core-plugins/src/lib.rs",
+        "codex-rs/code-mode-protocol/src/description.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
+        "codex-rs/core/src/tools/handlers/computer_use_code_mode.rs",
+        "codex-rs/core/src/tools/handlers/mod.rs",
         "codex-rs/core/src/tools/handlers/tool_search.rs",
+        "codex-rs/core/tests/suite/code_mode.rs",
         "codex-rs/tools/src/tool_search.rs",
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/android_tool_tests.rs",
@@ -2262,7 +2267,8 @@
         "docs/downstream-regression-matrix.md",
         "docs/validation_workflow.md",
         "docs/divergences/index.yaml",
-        ".github/validation-lanes.json"
+        ".github/validation-lanes.json",
+        ".github/scripts/test_ci_planners.py"
       ],
       "required_any_paths": [
         "codex-rs/app-server/src/computer_use.rs",
@@ -2270,6 +2276,7 @@
         "codex-rs/app-server/tests/suite/v2/computer_use.rs",
         "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
+        "codex-rs/core/src/tools/handlers/computer_use_code_mode.rs",
         "codex-rs/tools/src/android_tool.rs",
         "codex-rs/tools/src/browser_tool.rs",
         "codex-rs/tools/src/computer_use_tool.rs",

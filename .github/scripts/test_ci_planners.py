@@ -858,6 +858,40 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_native_computer_use_code_mode_route_covers_wrapper_and_provider_lanes(
+        self,
+    ) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                ".github/scripts/test_ci_planners.py",
+                ".github/validation-lanes.json",
+                "codex-rs/code-mode-protocol/src/description.rs",
+                "codex-rs/core/src/tools/handlers/computer_use.rs",
+                "codex-rs/core/src/tools/handlers/computer_use_code_mode.rs",
+                "codex-rs/core/src/tools/handlers/mod.rs",
+                "codex-rs/core/tests/suite/code_mode.rs",
+                "docs/carry-divergence-ledger.md",
+                "docs/divergences/index.yaml",
+                "docs/downstream-regression-matrix.md",
+                "docs/downstream-tool-surface-matrix.md",
+                "docs/native-computer-use.md",
+                "justfile",
+            ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.app-server-protocol-test",
+                "codex.app-server-computer-use-targeted",
+                "codex.tui-native-computer-use-targeted",
+                "codex.exec-native-computer-use-targeted",
+                "codex.native-computer-use-tool-registry-targeted",
+                "codex.code-mode-declaration-targeted",
+                "codex.native-computer-use-doctor-targeted",
+            ],
+        )
+
     def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/app-server-protocol/schema/json/ServerNotification.json"],

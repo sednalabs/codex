@@ -37,6 +37,8 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tracing::warn;
 
+use super::computer_use_code_mode;
+
 pub struct ComputerUseHandler {
     tool_name: ToolName,
     adapter: String,
@@ -78,8 +80,8 @@ impl ToolOutput for ComputerUseOutput {
         }))
     }
 
-    fn code_mode_result(&self, payload: &ToolPayload) -> Value {
-        self.output.code_mode_result(payload)
+    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
+        computer_use_code_mode::result(&self.output.body, self.output.success.unwrap_or(true))
     }
 }
 
@@ -91,7 +93,8 @@ impl ComputerUseHandler {
         } else {
             DEFAULT_COMPUTER_USE_TIMEOUT
         };
-        let output_tool = native_tool.tool;
+        let mut output_tool = native_tool.tool;
+        output_tool.output_schema = Some(computer_use_code_mode::output_schema());
         let search_text = [
             output_tool.name.clone(),
             output_tool.name.replace('_', " "),
