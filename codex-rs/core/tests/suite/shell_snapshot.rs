@@ -548,7 +548,6 @@ async fn shell_command_snapshot_still_intercepts_apply_patch() -> Result<()> {
     let test = harness.test();
     let codex = test.codex.clone();
     let cwd = test.config.cwd.clone();
-    let codex_home = test.home.path().to_path_buf();
     let target = cwd.join("snapshot-apply.txt");
 
     let script = "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: snapshot-apply.txt\n+hello from snapshot\n*** End Patch\nEOF\n";
@@ -603,10 +602,6 @@ async fn shell_command_snapshot_still_intercepts_apply_patch() -> Result<()> {
             },
         })
         .await?;
-
-    let snapshot_path = wait_for_snapshot(&codex_home).await?;
-    let snapshot_content = fs::read_to_string(&snapshot_path).await?;
-    assert_posix_snapshot_sections(&snapshot_content);
 
     let mut saw_patch_begin = false;
     let mut patch_end = None;

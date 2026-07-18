@@ -86,10 +86,10 @@ async fn stop_waits_for_live_reservation_to_resolve() {
     assert!(try_lock_file(&reservation).expect("lock reservation"));
     let cleanup = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        drop(reservation);
         tokio::fs::remove_file(pid_file)
             .await
             .expect("remove pid file");
+        drop(reservation);
     });
 
     backend.stop().await.expect("stop");

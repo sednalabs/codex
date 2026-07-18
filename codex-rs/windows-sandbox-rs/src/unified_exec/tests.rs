@@ -130,7 +130,11 @@ fn current_user_sid() -> Result<Vec<u8>> {
             anyhow::ensure!(sid_len != 0, "GetLengthSid failed: {}", GetLastError());
 
             let mut sid = vec![0; sid_len as usize];
-            let copied = CopySid(sid_len, sid.as_mut_ptr() as *mut c_void, token_user.User.Sid);
+            let copied = CopySid(
+                sid_len,
+                sid.as_mut_ptr() as *mut c_void,
+                token_user.User.Sid,
+            );
             anyhow::ensure!(copied != 0, "CopySid failed: {}", GetLastError());
             Ok(sid)
         })();
@@ -180,7 +184,10 @@ fn replace_with_restrictive_test_dacl(path: &Path, current_user_sid: &[u8]) -> R
                 dacl,
                 std::ptr::null_mut(),
             );
-            anyhow::ensure!(status == ERROR_SUCCESS, "SetNamedSecurityInfoW failed: {status}");
+            anyhow::ensure!(
+                status == ERROR_SUCCESS,
+                "SetNamedSecurityInfoW failed: {status}"
+            );
             Ok(())
         })();
         let _ = LocalFree(security_descriptor as HLOCAL);

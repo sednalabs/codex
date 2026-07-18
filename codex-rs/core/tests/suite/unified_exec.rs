@@ -998,8 +998,15 @@ async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result
         Duration::from_secs(/*secs*/ 90),
     )
     .await;
-    assert_eq!(end_event.status, ExecCommandStatus::Completed);
-    assert_eq!(end_event.exit_code, 0);
+    assert_eq!(
+        end_event.status,
+        ExecCommandStatus::Completed,
+        "elevated proxy firewall command failed: {end_event:?}"
+    );
+    assert_eq!(
+        end_event.exit_code, 0,
+        "elevated proxy firewall command returned a nonzero exit: {end_event:?}"
+    );
     assert!(
         end_event.aggregated_output.contains("DIRECT-BLOCKED"),
         "elevated proxy firewall should block direct loopback access: {end_event:?}"
