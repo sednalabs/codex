@@ -3188,6 +3188,23 @@ image(imageItem);
 async fn code_mode_native_browser_result_forwards_screenshot_as_input_image() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    run_code_mode_native_browser_image_case(/*browser_success*/ true).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_failed_native_browser_result_forwards_input_image() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    run_code_mode_native_browser_image_case(/*browser_success*/ false).await
+}
+
+async fn run_code_mode_native_browser_image_case(browser_success: bool) -> Result<()> {
+    let response_text = if browser_success {
+        "Browser observation for https://example.test/"
+    } else {
+        "Browser observation failed after preserving the current viewport."
+    };
+
     const SCREENSHOT_DATA_URL: &str = concat!(
         "data:image/png;base64,",
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/",
@@ -3195,11 +3212,9 @@ async fn code_mode_native_browser_result_forwards_screenshot_as_input_image() ->
     );
 
     let server = responses::start_mock_server().await;
-    let mut builder = test_codex()
-        .with_model("gpt-5.4")
-        .with_config(|config| {
-            let _ = config.features.enable(Feature::CodeMode);
-        });
+    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+        let _ = config.features.enable(Feature::CodeModeOnly);
+    });
     let base_test = builder.build_with_auto_env(&server).await?;
     let new_thread = base_test
         .thread_manager
@@ -3223,6 +3238,7 @@ async fn code_mode_native_browser_result_forwards_screenshot_as_input_image() ->
     let mut test = base_test;
     test.codex = new_thread.thread;
     test.session_configured = new_thread.session_configured;
+    let selected_environment = test.executor_environment().selection().clone();
 
     let code = r#"
 const result = await tools.browser_observe({ scope: "viewport" });
@@ -3233,6 +3249,7 @@ if (!screenshot) {
 text(JSON.stringify({
   contentTypes: result.content.map((item) => item.type),
   imageDetail: screenshot.detail,
+  inputText: result.content.find((item) => item.type === "input_text")?.text,
   success: result.success,
 }));
 image(screenshot);
@@ -3277,15 +3294,16 @@ image(screenshot);
                 ComputerUseResponse {
                     content_items: vec![
                         ComputerUseOutputContentItem::InputText {
-                            text: "Browser observation for https://example.test/".to_string(),
+                            text: response_text.to_string(),
                         },
                         ComputerUseOutputContentItem::InputImage {
                             image_url: SCREENSHOT_DATA_URL.to_string(),
                             detail: Some("high".to_string()),
                         },
                     ],
-                    success: true,
-                    error: None,
+                    success: browser_success,
+                    error: (!browser_success)
+                        .then(|| "browser observation failed after capture".to_string()),
                 },
             )
             .await;
@@ -3293,7 +3311,10 @@ image(screenshot);
     };
 
     tokio::try_join!(
-        test.submit_turn("use exec to observe the browser and forward its screenshot"),
+        test.submit_turn_with_environments(
+            "use exec to observe the browser and forward its screenshot",
+            Some(vec![selected_environment]),
+        ),
         respond_to_browser,
     )?;
 
@@ -3312,13 +3333,35 @@ image(screenshot);
         })
         .expect("exec description should be present");
     assert!(
-        exec_description.contains(
-            "Native computer-use tools return a typed `{ content, success }` object"
-        )
+        exec_description
+            .contains("Native computer-use tools return a typed `{ content, success }` object")
     );
-    assert!(exec_description.contains("browser_observe(args:"));
-    assert!(exec_description.contains("image_url: string"));
-    assert!(exec_description.contains("success: boolean"));
+    let browser_section = exec_description
+        .split_once("### `browser_observe`\n")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split("\n\n### `").next())
+        .expect("exec description should contain a browser_observe section");
+    let browser_declaration = browser_section
+        .split_once("exec tool declaration:\n```ts\n")
+        .map(|(_, tail)| tail)
+        .and_then(|tail| tail.split_once("\n```").map(|(declaration, _)| declaration))
+        .expect("browser_observe section should contain a TypeScript declaration");
+    assert!(
+        browser_declaration.starts_with("declare const tools: { browser_observe(args: {")
+    );
+    let (_, browser_output) = browser_declaration
+        .rsplit_once("): Promise<")
+        .expect("browser_observe declaration should contain an output type");
+    assert_eq!(
+        browser_output,
+        concat!(
+            "{ content: Array<",
+            "{ text: string; type: \"input_text\"; } | ",
+            "{ detail?: \"auto\" | \"low\" | \"high\" | \"original\"; ",
+            "image_url: string; type: \"input_image\"; }",
+            ">; success: boolean; }>; };",
+        ),
+    );
 
     let request = second_mock.single_request();
     let items = custom_tool_output_items(&request, "call-1");
@@ -3337,7 +3380,8 @@ image(screenshot);
         serde_json::json!({
             "contentTypes": ["input_text", "input_image"],
             "imageDetail": "high",
-            "success": true,
+            "inputText": response_text,
+            "success": browser_success,
         }),
     );
     assert!(!text_item(&items, /*index*/ 1).contains("data:image"));

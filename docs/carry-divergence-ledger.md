@@ -839,6 +839,8 @@ docs-only refresh commit that records this snapshot.
 - Nested code-mode calls retain native computer-use responses as a typed
   `{ content, success }` object. Callers forward an `input_image` item with
   `image(...)` and never serialize the complete image-bearing result to text.
+  Failed provider responses preserve the same typed content contract, including
+  diagnostic text and any screenshot returned with the failure.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.
