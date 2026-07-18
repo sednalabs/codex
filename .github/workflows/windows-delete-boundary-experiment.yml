@@ -1,6 +1,9 @@
 name: Windows delete boundary experiment
 
 on:
+  push:
+    branches:
+      - validation/windows-delete-boundary-20260718
   workflow_dispatch:
 
 permissions:
