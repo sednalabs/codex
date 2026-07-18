@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-18`
-- downstream integration code tree: `8ac903698df6afcc68d17aecc4b93c431da88f03`
+- downstream integration code tree: `d2ad519397cb48123d0ac9cf0c3f8f08ba362449`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `6bd3f5e3db8275c10c7e4bbcc1342c32a89b7eee`
-- `upstream/main`: `6bd3f5e3db8275c10c7e4bbcc1342c32a89b7eee`
-- downstream branch vs `upstream/main`: `1799` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `82b294c73c902a4c51f789ba68bb599f0065616f`
+- `upstream/main`: `82b294c73c902a4c51f789ba68bb599f0065616f`
+- downstream branch vs `upstream/main`: `1807` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1562` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1569` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -619,11 +619,19 @@ docs-only refresh commit that records this snapshot.
   response-only queued items may still defer after an answer boundary.
 - Legacy active turns that only contain `UserMessageEvent` tails are still
   treated as mid-turn so replay/fork state does not discard the active start.
+- Upstream `PermissionsState` owns permission-instruction diffing and retained
+  fragment matching. Downstream custom realtime-start instructions remain the
+  earlier world-state contribution relative to permissions, including remote
+  compaction and resume reconstruction, so adopting upstream ownership does not
+  silently replace the configured realtime wording.
 - Primary files:
+  - `codex-rs/core/src/context/world_state/permissions.rs`
   - `codex-rs/core/src/session/input_queue.rs`
   - `codex-rs/core/src/session/mod.rs`
   - `codex-rs/core/src/session/session.rs`
   - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/session/world_state.rs`
+  - `codex-rs/core/tests/suite/compact_remote.rs`
   - `codex-rs/core/src/thread_manager.rs`
 
 ### Blocking Unified-Exec Waits And Compaction-Aware Turn Completion
