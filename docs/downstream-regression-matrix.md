@@ -353,8 +353,8 @@ Windows hosted harness note:
 
 - The deletion characterization uses PowerShell 7, and the direct-loopback
   denial probe uses a supervised native `curl.exe` child with explicit direct
-  routing and bounded child-tree termination so both finish under the
-  restricted hosted lifecycle.
+  routing and bounded child termination so both finish under the restricted
+  hosted lifecycle.
 - Exact `0xc0000142` while re-entering the Bazel gnullvm test executable proves
   that the filesystem helper reached the sandbox wrapper, but it is not a
   substitute for the read and denied-write assertions on MSVC and other
