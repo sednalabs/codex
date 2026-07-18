@@ -308,6 +308,10 @@ fn computer_use_command(tool_name: &str, arguments: &str) -> String {
     clippy::await_holding_invalid_type,
     reason = "active turn checks and computer-use response registration must remain atomic"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "computer-use request mapping keeps protocol fields explicit"
+)]
 async fn request_computer_use(
     session: &Session,
     turn_context: &TurnContext,

@@ -5,7 +5,6 @@ use crate::history_cell::HistoryRenderMode;
 use crate::streaming::controller::StreamController;
 use pretty_assertions::assert_eq;
 use ratatui::style::Style;
-use ratatui::style::Stylize;
 use tempfile::TempDir;
 
 fn context_with_fragment(fragment: &str) -> (TempDir, InlineVisualizationContext) {
