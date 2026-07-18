@@ -1599,10 +1599,10 @@
           "default_dacl_keeps_everyone_for_ipc_compatibility"
         ],
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs": [
-          "legacy_workspace_write_delete_is_limited_to_writable_roots"
+          "legacy_write_restricted_deletion_limitation_is_explicit"
         ]
       },
-      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible restricted token excludes Everyone from the restricting SID set while retaining it on the default DACL for IPC. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
+      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible legacy token excludes Everyone from the restricting SID set, retains it on the default DACL for IPC, and uses WRITE_RESTRICTED for launch compatibility. Standalone DELETE and FILE_DELETE_CHILD checks remain an explicit legacy-backend limitation until bounded capability-SID read access makes full restriction safe. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1616,10 +1616,10 @@
         "windows_restricted_token_supports_full_read_split_write_read_carveouts",
         "restricted_sids_exclude_everyone",
         "default_dacl_keeps_everyone_for_ipc_compatibility",
-        "legacy_workspace_write_delete_is_limited_to_writable_roots"
+        "legacy_write_restricted_deletion_limitation_is_explicit"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
+      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. Hosted full-restriction experiments exposed missing launch/runtime read capabilities and an Everyone-write bypass, so the compatible WRITE_RESTRICTED shape is retained and its deletion limitation is characterized rather than misreported as containment. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "windows-sandbox-policy-adapter",
       "hotspot_files": [

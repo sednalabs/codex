@@ -41,6 +41,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const DISABLE_MAX_PRIVILEGE: u32 = 0x01;
 const LUA_TOKEN: u32 = 0x04;
+const WRITE_RESTRICTED: u32 = 0x08;
 const GENERIC_ALL: u32 = 0x1000_0000;
 const WIN_WORLD_SID: i32 = 1;
 const SE_GROUP_LOGON_ID: u32 = 0xC0000000;
@@ -427,12 +428,11 @@ fn build_restricted_sid_entries(
     psid_capabilities: &[*mut c_void],
     extra_restricting_sids: &[*mut c_void],
     psid_logon: *mut c_void,
-    psid_everyone: *mut c_void,
 ) -> Vec<SID_AND_ATTRIBUTES> {
     let mut entries: Vec<SID_AND_ATTRIBUTES> =
         vec![
             unsafe { std::mem::zeroed() };
-            psid_capabilities.len() + extra_restricting_sids.len() + 2
+            psid_capabilities.len() + extra_restricting_sids.len() + 1
         ];
     for (i, psid) in psid_capabilities.iter().enumerate() {
         entries[i].Sid = *psid;
@@ -446,8 +446,6 @@ fn build_restricted_sid_entries(
     let logon_idx = extras_idx + extra_restricting_sids.len();
     entries[logon_idx].Sid = psid_logon;
     entries[logon_idx].Attributes = 0;
-    entries[logon_idx + 1].Sid = psid_everyone;
-    entries[logon_idx + 1].Attributes = 0;
     entries
 }
 
@@ -476,17 +474,12 @@ unsafe fn create_token_with_caps_from(
     let mut everyone = world_sid()?;
     let psid_everyone = everyone.as_mut_ptr() as *mut c_void;
 
-    let mut entries = build_restricted_sid_entries(
-        psid_capabilities,
-        extra_restricting_sids,
-        psid_logon,
-        psid_everyone,
-    );
+    // Everyone stays on the IPC DACL, but must not widen the write-restricted token.
+    let mut entries =
+        build_restricted_sid_entries(psid_capabilities, extra_restricting_sids, psid_logon);
 
     let mut new_token: HANDLE = 0;
-    // Apply restricting SIDs to every access check so DELETE and
-    // FILE_DELETE_CHILD cannot bypass the sandbox capability boundary.
-    let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN;
+    let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
     let ok = CreateRestrictedToken(
         base_token,
         flags,
