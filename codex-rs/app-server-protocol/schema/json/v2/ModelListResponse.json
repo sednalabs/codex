@@ -12,6 +12,11 @@
           "const": "image",
           "description": "Image attachments included in user turns.",
           "type": "string"
+        },
+        {
+          "const": "audio",
+          "description": "Audio attachments included in user turns.",
+          "type": "string"
         }
       ]
     },

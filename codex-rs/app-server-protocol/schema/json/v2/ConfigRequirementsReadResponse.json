@@ -337,6 +337,13 @@
           },
           "type": "array"
         },
+        "SessionEnd": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ConfiguredHookMatcherGroup"
+          },
+          "type": "array"
+        },
         "SessionStart": {
           "items": {
             "$ref": "#/$defs/ConfiguredHookMatcherGroup"

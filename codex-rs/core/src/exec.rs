@@ -24,6 +24,8 @@ use crate::spawn::SpawnChildRequest;
 use crate::spawn::StdioPolicy;
 use crate::spawn::spawn_child_async;
 use codex_network_proxy::NetworkProxy;
+#[cfg(target_os = "windows")]
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::error::SandboxErr;
@@ -45,10 +47,13 @@ use codex_sandboxing::WindowsSandboxFilesystemOverrides;
 pub(crate) use codex_sandboxing::is_likely_sandbox_denied;
 #[cfg(test)]
 use codex_sandboxing::permission_profile_supports_windows_restricted_token_sandbox;
+#[cfg(test)]
 use codex_sandboxing::resolve_windows_elevated_filesystem_overrides;
+#[cfg(test)]
 use codex_sandboxing::resolve_windows_restricted_token_filesystem_overrides;
 #[cfg(test)]
 use codex_sandboxing::unsupported_windows_restricted_token_sandbox_reason;
+#[cfg(any(test, target_os = "windows"))]
 use codex_sandboxing::windows_sandbox_uses_elevated_backend;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -411,26 +416,7 @@ pub fn build_exec_request(
             )
         })
         .map_err(CodexErr::from)?;
-    let use_windows_elevated_backend = windows_sandbox_uses_elevated_backend(
-        exec_req.windows_sandbox_level,
-        exec_req.network.is_some(),
-    );
-    exec_req.windows_sandbox_filesystem_overrides = if use_windows_elevated_backend {
-        resolve_windows_elevated_filesystem_overrides(
-            exec_req.sandbox,
-            &exec_req.permission_profile,
-            sandbox_cwd,
-            use_windows_elevated_backend,
-        )
-    } else {
-        resolve_windows_restricted_token_filesystem_overrides(
-            exec_req.sandbox,
-            &exec_req.permission_profile,
-            sandbox_cwd,
-            exec_req.windows_sandbox_level,
-        )
-    }
-    .map_err(CodexErr::UnsupportedOperation)?;
+    exec_req.prepare_windows_sandbox()?;
     Ok(exec_req)
 }
 
@@ -461,6 +447,7 @@ pub(crate) async fn execute_exec_request(
         exec_server_sandbox: _,
         exec_server_enforce_managed_network: _,
         exec_server_managed_network: _,
+        exec_server_network_proxy: _,
     } = exec_request;
 
     // TODO(anp): Keep PathUri through the local process launch boundary.
@@ -563,9 +550,22 @@ fn windowsapps_path_kind(path: &str) -> &'static str {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_sandbox_backend_metric_level(
+    sandbox_level: WindowsSandboxLevel,
+    proxy_enforced: bool,
+) -> &'static str {
+    if windows_sandbox_uses_elevated_backend(sandbox_level, proxy_enforced) {
+        "elevated"
+    } else {
+        "legacy"
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn record_windows_sandbox_spawn_failure(
     command_path: Option<&str>,
-    windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel,
+    sandbox_level: WindowsSandboxLevel,
+    proxy_enforced: bool,
     err: &str,
 ) {
     let Some(error_code) = extract_create_process_as_user_error_code(err) else {
@@ -578,14 +578,7 @@ fn record_windows_sandbox_spawn_failure(
         .unwrap_or("unknown")
         .to_ascii_lowercase();
     let path_kind = windowsapps_path_kind(path);
-    let level = if matches!(
-        windows_sandbox_level,
-        codex_protocol::config_types::WindowsSandboxLevel::Elevated
-    ) {
-        "elevated"
-    } else {
-        "legacy"
-    };
+    let level = windows_sandbox_backend_metric_level(sandbox_level, proxy_enforced);
     if let Some(metrics) = codex_otel::global() {
         let _ = metrics.counter(
             "codex.windows_sandbox.createprocessasuserw_failed",
@@ -717,6 +710,7 @@ async fn exec_windows_sandbox(
             record_windows_sandbox_spawn_failure(
                 command_path.as_deref(),
                 sandbox_level,
+                proxy_enforced,
                 &err.to_string(),
             );
             return Err(CodexErr::Io(io::Error::other(format!(

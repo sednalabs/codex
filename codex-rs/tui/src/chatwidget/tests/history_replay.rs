@@ -76,6 +76,43 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn restored_conversation_ultra_remains_selected_after_switching_to_plan() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    chat.set_plan_mode_reasoning_effort(Some(ReasoningEffortConfig::High));
+
+    chat.handle_thread_session(crate::session_state::ThreadSessionState {
+        thread_id: ThreadId::new(),
+        forked_from_id: None,
+        fork_parent_title: None,
+        thread_name: None,
+        model: "gpt-5.4".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        service_tier: None,
+        approval_policy: AskForApproval::Never,
+        approvals_reviewer: ApprovalsReviewer::User,
+        permission_profile: PermissionProfile::read_only(),
+        active_permission_profile: None,
+        cwd: test_path_buf("/home/user/project").abs(),
+        runtime_workspace_roots: Vec::new(),
+        instruction_source_paths: Vec::new(),
+        reasoning_effort: Some(ReasoningEffortConfig::Ultra),
+        collaboration_mode: None,
+        personality: None,
+        message_history: None,
+        network_proxy: None,
+        rollout_path: None,
+    });
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+    assert_eq!(
+        chat.current_reasoning_effort(),
+        Some(ReasoningEffortConfig::Ultra)
+    );
+}
+
+#[tokio::test]
 async fn replayed_user_messages_seed_composer_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.bottom_pane.set_history_metadata(
@@ -145,7 +182,7 @@ async fn replayed_user_messages_seed_composer_history() {
         };
         offset
     };
-    let response = |offset, entry: &str| HistoryLookupResponse {
+    let response = |offset, entry: &str| HistoryLookupResponse::Entry {
         offset,
         log_id: 1,
         entry: Some(entry.to_string()),
@@ -187,6 +224,89 @@ async fn replayed_review_prompt_does_not_seed_composer_history() {
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(chat.bottom_pane.composer_text(), "");
+}
+
+#[tokio::test]
+async fn replayed_nested_review_prompts_do_not_render_or_seed_composer_history() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let review_hint = "current changes";
+    let review_prompt = "Review the current code changes (staged, unstaged, and untracked files).";
+    let user_message = |id: &str, text: &str| AppServerThreadItem::UserMessage {
+        id: id.to_string(),
+        client_id: None,
+        content: vec![AppServerUserInput::Text {
+            text: text.to_string(),
+            text_elements: Vec::new(),
+        }],
+    };
+    let review_marker = |turn_id: &str| AppServerTurn {
+        items: vec![
+            AppServerThreadItem::EnteredReviewMode {
+                id: format!("{turn_id}-start"),
+                review: review_hint.to_string(),
+            },
+            AppServerThreadItem::ExitedReviewMode {
+                id: format!("{turn_id}-end"),
+                review: "review complete".to_string(),
+            },
+        ],
+        ..app_server_turn(
+            turn_id,
+            AppServerTurnStatus::Completed,
+            /*duration_ms*/ None,
+            /*error*/ None,
+        )
+    };
+
+    chat.replay_thread_turns(
+        vec![
+            review_marker("turn-review-before-steer"),
+            AppServerTurn {
+                items: vec![
+                    user_message("interrupted-prompt", review_hint),
+                    user_message("interrupted-steer", review_hint),
+                ],
+                completed_at: Some(1),
+                ..app_server_turn(
+                    "turn-interrupted",
+                    AppServerTurnStatus::Interrupted,
+                    /*duration_ms*/ None,
+                    /*error*/ None,
+                )
+            },
+            review_marker("turn-review"),
+            AppServerTurn {
+                items: vec![
+                    user_message("review-prompt-1", review_prompt),
+                    user_message("review-prompt-2", review_prompt),
+                    AppServerThreadItem::AgentMessage {
+                        id: "review-result".to_string(),
+                        text: "review result is retained".to_string(),
+                        phase: Some(MessagePhase::FinalAnswer),
+                        memory_citation: None,
+                    },
+                ],
+                ..app_server_turn(
+                    "turn-review-child",
+                    AppServerTurnStatus::Interrupted,
+                    /*duration_ms*/ None,
+                    /*error*/ None,
+                )
+            },
+        ],
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<String>();
+    assert!(!rendered.contains(review_prompt));
+    assert_eq!(rendered.matches(review_hint).count(), 4);
+    insta::assert_snapshot!("replayed_nested_review_prompts", rendered);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.composer_text(), review_hint);
 }
 
 #[tokio::test]
@@ -703,6 +823,28 @@ async fn forked_thread_history_line_without_name_shows_id_once_snapshot() {
     let combined = lines_to_single_string(&history_cell.display_lines(/*width*/ 80));
 
     assert_chatwidget_snapshot!("forked_thread_history_line_without_name", combined);
+}
+
+#[tokio::test]
+async fn prompt_edit_thread_history_line_snapshot() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.emit_prompt_edit_thread_event();
+
+    let history_cell = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 2), async {
+        loop {
+            match rx.recv().await {
+                Some(AppEvent::InsertHistoryCell(cell)) => break cell,
+                Some(_) => continue,
+                None => panic!("app event channel closed before prompt edit history was emitted"),
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for prompt edit history");
+    let combined = lines_to_single_string(&history_cell.display_lines(/*width*/ 80));
+
+    assert_chatwidget_snapshot!("prompt_edit_thread_history_line", combined);
 }
 
 #[tokio::test]

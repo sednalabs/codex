@@ -180,6 +180,7 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
     };
     assert_eq!(
         tool_names(managed.listed_tools().await),

@@ -17,7 +17,9 @@ use crate::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
 use codex_file_system::FileSystemSandboxContext;
 use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_network_proxy::NetworkProxy;
+use codex_network_proxy::RemoteNetworkProxyLaunchConfig;
 use codex_protocol::config_types::WindowsSandboxLevel;
+use codex_protocol::error::CodexErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::models::PermissionProfile;
 pub use codex_protocol::models::SandboxPermissions;
@@ -26,6 +28,7 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_sandboxing::SandboxExecRequest;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::WindowsSandboxFilesystemOverrides;
+use codex_sandboxing::resolve_windows_sandbox_filesystem_overrides;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
@@ -65,6 +68,7 @@ pub struct ExecRequest {
     pub(crate) exec_server_sandbox: Option<FileSystemSandboxContext>,
     pub(crate) exec_server_enforce_managed_network: bool,
     pub(crate) exec_server_managed_network: Option<ManagedNetworkSandboxContext>,
+    pub(crate) exec_server_network_proxy: Option<RemoteNetworkProxyLaunchConfig>,
 }
 
 impl ExecRequest {
@@ -110,6 +114,7 @@ impl ExecRequest {
             exec_server_sandbox: None,
             exec_server_enforce_managed_network: false,
             exec_server_managed_network: None,
+            exec_server_network_proxy: None,
         }
     }
 
@@ -169,7 +174,31 @@ impl ExecRequest {
             exec_server_sandbox: None,
             exec_server_enforce_managed_network: false,
             exec_server_managed_network: None,
+            exec_server_network_proxy: None,
         }
+    }
+
+    pub(crate) fn resolve_windows_sandbox_filesystem_overrides(
+        &self,
+    ) -> Result<Option<WindowsSandboxFilesystemOverrides>, CodexErr> {
+        let sandbox_policy_cwd = self
+            .windows_sandbox_policy_cwd
+            .to_abs_path()
+            .map_err(CodexErr::from)?;
+        resolve_windows_sandbox_filesystem_overrides(
+            self.sandbox,
+            &self.permission_profile,
+            &sandbox_policy_cwd,
+            self.windows_sandbox_level,
+            self.network.is_some(),
+        )
+        .map_err(CodexErr::UnsupportedOperation)
+    }
+
+    pub(crate) fn prepare_windows_sandbox(&mut self) -> Result<(), CodexErr> {
+        self.windows_sandbox_filesystem_overrides =
+            self.resolve_windows_sandbox_filesystem_overrides()?;
+        Ok(())
     }
 }
 

@@ -134,6 +134,19 @@ fn managed_network_enforcement_tags_unrestricted_profiles_as_sandboxed() {
     );
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn proxy_enforced_restricted_token_uses_windows_elevated_tag() {
+    assert_eq!(
+        permission_profile_sandbox_tag(
+            &PermissionProfile::read_only(),
+            WindowsSandboxLevel::RestrictedToken,
+            /*enforce_managed_network*/ true,
+        ),
+        "windows_elevated"
+    );
+}
+
 #[test]
 fn profile_policy_tag_reports_closest_legacy_mode() {
     let cwd = AbsolutePathBuf::from_absolute_path(Path::new("/tmp/codex")).expect("absolute cwd");

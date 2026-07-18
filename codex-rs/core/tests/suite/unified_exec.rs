@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
+#[cfg(target_os = "windows")]
+use codex_config::types::WindowsSandboxModeToml;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_features::Feature;
 use codex_protocol::models::PermissionProfile;
@@ -23,7 +25,6 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::TempDirExt;
 use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
-use core_test_support::managed_network_requirements_loader;
 use core_test_support::process::process_is_alive;
 use core_test_support::process::wait_for_pid_file;
 use core_test_support::process::wait_for_process_exit;
@@ -52,6 +53,8 @@ use pretty_assertions::assert_eq;
 use regex_lite::Regex;
 use serde_json::Value;
 use serde_json::json;
+#[cfg(target_os = "windows")]
+use serial_test::serial;
 use tokio::time::Duration;
 
 const UNIFIED_EXEC_LAGGED_OUTPUT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -748,9 +751,11 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
     let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec-full-lifecycle";
-    // This timing force the long-standing PTY
+    // The direct child outlives the initial yield, then exits while one
+    // descendant emits output inside the drain window and another keeps the
+    // descriptor open past it.
     let args = json!({
-        "cmd": "sleep 0.5; printf 'HELLO-FULL-LIFECYCLE'",
+        "cmd": "sleep 1.2; printf 'HEAD-FULL-LIFECYCLE'; (sleep 0.2; printf 'TAIL-FULL-LIFECYCLE') & sleep 30 &",
         "yield_time_ms": 1000,
     });
 
@@ -818,8 +823,13 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
         "end event should include process_id emitted by background watcher"
     );
     assert!(
-        end_event.aggregated_output.contains("HELLO-FULL-LIFECYCLE"),
-        "aggregated_output should contain the full PTY transcript; got {:?}",
+        end_event.aggregated_output.contains("HEAD-FULL-LIFECYCLE"),
+        "aggregated_output should contain output before source exit; got {:?}",
+        end_event.aggregated_output
+    );
+    assert!(
+        end_event.aggregated_output.contains("TAIL-FULL-LIFECYCLE"),
+        "aggregated_output should contain delayed descendant output; got {:?}",
         end_event.aggregated_output
     );
     Ok(())
@@ -837,7 +847,8 @@ async fn unified_exec_network_denial_emits_failed_background_end_event() -> Resu
     );
 
     let server = start_mock_server().await;
-    let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
+    let (test, sandbox_policy) =
+        unified_exec_network_denial_test(&server, /*allow_local_binding*/ true).await?;
 
     let call_id = "uexec-network-denied";
     let args = json!({
@@ -885,7 +896,8 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     );
 
     let server = start_mock_server().await;
-    let (test, sandbox_policy) = unified_exec_network_denial_test(&server).await?;
+    let (test, sandbox_policy) =
+        unified_exec_network_denial_test(&server, /*allow_local_binding*/ true).await?;
 
     let call_id = "uexec-short-network-denied";
     let args = json!({
@@ -921,18 +933,158 @@ async fn unified_exec_short_lived_network_denial_emits_failed_end_event() -> Res
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial(codex_home)]
+async fn unified_exec_proxy_blocks_direct_loopback_bypass_on_windows() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+    skip_if_remote!(
+        Ok(()),
+        "fixture requires a managed-network proxy endpoint reachable from the target process"
+    );
+
+    let server = start_mock_server().await;
+    let (test, permission_profile) =
+        unified_exec_network_denial_test(&server, /*allow_local_binding*/ false).await?;
+    assert_eq!(
+        test.config.permissions.windows_sandbox_mode,
+        Some(WindowsSandboxModeToml::Elevated)
+    );
+    let sandbox_codex_home = super::windows_sandbox::codex_home_for_windows_sandbox_test(
+        "unified-exec-proxy-firewall-codex-home",
+    )?;
+    let _codex_home_guard = super::windows_sandbox::EnvVarGuard::set(
+        "CODEX_HOME",
+        sandbox_codex_home.path().as_os_str(),
+    );
+    super::windows_sandbox::stage_windows_sandbox_helpers()?;
+
+    let call_id = "uexec-windows-direct-loopback-bypass";
+    let port = server.address().port();
+    let runtime_proxy = test
+        .session_configured
+        .network_proxy
+        .as_ref()
+        .context("managed network proxy should be active")?;
+    let http_proxy_addr = runtime_proxy
+        .http_addr
+        .parse::<std::net::SocketAddr>()
+        .context("parse managed HTTP proxy address")?;
+    let socks_proxy_addr = runtime_proxy
+        .socks_addr
+        .parse::<std::net::SocketAddr>()
+        .context("parse managed SOCKS proxy address")?;
+    assert_ne!(port, http_proxy_addr.port());
+    assert_ne!(port, socks_proxy_addr.port());
+    let command = format!(
+        "$curl = Join-Path $env:SystemRoot 'System32\\curl.exe'; & $curl --noproxy '*' --connect-timeout 1 --max-time 2 --silent --output NUL 'http://127.0.0.1:{port}/direct-loopback-bypass'; $code = $LASTEXITCODE; if ($code -eq 0) {{ Write-Output 'DIRECT-CONNECTED'; exit 7 }}; if ($code -eq 7 -or $code -eq 28) {{ Write-Output 'DIRECT-BLOCKED'; exit 0 }}; Write-Output ('DIRECT-PROBE-ERROR:' + $code); exit 9"
+    );
+    let args = json!({
+        "cmd": command,
+        "shell": "powershell",
+        "login": false,
+        "yield_time_ms": 5_000,
+    });
+    let response_mock =
+        mount_unified_exec_network_denial_responses(&server, call_id, &args).await?;
+
+    submit_unified_exec_turn(&test, "exercise direct loopback bypass", permission_profile).await?;
+
+    let start_output = wait_for_raw_unified_exec_output(&test, call_id).await?;
+    let mut turn_completed = false;
+    if let Some(process_id) = start_output.process_id.as_deref() {
+        let process_id = process_id
+            .parse::<i32>()
+            .context("parse direct-loopback background process id")?;
+        let terminated = tokio::time::timeout(
+            Duration::from_secs(/*secs*/ 15),
+            test.codex.terminate_background_terminal(process_id),
+        )
+        .await
+        .context("timed out terminating direct-loopback background process")?;
+        assert!(
+            terminated,
+            "direct-loopback background process was not registered"
+        );
+
+        let (end_event, completed) = wait_for_unified_exec_end_with_timeout(
+            &test,
+            call_id,
+            &response_mock,
+            Duration::from_secs(/*secs*/ 30),
+        )
+        .await;
+        turn_completed = completed;
+        assert!(
+            end_event.process_id.is_some(),
+            "managed termination should retain the background process id: {end_event:?}"
+        );
+        assert!(
+            !end_event.aggregated_output.contains("DIRECT-CONNECTED"),
+            "sandboxed background process bypassed the managed proxy: {end_event:?}"
+        );
+        assert!(
+            !end_event.aggregated_output.contains("DIRECT-PROBE-ERROR"),
+            "terminated probe failed unexpectedly: {end_event:?}"
+        );
+    } else {
+        assert!(
+            !start_output.output.contains("DIRECT-CONNECTED"),
+            "sandboxed process bypassed the managed proxy: {start_output:?}"
+        );
+        assert!(
+            !start_output.output.contains("DIRECT-PROBE-ERROR"),
+            "direct-loopback probe failed unexpectedly: {start_output:?}"
+        );
+        assert_eq!(
+            start_output.exit_code,
+            Some(0),
+            "completed direct-loopback denial returned a nonzero exit: {start_output:?}"
+        );
+        assert!(
+            start_output.output.contains("DIRECT-BLOCKED"),
+            "completed direct-loopback probe did not report denial: {start_output:?}"
+        );
+    }
+
+    let direct_requests = server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|request| request.url.path() == "/direct-loopback-bypass")
+        .collect::<Vec<_>>();
+    assert!(
+        direct_requests.is_empty(),
+        "managed firewall allowed direct requests outside the proxy ports: {direct_requests:?}"
+    );
+
+    if !turn_completed {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::expect_used)]
 async fn unified_exec_network_denial_test(
     server: &wiremock::MockServer,
+    allow_local_binding: bool,
 ) -> Result<(TestCodex, PermissionProfile)> {
     use codex_config::Constrained;
+    use codex_config::test_support::CloudConfigBundleFixture;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     let home = Arc::new(TempDir::new()?);
     fs::write(
         home.path().join("config.toml"),
-        r#"default_permissions = "workspace"
+        format!(
+            r#"default_permissions = "workspace"
 
 [permissions.workspace.filesystem]
 ":minimal" = "read"
@@ -940,9 +1092,18 @@ async fn unified_exec_network_denial_test(
 [permissions.workspace.network]
 enabled = true
 mode = "limited"
-allow_local_binding = true
-"#,
+allow_local_binding = {allow_local_binding}
+"#
+        ),
     )?;
+    let managed_network_requirements =
+        CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
+            r#"
+[experimental_network]
+enabled = true
+allow_local_binding = {allow_local_binding}
+"#
+        ));
     let permission_profile_for_config = PermissionProfile::workspace_write_with(
         &[],
         NetworkSandboxPolicy::Enabled,
@@ -952,7 +1113,7 @@ allow_local_binding = true
     let permission_profile = permission_profile_for_config.clone();
     let mut builder = test_codex()
         .with_home(home)
-        .with_cloud_config_bundle(managed_network_requirements_loader())
+        .with_cloud_config_bundle(managed_network_requirements)
         .with_config(move |config| {
             config.use_experimental_unified_exec_tool = true;
             config
@@ -964,6 +1125,11 @@ allow_local_binding = true
                 .permissions
                 .set_permission_profile(permission_profile_for_config)
                 .expect("set permission profile");
+            #[cfg(target_os = "windows")]
+            {
+                config.permissions.windows_sandbox_mode = Some(WindowsSandboxModeToml::Elevated);
+                config.permissions.windows_sandbox_private_desktop = false;
+            }
         });
     let test = builder.build_with_auto_env(server).await?;
     assert!(
@@ -999,7 +1165,22 @@ async fn wait_for_unified_exec_end(
     call_id: &str,
     response_mock: &core_test_support::responses::ResponseMock,
 ) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    wait_for_unified_exec_end_with_timeout(
+        test,
+        call_id,
+        response_mock,
+        Duration::from_secs(/*secs*/ 15),
+    )
+    .await
+}
+
+async fn wait_for_unified_exec_end_with_timeout(
+    test: &TestCodex,
+    call_id: &str,
+    response_mock: &core_test_support::responses::ResponseMock,
+    timeout: Duration,
+) -> (codex_protocol::protocol::ExecCommandEndEvent, bool) {
+    let deadline = std::time::Instant::now() + timeout;
     let mut observed_events = Vec::new();
     let mut turn_completed = false;
     let end_event = loop {
@@ -3019,6 +3200,73 @@ PY
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unified_exec_end_event_is_bounded_when_descendant_holds_output_open() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses a POSIX-only command fixture");
+    skip_if_remote!(Ok(()), "covers the local PTY source-drain bound");
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let call_id = "uexec-descendant-output";
+    let args = serde_json::json!({
+        "cmd": "printf 'HEAD-BEFORE-DESCENDANT'; (sleep 0.2; printf 'TAIL-FROM-DESCENDANT') & sleep 30 &",
+        "yield_time_ms": 1_000,
+    });
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    ];
+    mount_sse_sequence(&server, responses).await;
+
+    submit_unified_exec_turn(
+        &test,
+        "run a command with inherited output",
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let mut end_event = None;
+    let mut turn_completed = false;
+    while end_event.is_none() || !turn_completed {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ExecCommandEnd(event) if event.call_id == call_id => {
+                end_event = Some(event);
+            }
+            EventMsg::TurnComplete(_) => turn_completed = true,
+            _ => {}
+        }
+    }
+    let end_event = end_event.expect("expected ExecCommandEnd event");
+    assert!(
+        end_event
+            .aggregated_output
+            .contains("HEAD-BEFORE-DESCENDANT")
+    );
+    assert!(
+        end_event.aggregated_output.contains("TAIL-FROM-DESCENDANT"),
+        "final output should include descendant output produced inside the drain window: {:?}",
+        end_event.aggregated_output
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_runs_under_sandbox() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -3453,6 +3701,78 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
     assert_eq!(output.exit_code, Some(0));
     // TODO: Weaker match because windows produces control characters
     assert_regex_match(".*hello crossplat.*", &output.output);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_stdin_calls_run_in_parallel_across_sessions() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_target_windows!(Ok(()), "uses bash and POSIX file rendezvous commands");
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+        config.use_experimental_unified_exec_tool = true;
+        config
+            .features
+            .enable(Feature::UnifiedExec)
+            .expect("test config should allow feature update");
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let start_args = serde_json::to_string(&json!({
+        "cmd": "bash --noprofile --norc",
+        "tty": true,
+        "yield_time_ms": 250,
+    }))?;
+    let cross_session_a = serde_json::to_string(&json!({
+        "session_id": 1000,
+        "chars": ": > .write-stdin-a; while [ ! -e .write-stdin-b ]; do sleep 0.01; done; printf 'alpha-%s\\n' ready; exit\n",
+        "yield_time_ms": 5_000,
+    }))?;
+    let cross_session_b = serde_json::to_string(&json!({
+        "session_id": 1001,
+        "chars": ": > .write-stdin-b; while [ ! -e .write-stdin-a ]; do sleep 0.01; done; printf 'beta-%s\\n' ready; exit\n",
+        "yield_time_ms": 5_000,
+    }))?;
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-start-1"),
+                ev_function_call("start-a", "exec_command", &start_args),
+                ev_function_call("start-b", "exec_command", &start_args),
+                ev_completed("resp-start-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-cross-1"),
+                ev_function_call("cross-a", "write_stdin", &cross_session_a),
+                ev_function_call("cross-b", "write_stdin", &cross_session_b),
+                ev_completed("resp-cross-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-done", "done"),
+                ev_completed("resp-done"),
+            ]),
+        ],
+    )
+    .await;
+
+    submit_unified_exec_turn(&test, "start terminals", PermissionProfile::Disabled).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let outputs = collect_tool_outputs(
+        &response_mock
+            .requests()
+            .into_iter()
+            .map(|request| request.body_json())
+            .collect::<Vec<_>>(),
+    )?;
+    assert_regex_match(".*alpha-ready.*", &outputs["cross-a"].output);
+    assert_regex_match(".*beta-ready.*", &outputs["cross-b"].output);
 
     Ok(())
 }

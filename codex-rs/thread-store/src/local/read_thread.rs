@@ -11,6 +11,7 @@ use codex_rollout::find_thread_path_by_id_str;
 use codex_rollout::read_session_meta_line;
 use codex_rollout::read_thread_item_from_rollout;
 use codex_state::ThreadMetadata;
+use codex_state::apply_rollout_item;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
@@ -48,6 +49,7 @@ pub(super) async fn read_thread(
             .await)
     {
         let metadata_sandbox_policy = metadata.sandbox_policy.clone();
+        let rollout_identity_fallback = metadata.model.is_none().then(|| metadata.clone());
         let mut thread = stored_thread_from_sqlite_metadata(store, metadata).await?;
         if !params.include_history
             && let Some(rollout_path) = thread.rollout_path.clone()
@@ -56,10 +58,26 @@ pub(super) async fn read_thread(
             && (params.include_archived || rollout_thread.archived_at.is_none())
             && !rollout_thread.preview.is_empty()
         {
+            if let Some(metadata) = rollout_identity_fallback {
+                // Preview overlays are best-effort; keep the indexed fallback if
+                // legacy rollout history cannot be replayed.
+                let _ =
+                    populate_rollout_identity_from_history(store, &mut rollout_thread, metadata)
+                        .await;
+            }
             rollout_thread.recency_at = thread.recency_at;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
+            rollout_thread.model_provider = thread.model_provider.clone();
+            rollout_thread.model = thread.model.clone().or(rollout_thread.model);
+            // A populated indexed model makes the indexed effort authoritative,
+            // including an intentional clear. Legacy rows whose new identity
+            // columns were never backfilled retain the rollout effort.
+            if thread.model.is_some() {
+                rollout_thread.reasoning_effort = thread.reasoning_effort.clone();
+            }
+            rollout_thread.agent_path = thread.agent_path.clone().or(rollout_thread.agent_path);
             rollout_thread.git_info = thread.git_info;
             rollout_thread.permission_profile = permission_profile_from_metadata_value(
                 &metadata_sandbox_policy,
@@ -206,7 +224,7 @@ async fn attach_history_if_requested(
     Ok(())
 }
 
-async fn resolve_rollout_path(
+pub(super) async fn resolve_rollout_path(
     store: &LocalThreadStore,
     thread_id: codex_protocol::ThreadId,
     include_archived: bool,
@@ -291,7 +309,7 @@ async fn read_thread_from_rollout_path(
     Ok(thread)
 }
 
-async fn load_history_items(
+pub(super) async fn load_history_items(
     path: &std::path::Path,
 ) -> ThreadStoreResult<Vec<codex_protocol::protocol::RolloutItem>> {
     let (items, _, _) = RolloutRecorder::load_rollout_items(path)
@@ -300,6 +318,28 @@ async fn load_history_items(
             message: format!("failed to load thread history {}: {err}", path.display()),
         })?;
     Ok(items)
+}
+
+async fn populate_rollout_identity_from_history(
+    store: &LocalThreadStore,
+    thread: &mut StoredThread,
+    mut metadata: ThreadMetadata,
+) -> ThreadStoreResult<()> {
+    let Some(path) = thread.rollout_path.as_deref() else {
+        return Ok(());
+    };
+    metadata.model = None;
+    metadata.reasoning_effort = None;
+    for item in load_history_items(path).await? {
+        apply_rollout_item(
+            &mut metadata,
+            &item,
+            store.config.default_model_provider_id.as_str(),
+        );
+    }
+    thread.model = metadata.model;
+    thread.reasoning_effort = metadata.reasoning_effort;
+    Ok(())
 }
 
 async fn read_sqlite_metadata(
@@ -493,9 +533,14 @@ mod tests {
 
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ReasoningSummary;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::RolloutLine;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -913,7 +958,10 @@ mod tests {
         assert_eq!(thread.rollout_path, Some(rollout_path));
         assert_eq!(thread.preview, "Hello from rollout");
         assert_eq!(thread.name, Some("Saved title".to_string()));
-        assert_eq!(thread.model_provider, "rollout-provider");
+        assert_eq!(
+            thread.model_provider, config.default_model_provider_id,
+            "indexed provider remains authoritative during a rollout preview overlay"
+        );
         assert_eq!(thread.cwd, rollout_cwd);
         let legacy_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
@@ -927,6 +975,132 @@ mod tests {
                 &legacy_policy,
                 rollout_cwd.as_path()
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn read_thread_keeps_complete_indexed_identity_during_rollout_overlay() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(227);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let rollout_path =
+            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&rollout_path)
+            .expect("open rollout");
+        let rollout_line = RolloutLine {
+            timestamp: "2025-01-03T12:00:01Z".to_string(),
+            ordinal: None,
+            item: RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                cwd: serde_json::from_value(serde_json::json!(home.path())).expect("absolute cwd"),
+                workspace_roots: None,
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::Never,
+                approvals_reviewer: None,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                permission_profile: None,
+                network: None,
+                file_system_sandbox_policy: None,
+                model: "rollout-model".to_string(),
+                comp_hash: None,
+                personality: None,
+                collaboration_mode: None,
+                multi_agent_version: None,
+                multi_agent_mode: None,
+                realtime_active: None,
+                effort: Some(ReasoningEffort::Medium),
+                summary: ReasoningSummary::Auto,
+            }),
+        };
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&rollout_line).expect("serialize turn")
+        )
+        .expect("write turn context");
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        let mut builder =
+            ThreadMetadataBuilder::new(thread_id, rollout_path, Utc::now(), SessionSource::Cli);
+        builder.model_provider = Some("indexed-provider".to_string());
+        builder.agent_path = Some("/root/worker".to_string());
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.model = Some("indexed-model".to_string());
+        metadata.reasoning_effort = Some(ReasoningEffort::High);
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+
+        let thread = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read thread");
+
+        assert_eq!(thread.preview, "Hello from user");
+        assert_eq!(
+            (
+                thread.model.as_deref(),
+                thread.model_provider.as_str(),
+                thread.reasoning_effort,
+                thread.agent_path.as_deref(),
+            ),
+            (
+                Some("indexed-model"),
+                "indexed-provider",
+                Some(ReasoningEffort::High),
+                Some("/root/worker"),
+            )
+        );
+
+        metadata.reasoning_effort = None;
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db clear should succeed");
+        let cleared = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read cleared identity");
+        assert_eq!(
+            cleared.reasoning_effort, None,
+            "an indexed clear must not revive the rollout effort"
+        );
+
+        metadata.model = None;
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db legacy row should succeed");
+        let legacy = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read legacy identity");
+        assert_eq!(
+            (legacy.model.as_deref(), legacy.reasoning_effort),
+            (Some("rollout-model"), Some(ReasoningEffort::Medium)),
+            "an unpopulated indexed identity must retain its rollout model and effort"
         );
     }
 

@@ -16,6 +16,7 @@ mod migrations;
 mod model;
 mod paths;
 mod runtime;
+mod sqlite;
 mod telemetry;
 
 pub use model::LogEntry;
@@ -26,6 +27,7 @@ pub use model::Phase2JobClaimOutcome;
 pub use runtime::ConfiguredIdentityProvenance;
 /// Preferred entrypoint: owns configuration and metrics.
 pub use runtime::StateRuntime;
+pub use sqlite::SqliteConfig;
 
 pub use audit::ThreadStateAuditRow;
 pub use audit::read_thread_state_audit_rows;
@@ -80,6 +82,7 @@ pub use runtime::logs_db_filename;
 pub use runtime::logs_db_path;
 pub use runtime::memories_db_filename;
 pub use runtime::memories_db_path;
+pub use runtime::open_thread_history_db;
 pub use runtime::runtime_db_path_for_corruption_error;
 pub use runtime::runtime_db_paths;
 pub use runtime::sqlite_error_detail_is_corruption;

@@ -210,6 +210,10 @@ impl Approvable<ShellRequest> for ShellRuntime {
 }
 
 impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
+    fn workspace_roots<'a>(&self, req: &'a ShellRequest) -> &'a [PathUri] {
+        req.turn_environment.workspace_roots()
+    }
+
     fn network_approval_spec(
         &self,
         req: &ShellRequest,
@@ -292,6 +296,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             req.shell_type.as_ref(),
             attempt.sandbox,
             attempt.windows_sandbox_level,
+            managed_network.is_some(),
         );
         let command = if matches!(shell.shell_type, ShellType::PowerShell) {
             prefix_powershell_script_with_utf8(&command)

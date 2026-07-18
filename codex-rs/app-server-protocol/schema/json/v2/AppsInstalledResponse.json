@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "InstalledApp": {
+      "description": "Installed connector runtime state.",
+      "properties": {
+        "callable": {
+          "description": "Whether the connector is enabled and has a non-synthetic, model-visible tool allowed by\neffective MCP and app/tool policy in the committed runtime snapshot.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Effective enabled state after applying global, workspace, local, and managed configuration\nat read time.",
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "runtimeName": {
+          "description": "Best-effort name carried by the runtime tool catalog. Canonical app metadata remains owned\nby `app/read`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "enabled",
+        "callable"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The installed connectors in one committed runtime snapshot.",
+  "properties": {
+    "apps": {
+      "items": {
+        "$ref": "#/$defs/InstalledApp"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "apps"
+  ],
+  "title": "AppsInstalledResponse",
+  "type": "object"
+}

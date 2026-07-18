@@ -21,8 +21,15 @@ use codex_network_proxy::PROXY_ENV_KEYS;
 use codex_network_proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::FileSystemSpecialPath;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxType;
+use codex_sandboxing::windows_sandbox_uses_elevated_backend;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
@@ -112,7 +119,7 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
         enforce_managed_network: false,
         manager: &manager,
         sandbox_cwd: &sandbox_policy_cwd,
-        workspace_roots: std::slice::from_ref(&native_sandbox_policy_cwd),
+        workspace_roots: std::slice::from_ref(&sandbox_policy_cwd),
         codex_linux_sandbox_exe: None,
         use_legacy_landlock: false,
         windows_sandbox_level: WindowsSandboxLevel::Disabled,
@@ -151,6 +158,100 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
         exec_request.env.get("CUSTOM_ENV"),
         Some(&"kept".to_string())
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_enforced_windows_sandbox_prepares_elevated_filesystem_overrides()
+-> anyhow::Result<()> {
+    let proxy = test_network_proxy().await?;
+    let dir = tempdir().expect("create temp dir");
+    let command_cwd = dir.path().join("command");
+    std::fs::create_dir(&command_cwd)?;
+    let command_cwd = command_cwd.abs();
+    let secret = command_cwd.join("secret.env");
+    std::fs::write(&secret, "secret")?;
+    let secret = secret.canonicalize()?;
+    let sandbox_policy_cwd = PathUri::from_abs_path(&command_cwd);
+    let file_system_sandbox_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::Root,
+            },
+            access: FileSystemAccessMode::Read,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+            },
+            access: FileSystemAccessMode::Write,
+        },
+        FileSystemSandboxEntry {
+            path: FileSystemPath::Path {
+                path: secret.clone(),
+            },
+            access: FileSystemAccessMode::Deny,
+        },
+    ]);
+    let permissions = PermissionProfile::from_runtime_permissions(
+        &file_system_sandbox_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+    let command = build_sandbox_command(
+        &[
+            "cmd.exe".to_string(),
+            "/D".to_string(),
+            "/C".to_string(),
+            "exit /B 0".to_string(),
+        ],
+        &command_cwd,
+        &HashMap::new(),
+        /*additional_permissions*/ None,
+    )
+    .expect("build sandbox command");
+    let options = ExecOptions {
+        expiration: ExecExpiration::DefaultTimeout,
+        capture_policy: ExecCapturePolicy::ShellTool,
+    };
+    let manager = SandboxManager::new();
+    let attempt = SandboxAttempt {
+        sandbox: SandboxType::WindowsRestrictedToken,
+        sandbox_requested: true,
+        permissions: &permissions,
+        exec_server_permissions: &permissions,
+        enforce_managed_network: true,
+        manager: &manager,
+        sandbox_cwd: &sandbox_policy_cwd,
+        workspace_roots: std::slice::from_ref(&sandbox_policy_cwd),
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+        windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+        windows_sandbox_private_desktop: false,
+        network_denial_cancellation_token: None,
+        network_proxy: None,
+    };
+
+    let request = attempt.env_for(command, options, Some(&proxy), /*environment_id*/ None)?;
+
+    assert!(request.network.is_some());
+    assert_eq!(
+        request.windows_sandbox_level,
+        WindowsSandboxLevel::RestrictedToken
+    );
+    assert!(windows_sandbox_uses_elevated_backend(
+        request.windows_sandbox_level,
+        request.network.is_some(),
+    ));
+    assert_eq!(
+        request.windows_sandbox_filesystem_overrides,
+        request.resolve_windows_sandbox_filesystem_overrides()?
+    );
+    let overrides = request
+        .windows_sandbox_filesystem_overrides
+        .as_ref()
+        .expect("proxy-selected elevated backend should retain deny-read overrides");
+    assert_eq!(overrides.additional_deny_read_paths, vec![secret]);
 
     Ok(())
 }

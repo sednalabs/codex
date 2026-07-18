@@ -25,9 +25,10 @@ use codex_app_server_protocol::RemoteControlPairingStartParams;
 use codex_app_server_protocol::RemoteControlPairingStatusParams;
 use codex_app_server_protocol::RemoteControlStatusChangedNotification;
 use codex_app_server_protocol::ServerNotification;
-use codex_core::auth::AuthCredentialsStoreMode;
+use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_core::test_support::auth_manager_from_auth;
 use codex_core::test_support::auth_manager_from_auth_with_home;
+use codex_login::AuthCredentialsStoreMode;
 use codex_login::AuthDotJson;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
@@ -737,14 +738,15 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
 
     writer
         .send(QueuedOutgoingMessage::new(
-            OutgoingMessage::AppServerNotification(ServerNotification::ConfigWarning(
-                ConfigWarningNotification {
+            OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                notification: ServerNotification::ConfigWarning(ConfigWarningNotification {
                     summary: "test".to_string(),
                     details: None,
                     path: None,
                     range: None,
-                },
-            )),
+                }),
+                emitted_at_ms: Some(1_234),
+            }),
         ))
         .await
         .expect("remote writer should accept outgoing message");
@@ -759,7 +761,8 @@ async fn remote_control_transport_manages_virtual_clients_and_routes_messages() 
                 "params": {
                     "summary": "test",
                     "details": null,
-                }
+                },
+                "emittedAtMs": 1_234,
             }
         })
     );
@@ -1345,14 +1348,15 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
 
     writer
         .send(QueuedOutgoingMessage::new(
-            OutgoingMessage::AppServerNotification(ServerNotification::ConfigWarning(
-                ConfigWarningNotification {
+            OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                notification: ServerNotification::ConfigWarning(ConfigWarningNotification {
                     summary: "stale".to_string(),
                     details: None,
                     path: None,
                     range: None,
-                },
-            )),
+                }),
+                emitted_at_ms: Some(1_234),
+            }),
         ))
         .await
         .expect("remote writer should accept outgoing message");
@@ -1368,7 +1372,8 @@ async fn remote_control_transport_clears_outgoing_buffer_when_backend_acks() {
                 "params": {
                     "summary": "stale",
                     "details": null,
-                }
+                },
+                "emittedAtMs": 1_234,
             }
         })
     );
@@ -1635,14 +1640,15 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
 
     writer
         .send(QueuedOutgoingMessage::new(
-            OutgoingMessage::AppServerNotification(ServerNotification::ConfigWarning(
-                ConfigWarningNotification {
+            OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+                notification: ServerNotification::ConfigWarning(ConfigWarningNotification {
                     summary: "backend".to_string(),
                     details: None,
                     path: None,
                     range: None,
-                },
-            )),
+                }),
+                emitted_at_ms: Some(1_234),
+            }),
         ))
         .await
         .expect("remote writer should accept outgoing message");
@@ -1657,7 +1663,8 @@ async fn remote_control_http_mode_enrolls_before_connecting() {
                 "params": {
                     "summary": "backend",
                     "details": null,
-                }
+                },
+                "emittedAtMs": 1_234,
             }
         })
     );

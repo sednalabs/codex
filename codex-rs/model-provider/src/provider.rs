@@ -87,11 +87,11 @@ pub const DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL: &str = "codex-auto-review";
 
 /// Default model used for memory extraction when a provider does not require a
 /// backend-specific model ID.
-pub const DEFAULT_MEMORY_EXTRACTION_PREFERRED_MODEL: &str = "gpt-5.4-mini";
+pub const DEFAULT_MEMORY_EXTRACTION_PREFERRED_MODEL: &str = "gpt-5.6-luna";
 
 /// Default model used for memory consolidation when a provider does not require
 /// a backend-specific model ID.
-pub const DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL: &str = "gpt-5.4";
+pub const DEFAULT_MEMORY_CONSOLIDATION_PREFERRED_MODEL: &str = "gpt-5.6-terra";
 
 /// Runtime provider abstraction used by model execution.
 ///
@@ -199,6 +199,20 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager;
+
+    /// Creates a model manager with caching disabled.
+    ///
+    /// Providers that fetch model catalogs should override this method. The default uses an
+    /// authoritative in-memory catalog so hosted callers cannot accidentally write to disk.
+    fn models_manager_without_cache(
+        &self,
+        config_model_catalog: Option<ModelsResponse>,
+    ) -> SharedModelsManager {
+        let model_catalog = config_model_catalog
+            .or_else(|| codex_models_manager::bundled_models_response().ok())
+            .unwrap_or_default();
+        Arc::new(StaticModelsManager::new(self.auth_manager(), model_catalog))
+    }
 }
 
 pub type ModelProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -328,6 +342,28 @@ impl ModelProvider for ConfiguredModelProvider {
                 ));
                 Arc::new(OpenAiModelsManager::new(
                     codex_home,
+                    endpoint,
+                    self.auth_manager.clone(),
+                ))
+            }
+        }
+    }
+
+    fn models_manager_without_cache(
+        &self,
+        config_model_catalog: Option<ModelsResponse>,
+    ) -> SharedModelsManager {
+        match config_model_catalog {
+            Some(model_catalog) => Arc::new(StaticModelsManager::new(
+                self.auth_manager.clone(),
+                model_catalog,
+            )),
+            None => {
+                let endpoint = Arc::new(OpenAiModelsEndpoint::new(
+                    self.info.clone(),
+                    self.auth_manager.clone(),
+                ));
+                Arc::new(OpenAiModelsManager::new_without_cache(
                     endpoint,
                     self.auth_manager.clone(),
                 ))
@@ -640,8 +676,7 @@ mod tests {
             provider.account_state(),
             Ok(ProviderAccountState {
                 account: Some(ProviderAccount::AmazonBedrock {
-                    credential_source:
-                        codex_protocol::account::AmazonBedrockCredentialSource::AwsManaged,
+                    uses_codex_managed_credentials: false,
                 }),
                 requires_openai_auth: false,
             })
@@ -656,6 +691,8 @@ mod tests {
         );
         let manager =
             provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+        let uncached_manager =
+            provider.models_manager_without_cache(/*config_model_catalog*/ None);
 
         let catalog = manager
             .raw_model_catalog(
@@ -663,6 +700,13 @@ mod tests {
                 HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
             )
             .await;
+        let uncached_catalog = uncached_manager
+            .raw_model_catalog(
+                RefreshStrategy::Online,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await;
+        assert_eq!(uncached_catalog, catalog);
         let models = catalog
             .models
             .iter()

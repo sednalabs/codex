@@ -1,21 +1,21 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo as McpToolInfo;
 use codex_mcp::tool_is_model_visible;
+use codex_tools::ToolExposure;
 use tracing::instrument;
 use tracing::warn;
 
 use crate::config::Config;
 use crate::connectors;
-
-pub(crate) struct McpToolExposure {
-    pub(crate) direct_tools: Vec<McpToolInfo>,
-    pub(crate) deferred_tools: Option<Vec<McpToolInfo>>,
-}
+use crate::tools::handlers::McpHandler;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::override_tool_exposure;
 
 const PREFERRED_DIRECT_ROUTE_NOTE: &str =
     "Codex uses this direct MCP route because an equivalent app-backed route is also available.";
@@ -23,29 +23,39 @@ const DIRECT_ROUTE_DRIFT_NOTE: &str = "This direct MCP route remains visible alo
 const APP_ROUTE_DRIFT_NOTE: &str = "This app-backed MCP route remains visible alongside a direct route because their callable contracts differ.";
 
 #[instrument(level = "trace", skip_all)]
-pub(crate) fn build_mcp_tool_exposure(
+pub(crate) fn build_mcp_tool_runtimes(
     all_mcp_tools: &[McpToolInfo],
     connectors: Option<&[connectors::AppInfo]>,
     config: &Config,
     search_tool_enabled: bool,
-) -> McpToolExposure {
+) -> Vec<Arc<dyn CoreToolRuntime>> {
     let direct_tools = filter_non_codex_apps_mcp_tools_only(all_mcp_tools);
     let app_tools = connectors
         .map(|connectors| filter_codex_apps_mcp_tools(all_mcp_tools, connectors, config))
         .unwrap_or_default();
-    let deferred_tools = reconcile_direct_and_app_tools(direct_tools, app_tools);
+    let exposed_tools = reconcile_direct_and_app_tools(direct_tools, app_tools);
 
-    if !search_tool_enabled {
-        return McpToolExposure {
-            direct_tools: deferred_tools,
-            deferred_tools: None,
-        };
-    }
-
-    McpToolExposure {
-        direct_tools: Vec::new(),
-        deferred_tools: (!deferred_tools.is_empty()).then_some(deferred_tools),
-    }
+    let exposure = if search_tool_enabled {
+        ToolExposure::Deferred
+    } else {
+        ToolExposure::Direct
+    };
+    exposed_tools
+        .into_iter()
+        .filter_map(|tool| {
+            let tool_name = tool.canonical_tool_name();
+            match McpHandler::new(tool) {
+                Ok(handler) => {
+                    let handler: Arc<dyn CoreToolRuntime> = Arc::new(handler);
+                    Some(override_tool_exposure(handler, exposure))
+                }
+                Err(err) => {
+                    warn!("Skipping MCP tool `{tool_name}`: failed to build tool spec: {err}");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 fn reconcile_direct_and_app_tools(

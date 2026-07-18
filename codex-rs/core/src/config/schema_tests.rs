@@ -55,6 +55,20 @@ Run `just write-config-schema` to overwrite with your changes.\n\n{diff}"
 }
 
 #[test]
+fn config_schema_allows_named_agent_roles() {
+    let schema_json = config_schema_json().expect("serialize config schema");
+    let schema_value: serde_json::Value =
+        serde_json::from_slice(&schema_json).expect("decode schema json");
+
+    assert_eq!(
+        schema_value
+            .pointer("/definitions/AgentsToml/additionalProperties/$ref")
+            .and_then(serde_json::Value::as_str),
+        Some("#/definitions/AgentRoleToml"),
+    );
+}
+
+#[test]
 fn config_schema_hides_unsupported_inline_mcp_bearer_token() {
     let schema_json = config_schema_json().expect("serialize config schema");
     let schema_value: serde_json::Value =

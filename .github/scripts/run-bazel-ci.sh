@@ -380,14 +380,17 @@ fi
 bazel_console_log="$(mktemp)"
 trap 'rm -f "$bazel_console_log"' EXIT
 
-bazel_run_args=(
-  "${bazel_args[@]}"
-)
+bazel_run_args=("${bazel_args[0]}")
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   echo "BuildBuddy API key is available; using remote Bazel configuration."
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
+fi
+if (( ${#bazel_args[@]} > 1 )); then
+  # Explicit caller flags must follow rc configs so workflow-level safety and
+  # resource limits cannot be silently overwritten by the selected CI config.
+  bazel_run_args+=("${bazel_args[@]:1}")
 fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")

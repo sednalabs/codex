@@ -410,6 +410,43 @@ fn windows_proxy_enforcement_uses_elevated_backend() {
         WindowsSandboxLevel::Elevated,
         /*proxy_enforced*/ false,
     ));
+    assert!(windows_sandbox_uses_elevated_backend(
+        WindowsSandboxLevel::Elevated,
+        /*proxy_enforced*/ true,
+    ));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_spawn_failure_metric_uses_effective_backend() {
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::RestrictedToken,
+            /*proxy_enforced*/ false,
+        ),
+        "legacy"
+    );
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::RestrictedToken,
+            /*proxy_enforced*/ true,
+        ),
+        "elevated"
+    );
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::Elevated,
+            /*proxy_enforced*/ false,
+        ),
+        "elevated"
+    );
+    assert_eq!(
+        windows_sandbox_backend_metric_level(
+            WindowsSandboxLevel::Elevated,
+            /*proxy_enforced*/ true,
+        ),
+        "elevated"
+    );
 }
 
 #[test]

@@ -14,6 +14,7 @@ use crate::computer_use_provider::ComputerUseProviderOutcome;
 use crate::computer_use_provider::handle_computer_use;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::AuthMode;
+use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 
@@ -78,6 +79,19 @@ impl App {
                 self.refresh_mcp_startup_expected_servers_from_config();
             }
             ServerNotification::AccountRateLimitsUpdated(notification) => {
+                if matches!(
+                    notification.rate_limits.rate_limit_reached_type,
+                    Some(
+                        RateLimitReachedType::WorkspaceOwnerCreditsDepleted
+                            | RateLimitReachedType::WorkspaceMemberCreditsDepleted
+                            | RateLimitReachedType::WorkspaceOwnerUsageLimitReached
+                            | RateLimitReachedType::WorkspaceMemberUsageLimitReached
+                    )
+                ) || notification.rate_limits.spend_control_reached == Some(true)
+                {
+                    self.rate_limit_hard_stop_generation =
+                        self.rate_limit_hard_stop_generation.wrapping_add(1);
+                }
                 self.chat_widget
                     .on_rolling_rate_limit_snapshot(notification.rate_limits.clone());
                 return;

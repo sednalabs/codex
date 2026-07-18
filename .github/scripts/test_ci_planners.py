@@ -946,6 +946,25 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
 
+    def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        windows_steps = (
+            ((payload.get("jobs") or {}).get("test-windows-shard") or {}).get("steps")
+            or []
+        )
+        windows_test_run = next(
+            step for step in windows_steps if step.get("name") == "bazel test shard"
+        ).get("run") or ""
+        self.assertIn("--local_test_jobs=1", windows_test_run)
+
+    def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
+        script = (REPO_ROOT / ".github/scripts/run-bazel-ci.sh").read_text()
+        config_append = 'bazel_run_args+=("--config=${ci_config}")'
+        caller_append = 'bazel_run_args+=("${bazel_args[@]:1}")'
+
+        self.assertIn('bazel_run_args=("${bazel_args[0]}")', script)
+        self.assertLess(script.index(config_append), script.index(caller_append))
+
 
 class DownstreamDivergenceAuditTests(unittest.TestCase):
     def run_git(self, repo: Path, *args: str) -> str:
@@ -1507,6 +1526,181 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_recommend_lab_external_agent_containment_route_is_fail_closed(self) -> None:
+        payload = self.recommend_lab_for_files(
+            [
+                "codex-rs/external-agent-migration/src/service.rs",
+                "codex-rs/external-agent-migration/Cargo.toml",
+                "codex-rs/Cargo.lock",
+                "MODULE.bazel.lock",
+                "codex-rs/app-server/tests/suite/v2/external_agent_config.rs",
+                ".github/scripts/test_ci_planners.py",
+                ".github/workflows/sedna-heavy-tests.yml",
+                "docs/carry-divergence-ledger.md",
+            ]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            ["codex.external-agent-migration-containment-targeted"],
+        )
+
+        lane = next(
+            lane
+            for lane in RESOLVE_VALIDATION_PLAN.load_catalog()["lanes"]
+            if lane["lane_id"]
+            == "codex.external-agent-migration-containment-targeted"
+        )
+        self.assertTrue(lane["needs_nextest"])
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "external-agent-migration-containment-targeted"
+            ]
+        )
+        self.assertEqual(recipe.count("cargo nextest run --locked"), 2)
+        self.assertEqual(recipe.count("--no-tests=fail"), 2)
+        self.assertIn(
+            "suite::v2::external_agent_config::"
+            "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation",
+            recipe,
+        )
+        self.assertIn("--exact", recipe)
+
+    def test_recommend_lab_subagent_model_pinning_route_is_fail_closed(self) -> None:
+        payload = self.recommend_lab_for_files(
+            [
+                "codex-rs/core/src/agent/control.rs",
+                "codex-rs/core/src/agent/control/spawn.rs",
+                "codex-rs/core/src/agent/control_tests.rs",
+                "codex-rs/core/src/agent/builtins/terminal-babysitter.toml",
+                "codex-rs/core/src/agent/role_tests.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+                "codex-rs/core/tests/suite/subagent_notifications.rs",
+                "codex-rs/core/tests/suite/multi_agent_resume.rs",
+                "codex-rs/state/src/extract.rs",
+                "codex-rs/thread-store/src/local/read_thread.rs",
+                "codex-rs/thread-store/src/thread_metadata_sync.rs",
+                "codex-rs/thread-store/src/types.rs",
+                ".github/scripts/test_ci_planners.py",
+                ".github/validation-lanes.json",
+                "docs/carry-divergence-ledger.md",
+                "docs/divergences/index.yaml",
+                "docs/downstream-regression-matrix.md",
+                "justfile",
+            ]
+        )
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            ["codex.core-subagent-model-pinning-targeted"],
+        )
+
+        lane = next(
+            lane
+            for lane in RESOLVE_VALIDATION_PLAN.load_catalog()["lanes"]
+            if lane["lane_id"] == "codex.core-subagent-model-pinning-targeted"
+        )
+        self.assertTrue(lane["needs_nextest"])
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "core-subagent-model-pinning-targeted"
+            ]
+        )
+        self.assertEqual(recipe.count("cargo nextest run"), 6)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 6)
+        self.assertEqual(recipe.count("--no-tests=fail"), 6)
+        self.assertIn(
+            "tools::handlers::multi_agents_spec::tests::"
+            "spawn_agent_tool_v2_requires_task_name_and_lists_visible_models",
+            recipe,
+        )
+        self.assertIn(
+            "agent::role::tests::apply_role_preserves_unspecified_keys",
+            recipe,
+        )
+        self.assertIn(
+            "agent::role::tests::"
+            "spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "spawn_agent_reasoning_effort_accepts_empty_support_metadata",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_accepts_child_model_without_backend_assignment",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_rejects_child_model_from_different_backend",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_uses_configured_subagent_defaults",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_preserves_configured_defaults_through_unrelated_role",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawn_agent_rejects_reasoning_effort_unsupported_by_role_model",
+            recipe,
+        )
+        self.assertIn(
+            "suite::subagent_notifications::"
+            "spawned_full_history_v2_child_uses_model_precedence_without_dropping_context",
+            recipe,
+        )
+        self.assertIn(
+            "local::read_thread::tests::"
+            "read_thread_keeps_complete_indexed_identity_during_rollout_overlay",
+            recipe,
+        )
+        self.assertIn(
+            "suite::multi_agent_resume::"
+            "cold_root_resume_restores_agent_identity_and_reloads_target_on_followup",
+            recipe,
+        )
+        self.assertIn(
+            "suite::multi_agent_resume::"
+            "cold_root_resume_restores_agent_identity_and_role_on_followup",
+            recipe,
+        )
+        self.assertEqual(recipe.count("--exact"), 5)
+
     def test_recommend_lab_docs_path_uses_docs_domain_fallback(self) -> None:
         payload = self.recommend_lab_for_files(["docs/validation_workflow.md"])
 
@@ -1592,15 +1786,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["run_selected_lanes"], "true")
         self.assertEqual(payload["run_smoke_gate"], "false")
-        self.assertEqual(len(payload["selected_matrix"]["include"]), 24)
-        self.assertEqual(payload["planned_job_count"], 15)
+        self.assertEqual(len(payload["selected_matrix"]["include"]), 25)
+        self.assertEqual(payload["planned_job_count"], 16)
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 9)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 6)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 7)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         for batch in (
             payload["selected_rust_minimal_batch_matrix"]["include"]
@@ -1663,12 +1857,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             str(REPO_ROOT / ".github/validation-lanes.json"),
         )
 
-        self.assertEqual(payload["planned_job_count"], 24)
+        self.assertEqual(payload["planned_job_count"], 25)
         self.assertEqual(payload["rust_batching_mode"], "off")
         self.assertEqual(payload["rust_batching_reason"], "disabled by workflow input")
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 16)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 0)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 8)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 9)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 0)
 
     def test_lab_product_surface_lane_set_returns_first_wave_lanes(self) -> None:
@@ -1904,8 +2098,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_workflow_lane_count"], 1)
         self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 0)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 0)
         self.assertEqual(payload["smoke_rust_integration_lane_count"], 5)
@@ -1916,6 +2110,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["rust_integration_max_parallel"], "2")
         self.assertEqual(payload["release_max_parallel"], "1")
         self.assertEqual(payload["rust_batching_mode"], "auto")
+        self.assertIn(
+            "codex.core-multi-agent-orchestration-targeted",
+            payload["selected_lane_ids"],
+        )
 
     def test_heavy_plan_can_disable_rust_batching(self) -> None:
         payload = run_script(
@@ -2602,6 +2800,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_stack_sensitive_targeted_recipes_set_rust_min_stack(self) -> None:
+        recipes = just_recipe_bodies(REPO_ROOT / "justfile")
+
+        multi_agent_recipe = "\n".join(
+            recipes["core-multi-agent-orchestration-targeted"]
+        )
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 2)
+
+        unified_exec_recipe = "\n".join(
+            recipes["blocking-waits-unified-exec-targeted"]
+        )
+        self.assertEqual(unified_exec_recipe.count("RUST_MIN_STACK="), 8)
+
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,
     ) -> None:
@@ -2651,6 +2862,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.app-server-protocol-test",
                 "codex.cli-surface-targeted",
                 "codex.exec-native-computer-use-targeted",
+                "codex.external-agent-session-migration-targeted",
                 "codex.native-computer-use-tool-registry-targeted",
                 "codex.core-subagent-notification-visibility-targeted",
                 "codex.spawn-agent-description-model-surface-targeted",
@@ -3909,6 +4121,44 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(summary["sccache_restore_mode"], "restore-key-or-miss")
         self.assertNotIn("run_command", summary)
 
+    def test_lane_summary_does_not_treat_panic_crate_names_as_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            log = root / "lane.log"
+            output = root / "summary.json"
+            log.write_text(
+                "\n".join(
+                    [
+                        "Checking sentry-panic v0.46.2",
+                        "error[E0277]: a real compiler failure",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "write_lane_summary.py"),
+                    "--lane-id",
+                    "codex.example",
+                    "--summary-title",
+                    "example",
+                    "--outcome",
+                    "failure",
+                    "--log-file",
+                    str(log),
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+            )
+
+            summary = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertNotIn("error_lines", summary)
+        self.assertEqual(summary["primary_signal"], "error[E0277]: a real compiler failure")
+
     def test_lane_summary_records_script_metadata_and_cache_telemetry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "summary.json"
@@ -4091,19 +4341,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("sedna.release-linux-smoke", selected_lane_ids)
         self.assertIn("codex.tui-config-refresh-session-targeted", selected_lane_ids)
         self.assertIn("codex.spawn-agent-description-model-surface-targeted", selected_lane_ids)
+        self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
         self.assertNotIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 37)
+        self.assertEqual(payload["planned_job_count"], 39)
         self.assertEqual(payload["selected_workflow_lane_count"], 6)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 11)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 4)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
         self.assertEqual(payload["workflow_max_parallel"], "6")
         self.assertEqual(payload["node_max_parallel"], "2")
-        self.assertEqual(payload["rust_minimal_max_parallel"], "22")
-        self.assertEqual(payload["rust_integration_max_parallel"], "23")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "23")
+        self.assertEqual(payload["rust_integration_max_parallel"], "24")
         self.assertEqual(payload["release_max_parallel"], "1")
 
     def test_validation_lab_frontier_all_can_include_explicit_only_lanes(self) -> None:
@@ -4126,16 +4377,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.tui-agent-picker-model-surface-targeted", selected_lane_ids)
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 40)
+        self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
+        self.assertEqual(payload["planned_job_count"], 42)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
-        self.assertEqual(payload["selected_rust_minimal_batch_count"], 12)
-        self.assertEqual(payload["selected_rust_integration_lane_count"], 5)
+        self.assertEqual(payload["selected_rust_minimal_batch_count"], 13)
+        self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "24")
-        self.assertEqual(payload["rust_integration_max_parallel"], "24")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "25")
+        self.assertEqual(payload["rust_integration_max_parallel"], "25")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {

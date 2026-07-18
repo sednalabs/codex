@@ -22,13 +22,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-struct EnvVarGuard {
+pub(super) struct EnvVarGuard {
     key: &'static str,
     original: Option<OsString>,
 }
 
 impl EnvVarGuard {
-    fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+    pub(super) fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
         let original = std::env::var_os(key);
         unsafe {
             std::env::set_var(key, value);
@@ -48,13 +48,13 @@ impl Drop for EnvVarGuard {
     }
 }
 
-enum TestCodexHome {
+pub(super) enum TestCodexHome {
     Persistent(PathBuf),
     Temporary(TempDir),
 }
 
 impl TestCodexHome {
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         match self {
             Self::Persistent(path) => path.as_path(),
             Self::Temporary(temp_dir) => temp_dir.path(),
@@ -62,7 +62,7 @@ impl TestCodexHome {
     }
 }
 
-fn codex_home_for_windows_sandbox_test(name: &str) -> anyhow::Result<TestCodexHome> {
+pub(super) fn codex_home_for_windows_sandbox_test(name: &str) -> anyhow::Result<TestCodexHome> {
     if let Some(test_tmpdir) = std::env::var_os("TEST_TMPDIR") {
         // The elevated backend provisions machine-local sandbox users. Bazel
         // retries run in the same Windows VM, so keep CODEX_HOME stable within
@@ -76,7 +76,7 @@ fn codex_home_for_windows_sandbox_test(name: &str) -> anyhow::Result<TestCodexHo
     Ok(TestCodexHome::Temporary(TempDir::new()?))
 }
 
-fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
+pub(super) fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
     let test_exe = std::env::current_exe().context("resolve current Windows test executable")?;
     let test_exe_dir = test_exe
         .parent()

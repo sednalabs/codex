@@ -2,6 +2,7 @@ use crate::function_tool::FunctionCallError;
 use crate::original_image_detail::can_request_original_image_detail;
 use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
@@ -156,6 +157,7 @@ impl ComputerUseHandler {
         let ToolInvocation {
             session,
             turn,
+            step_context,
             call_id,
             tool_name,
             payload,
@@ -176,6 +178,7 @@ impl ComputerUseHandler {
         let response = request_computer_use(
             &session,
             turn.as_ref(),
+            selected_computer_use_environment_id(step_context.as_ref()),
             call_id,
             self.adapter.clone(),
             tool_name,
@@ -305,6 +308,7 @@ fn computer_use_command(tool_name: &str, arguments: &str) -> String {
 async fn request_computer_use(
     session: &Session,
     turn_context: &TurnContext,
+    environment_id: Option<String>,
     call_id: String,
     adapter: String,
     tool_name: ToolName,
@@ -313,7 +317,6 @@ async fn request_computer_use(
 ) -> Option<ComputerUseResponse> {
     let tool = tool_name.name;
     let turn_id = turn_context.sub_id.clone();
-    let environment_id = selected_computer_use_environment_id(turn_context);
     let started_at = Instant::now();
     if environment_id.is_none() {
         let response = unavailable_response(&format!(
@@ -419,11 +422,10 @@ async fn request_computer_use(
     response
 }
 
-fn selected_computer_use_environment_id(turn_context: &TurnContext) -> Option<String> {
-    turn_context
+fn selected_computer_use_environment_id(step_context: &StepContext) -> Option<String> {
+    step_context
         .environments
-        .turn_environments
-        .first()
+        .primary()
         .map(|environment| environment.environment_id.clone())
 }
 
@@ -453,6 +455,8 @@ mod tests {
     use super::request_computer_use;
     use super::selected_computer_use_environment_id;
     use super::unavailable_response;
+    use crate::environment_selection::TurnEnvironmentState;
+    use crate::session::step_context::StepContext;
     use crate::session::tests::make_session_and_context_with_rx;
     use crate::session::turn_context::TurnEnvironment;
     use crate::state::ActiveTurn;
@@ -661,26 +665,67 @@ mod tests {
                 .expect("create second environment"),
         );
         turn_context.environments = crate::environment_selection::TurnEnvironmentSnapshot {
-            turn_environments: vec![
-                TurnEnvironment::new(
+            environments: vec![
+                TurnEnvironmentState::Ready(TurnEnvironment::new(
                     "first".to_string(),
                     first_environment,
                     codex_utils_path_uri::PathUri::from_abs_path(&cwd),
+                    Vec::new(),
                     /*shell*/ None,
-                ),
-                TurnEnvironment::new(
+                )),
+                TurnEnvironmentState::Ready(TurnEnvironment::new(
                     "second".to_string(),
                     second_environment,
                     codex_utils_path_uri::PathUri::from_abs_path(&cwd),
+                    Vec::new(),
                     /*shell*/ None,
-                ),
+                )),
             ],
-            starting: Vec::new(),
         };
+        let step_context = StepContext::for_test(Arc::new(turn_context));
 
         assert_eq!(
-            selected_computer_use_environment_id(&turn_context),
+            selected_computer_use_environment_id(step_context.as_ref()),
             Some("first".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_computer_use_environment_uses_refreshed_step_snapshot() {
+        let (_session, turn_context, _rx) = make_session_and_context_with_rx().await;
+        let mut turn_context =
+            Arc::into_inner(turn_context).expect("turn context should have one owner");
+        let cwd = turn_context
+            .environments
+            .primary()
+            .expect("turn context should have a primary environment")
+            .cwd()
+            .to_abs_path()
+            .expect("primary test environment cwd should be native");
+        turn_context.environments = crate::environment_selection::TurnEnvironmentSnapshot {
+            environments: Vec::new(),
+        };
+        let turn_context = Arc::new(turn_context);
+        let mut step_context = Arc::into_inner(StepContext::for_test(Arc::clone(&turn_context)))
+            .expect("step context should have one owner");
+        let ready_environment = Arc::new(
+            codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)
+                .expect("create ready environment"),
+        );
+        step_context.environments = crate::environment_selection::TurnEnvironmentSnapshot {
+            environments: vec![TurnEnvironmentState::Ready(TurnEnvironment::new(
+                "ready-after-startup".to_string(),
+                ready_environment,
+                codex_utils_path_uri::PathUri::from_abs_path(&cwd),
+                Vec::new(),
+                /*shell*/ None,
+            ))],
+        };
+
+        assert!(turn_context.environments.primary().is_none());
+        assert_eq!(
+            selected_computer_use_environment_id(&step_context),
+            Some("ready-after-startup".to_string())
         );
     }
 
@@ -689,13 +734,13 @@ mod tests {
         let (session, turn, rx) = make_session_and_context_with_rx().await;
         let mut turn = Arc::into_inner(turn).expect("turn context should have one owner");
         turn.environments = crate::environment_selection::TurnEnvironmentSnapshot {
-            turn_environments: Vec::new(),
-            starting: Vec::new(),
+            environments: Vec::new(),
         };
 
         let response = request_computer_use(
             &session,
             &turn,
+            /*environment_id*/ None,
             "call-no-env".to_string(),
             COMPUTER_USE_ADAPTER_ANDROID.to_string(),
             ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
@@ -735,10 +780,12 @@ mod tests {
     async fn computer_use_call_times_out_and_unregisters_pending_response() {
         let (session, turn, rx) = make_session_and_context_with_rx().await;
         *session.active_turn.lock().await = Some(ActiveTurn::default());
+        let step_context = StepContext::for_test(Arc::clone(&turn));
 
         let response = request_computer_use(
             &session,
             &turn,
+            selected_computer_use_environment_id(step_context.as_ref()),
             "call-timeout".to_string(),
             COMPUTER_USE_ADAPTER_ANDROID.to_string(),
             ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),

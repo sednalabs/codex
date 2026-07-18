@@ -166,6 +166,50 @@ fn skips_local_image_label_text() {
 }
 
 #[test]
+fn skips_local_audio_label_text() {
+    let audio_url = "data:audio/wav;base64,abc".to_string();
+    let label = r#"<audio name=[Audio #1] path="/tmp/local.wav">"#.to_string();
+    let user_text = "Please transcribe this audio.".to_string();
+
+    let item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![
+            ContentItem::InputText { text: label },
+            ContentItem::InputAudio {
+                audio_url: audio_url.clone(),
+            },
+            ContentItem::InputText {
+                text: "</audio>".to_string(),
+            },
+            ContentItem::InputText {
+                text: user_text.clone(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let turn_item = parse_turn_item(&item).expect("expected user message turn item");
+
+    match turn_item {
+        TurnItem::UserMessage(user) => {
+            assert_eq!(
+                user.content,
+                vec![
+                    UserInput::Audio { audio_url },
+                    UserInput::Text {
+                        text: user_text,
+                        text_elements: Vec::new(),
+                    },
+                ]
+            );
+        }
+        other => panic!("expected TurnItem::UserMessage, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_assistant_message_input_text_for_backward_compatibility() {
     let item = ResponseItem::Message {
         id: None,
@@ -509,6 +553,7 @@ fn parses_web_search_call() {
                     query: Some("weather".to_string()),
                     queries: None,
                 },
+                results: None,
             }
         ),
         other => panic!("expected TurnItem::WebSearch, got {other:?}"),
@@ -537,6 +582,7 @@ fn parses_web_search_open_page_call() {
                 action: WebSearchAction::OpenPage {
                     url: Some("https://example.com".to_string()),
                 },
+                results: None,
             }
         ),
         other => panic!("expected TurnItem::WebSearch, got {other:?}"),
@@ -567,6 +613,7 @@ fn parses_web_search_find_in_page_call() {
                     url: Some("https://example.com".to_string()),
                     pattern: Some("needle".to_string()),
                 },
+                results: None,
             }
         ),
         other => panic!("expected TurnItem::WebSearch, got {other:?}"),
@@ -590,6 +637,7 @@ fn parses_partial_web_search_call_without_action_as_other() {
                 id: "ws_partial".to_string(),
                 query: String::new(),
                 action: WebSearchAction::Other,
+                results: None,
             }
         ),
         other => panic!("expected TurnItem::WebSearch, got {other:?}"),

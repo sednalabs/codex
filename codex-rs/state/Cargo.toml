@@ -10,6 +10,7 @@ chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
 dirs = { workspace = true }
 libsqlite3-sys = { workspace = true }
 log = { workspace = true }
@@ -26,6 +27,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 codex-git-utils = { workspace = true }
 pretty_assertions = { workspace = true }
+scopeguard = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

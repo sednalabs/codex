@@ -7,6 +7,7 @@
 
 mod apply_patch;
 mod apps;
+mod audio_preparation;
 pub use codex_login as auth;
 mod capacity_retry;
 mod client;
@@ -65,9 +66,8 @@ mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
 mod network_policy_decision;
-#[allow(dead_code)]
-pub(crate) mod network_proxy_loader;
 mod original_image_detail;
+pub use codex_mcp::CodexAppsToolsCache;
 pub use codex_mcp::SandboxState;
 mod mcp_tool_call;
 pub(crate) mod mention_syntax;
@@ -167,6 +167,7 @@ pub use state_db_bridge::StateDbHandle;
 pub use state_db_bridge::init_state_db;
 mod thread_rollout_truncation;
 pub use thread_rollout_truncation::truncate_rollout_after_turn_id;
+pub use thread_rollout_truncation::truncate_rollout_before_turn_id;
 mod tools;
 pub(crate) mod turn_diff_tracker;
 mod turn_metadata;

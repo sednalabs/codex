@@ -23,6 +23,7 @@ use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::APPS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SandboxPolicy;
@@ -470,7 +471,7 @@ fn total_token_usage_includes_all_items_after_last_model_generated_item() {
 }
 
 #[test]
-fn for_prompt_strips_images_when_model_does_not_support_images() {
+fn for_prompt_strips_media_when_model_does_not_support_it() {
     let items = vec![
         ResponseItem::Message {
             id: None,
@@ -482,6 +483,9 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
                 ContentItem::InputImage {
                     image_url: "https://example.com/img.png".to_string(),
                     detail: Some(DEFAULT_IMAGE_DETAIL),
+                },
+                ContentItem::InputAudio {
+                    audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
                 },
                 ContentItem::InputText {
                     text: "caption".to_string(),
@@ -551,6 +555,10 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
                 },
                 ContentItem::InputText {
                     text: "image content omitted because you do not support image input"
+                        .to_string(),
+                },
+                ContentItem::InputText {
+                    text: "audio content omitted because you do not support audio input"
                         .to_string(),
                 },
                 ContentItem::InputText {
@@ -634,6 +642,21 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
     } else {
         panic!("expected Message");
     }
+
+    let audio_message = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputAudio {
+            audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let with_audio = create_history_with_items(vec![audio_message.clone()]);
+    assert_eq!(
+        with_audio.for_prompt(&[InputModality::Text, InputModality::Audio]),
+        vec![audio_message]
+    );
 }
 
 #[test]
@@ -1030,6 +1053,9 @@ fn drop_last_n_user_turns_trims_context_updates_above_rolled_back_turn() {
         )),
         developer_msg(&format!(
             "{PLUGINS_INSTRUCTIONS_OPEN_TAG}\nROLLED_BACK_PLUGIN_INSTRUCTIONS"
+        )),
+        developer_msg(&format!(
+            "{ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG}\nROLLED_BACK_ENVIRONMENT_INSTRUCTIONS"
         )),
         developer_msg("<collaboration_mode>ROLLED_BACK_DEV_INSTRUCTIONS</collaboration_mode>"),
         developer_msg("<multi_agent_mode>ROLLED_BACK_MULTI_AGENT_MODE</multi_agent_mode>"),

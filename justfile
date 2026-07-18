@@ -135,17 +135,31 @@ core-carry-smoke:
 core-startup-sync-targeted:
     cargo test -p codex-core --lib startup_remote_plugin_sync_ -- --test-threads=1
 
+# Focused external-agent session import and content-hash compatibility slice.
+external-agent-session-migration-targeted:
+    cargo test --locked -p codex-external-agent-migration --lib -- --test-threads=1
+
+# Focused containment slice for repository and memory migration paths.
+external-agent-migration-containment-targeted:
+    cargo nextest run --locked -p codex-external-agent-migration --no-fail-fast --no-tests=fail --lib
+    cargo nextest run --locked -p codex-app-server --no-fail-fast --no-tests=fail --test all -- suite::v2::external_agent_config::external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation --exact
+
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- config::schema::tests::config_schema_matches_fixture config::schema::tests::config_schema_allows_named_agent_roles codex_delegate_tests::run_codex_thread_interactive_respects_pre_cancelled_spawn --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::configured_agent_roles_control_spawn_agent_type
 
 # Focused inspect_agent_tree stale-descendant fallback regression.
 core-subagent-inspect-tree-fallback-targeted:
-    cargo test -p codex-core inspect_agent_tree_without_state_db_points_to_subagent_tail --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --lib --no-tests=fail -- agent::control::tests::inspect_agent_tree_without_state_db_points_to_subagent_tail --exact
 
 # Focused core-side sub-agent notification contract slice.
 core-subagent-notification-contract-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- format_subagent_notification_message_round_trips_completed_status classifies_memory_excluded_fragments drop_last_n_user_turns_ignores_session_prefix_user_messages serializes_memory_rollout_with_agents_removed_but_environment_kept
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- context_manager::history::tests::drop_last_n_user_turns_ignores_session_prefix_user_messages --exact
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- session_prefix::tests::format_subagent_notification_message_round_trips_completed_status --exact
+    cargo nextest run -p codex-memories-write --no-fail-fast --no-tests=fail --lib -- phase1::job::tests::classifies_memory_excluded_fragments --exact
+    cargo nextest run -p codex-memories-write --no-fail-fast --no-tests=fail --lib -- phase1::tests::serializes_memory_rollout_with_agents_removed_but_environment_kept --exact
 
 # Focused sub-agent completion-notification parser + TUI render slice after the
 
@@ -250,8 +264,14 @@ tui-front-queue-submit-targeted:
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
     cargo test -p codex-tui footer_collapse_snapshots -- --exact --test-threads=1
 
-# Focused TUI transcript viewport redraw and clipping slice.
+# Focused TUI selected-turn copy feedback, viewport redraw, and clipping slice.
 tui-transcript-viewport-targeted:
+    cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_supports_proposed_plan --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_requires_finalized_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::slash_commands::transcript_turn_copy_includes_user_prompt_and_agent_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_replaces_previous_message --lib -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1
@@ -269,9 +289,8 @@ tui-brokered-tool-replay-targeted:
 
 # Focused multi-agent orchestration slice covering wait semantics and tool guidance.
 core-multi-agent-orchestration-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core multi_agent_v2_list_agents_returns_completed_status_without_encrypted_spawn_preview --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents::tests::multi_agent_v2_list_agents_returns_completed_status tools::handlers::multi_agents_v2::wait::tests::completion_rule_distinguishes_any_from_all --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts --exact
 
 # Focused blocking-wait slices split by compile surface so hosted validation
 
@@ -284,8 +303,14 @@ blocking-waits-core-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 blocking-waits-unified-exec-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process::tests::source_transcript_preserves_exec_end_when_delta_receiver_lags --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::failed_initial_end_for_unstored_process_prefers_source_transcript --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::failed_exec_end_uses_fallback_when_source_transcript_is_empty --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_formats_large_output_summary --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_full_lifecycle_with_background_end_event --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_end_event_is_bounded_when_descendant_holds_output_open --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::exec_command_reports_chunk_and_exit_metadata --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 -p codex-core --test all -- suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
 
 blocking-waits-app-server-targeted:
     cargo test -p codex-tui live_app_server_retrying_server_overloaded_error_keeps_task_running --lib -- --test-threads=1
@@ -334,10 +359,14 @@ mcp-device-login-targeted:
     cargo test -p codex-rmcp-client perform_oauth_device_login::tests::device_login_polls_until_authorized --lib -- --exact --test-threads=1
     cargo test -p codex-client custom_ca::tests::reqwest_client_builder_installs_rustls_provider_without_custom_ca --lib -- --exact --test-threads=1
 
-# Focused model-pinning slice for exact spawn-agent model slug preservation.
+# Focused sub-agent selection, role, backend, and cold-reload slice.
 core-subagent-model-pinning-targeted:
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core spawn_agent_tool_v2_requires_task_name_and_lists_visible_models --lib -- --exact --test-threads=1
-    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::subagent_notifications::spawn_agent_preserves_exact_requested_model_slug_through_role_layering -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::role::tests::apply_role_preserves_unspecified_keys agent::role::tests::spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort tools::handlers::multi_agents_spec::tests::spawn_agent_tool_v2_requires_task_name_and_lists_visible_models tools::handlers::multi_agents::tests::spawn_agent_reasoning_effort_accepts_empty_support_metadata tools::handlers::multi_agents::tests::multi_agent_v2_spawn_accepts_child_model_without_backend_assignment tools::handlers::multi_agents::tests::multi_agent_v2_spawn_rejects_child_model_from_different_backend tools::handlers::multi_agents::tests::multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override tools::handlers::multi_agents::tests::multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_uses_configured_subagent_defaults suite::subagent_notifications::spawn_agent_preserves_configured_defaults_through_unrelated_role suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::subagent_notifications::spawn_agent_rejects_reasoning_effort_unsupported_by_role_model --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawned_full_history_v2_child_uses_model_precedence_without_dropping_context
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- extract::tests::turn_context_sets_model_and_reasoning_effort extract::tests::thread_settings_applied_updates_resume_metadata local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay thread_metadata_sync::tests::thread_settings_applied_updates_live_metadata types::tests::thread_metadata_patch_round_trips_optional_clears --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::multi_agent_resume::cold_root_resume_restores_agent_identity_and_reloads_target_on_followup suite::multi_agent_resume::cold_root_resume_restores_agent_identity_and_role_on_followup --exact
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
 core-persisted-subagent-descendants-targeted:
