@@ -1,19 +1,14 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use sqlx::Connection;
 use sqlx::Row;
-use sqlx::SqliteConnection;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
-use sqlx::sqlite::SqliteConnectOptions;
-use sqlx::sqlite::SqliteJournalMode;
-use sqlx::sqlite::SqlitePoolOptions;
-use uuid::Uuid;
 
 use super::STATE_MIGRATOR;
 use super::repair_state_migration_version_collisions;
+use crate::state_db_path;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
@@ -94,11 +89,18 @@ fn state_migration_versions_are_unique() {
 #[tokio::test]
 async fn configured_identity_provenance_migration_defaults_existing_and_old_binary_rows_to_unknown()
 {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
         .await
-        .expect("in-memory database should open");
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.clone());
+    let pool = sqlite
+        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .await
+        .expect("sqlite database should open");
     migrator_through(PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION)
         .run(&pool)
         .await
@@ -147,15 +149,24 @@ async fn configured_identity_provenance_migration_defaults_existing_and_old_bina
         invalid_update.is_err(),
         "invalid provenance must be rejected"
     );
+
+    pool.close().await;
 }
 
 #[tokio::test]
 async fn recency_migration_backfills_and_seeds_old_binary_inserts() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
         .await
-        .expect("in-memory database should open");
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.clone());
+    let pool = sqlite
+        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .await
+        .expect("sqlite database should open");
     migrator_through(PRE_RECENCY_MIGRATION_VERSION)
         .run(&pool)
         .await
@@ -251,15 +262,24 @@ INSERT INTO threads (
         .expect("old-binary row should load");
     assert_eq!(seeded.get::<i64, _>("recency_at"), 1_700_000_300);
     assert_eq!(seeded.get::<i64, _>("recency_at_ms"), 1_700_000_300_456);
+
+    pool.close().await;
 }
 
 #[tokio::test]
 async fn repairs_recency_migration_that_was_applied_as_version_38() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
         .await
-        .expect("in-memory database should open");
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.clone());
+    let pool = sqlite
+        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .await
+        .expect("sqlite database should open");
     migrator_through(/*version*/ 37)
         .run(&pool)
         .await
@@ -318,15 +338,24 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
+
+    pool.close().await;
 }
 
 #[tokio::test]
 async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40() {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
         .await
-        .expect("in-memory database should open");
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.clone());
+    let pool = sqlite
+        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .await
+        .expect("sqlite database should open");
     migrator_through(/*version*/ 39)
         .run(&pool)
         .await
@@ -385,44 +414,48 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
+
+    pool.close().await;
 }
 
 #[tokio::test]
 async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held() {
-    let database_path = std::env::temp_dir().join(format!(
-        "codex-state-migrations-test-{}.sqlite",
-        Uuid::new_v4()
-    ));
-    let options = SqliteConnectOptions::new()
-        .filename(&database_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_millis(100));
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options.clone())
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.clone());
+    let state_path = state_db_path(&sqlite_home);
+    let pool = sqlite
+        .open_read_write_pool(&state_path)
         .await
         .expect("database should open");
     STATE_MIGRATOR
         .run(&pool)
         .await
         .expect("current migrations should apply");
-    let mut write_connection = SqliteConnection::connect_with(&options)
+    let read_pool = sqlite
+        .open_read_only_pool(&state_path)
         .await
-        .expect("write connection should open");
+        .expect("read-only pool should open");
+    let mut write_connection = pool.acquire().await.expect("write connection should open");
     let write_transaction = write_connection
         .begin_with("BEGIN IMMEDIATE")
         .await
         .expect("write transaction should acquire the writer slot");
 
-    let repair_result = repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR).await;
+    let repair_result =
+        repair_state_migration_version_collisions(&read_pool, &STATE_MIGRATOR).await;
 
     write_transaction
         .rollback()
         .await
         .expect("write transaction should roll back");
     drop(write_connection);
+    read_pool.close().await;
     pool.close().await;
-    let _ = tokio::fs::remove_file(database_path).await;
     repair_result.expect("current migration history should not need the writer slot");
 }

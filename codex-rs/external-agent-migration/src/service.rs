@@ -209,6 +209,7 @@ impl ExternalAgentConfigService {
                                 record_import_error(
                                     &mut item_result,
                                     "plugin_import",
+                                    /*sub_error_type*/ None,
                                     err.to_string(),
                                     /*source*/ None,
                                 );
@@ -223,6 +224,7 @@ impl ExternalAgentConfigService {
                                 record_import_error(
                                     &mut item_result,
                                     "plugin_import",
+                                    /*sub_error_type*/ None,
                                     err.to_string(),
                                     /*source*/ None,
                                 );
@@ -240,6 +242,7 @@ impl ExternalAgentConfigService {
                                     record_import_error(
                                         &mut item_result,
                                         "plugin_import",
+                                        /*sub_error_type*/ None,
                                         err.to_string(),
                                         /*source*/ None,
                                     );
@@ -351,6 +354,7 @@ impl ExternalAgentConfigService {
                             record_import_error(
                                 &mut item_result,
                                 "memory_import",
+                                /*sub_error_type*/ None,
                                 failure.message,
                                 Some(failure.project_key),
                             );

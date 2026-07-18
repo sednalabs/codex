@@ -13,6 +13,7 @@ use super::*;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
+use crate::app_event::HistoryBatchEntryResponse;
 
 use crate::chatwidget::ChatWidgetInit;
 use crate::chatwidget::create_initial_user_message;
@@ -99,7 +100,11 @@ use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::MAX_THREAD_GOAL_OBJECTIVE_CHARS;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionMeta;
+use codex_protocol::protocol::SessionSource as RolloutSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
@@ -497,9 +502,34 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
         panic!("expected thread-routed history response");
     };
     assert_eq!(routed_thread_id, thread_id);
-    assert_eq!(event.offset, 0);
-    assert_eq!(event.log_id, 1);
-    assert!(event.entry.is_none());
+    assert_eq!(
+        event,
+        HistoryLookupResponse::Entry {
+            offset: 0,
+            log_id: 1,
+            entry: None,
+        }
+    );
+
+    let cursor = codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 10);
+    app.lookup_message_history_batch(thread_id, cursor, /*log_id*/ 1)
+        .await?;
+    let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
+        .await
+        .expect("history batch lookup should emit an app event")
+        .expect("app event channel should stay open");
+    let AppEvent::ThreadHistoryEntryResponse {
+        thread_id: routed_thread_id,
+        event,
+    } = app_event
+    else {
+        panic!("expected thread-routed history batch response");
+    };
+    assert_eq!(routed_thread_id, thread_id);
+    assert_eq!(
+        event,
+        HistoryLookupResponse::BatchError { cursor, log_id: 1 }
+    );
 
     Ok(())
 }
@@ -539,6 +569,47 @@ async fn enqueue_thread_event_does_not_block_when_channel_full() -> Result<()> {
         .await
         .expect("timed out waiting for second event")
         .expect("channel closed unexpectedly");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_history_batch_is_delivered_without_replay_buffering() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    app.set_thread_active(thread_id, /*active*/ true).await;
+
+    let cursor = codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 1);
+    let event = HistoryLookupResponse::Batch {
+        cursor,
+        log_id: 1,
+        entries: vec![HistoryBatchEntryResponse {
+            offset: 1,
+            entry: Some("history entry".to_string()),
+        }],
+        next_older_cursor: Some(codex_message_history::HistoryBatchCursor::new(
+            /*end_offset*/ 0,
+        )),
+    };
+    app.enqueue_thread_history_entry_response(thread_id, event.clone())
+        .await?;
+
+    let channel = app
+        .thread_event_channels
+        .get_mut(&thread_id)
+        .expect("missing thread channel");
+    assert!(channel.store.lock().await.buffer.is_empty());
+    let mut receiver = channel.receiver.take().expect("missing receiver");
+    let delivered = time::timeout(Duration::from_millis(50), receiver.recv())
+        .await
+        .expect("timed out waiting for history batch")
+        .expect("missing history batch");
+    let ThreadBufferedEvent::HistoryEntryResponse(delivered) = delivered else {
+        panic!("expected history batch response");
+    };
+    assert_eq!(delivered, event);
 
     Ok(())
 }
@@ -1388,7 +1459,95 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
 }
 
 #[tokio::test]
-async fn open_agent_picker_clears_completed_path_backed_agent_running_state() -> Result<()> {
+async fn open_agent_picker_preserves_running_hints_until_observed_completion() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/child".to_string(),
+            is_running_hint: true,
+        });
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    let mut expected_entry = AgentPickerThreadEntry {
+        agent_nickname: None,
+        agent_role: None,
+        agent_path: Some("/root/child".to_string()),
+        is_running: true,
+        is_closed: false,
+        ..AgentPickerThreadEntry::default()
+    };
+    assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    let status = loop {
+        let event = app_event_rx.try_recv().expect("agent status history cell");
+        if let AppEvent::InsertHistoryCell(cell) = event {
+            let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+            if rendered.contains("/agent") {
+                break rendered;
+            }
+        }
+    };
+    assert_snapshot!(status, @r###"
+    /agent
+    Sub-agents running
+
+      • `/root/child`
+        No recent activity yet.
+    "###);
+
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_completed_notification(thread_id, "turn-older", TurnStatus::Completed),
+    )
+    .await?;
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    app.enqueue_thread_notification(thread_id, turn_started_notification(thread_id, "turn-1"))
+        .await?;
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
+    )
+    .await?;
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    expected_entry.is_running = false;
+    assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/child".to_string(),
+            is_running_hint: true,
+        });
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    expected_entry.is_running = false;
+    assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    app.enqueue_thread_notification(thread_id, turn_started_notification(thread_id, "turn-2"))
+        .await?;
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    expected_entry.is_running = true;
+    assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
         app.chat_widget.config_ref(),
@@ -1396,23 +1555,21 @@ async fn open_agent_picker_clears_completed_path_backed_agent_running_state() ->
     .await
     .expect("embedded app server");
     let thread_id = ThreadId::new();
-    let channel = ThreadEventChannel::new(/*capacity*/ 4);
-    {
-        let mut store = channel.store.lock().await;
-        store.push_notification(turn_started_notification(thread_id, "turn-1"));
-        store.push_notification(turn_completed_notification(
-            thread_id,
-            "turn-1",
-            TurnStatus::Completed,
-        ));
-    }
-    app.thread_event_channels.insert(thread_id, channel);
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            test_thread_session(thread_id, test_path_buf("/tmp/project")),
+            vec![test_turn("turn-1", TurnStatus::Completed, Vec::new())],
+        ),
+    );
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
             is_running_hint: true,
         });
+    assert!(!app.agent_navigation.is_parent_owned(thread_id));
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
 
@@ -1427,6 +1584,41 @@ async fn open_agent_picker_clears_completed_path_backed_agent_running_state() ->
             created_at: None,
             updated_at: None,
         })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = Box::pin(make_test_app_with_channels()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/worker".to_string(),
+            is_running_hint: true,
+        });
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_app_snapshot!(
+        "path_backed_agent_picker",
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+    );
+    while app_event_rx.try_recv().is_ok() {}
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::SelectAgentThread(selected_thread_id)) if selected_thread_id == thread_id
     );
     Ok(())
 }
@@ -1559,6 +1751,147 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
                 is_closed: false,
                 ..AgentPickerThreadEntry::default()
             })
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -> Result<()> {
+    const WORKER_THREADS: usize = 1;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .thread_stack_size(TEST_STACK_SIZE_BYTES)
+        .enable_all()
+        .build()?;
+
+    runtime.block_on(async {
+        let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+        let root = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let root_thread_id = root.session.thread_id;
+        app.enqueue_primary_thread_session(root.session, root.turns)
+            .await?;
+
+        let rollout_dir = app
+            .config
+            .codex_home
+            .join("sessions")
+            .join("2026")
+            .join("01")
+            .join("01");
+        std::fs::create_dir_all(&rollout_dir)?;
+        let mut child_thread_ids = Vec::new();
+        for (index, multi_agent_version) in [MultiAgentVersion::V1, MultiAgentVersion::V2]
+            .into_iter()
+            .enumerate()
+        {
+            let child_thread_id = ThreadId::new();
+            let timestamp = format!("2026-01-01T00:00:0{index}Z");
+            let session_meta = SessionMeta {
+                session_id: child_thread_id.into(),
+                id: child_thread_id,
+                parent_thread_id: Some(root_thread_id),
+                timestamp: timestamp.clone(),
+                cwd: app.config.cwd.to_path_buf(),
+                originator: "codex-tui-test".to_string(),
+                cli_version: "0.0.0".to_string(),
+                source: RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some(format!("child-{index}")),
+                    agent_role: Some("worker".to_string()),
+                }),
+                model_provider: Some(app.config.model_provider_id.clone()),
+                multi_agent_version: Some(multi_agent_version),
+                ..SessionMeta::default()
+            };
+            let rollout_path = rollout_dir.join(format!(
+                "rollout-2026-01-01T00-00-0{index}-{child_thread_id}.jsonl"
+            ));
+            let session_meta_line = serde_json::json!({
+                "timestamp": timestamp,
+                "type": "session_meta",
+                "payload": serde_json::to_value(session_meta)?,
+            });
+            std::fs::write(rollout_path, format!("{session_meta_line}\n"))?;
+
+            assert!(
+                app.attach_live_thread_for_selection(&mut app_server, child_thread_id)
+                    .await?
+            );
+            assert_eq!(
+                app.agent_navigation.is_parent_owned(child_thread_id),
+                multi_agent_version == MultiAgentVersion::V2
+            );
+            child_thread_ids.push(child_thread_id);
+        }
+
+        assert!(app.backfill_loaded_subagent_threads(&mut app_server).await);
+        assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
+        assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
+
+        let mut tui = crate::tui::test_support::make_test_tui()?;
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[0])
+            .await?;
+        while app_event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .restore_user_message_to_composer("v1 remains writable".into());
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+        );
+
+        app.select_agent_thread(&mut tui, &mut app_server, child_thread_ids[1])
+            .await?;
+        while app_event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .restore_user_message_to_composer("v2 stays view-only".into());
+        let draft = app.chat_widget.composer_text_with_pending();
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+        assert!(
+            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
+        );
+
+        let resumed = app_server
+            .resume_thread(
+                app.config.clone(),
+                child_thread_ids[1],
+                app.resume_model_settings(),
+            )
+            .await?;
+        assert!(resumed.blocks_direct_input);
+        app.replace_chat_widget_with_app_server_thread(
+            &mut tui,
+            &mut app_server,
+            resumed,
+            crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
+            /*initial_user_message*/ None,
+        )
+        .await?;
+        while app_event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .restore_user_message_to_composer("direct resume stays view-only".into());
+        let draft = app.chat_widget.composer_text_with_pending();
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+        assert!(
+            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. })))
         );
         Ok(())
     })
@@ -2985,6 +3318,7 @@ fn inactive_thread_started_notification_initializes_replay_session() -> Result<(
                     cwd: test_path_buf("/tmp/agent").abs(),
                     cli_version: "0.0.0".to_string(),
                     source: codex_app_server_protocol::SessionSource::Unknown,
+                    can_accept_direct_input: None,
                     thread_source: None,
                     agent_nickname: Some("Robie".to_string()),
                     agent_role: Some("explorer".to_string()),
@@ -3085,6 +3419,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 cwd: test_path_buf("/tmp/agent").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Unknown,
+                can_accept_direct_input: None,
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -3151,6 +3486,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         cwd: test_path_buf("/tmp/read").abs(),
         cli_version: "0.0.0".to_string(),
         source: codex_app_server_protocol::SessionSource::Unknown,
+        can_accept_direct_input: None,
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
@@ -3635,6 +3971,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
         AppServerStartedThread {
             session: test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
             turns: Vec::new(),
+            blocks_direct_input: false,
         },
         &mut child_snapshot,
     )
@@ -4763,6 +5100,7 @@ async fn required_stream_reflow_during_capped_initial_replay_survives_transcript
         "Final answer:\n\n| Pattern | Outcome |\n| --- | --- |\n| Table tail | Preserved |"
             .to_string(),
         PathBuf::from("/tmp"),
+        /*inline_visualization_context*/ None,
         ConsolidationScrollbackReflow::Required,
         /*deferred_history_cell*/ None,
     )?;
@@ -5848,11 +6186,13 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
         AppServerStartedThread {
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
+            blocks_direct_input: true,
         },
         &mut snapshot,
     )
     .await;
 
+    assert!(app.agent_navigation.is_parent_owned(thread_id));
     assert_eq!(snapshot.session, Some(resumed_session.clone()));
     assert_eq!(snapshot.turns, resumed_turns);
 

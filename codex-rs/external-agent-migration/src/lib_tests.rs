@@ -489,6 +489,13 @@ fn hook_migration_ignores_unsupported_handlers() {
                     "command": source_hook_command("approve.py")
                 }]
             }],
+            "SessionEnd": [{
+                "matcher": "clear",
+                "hooks": [{
+                    "type": "command",
+                    "command": source_hook_command("cleanup.py")
+                }]
+            }],
             "SubagentStart": [{
                 "matcher": "worker",
                 "hooks": [{"type": "prompt", "prompt": "check"}]
@@ -511,6 +518,13 @@ fn hook_migration_ignores_unsupported_handlers() {
                 "hooks": [{
                     "type": "command",
                     "command": migrated_hook_command("approve.py")
+                }]
+            }],
+            "SessionEnd": [{
+                "matcher": "clear",
+                "hooks": [{
+                    "type": "command",
+                    "command": migrated_hook_command("cleanup.py")
                 }]
             }]
         })

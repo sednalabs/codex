@@ -199,6 +199,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             cwd: absolute_path("tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Exec,
+            can_accept_direct_input: None,
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
@@ -2548,6 +2549,12 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 path: PathBuf::from("local/image.png"),
                 detail: Some(ImageDetail::Original),
             },
+            CoreUserInput::Audio {
+                audio_url: "data:audio/wav;base64,AAA".to_string(),
+            },
+            CoreUserInput::LocalAudio {
+                path: PathBuf::from("local/audio.mp3"),
+            },
             CoreUserInput::Skill {
                 name: "skill-creator".to_string(),
                 path: PathBuf::from("/repo/.codex/skills/skill-creator/SKILL.md"),
@@ -2576,6 +2583,12 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 UserInput::LocalImage {
                     path: PathBuf::from("local/image.png"),
                     detail: Some(ImageDetail::Original),
+                },
+                UserInput::Audio {
+                    url: "data:audio/wav;base64,AAA".to_string(),
+                },
+                UserInput::LocalAudio {
+                    path: PathBuf::from("local/audio.mp3"),
                 },
                 UserInput::Skill {
                     name: "skill-creator".to_string(),
@@ -3035,7 +3048,7 @@ fn mcp_tool_call_app_context_serializes_missing_mixed_version_fields_as_null() {
 }
 
 #[test]
-fn user_input_into_core_preserves_image_detail() {
+fn user_input_into_core_preserves_media_fields() {
     assert_eq!(
         UserInput::Image {
             url: "https://example.com/image.png".to_string(),
@@ -3057,6 +3070,26 @@ fn user_input_into_core_preserves_image_detail() {
         CoreUserInput::LocalImage {
             path: PathBuf::from("local/image.png"),
             detail: Some(ImageDetail::Original),
+        }
+    );
+
+    assert_eq!(
+        UserInput::Audio {
+            url: "data:audio/wav;base64,AAA".to_string(),
+        }
+        .into_core(),
+        CoreUserInput::Audio {
+            audio_url: "data:audio/wav;base64,AAA".to_string(),
+        }
+    );
+
+    assert_eq!(
+        UserInput::LocalAudio {
+            path: PathBuf::from("local/audio.mp3"),
+        }
+        .into_core(),
+        CoreUserInput::LocalAudio {
+            path: PathBuf::from("local/audio.mp3"),
         }
     );
 }
@@ -3693,6 +3726,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: Some(PluginInstallPolicySource::WorkspaceSetting),
+                    must_show_installation_interstitial: None,
                     auth_policy: PluginAuthPolicy::OnUse,
                     availability: PluginAvailability::Available,
                     interface: None,
@@ -3716,6 +3750,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     "enabled": false,
                     "installPolicy": "AVAILABLE",
                     "installPolicySource": "WORKSPACE_SETTING",
+                    "mustShowInstallationInterstitial": null,
                     "authPolicy": "ON_USE",
                     "availability": "AVAILABLE",
                     "interface": null,
@@ -3744,6 +3779,7 @@ fn plugin_summary_defaults_missing_availability_to_available() {
     assert_eq!(summary.availability, PluginAvailability::Available);
     assert_eq!(summary.local_version, None);
     assert_eq!(summary.share_context, None);
+    assert_eq!(summary.must_show_installation_interstitial, None);
 }
 
 #[test]
