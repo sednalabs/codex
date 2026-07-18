@@ -184,25 +184,34 @@ docs-only refresh commit that records this snapshot.
 - Explicit read-only carveouts and pre-existing protected metadata remain the
   enforceable boundary. Keep those assertions holistic rather than restoring
   removed setup-side-effect tests or persistent sentinel directories.
-- The compatible restricted token keeps the Everyone SID on both its default
-  DACL and restricting SID set for loader and IPC compatibility, but no longer
-  uses `WRITE_RESTRICTED`. Full restricted-SID checks prevent `DELETE` and
-  `FILE_DELETE_CHILD` from bypassing the capability boundary while existing
-  capability grants and deny ACEs preserve writable-root and protected-child
-  behavior.
-- Hosted comparison run `29628256459` proved the distinction: retaining
-  `WRITE_RESTRICTED` with Everyone started successfully but deleted both hostile
-  protected targets, full restriction without Everyone failed during process
-  startup, and only full restriction with Everyone satisfied the normalized
-  six-field deletion contract. Run `29628486469` then passed the complete
-  Windows sandbox unit target with that production shape.
+- The compatible legacy token keeps Everyone on its default DACL for IPC, but
+  excludes Everyone from the restricting SID set and retains `WRITE_RESTRICTED`
+  so existing launch and runtime dependencies remain readable. This preserves
+  the pre-existing backend behavior; it does not make capability-SID deny ACEs
+  authoritative for standalone `DELETE` or `FILE_DELETE_CHILD` checks.
+- Hosted comparison run `29628256459` proved the remaining limitation:
+  `WRITE_RESTRICTED` started successfully but deleted both normalized hostile
+  targets, while full restriction without Everyone could not start the process.
+  Full restriction with Everyone passed that fixture and the complete Windows
+  sandbox unit target in run `29628486469`, but review found that any path which
+  grants Everyone write access would also satisfy the restricting check. The
+  merged-head run `29636964666` additionally proved that full restriction breaks
+  PowerShell and gnullvm runtime loading without explicit capability-SID read
+  access. Those runs are diagnostic evidence, not proof that either incomplete
+  full-restriction shape is safe to ship.
+- A durable full-restriction design must provision the exact active capability
+  SIDs with synchronous read/execute access to bounded launch and runtime
+  dependencies, must not derive those roots from ambient `PATH`, and must avoid
+  stale capability ACEs widening later policies. Until then, the normalized
+  deletion fixture deliberately characterizes the legacy limitation rather than
+  claiming containment.
 - Hosted Windows guardrails:
   `slash_tmp_permission_path_is_unix_only`,
   `filesystem_policy_blocks_protected_metadata_path_writes_by_default`,
   `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement`,
   `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
-  `legacy_workspace_write_delete_is_limited_to_writable_roots`, plus
-  `restricted_sids_keep_everyone_for_loader_compatibility` and
+  `legacy_write_restricted_deletion_limitation_is_explicit`, plus
+  `restricted_sids_exclude_everyone` and
   `default_dacl_keeps_everyone_for_ipc_compatibility`.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`
