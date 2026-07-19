@@ -128,13 +128,17 @@ impl V2Residency {
             let Some(candidate_thread_id) = self.pop_lru_candidate(protected_thread_id) else {
                 return false;
             };
-            let Some(metadata) = registry.agent_metadata_for_thread(candidate_thread_id) else {
-                continue;
+            let metadata = registry.agent_metadata_for_thread(candidate_thread_id);
+            let mut lifecycle = match metadata.as_ref() {
+                Some(metadata) => {
+                    let lifecycle = metadata.lifecycle.lock().await;
+                    if !registry.metadata_is_current(candidate_thread_id, metadata) {
+                        continue;
+                    }
+                    Some(lifecycle)
+                }
+                None => None,
             };
-            let mut lifecycle = metadata.lifecycle.lock().await;
-            if !registry.metadata_is_current(candidate_thread_id, &metadata) {
-                continue;
-            }
             let Some(candidate_thread) = manager
                 .get_thread(candidate_thread_id)
                 .await
@@ -188,7 +192,9 @@ impl V2Residency {
                 .input_queue
                 .drain_mailbox_communications()
                 .await;
-            if pending_mail.iter().any(|mail| mail.trigger_turn) {
+            if pending_mail.iter().any(|mail| mail.trigger_turn)
+                || (metadata.is_none() && !pending_mail.is_empty())
+            {
                 candidate_thread
                     .session
                     .input_queue
@@ -211,10 +217,10 @@ impl V2Residency {
             }
             let removal = manager
                 .remove_thread_if_same(&candidate_thread_id, &candidate_thread, || {
-                    if let Some(status) = cold_status {
+                    if let (Some(metadata), Some(status)) = (&metadata, cold_status) {
                         registry.publish_cold_status_if_current(
                             candidate_thread_id,
-                            &metadata,
+                            metadata,
                             &candidate_thread,
                             status,
                         );
@@ -223,12 +229,14 @@ impl V2Residency {
                 .await;
             match removal {
                 RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
-                    lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
-                        ColdMailboxItem {
-                            receive_id: None,
-                            communication,
-                        }
-                    }));
+                    if let Some(lifecycle) = lifecycle.as_mut() {
+                        lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                            ColdMailboxItem {
+                                receive_id: None,
+                                communication,
+                            }
+                        }));
+                    }
                     return true;
                 }
                 RemoveThreadIfSameResult::Replaced => {
@@ -239,12 +247,14 @@ impl V2Residency {
                             .prepend_mailbox_communications(pending_mail)
                             .await;
                     } else {
-                        lifecycle.extend_cold_mail(pending_mail.into_iter().map(
-                            |communication| ColdMailboxItem {
-                                receive_id: None,
-                                communication,
-                            },
-                        ));
+                        if let Some(lifecycle) = lifecycle.as_mut() {
+                            lifecycle.extend_cold_mail(pending_mail.into_iter().map(
+                                |communication| ColdMailboxItem {
+                                    receive_id: None,
+                                    communication,
+                                },
+                            ));
+                        }
                     }
                     self.touch(candidate_thread_id);
                 }
