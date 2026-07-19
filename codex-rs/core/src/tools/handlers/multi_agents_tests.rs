@@ -24,6 +24,8 @@ use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
+use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
@@ -49,6 +51,7 @@ use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -585,7 +588,7 @@ async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
-                "task_name": "incompatible_model",
+                "task_name": "luna_model",
                 "model": "gpt-5.6-luna",
                 "fork_turns": "none"
             })),
@@ -603,6 +606,56 @@ async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5.6-luna");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut catalog = bundled_models_response().expect("bundled models should parse");
+    let mut incompatible_model = catalog
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-5.6-luna")
+        .cloned()
+        .expect("bundled catalog should contain Luna");
+    incompatible_model.slug = "v1-only-model".to_string();
+    incompatible_model.display_name = "V1-only model".to_string();
+    incompatible_model.multi_agent_version = Some(MultiAgentVersion::V1);
+    catalog.models.push(incompatible_model);
+    session.services.models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None,
+        catalog,
+    ));
+
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "incompatible_model",
+                "model": "v1-only-model",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .err()
+        .expect("a model assigned only to V1 should be rejected");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "Unknown model `v1-only-model` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.2".to_string()
+        )
+    );
 }
 
 #[tokio::test]

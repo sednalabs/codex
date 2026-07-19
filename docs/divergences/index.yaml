@@ -274,6 +274,7 @@
         "spawn_agent_reasoning_effort_accepts_empty_support_metadata",
         "multi_agent_v2_spawn_accepts_child_model_without_backend_assignment",
         "multi_agent_v2_spawn_accepts_luna_compatibility_override",
+        "multi_agent_v2_spawn_rejects_child_model_from_different_backend",
         "multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override",
         "multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override",
         "spawn_agent_uses_configured_subagent_defaults",

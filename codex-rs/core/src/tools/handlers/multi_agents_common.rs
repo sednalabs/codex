@@ -35,16 +35,13 @@ pub(crate) fn model_supports_multi_agent_backend(
     model: &ModelPreset,
     multi_agent_version: MultiAgentVersion,
 ) -> bool {
-    if multi_agent_version != MultiAgentVersion::V2 {
-        return true;
-    }
-    // Luna can run as a V2 child while its top-level catalog default remains V1. Keep the
-    // compatibility rule here so the upstream-synced model catalog stays unchanged.
-    if model.model == LUNA_MODEL_SLUG {
-        return true;
-    }
-    model.multi_agent_version.is_none()
-        || model.multi_agent_version == Some(multi_agent_version)
+    multi_agent_version != MultiAgentVersion::V2
+        // Luna can run as a V2 child while its top-level catalog default remains V1. Keep the
+        // compatibility rule here so the upstream-synced model catalog stays unchanged.
+        || model.model == LUNA_MODEL_SLUG
+        || model
+            .multi_agent_version
+            .is_none_or(|version| version == multi_agent_version)
 }
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
