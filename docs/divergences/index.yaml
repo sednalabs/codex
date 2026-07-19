@@ -266,6 +266,7 @@
         "codex-rs/core/tests/suite/spawn_agent_description.rs",
         "codex-rs/core/tests/suite/multi_agent_resume.rs",
         "codex-rs/core/tests/suite/subagent_notifications.rs",
+        "codex-rs/exec/tests/suite/completion_backfill_tests.rs",
         "codex-rs/thread-store/src/local/read_thread.rs",
         ".github/scripts/test_ci_planners.py",
         ".github/validation-lanes.json",
@@ -307,6 +308,7 @@
         "inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields",
         "inspect_agent_tree_without_state_db_points_to_subagent_tail",
         "completion_rule_distinguishes_any_from_all",
+        "ignores_unrelated_turn_completion_before_backfilling_primary_turn",
         "multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity",
         "config_schema_matches_fixture",
         "config_schema_allows_named_agent_roles",
@@ -317,7 +319,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while avoiding a downstream duplicate of upstream's child selection pipeline. The Schemars 1.2 adapter keeps flattened named roles schema-valid, V2 description tests follow the effective configured namespace, and pre-cancelled delegates abort before session spawn. Full-history forks accept configured or explicit model/reasoning selection while rejecting agent_type changes. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. The capacity-eviction slice is a manual port of the useful mechanism from draft upstream PR #30154 onto the current refactored tree, extended so interrupted identities remain observable and reloadable and so issue #32353's queue-only mailbox can cross eviction without pinning a runtime. Preserve this direct lifecycle fix until upstream owns an equivalent generation-safe FIFO transfer and close contract; cross-reload subscriptions and timed idle eviction remain separate follow-up work. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while avoiding a downstream duplicate of upstream's child selection pipeline. The Schemars 1.2 adapter keeps flattened named roles schema-valid, V2 description and namespace-sensitive upstream fixture tests follow the effective configured namespace, and pre-cancelled delegates abort before session spawn. Full-history forks accept configured or explicit model/reasoning selection while rejecting agent_type changes. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. The capacity-eviction slice is a manual port of the useful mechanism from draft upstream PR #30154 onto the current refactored tree, extended so interrupted identities remain observable and reloadable and so issue #32353's queue-only mailbox can cross eviction without pinning a runtime. Preserve this direct lifecycle fix until upstream owns an equivalent generation-safe FIFO transfer and close contract; cross-reload subscriptions and timed idle eviction remain separate follow-up work. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
@@ -2056,6 +2058,8 @@
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
         "codex-rs/app-server-daemon/src/backend/pid_tests.rs",
+        "codex-rs/core/tests/suite/otel.rs",
+        "codex-rs/core/tests/suite/pending_input.rs",
         "codex-rs/exec-server/tests/http_client.rs",
         "scripts/list-bazel-clippy-targets.sh",
         "defs.bzl",
@@ -2079,7 +2083,7 @@
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
-      "behavior": "Downstream keeps patched build, packaging, and install scripts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
+      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2098,13 +2102,15 @@
         "http_response_body_stream_enforces_queued_byte_budget",
         "http_response_body_streams_share_queued_byte_budget",
         "stop_waits_for_live_reservation_to_resolve",
+        "any_new_input_interrupts_sleep",
+        "turn_and_completed_response_spans_record_token_usage",
         "system_proxy_cache_key_preserves_url_specific_pac_decisions",
         "managed_ca_certificate_path_uses_matching_content_hash",
         "environment_id_fallback_has_cwd_prefix",
         "returns thread events"
       ],
       "owner": "downstream",
-      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The Windows direct-loopback fixture observes a bounded native curl attempt, cleans up a WFP-stalled command through Codex's registered background-terminal path, and requires zero requests at its unique non-proxy endpoint while preserving distinct connected, denied, and probe-error outcomes. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction. The exec-server stress-test deadlines are test-only and may be dropped when upstream uses readiness-based completion conditions or equivalent cold-run-safe bounds. The daemon PID test removes the PID file while its reservation lock is still held, preventing cleanup races; drop this carry when upstream adopts equivalent ordering.",
+      "notes": "Captures downstream platform/patch artifacts that the audit should treat as deliberate. The Bazel crate macro forwards optional unit-test arguments so upstream exec-server tests can remain serialized until equivalent macro support lands upstream. Windows hosted setup prefers Dev Drive acceleration but falls back to an existing secondary or system volume when the runner image lacks Dev Drive formatting support. The Windows direct-loopback fixture observes a bounded native curl attempt, cleans up a WFP-stalled command through Codex's registered background-terminal path, and requires zero requests at its unique non-proxy endpoint while preserving distinct connected, denied, and probe-error outcomes. The reqwest ownership ratchet permits codex-android-computer-use only as temporary migration debt until its MCP transport moves behind codex-http-client; unnamed new direct reqwest owners remain denied. Python SDK runtime-package staging rejects traversal, links, and special archive entries rather than falling back to unfiltered extraction. The exec-server stress-test deadlines are test-only and may be dropped when upstream uses readiness-based completion conditions or equivalent cold-run-safe bounds. The daemon PID test removes the PID file while its reservation lock remains held. Pending-input tests use the sleep completion itself as the sole consequence barrier so a separate event wait cannot consume it, and the OTel span test shuts the session down before reading its trace buffer so retained span handles have closed. Drop these test-only carries when upstream adopts equivalent deterministic ordering.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "build-policy-config",
       "hotspot_files": [

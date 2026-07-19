@@ -590,7 +590,8 @@ docs-only refresh commit that records this snapshot.
   This is intentional downstream routing behavior, not a reason to retain old
   handler implementations. Description tests derive the effective namespace
   from configuration rather than hard-coding either upstream or downstream
-  defaults.
+  defaults. Namespace-sensitive upstream fixtures must likewise use the
+  effective downstream namespace rather than assuming upstream's default.
 - A delegate whose cancellation token is already cancelled returns
   `TurnAborted` before allocating channels or spawning a child session; the
   subsequent cancellation-aware spawn remains responsible for races after
@@ -1495,6 +1496,12 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/diff_render.rs` retains the downstream ratatui `0.30.1`
     `Widget::render` test adapter and tab-free gallery fixtures; production
     rendering follows upstream's borrowed-file-change implementation
+  - `codex-rs/core/tests/suite/pending_input.rs` uses the interrupted sleep
+    completion as the sole consequence barrier so an unrelated event wait
+    cannot consume the completion before its assertion
+  - `codex-rs/core/tests/suite/otel.rs` waits for orderly session shutdown
+    before reading the trace buffer so retained response spans are closed;
+    both metadata assertions remain unchanged
 - Schema-generation adapters that preserve legacy wire deserialization while
   keeping generated app-server schemas on the current public shape, such as
   `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
