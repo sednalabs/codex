@@ -2110,6 +2110,8 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
         Some("Ghost".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
 
