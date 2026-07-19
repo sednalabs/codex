@@ -8884,8 +8884,8 @@
               }
             },
             "required": [
-              "audioUrl",
-              "type"
+              "type",
+              "audioUrl"
             ],
             "title": "InputAudioDynamicToolCallOutputContentItem",
             "type": "object"
