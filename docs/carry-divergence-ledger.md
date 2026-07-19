@@ -1451,6 +1451,9 @@ docs-only refresh commit that records this snapshot.
   - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
+  - `codex-rs/app-server-daemon/src/backend/pid_tests.rs` removes the PID file
+    while its reservation lock remains held, preventing test cleanup races;
+    drop this carry when upstream adopts equivalent ordering
 - Schema-generation adapters that preserve legacy wire deserialization while
   keeping generated app-server schemas on the current public shape, such as
   `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
