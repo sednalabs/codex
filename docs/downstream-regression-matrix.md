@@ -181,8 +181,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   - Windows hosted setup prefers Dev Drive acceleration and keeps an explicit
     D:/C: fallback for runner images without the Dev Drive formatting switch.
   - `core-carry-ui-smoke` uses the same hosted test stack floor as
-    `core-carry-core-smoke` so stack-heavy TUI replay checks fail on behavior,
-    not on runner-default stack limits.
+    `core-carry-core-smoke`, while shared TUI test support gives individually
+    dispatched `codex.tui-agent-picker-targeted` app and app-server-session
+    regressions an explicit 8 MiB stack budget, so stack-heavy checks fail on
+    behavior rather than runner-default stack limits.
   - Any ambiguous or high-risk follow-up falls back to the normal `rust-ci`
     path.
 - `sedna-heavy-tests.yml` is the downstream-heavy lane workflow.

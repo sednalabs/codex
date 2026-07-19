@@ -130,37 +130,12 @@ macro_rules! assert_app_snapshot {
     };
 }
 
-const APP_TEST_WORKER_THREADS: usize = 1;
-const APP_TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
 fn run_large_stack_app_test<F, Fut>(test_body: F) -> Result<()>
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<()>> + 'static,
 {
-    std::thread::Builder::new()
-        .name("tui-app-large-stack-test".to_string())
-        .stack_size(APP_TEST_STACK_SIZE_BYTES)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(APP_TEST_WORKER_THREADS)
-                .thread_stack_size(APP_TEST_STACK_SIZE_BYTES)
-                .enable_all()
-                .build()?;
-
-            runtime.block_on(test_body())
-        })?
-        .join()
-        .map_err(|panic| {
-            let panic_message = if let Some(message) = panic.downcast_ref::<&str>() {
-                (*message).to_string()
-            } else if let Some(message) = panic.downcast_ref::<String>() {
-                message.clone()
-            } else {
-                "large-stack app test thread panicked".to_string()
-            };
-            color_eyre::eyre::eyre!("{panic_message}")
-        })?
+    crate::test_support::run_large_stack_test("tui-app-large-stack-test", test_body)
 }
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
