@@ -442,9 +442,7 @@ async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41
     let remote_control_enabled_migration = STATE_MIGRATOR
         .migrations
         .iter()
-        .find(|migration| {
-            migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION
-        })
+        .find(|migration| migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
         .expect("remote-control-enabled migration should exist");
     let mut legacy_migrations = STATE_MIGRATOR
         .migrations
@@ -459,8 +457,7 @@ async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41
         remote_control_enabled_migration.sql.clone(),
         remote_control_enabled_migration.no_tx,
     ));
-    let legacy_remote_control_enabled_migrator =
-        Migrator::with_migrations(legacy_migrations);
+    let legacy_remote_control_enabled_migrator = Migrator::with_migrations(legacy_migrations);
     legacy_remote_control_enabled_migrator
         .run(&pool)
         .await

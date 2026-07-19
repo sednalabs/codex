@@ -8,12 +8,15 @@ use super::rate_limits::SpendControlLimitSnapshotDisplay;
 use super::rate_limits::StatusRateLimitData;
 use super::rate_limits::compose_rate_limit_data_many;
 use crate::history_cell::HistoryCell;
+use crate::history_cell::HistoryRenderMode;
 use crate::history_cell::PlainHistoryCell;
+use crate::history_cell::TranscriptDetailMode;
 use crate::keymap::RuntimeKeymap;
 use crate::legacy_core::config::Config;
 use crate::legacy_core::config::ConfigBuilder;
 use crate::legacy_core::config::PermissionProfileSnapshot;
 use crate::pager_overlay::TranscriptOverlay;
+use crate::pager_overlay::TranscriptOverlayState;
 use crate::status::StatusAccountDisplay;
 use crate::status::remote_connection::RemoteConnectionStatus;
 use crate::test_support::PathBufExt;
@@ -1804,8 +1807,14 @@ async fn transcript_overlay_remeasures_status_after_rate_limit_refresh() {
         /*reasoning_effort_override*/ None,
         /*refreshing_rate_limits*/ true,
     );
-    let mut overlay =
-        TranscriptOverlay::new(vec![Arc::new(status)], RuntimeKeymap::defaults().pager);
+    let keymap = RuntimeKeymap::defaults();
+    let mut overlay = TranscriptOverlay::new(
+        vec![Arc::new(status)],
+        keymap.pager,
+        keymap.app.copy,
+        keymap.app.toggle_raw_output,
+        TranscriptOverlayState::new(HistoryRenderMode::Rich, TranscriptDetailMode::Verbose),
+    );
     let area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 80, /*height*/ 30,
     );

@@ -274,6 +274,8 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         agent_path: Some("/root/worker".to_string()),
                         is_running: false,
                         is_closed: false,
+                        created_at: None,
+                        updated_at: None,
                     })
                 );
 

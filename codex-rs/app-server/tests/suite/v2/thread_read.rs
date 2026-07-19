@@ -35,10 +35,10 @@ use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
+use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
-use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::Turn;
@@ -1236,11 +1236,7 @@ async fn paginated_thread_name_preserves_metadata_across_read_list_and_resume() 
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
-    let rollout = rollout_path(
-        codex_home.path(),
-        "2025-01-05T12-00-00",
-        &conversation_id,
-    );
+    let rollout = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &conversation_id);
     let contents = std::fs::read_to_string(&rollout)?;
     let mut lines = contents.lines();
     let session_meta = lines
