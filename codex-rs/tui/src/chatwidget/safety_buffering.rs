@@ -124,7 +124,13 @@ impl ChatWidget {
         };
         let thread_id = self.thread_id;
         let retry_prompt = self.safety_buffering_prompt.clone();
-        let can_offer_retry = faster_model.is_some()
+        let prompt_hidden = self
+            .config
+            .notices
+            .hide_safety_buffering_prompt
+            .unwrap_or(false);
+        let can_offer_retry = !prompt_hidden
+            && faster_model.is_some()
             && retry_turn.is_some()
             && retry_prompt.is_some()
             && thread_id.is_some();
@@ -156,6 +162,11 @@ impl ChatWidget {
             /*details_max_lines*/ 6,
         );
 
+        if prompt_hidden {
+            self.bottom_pane
+                .dismiss_view_by_id(SAFETY_BUFFERING_PROMPT_VIEW_ID);
+            return;
+        }
         if !should_show_prompt {
             return;
         }
