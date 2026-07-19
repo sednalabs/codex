@@ -1028,14 +1028,15 @@ impl BottomPane {
 
     /// Update the status indicator header (defaults to "Working") and details below it.
     ///
-    /// Passing `None` clears any existing details. No-ops if the status indicator is not active.
+    /// Passing `None` clears any existing details. Returns whether the active status indicator
+    /// was updated and requested a redraw.
     pub(crate) fn update_status(
         &mut self,
         header: String,
         details: Option<String>,
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
-    ) {
+    ) -> bool {
         if let Some(status) = self.status.as_mut() {
             let contribution = contribute_status_indicator(StatusIndicatorContribution::new(
                 header,
@@ -1050,7 +1051,9 @@ impl BottomPane {
                 contribution.details_max_lines,
             );
             self.request_redraw();
+            return true;
         }
+        false
     }
 
     /// Show the transient "press again to quit" hint for `key`.

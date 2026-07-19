@@ -436,6 +436,12 @@ model-facing text instead of a native image input. The same typed result is
 retained when `success` is false, so provider diagnostics and a failure-time
 screenshot can both remain available to the caller.
 
+Ordinary dynamic tools and code mode also accept upstream `input_audio` output
+through the `audio(...)` helper. That additive media support does not widen the
+native computer-use response enum: computer-use providers still return text and
+image items, while the shared dynamic-tool/app-server history projection keeps
+optional image detail alongside any ordinary dynamic-tool audio items.
+
 If no selected environment exists, Codex returns a failed native response
 without sending an external client request. If the client does not answer before
 the computer-use timeout, Codex unregisters the pending response and returns a

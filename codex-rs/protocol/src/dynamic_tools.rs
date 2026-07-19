@@ -90,6 +90,8 @@ pub enum DynamicToolCallOutputContentItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    InputAudio { audio_url: String },
 }
 
 #[derive(Deserialize)]
