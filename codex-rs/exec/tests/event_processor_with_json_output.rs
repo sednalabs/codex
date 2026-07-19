@@ -320,6 +320,9 @@ fn dynamic_tool_started_and_completed_translate_to_thread_events() {
                         image_url: "data:image/png;base64,AAA".to_string(),
                         detail: Some("original".to_string()),
                     },
+                    ApiDynamicToolCallOutputContentItem::InputAudio {
+                        audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                    },
                 ]),
                 success: Some(true),
                 duration_ms: Some(42),
@@ -342,7 +345,9 @@ fn dynamic_tool_started_and_completed_translate_to_thread_events() {
                         tool: "android_observe".to_string(),
                         arguments: json!({"scope": "screen_and_ui"}),
                         status: DynamicToolCallStatus::Completed,
-                        preview: Some("screen summary\n<1 image output>".to_string()),
+                        preview: Some(
+                            "screen summary\n<1 image output>\n<1 audio output>".to_string(),
+                        ),
                         success: Some(true),
                         duration_ms: Some(42),
                     }),

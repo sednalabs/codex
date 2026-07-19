@@ -363,32 +363,38 @@
         "turn environment selections",
         "session cwd updates",
         "mailbox delivery phase",
-        "legacy thread-tail replay"
+        "legacy thread-tail replay",
+        "custom realtime-start instructions"
       ],
       "files": [
         "codex-rs/core/src/session/input_queue.rs",
         "codex-rs/core/src/session/mod.rs",
         "codex-rs/core/src/session/session.rs",
         "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/session/world_state.rs",
+        "codex-rs/core/tests/suite/compact_remote.rs",
         "codex-rs/core/src/thread_manager.rs"
       ],
-      "behavior": "Session environment updates validate unknown or duplicate ids before mutating state, retain upstream explicit selected-environment cwd and workspace-root semantics, refresh runtime turn-environment selections for default turns, keep steered user input ahead of mailbox deferral, and preserve implicit active-turn tails from legacy user-event-only history.",
+      "behavior": "Session environment updates validate unknown or duplicate ids before mutating state, retain upstream explicit selected-environment cwd and workspace-root semantics, refresh runtime turn-environment selections for default turns, keep steered user input ahead of mailbox deferral, preserve implicit active-turn tails from legacy user-event-only history, and retain downstream custom realtime-start world-state instructions across remote compaction and resume. Upstream V3 initialItems seed realtime backend history independently and must not replace or reorder that Codex-facing world-state instruction.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-runtime-surface-smoke; codex.blocking-waits-core-targeted",
+      "guardrail_lane": "core-runtime-surface-smoke; core-carry-core-smoke; codex.blocking-waits-core-targeted",
       "tests": [
         "environment_settings_preserve_explicit_primary_cwd",
         "default_turn_honors_empty_stored_thread_environments",
         "duplicate_turn_environment_returns_error_without_mutating_session",
         "unknown_turn_environment_returns_error",
         "steered_input_reopens_mailbox_delivery_for_current_turn",
-        "legacy_user_event_only_tail_is_mid_turn"
+        "legacy_user_event_only_tail_is_mid_turn",
+        "remote_request_with_v3_initial_items_uses_custom_experimental_realtime_start_instructions",
+        "remote_pre_turn_compaction_restates_realtime_start_shapes",
+        "remote_manual_compact_restates_realtime_start_shapes"
       ],
       "owner": "downstream",
-      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, and legacy replay/fork boundaries. The 2026-07-15 sync adopted upstream sticky explicit-environment cwd behavior and workspace roots rather than retaining the superseded fallback-cwd rewrite implementation shape.",
+      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, legacy replay/fork boundaries, and realtime world-state reconstruction. The 2026-07-15 sync adopted upstream sticky explicit-environment cwd behavior and workspace roots rather than retaining the superseded fallback-cwd rewrite implementation shape. Upstream V3 initialItems are additive backend seed history, not a replacement for downstream custom realtime-start instructions.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "session-runtime-state",
       "hotspot_files": [
@@ -1212,7 +1218,7 @@
         "codex-rs/app-server-transport/",
         "sdk/python/src/openai_codex/generated/v2_all.py"
       ],
-      "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, and thread list/read/resume summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
+      "behavior": "Downstream now tracks upstream on the core app-server contract and replay surfaces, including upstream legacy-compatible full views for paginated thread read, resume, turn-list, and item-list requests, while preserving a narrow app-server-specific carry around protocol event history, rollout cwd portability, thread_source provenance, history_mode metadata, and thread summary surfaces. Neighboring carries such as blocking waits, MCP safety, and startup/plugin-sync follow-up are tracked separately.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1229,7 +1235,7 @@
         "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
-      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Upstream owns paginated legacy full-view compatibility and stored ThreadItem projection; downstream must preserve thread_source and history_mode through those views rather than rebuilding bounded paginated context through legacy event history. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
@@ -1302,7 +1308,7 @@
         "docs/native-computer-use-cleanroom.md",
         "codex-rs/browser-computer-use/"
       ],
-      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chrome/chromium, can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, clears Chromium tab-session restore artifacts before opening a persistent context so explicit requested URLs are not preceded by stale restored tab navigation, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured.",
+      "behavior": "Bare android_observe, android_step, android_install_build_from_run, browser_observe, browser_step, desktop_observe, and desktop_step dynamic tools are promoted to canonical Codex native computer-use handlers through a shared provider registry that declares adapter ids, supported tools, backend hints, mutation class, long-timeout behavior, and front-end dispatch eligibility. Codex owns the transcript, native image-output contract, adapter dispatch, app-server, TUI, rollout, and trace semantics while runtime providers supply Android device capability, browser capability, desktop capability, and provider-side build installation. Android remains the reference MCP-backed provider shape, exposes UI-tree-oriented selector and receipt hints in the canonical schema, supports long press, applies configured default serial/app launch settings, prefers stable UI observations when available, classifies transient provider outages as retryable provider-unavailable failures, returns a post-failure observation when an Android step action fails and capture remains possible, and has a shared provider crate used by TUI and exec. CLI/TUI sessions auto-advertise Android tools when an Android provider is configured, and the Android bridge consumes MCP image content or android.read_artifact output rather than raw artifact paths. The browser adapter has a shared provider crate used by TUI and exec. It can call operator-configured provider commands or the built-in Playwright provider for backend=auto/browser/chrome/chromium, can auto-advertise browser tools in CLI/TUI sessions when configured, inherits those native browser tools into thread-spawned sidecars, exposes accessibility-oriented selectors plus human-like mouse and keyboard primitives, defaults Playwright profiles to per-thread isolation with explicit shared/environment/call modes, clears Chromium tab-session restore artifacts before opening a persistent context so explicit requested URLs are not preceded by stale restored tab navigation, falls back to CDP/locator capture when headed Chrome page screenshots fail, can target headed Google Chrome on a visible display for realistic editor UX evidence, can return visible-control and attention-state metadata, can capture small viewport bundles, can save redacted audit artifacts, can inject locally configured service-account navigation headers, and can return a fresh screenshot plus selector candidates after action failures. The desktop adapter has a TUI command-provider seam for cleanroom macOS Screen Recording/Accessibility-style runtimes and future native desktop providers, and TUI auto-advertises desktop tools when that command-provider seam is configured. Shared dynamic-tool and code-mode output adopts upstream audio while preserving downstream optional image detail; native computer-use output remains text and image only.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1354,6 +1360,8 @@
         "browser_provider_response_preserves_native_image",
         "code_mode_native_browser_result_forwards_screenshot_as_input_image",
         "code_mode_failed_native_browser_result_forwards_input_image",
+        "dynamic_tool_call_round_trip_handles_content_items",
+        "audio_helper_accepts_audio_url_object_and_raw_mcp_audio_block",
         "desktop_provider_response_without_native_image_fails_loudly",
         "unknown_computer_use_tool_is_not_claimed_by_provider_registry",
         "native_computer_use_check_reports_android_browser_and_desktop_config_files",
@@ -1362,7 +1370,7 @@
         "computer_use_started_and_completed_translate_to_thread_events"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams. The current flat DynamicToolSpec compatibility shape remains authoritative for app-server input, persisted rows, resume filtering, and provider registries until the tracked tagged function/namespace migration can preserve those boundaries losslessly.",
+      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Upstream audio output is adopted for ordinary dynamic tools and code mode, while downstream optional image detail remains authoritative across app-server events, stored history, schemas, and JSONL previews; do not add audio to the separate native computer-use response enum without a provider-contract change. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams. The current flat DynamicToolSpec compatibility shape remains authoritative for app-server input, persisted rows, resume filtering, and provider registries until the tracked tagged function/namespace migration can preserve those boundaries losslessly.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "computer-use-provider-registry",
       "hotspot_files": [
@@ -2159,7 +2167,7 @@
         "codex-rs/app-server-protocol/",
         "codex-rs/app-server/tests/suite/conversation_summary.rs"
       ],
-      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata. App-server, rollout, state, and thread-store paths retain both independent fields; paginated-history metadata must not erase side, agent, or other source provenance.",
+      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata. App-server, rollout, state, and thread-store paths retain both independent fields; upstream paginated legacy full views hydrate stored ThreadItem projections for read, resume, initial-turn, turn-list, and item-list requests without erasing side, agent, or other source provenance.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2170,11 +2178,14 @@
         "thread_fork_side_source_persists_and_hides_from_default_list",
         "observed_metadata_rebuilds_history_mode_from_canonical_session_meta",
         "live_thread_memory_mode_update_before_rollout_materializes_keeps_history_mode",
+        "paginated_history_lists_use_projected_turns_and_items",
+        "thread_resume_rejoins_running_paginated_thread_with_initial_page",
+        "thread_resume_initial_turns_page_matches_requested_turns_list_page",
         "typescript_schema_fixtures_match_generated",
         "json_schema_fixtures_match_generated"
       ],
       "owner": "downstream",
-      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode itself remains upstream-owned.",
+      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode and paginated legacy full-view projection remain upstream-owned, while thread_source preservation remains downstream carry.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "thread-metadata-compatibility",
       "hotspot_files": [
