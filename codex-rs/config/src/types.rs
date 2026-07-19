@@ -847,7 +847,8 @@ pub struct ExternalConfigMigrationPrompts {
 #[schemars(deny_unknown_fields)]
 pub struct Notice {
     /// Automatically submits up to three consecutive `continue` follow-ups after cybersecurity
-    /// policy notices end live turns.
+    /// policy notices end live turns. Follow-ups stay in the same thread and use the normal request
+    /// path; this option does not disable or bypass server-side policy checks.
     pub auto_continue_on_cyber_policy: Option<bool>,
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,

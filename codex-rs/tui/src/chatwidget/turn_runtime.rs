@@ -374,6 +374,9 @@ impl ChatWidget {
     }
 
     pub(super) fn on_cyber_policy_error(&mut self, from_replay: bool) {
+        // Policy enforcement remains server-side. These opt-in retries preserve the original
+        // thread and context and use the normal submission path; do not rewrite or drop context,
+        // switch models, or otherwise route around the policy decision here.
         let should_auto_continue = !from_replay
             && !self.blocks_direct_input
             && self

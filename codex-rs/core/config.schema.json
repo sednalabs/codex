@@ -2583,7 +2583,7 @@
       "additionalProperties": false,
       "properties": {
         "auto_continue_on_cyber_policy": {
-          "description": "Automatically submits up to three consecutive `continue` follow-ups after cybersecurity policy notices end live turns.",
+          "description": "Automatically submits up to three consecutive `continue` follow-ups after cybersecurity policy notices end live turns. Follow-ups stay in the same thread and use the normal request path; this option does not disable or bypass server-side policy checks.",
           "type": [
             "boolean",
             "null"
