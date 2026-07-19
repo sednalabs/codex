@@ -24,33 +24,10 @@ pub(crate) struct PreparedV2AgentDelivery {
     lifecycle: OwnedMutexGuard<AgentLifecycleState>,
 }
 
-enum V2AgentPreparation {
-    KeepCold,
-    Reload(Config),
-}
-
 impl AgentControl {
     pub(crate) async fn prepare_v2_agent_delivery(
         &self,
         agent_id: ThreadId,
-    ) -> CodexResult<PreparedV2AgentDelivery> {
-        self.prepare_v2_agent_delivery_inner(agent_id, V2AgentPreparation::KeepCold)
-            .await
-    }
-
-    pub(crate) async fn prepare_v2_agent_delivery_with_reload(
-        &self,
-        config: Config,
-        agent_id: ThreadId,
-    ) -> CodexResult<PreparedV2AgentDelivery> {
-        self.prepare_v2_agent_delivery_inner(agent_id, V2AgentPreparation::Reload(config))
-            .await
-    }
-
-    async fn prepare_v2_agent_delivery_inner(
-        &self,
-        agent_id: ThreadId,
-        preparation: V2AgentPreparation,
     ) -> CodexResult<PreparedV2AgentDelivery> {
         let state = self.upgrade()?;
         let metadata = self
@@ -61,16 +38,7 @@ impl AgentControl {
         if !self.state.metadata_is_current(agent_id, &metadata) {
             return Err(CodexErr::ThreadNotFound(agent_id));
         }
-        if let V2AgentPreparation::Reload(config) = preparation {
-            self.ensure_v2_agent_loaded_under_lifecycle(
-                &state,
-                config,
-                agent_id,
-                &metadata,
-                &mut lifecycle,
-            )
-            .await?;
-        } else if state.get_thread(agent_id).await.is_ok() {
+        if state.get_thread(agent_id).await.is_ok() {
             self.touch_loaded_v2_residency(&state, agent_id).await;
         }
         Ok(PreparedV2AgentDelivery {
@@ -80,6 +48,23 @@ impl AgentControl {
             metadata,
             lifecycle,
         })
+    }
+
+    pub(crate) async fn prepare_v2_agent_delivery_with_reload(
+        &self,
+        config: Config,
+        agent_id: ThreadId,
+    ) -> CodexResult<PreparedV2AgentDelivery> {
+        let mut delivery = self.prepare_v2_agent_delivery(agent_id).await?;
+        self.ensure_v2_agent_loaded_under_lifecycle(
+            &delivery.state,
+            config,
+            agent_id,
+            &delivery.metadata,
+            &mut delivery.lifecycle,
+        )
+        .await?;
+        Ok(delivery)
     }
 
     pub(super) async fn uses_v2_lifecycle(
