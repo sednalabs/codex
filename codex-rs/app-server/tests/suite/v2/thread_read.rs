@@ -38,6 +38,7 @@ use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::Turn;
@@ -1222,21 +1223,33 @@ async fn thread_read_loaded_thread_returns_precomputed_path_before_materializati
 }
 
 #[tokio::test]
-async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
+async fn paginated_thread_name_preserves_metadata_across_read_list_and_resume() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let preview = "Saved user message";
-    let conversation_id = create_fake_rollout_with_text_elements(
+    let conversation_id = create_fake_paginated_rollout(
         codex_home.path(),
         "2025-01-05T12-00-00",
         "2025-01-05T12:00:00Z",
-        preview,
-        vec![],
+        "Saved user message",
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
+    let rollout = rollout_path(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        &conversation_id,
+    );
+    let contents = std::fs::read_to_string(&rollout)?;
+    let mut lines = contents.lines();
+    let session_meta = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("fake rollout missing session meta"))?;
+    let mut session_meta: Value = serde_json::from_str(session_meta)?;
+    session_meta["payload"]["thread_source"] = json!("side");
+    let remaining = lines.collect::<Vec<_>>().join("\n");
+    std::fs::write(&rollout, format!("{session_meta}\n{remaining}\n"))?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1246,7 +1259,7 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     // Set a user-facing thread title.
-    let new_name = "My renamed thread";
+    let new_name = "Saved user message";
     let set_id = mcp
         .send_thread_set_name_request(ThreadSetNameParams {
             thread_id: conversation_id.clone(),
@@ -1285,6 +1298,8 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
     let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
     assert_eq!(thread.id, conversation_id);
     assert_eq!(thread.name.as_deref(), Some(new_name));
+    assert_eq!(thread.history_mode, ThreadHistoryMode::Paginated);
+    assert_eq!(thread.thread_source, Some(ThreadSource::Side));
     let thread_json = read_result
         .get("thread")
         .and_then(Value::as_object)
@@ -1309,10 +1324,10 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
             sort_direction: None,
             model_providers: Some(vec!["mock_provider".to_string()]),
             source_kinds: None,
-            thread_sources: None,
+            thread_sources: Some(vec![ThreadSource::Side]),
             archived: None,
             cwd: None,
-            use_state_db_only: false,
+            use_state_db_only: true,
             search_term: None,
             parent_thread_id: None,
             ancestor_thread_id: None,
@@ -1330,6 +1345,8 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
         .find(|t| t.id == conversation_id)
         .expect("thread/list should include the created thread");
     assert_eq!(listed.name.as_deref(), Some(new_name));
+    assert_eq!(listed.history_mode, ThreadHistoryMode::Paginated);
+    assert_eq!(listed.thread_source, Some(ThreadSource::Side));
     let listed_json = list_result
         .get("data")
         .and_then(Value::as_array)
@@ -1353,6 +1370,7 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
     let resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: conversation_id.clone(),
+            exclude_turns: true,
             ..Default::default()
         })
         .await?;
@@ -1367,6 +1385,8 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
     } = to_response::<ThreadResumeResponse>(resume_resp)?;
     assert_eq!(resumed.id, conversation_id);
     assert_eq!(resumed.name.as_deref(), Some(new_name));
+    assert_eq!(resumed.history_mode, ThreadHistoryMode::Paginated);
+    assert_eq!(resumed.thread_source, Some(ThreadSource::Side));
     let resumed_json = resume_result
         .get("thread")
         .and_then(Value::as_object)

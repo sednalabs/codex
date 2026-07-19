@@ -15,6 +15,8 @@ const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
 const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
 const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
 const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
+const LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 41;
+const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 46;
 const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
 
 fn migrator_through(version: i64) -> Migrator {
@@ -411,6 +413,85 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
         .migrations
         .iter()
         .filter(|migration| migration.version >= 40)
+        .map(|migration| (migration.version, migration.checksum.to_vec()))
+        .collect::<Vec<_>>();
+    assert_eq!(applied, expected);
+
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.clone());
+    let pool = sqlite
+        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .await
+        .expect("sqlite database should open");
+    migrator_through(/*version*/ 40)
+        .run(&pool)
+        .await
+        .expect("pre-thread-name migrations should apply");
+
+    let remote_control_enabled_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION
+        })
+        .expect("remote-control-enabled migration should exist");
+    let mut legacy_migrations = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version <= 40)
+        .cloned()
+        .collect::<Vec<_>>();
+    legacy_migrations.push(Migration::new(
+        LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
+        remote_control_enabled_migration.description.clone(),
+        remote_control_enabled_migration.migration_type,
+        remote_control_enabled_migration.sql.clone(),
+        remote_control_enabled_migration.no_tx,
+    ));
+    let legacy_remote_control_enabled_migrator =
+        Migrator::with_migrations(legacy_migrations);
+    legacy_remote_control_enabled_migrator
+        .run(&pool)
+        .await
+        .expect("legacy remote-control-enabled migration should apply as version 41");
+
+    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("legacy remote-control-enabled migration history should be repaired");
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("current migrations should apply after remote-control-enabled repair");
+
+    let applied = sqlx::query(
+        "SELECT version, checksum FROM _sqlx_migrations WHERE version >= 41 ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("applied migrations should load")
+    .into_iter()
+    .map(|row| {
+        (
+            row.get::<i64, _>("version"),
+            row.get::<Vec<u8>, _>("checksum"),
+        )
+    })
+    .collect::<Vec<_>>();
+    let expected = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version >= 41)
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
