@@ -3765,6 +3765,7 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "WeakSet",
         "__codexContentItems",
         "add_content",
+        "audio",
         "decodeURI",
         "decodeURIComponent",
         "encodeURI",

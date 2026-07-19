@@ -8871,6 +8871,24 @@
             ],
             "title": "InputImageDynamicToolCallOutputContentItem",
             "type": "object"
+          },
+          {
+            "properties": {
+              "audioUrl": {
+                "type": "string"
+              },
+              "type": {
+                "const": "inputAudio",
+                "title": "InputAudioDynamicToolCallOutputContentItemType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "audioUrl"
+            ],
+            "title": "InputAudioDynamicToolCallOutputContentItem",
+            "type": "object"
           }
         ]
       },
@@ -19155,6 +19173,22 @@
           "message"
         ],
         "title": "ThreadRealtimeErrorNotification",
+        "type": "object"
+      },
+      "ThreadRealtimeInitialItem": {
+        "description": "EXPERIMENTAL - role-bearing text item included when a realtime V3 session starts.",
+        "properties": {
+          "role": {
+            "$ref": "#/definitions/v2/ConversationTextRole"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
+        ],
         "type": "object"
       },
       "ThreadRealtimeItemAddedNotification": {

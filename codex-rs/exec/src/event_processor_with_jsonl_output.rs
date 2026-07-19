@@ -717,6 +717,7 @@ impl EventProcessorWithJsonOutput {
 fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<String> {
     let mut text_parts: Vec<&str> = Vec::new();
     let mut image_count = 0usize;
+    let mut audio_count = 0usize;
     for item in items {
         match item {
             DynamicToolCallOutputContentItem::InputText { text } => {
@@ -726,6 +727,9 @@ fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<St
             }
             DynamicToolCallOutputContentItem::InputImage { .. } => {
                 image_count += 1;
+            }
+            DynamicToolCallOutputContentItem::InputAudio { .. } => {
+                audio_count += 1;
             }
         }
     }
@@ -742,6 +746,19 @@ fn dynamic_tool_preview(items: &[DynamicToolCallOutputContentItem]) -> Option<St
         } else {
             preview.push('\n');
             preview.push_str(&image_summary);
+        }
+    }
+    if audio_count > 0 {
+        let audio_summary = if audio_count == 1 {
+            "<1 audio output>".to_string()
+        } else {
+            format!("<{audio_count} audio outputs>")
+        };
+        if preview.is_empty() {
+            preview = audio_summary;
+        } else {
+            preview.push('\n');
+            preview.push_str(&audio_summary);
         }
     }
 

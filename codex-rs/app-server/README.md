@@ -173,7 +173,7 @@ Example with notification opt-out:
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
 - `turn/steer` — add user input to an already in-flight regular turn without starting a new turn; returns the active `turnId` that accepted the input. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Review and manual compaction turns reject `turn/steer`.
 - `turn/interrupt` — request cancellation of an in-flight turn by `(thread_id, turn_id)`; success is an empty `{}` response and the turn finishes with `status: "interrupted"`.
-- `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, optionally pass `model` and `version` to override configured realtime selection for this session only, and pass `includeStartupContext: false` to omit Codex's generated startup context. Version `"v1"` uses legacy Bidi `conversation.handoff.*`, `"v2"` uses the Realtime Voice API, and `"v3"` preserves V1 Codex Voice behavior while using Frameless Bidi `delegation.*`. For V3 automatic Codex text, `codexResponseHandoffMode` accepts `"thinking"` (the default; all output uses channel-less thinking appends), `"commentary"` (all output uses the commentary channel), or `"bemTags"` (the raw BEM envelope selects the API channel: BEM `analysis` and `commentary` use `commentary`, while BEM `final` and unparsable output use `speakable`). The BEM envelope remains in the appended text for the frontend model to interpret. V1 and V2 ignore this setting. V3 handoffs do not prepend the legacy `"Agent Final Message"` label. Pass `clientManagedHandoffs: true` to disable automatic Codex response delivery so only the client's explicit append calls produce handoffs. Pass `codexResponsesAsItems: true` to send automatic Codex responses as realtime conversation items instead, and optionally pass `codexResponseItemPrefix` to prepend experiment instructions to those items. Returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a Bidi WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`. Conversation `version: "v2"` requests remain unsupported for WebRTC.
+- `thread/realtime/start` — start a thread-scoped realtime session (experimental); pass `outputModality: "text"` or `outputModality: "audio"` to choose model output, optionally pass `model` and `version` to override configured realtime selection for this session only, pass `includeStartupContext: false` to omit Codex's generated startup context, and optionally pass `initialItems` to seed V3 with complete role-bearing text messages at session creation. Version `"v1"` uses legacy Bidi `conversation.handoff.*`, `"v2"` uses the Realtime Voice API, and `"v3"` preserves V1 Codex Voice behavior while using Frameless Bidi `delegation.*`. For V3 automatic Codex text, `codexResponseHandoffMode` accepts `"thinking"` (the default; all output uses channel-less thinking appends), `"commentary"` (all output uses the commentary channel), or `"bemTags"` (the raw BEM envelope selects the API channel: BEM `analysis` and `commentary` use `commentary`, while BEM `final` and unparsable output use `speakable`). The BEM envelope remains in the appended text for the frontend model to interpret. V1 and V2 ignore this setting. V3 handoffs do not prepend the legacy `"Agent Final Message"` label. Pass `clientManagedHandoffs: true` to disable automatic Codex response delivery so only the client's explicit append calls produce handoffs. Pass `codexResponsesAsItems: true` to send automatic Codex responses as realtime conversation items instead, and optionally pass `codexResponseItemPrefix` to prepend experiment instructions to those items. Returns `{}` and streams `thread/realtime/*` notifications. Omit `transport` for the websocket transport, or pass `{ "type": "webrtc", "sdp": "..." }` to create a Bidi WebRTC session from a browser-generated SDP offer; the remote answer SDP is emitted as `thread/realtime/sdp`. Conversation `version: "v2"` requests remain unsupported for WebRTC.
 - `thread/realtime/appendAudio` — append an input audio chunk to the active realtime session (experimental); returns `{}`.
 - `thread/realtime/appendText` — append text input to the active realtime session with a required `role` of `user`, `developer`, or `assistant` (experimental); returns `{}`. Older clients that omit `role` default to `user`.
 - `thread/realtime/appendSpeech` — append text that the realtime model should speak to the user (experimental); returns `{}`.
@@ -315,7 +315,7 @@ To continue a stored session, call `thread/resume` with the `thread.id` you prev
 
 By default, `thread/resume` includes the reconstructed turn history in `thread.turns`. Experimental clients can pass `excludeTurns: true` to return only thread metadata and live resume state, then call `thread/turns/list` separately if they want to page the turn history over the network. In that mode the server also skips replaying restored `thread/tokenUsage/updated`, which avoids rebuilding turns just to attribute historical usage.
 
-Paginated threads require `excludeTurns: true`. Their response leaves `thread.turns` empty and includes `turnsBackwardsCursor` and `itemsBackwardsCursor` for the durable history visible at the resume boundary. Pass each cursor directly to its matching list API with `sortDirection: "desc"`; the first page includes the cursor's head row, while newer records arrive through live notifications. Either cursor is `null` when there is no durable row yet. Full-history resume and `initialTurnsPage` remain unavailable for paginated threads.
+Paginated threads keep the same resume contract as legacy threads. A default resume materializes the full projected history into `thread.turns`; `excludeTurns: true` keeps that array empty and includes `turnsBackwardsCursor` and `itemsBackwardsCursor` for the durable history visible at the resume boundary. Pass each cursor directly to its matching list API with `sortDirection: "desc"`; the first page includes the cursor's head row, while newer records arrive through live notifications. Either cursor is `null` when there is no durable row yet.
 
 Experimental clients that want the live resume subscription plus a turns page in one round trip can pass `initialTurnsPage`. It accepts the same `limit`, `sortDirection`, and `itemsView` controls as `thread/turns/list`; omitted controls use its defaults. The response includes `initialTurnsPage` with `nextCursor` and `backwardsCursor` for follow-up pagination.
 
@@ -509,7 +509,7 @@ Use `thread/turns/list` with `capabilities.experimentalApi = true` to page a sto
 
 Every returned `Turn` includes `itemsView`, which tells clients whether the `items` array was omitted intentionally (`notLoaded`), contains only summary items (`summary`), or contains every item available from persisted app-server history (`full`). Pass `itemsView` to choose the returned detail level; omitted `itemsView` defaults to `"summary"`.
 
-Paginated threads support `summary` and `notLoaded`; `full` returns an invalid-request error for them, so use `thread/items/list` to page complete items.
+Paginated threads support the same views. Their `full` view is materialized from the paginated item projection before app-server returns the turn page.
 
 ```json
 { "method": "thread/turns/list", "id": 24, "params": {
@@ -936,6 +936,32 @@ only. WebRTC uses AVAS and supports legacy Bidi `"v1"` or Frameless Bidi
 `"v3"`; Realtime Voice `"v2"` is rejected for WebRTC.
 Pass `includeStartupContext: false` to skip Codex's startup context for this
 session while still using the selected backend prompt.
+For V3, clients may pass `initialItems` to seed the session with complete text
+messages before live input begins:
+
+```json
+{
+  "initialItems": [
+    {
+      "role": "developer",
+      "text": "Relevant user memory: prefers concise technical answers."
+    },
+    {
+      "role": "user",
+      "text": "Continue from the prior discussion."
+    }
+  ]
+}
+```
+
+Each item requires a `role` of `"user"`, `"developer"`, or `"assistant"` and a
+`text` string. Core serializes these as Frameless Bidi `session.initial_items`
+during the initial session bootstrap (including WebRTC call creation).
+Requests are limited to 128 items, 8,192 estimated text tokens per item, and
+8,192 estimated text tokens across all items.
+Omitting `initialItems`, or passing an empty list, preserves the previous
+session payload and startup behavior. V1 and V2 reject non-empty
+`initialItems`.
 Pass `clientManagedHandoffs: true` to suppress automatic Codex response handoffs
 and items. The client can then choose which updates to deliver with
 `thread/realtime/appendText` or `thread/realtime/appendSpeech`.
@@ -1651,7 +1677,7 @@ The server also emits item lifecycle notifications around the request:
 3. Client response.
 4. `item/completed` with `item.type = "dynamicToolCall"`, final `status`, and the returned `contentItems`/`success`.
 
-The client must respond with content items. Use `inputText` for text and `inputImage` for inline data URLs. Remote HTTP(S) image URLs make the dynamic tool response invalid.
+The client must respond with content items. Use `inputText` for text, `inputImage` for inline image data URLs, and `inputAudio` for inline audio data URLs. Audio data URLs accept wav, mp3, m4a, webm, and ogg media types. Remote HTTP(S) image URLs and non-data audio URLs make the dynamic tool response invalid.
 
 ```json
 {
@@ -1659,7 +1685,8 @@ The client must respond with content items. Use `inputText` for text and `inputI
   "result": {
     "contentItems": [
       { "type": "inputText", "text": "Ticket ABC-123 is open." },
-      { "type": "inputImage", "imageUrl": "data:image/png;base64,AAA" }
+      { "type": "inputImage", "imageUrl": "data:image/png;base64,AAA" },
+      { "type": "inputAudio", "audioUrl": "data:audio/wav;base64,AAA" }
     ],
     "success": true
   }

@@ -14,11 +14,14 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ConversationStartParams;
+use codex_protocol::protocol::ConversationTextParams;
+use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
+use codex_protocol::protocol::RealtimeConversationVersion;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::RolloutItem;
@@ -203,6 +206,14 @@ async fn start_remote_realtime_server() -> responses::WebSocketTestServer {
 }
 
 async fn start_realtime_conversation(codex: &codex_core::CodexThread) -> Result<()> {
+    start_realtime_conversation_with_initial_items(codex, Vec::new()).await
+}
+
+async fn start_realtime_conversation_with_initial_items(
+    codex: &codex_core::CodexThread,
+    initial_items: Vec<ConversationTextParams>,
+) -> Result<()> {
+    let version = (!initial_items.is_empty()).then_some(RealtimeConversationVersion::V3);
     codex
         .submit(Op::RealtimeConversationStart(ConversationStartParams {
             client_managed_handoffs: false,
@@ -214,10 +225,11 @@ async fn start_realtime_conversation(codex: &codex_core::CodexThread) -> Result<
             model: None,
             output_modality: RealtimeOutputModality::Audio,
             include_startup_context: true,
+            initial_items,
             prompt: Some(Some("backend prompt".to_string())),
             realtime_session_id: None,
             transport: None,
-            version: None,
+            version,
             voice: None,
         }))
         .await?;
@@ -2890,7 +2902,8 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_restates_realtime_sta
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_request_uses_custom_experimental_realtime_start_instructions() -> Result<()> {
+async fn remote_request_with_v3_initial_items_uses_custom_experimental_realtime_start_instructions()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = wiremock::MockServer::start().await;
@@ -2913,7 +2926,14 @@ async fn remote_request_uses_custom_experimental_realtime_start_instructions() -
     )
     .await;
 
-    start_realtime_conversation(test.codex.as_ref()).await?;
+    start_realtime_conversation_with_initial_items(
+        test.codex.as_ref(),
+        vec![ConversationTextParams {
+            text: "Seeded realtime history".to_string(),
+            role: ConversationTextRole::User,
+        }],
+    )
+    .await?;
 
     test.codex
         .submit(Op::UserInput {
