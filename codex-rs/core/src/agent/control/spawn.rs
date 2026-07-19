@@ -1,5 +1,5 @@
-use super::residency::is_v2_resident_session_source;
 use super::residency::V2ResidencySlot;
+use super::residency::is_v2_resident_session_source;
 use super::*;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;

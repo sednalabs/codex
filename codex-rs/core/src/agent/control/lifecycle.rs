@@ -159,7 +159,12 @@ impl PreparedV2AgentDelivery {
     }
 
     pub(crate) async fn config_snapshot(&self) -> CodexResult<ThreadConfigSnapshot> {
-        Ok(self.state.get_thread(self.agent_id).await?.config_snapshot().await)
+        Ok(self
+            .state
+            .get_thread(self.agent_id)
+            .await?
+            .config_snapshot()
+            .await)
     }
 
     pub(crate) async fn send(
@@ -182,12 +187,17 @@ impl PreparedV2AgentDelivery {
         interrupt: bool,
     ) -> futures::future::BoxFuture<'static, CodexResult<String>> {
         Box::pin(async move {
-            if !self.control.state.metadata_is_current(self.agent_id, &self.metadata) {
+            if !self
+                .control
+                .state
+                .metadata_is_current(self.agent_id, &self.metadata)
+            {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
             if let Ok(thread) = self.state.get_thread(self.agent_id).await {
                 if interrupt {
-                    self.state.record_submitted_op(self.agent_id, &Op::Interrupt);
+                    self.state
+                        .record_submitted_op(self.agent_id, &Op::Interrupt);
                     thread.session.interrupt_task().await;
                 }
                 let submission_id = self.record_submission(&communication, &context);

@@ -1,5 +1,4 @@
 use anyhow::Result;
-use codex_core::config::Config;
 use codex_features::Feature;
 use codex_protocol::error::CodexErr;
 use core_test_support::responses::ev_assistant_message;
@@ -23,12 +22,6 @@ const QUEUED_MESSAGE: &str = "remember the cold mailbox note";
 const FOLLOWUP_PROMPT: &str = "resume the first worker";
 const FOLLOWUP_TASK: &str = "continue after the cold mailbox note";
 const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
-
-fn configure_v2(config: &mut Config) {
-    config.features.enable(Feature::Collab).expect("enable collab");
-    config.features.enable(Feature::MultiAgentV2).expect("enable v2");
-    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
-}
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     serde_json::from_slice::<serde_json::Value>(&request.body)
@@ -113,7 +106,17 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
     )
     .await;
 
-    let mut builder = test_codex().with_model("koffing").with_config(configure_v2);
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    });
     let test = builder.build(&server).await?;
     test.submit_turn(FIRST_PROMPT).await?;
 
@@ -274,8 +277,7 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     let followup_child = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            body_contains(request, QUEUED_MESSAGE)
-                && body_contains(request, FOLLOWUP_TASK)
+            body_contains(request, QUEUED_MESSAGE) && body_contains(request, FOLLOWUP_TASK)
         },
         sse(vec![
             ev_response_created("followup-worker-response"),
@@ -295,7 +297,17 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     )
     .await;
 
-    let mut builder = test_codex().with_model("koffing").with_config(configure_v2);
+    let mut builder = test_codex().with_model("koffing").with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    });
     let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn(FIRST_PROMPT).await?;
 
