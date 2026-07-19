@@ -24,10 +24,10 @@ use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
-use codex_models_manager::bundled_models_response;
-use codex_models_manager::manager::StaticModelsManager;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
+use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -623,8 +623,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
     incompatible_model.multi_agent_version = Some(MultiAgentVersion::V1);
     catalog.models.push(incompatible_model);
     session.services.models_manager = Arc::new(StaticModelsManager::new(
-        /*auth_manager*/ None,
-        catalog,
+        /*auth_manager*/ None, catalog,
     ));
 
     let mut config = (*turn.config).clone();
