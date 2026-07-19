@@ -11,6 +11,7 @@ use crate::tools::context::FunctionToolOutput;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use futures::future::BoxFuture;
 use serde::Serialize;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -121,7 +122,25 @@ fn message_content_from_items(
     message_content(text_segments.join("\n"))
 }
 
-async fn handle_message_submission(
+fn handle_message_submission(
+    invocation: ToolInvocation,
+    mode: MessageDeliveryMode,
+    target: String,
+    message: String,
+    interrupt: bool,
+    expected_model: Option<String>,
+) -> BoxFuture<'static, Result<FunctionToolOutput, FunctionCallError>> {
+    Box::pin(handle_message_submission_inner(
+        invocation,
+        mode,
+        target,
+        message,
+        interrupt,
+        expected_model,
+    ))
+}
+
+async fn handle_message_submission_inner(
     invocation: ToolInvocation,
     mode: MessageDeliveryMode,
     target: String,
