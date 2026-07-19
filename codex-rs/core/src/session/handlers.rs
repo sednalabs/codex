@@ -48,7 +48,6 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
-use futures::future::BoxFuture;
 
 use crate::context_manager::is_user_turn_boundary;
 use codex_protocol::computer_use::ComputerUseResponse;
@@ -290,22 +289,20 @@ pub(super) async fn user_input_or_turn_inner(
 
 /// Queues an inter-agent message, then lets the shared pending-work scheduler
 /// decide whether an idle session should start a regular turn.
-pub fn inter_agent_communication(
+pub async fn inter_agent_communication(
     sess: &Arc<Session>,
     sub_id: String,
     communication: InterAgentCommunication,
-) -> BoxFuture<'_, ()> {
-    Box::pin(async move {
-        let trigger_turn = communication.trigger_turn;
-        sess.input_queue
-            .enqueue_mailbox_communication(communication)
+) {
+    let trigger_turn = communication.trigger_turn;
+    sess.input_queue
+        .enqueue_mailbox_communication(communication)
+        .await;
+    crate::agent_communication::emit_agent_communication_receive(&sub_id);
+    if trigger_turn {
+        sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
-        crate::agent_communication::emit_agent_communication_receive(&sub_id);
-        if trigger_turn {
-            sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
-                .await;
-        }
-    })
+    }
 }
 
 pub async fn run_user_shell_command(sess: &Arc<Session>, sub_id: String, command: String) {
