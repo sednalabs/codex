@@ -4095,9 +4095,15 @@ async fn reasoning_delta_restores_recreated_status_indicator_header() {
 
     let width: u16 = 80;
     let height = chat.desired_height(width);
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
-        .expect("create terminal");
-    terminal.set_viewport_area(Rect::new(/*x*/ 0, /*y*/ 0, width, height));
+    let mut terminal = ratatui::Terminal::with_options(
+        ratatui::backend::TestBackend::new(width, height),
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(Rect::new(
+                /*x*/ 0, /*y*/ 0, width, height,
+            )),
+        },
+    )
+    .expect("create terminal");
     terminal
         .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
         .expect("draw restored reasoning status");
