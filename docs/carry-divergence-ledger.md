@@ -414,6 +414,7 @@ docs-only refresh commit that records this snapshot.
   resume candidates.
 - Primary files:
   - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/agent_navigation.rs`
   - `codex-rs/tui/src/app/loaded_threads.rs`
   - `codex-rs/tui/src/app/session_lifecycle.rs`
   - `codex-rs/tui/src/app/tests/session_lifecycle_requests.rs`
@@ -1496,6 +1497,11 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/diff_render.rs` retains the downstream ratatui `0.30.1`
     `Widget::render` test adapter and tab-free gallery fixtures; production
     rendering follows upstream's borrowed-file-change implementation
+  - `codex-rs/tui/src/history_cell/plans_tests.rs` asserts that transcript
+    measurement primes the plan cache without pinning upstream's
+    ratatui-version-specific row count; the sentinel equality still proves
+    reuse, and this adaptation can drop when ratatui versions converge or
+    upstream adopts an equivalent semantic assertion
   - `codex-rs/core/tests/suite/pending_input.rs` uses the interrupted sleep
     completion as the sole consequence barrier so an unrelated event wait
     cannot consume the completion before its assertion
