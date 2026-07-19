@@ -691,7 +691,7 @@ class RouteSelectionTests(unittest.TestCase):
             ]
         )
         self.assertEqual(recipe.count("cargo nextest run"), 2)
-        self.assertEqual(recipe.count("RUST_MIN_STACK="), 2)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 3)
         self.assertEqual(recipe.count("--no-tests=fail"), 2)
         for test_name in (
             "agent::control::residency::tests::"
@@ -2902,7 +2902,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         multi_agent_recipe = "\n".join(
             recipes["core-multi-agent-orchestration-targeted"]
         )
-        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 2)
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 3)
+
+        blocking_waits_core_recipe = "\n".join(
+            recipes["blocking-waits-core-targeted"]
+        )
+        self.assertEqual(blocking_waits_core_recipe.count("RUST_MIN_STACK="), 1)
 
         unified_exec_recipe = "\n".join(
             recipes["blocking-waits-unified-exec-targeted"]
