@@ -166,7 +166,7 @@ impl PreparedV2AgentDelivery {
             if interrupt {
                 self.state
                     .record_submitted_op(self.agent_id, &Op::Interrupt);
-                thread.session.interrupt_task().await;
+                Box::pin(thread.session.interrupt_task()).await;
             }
             let submission_id = new_submission_id();
             self.state.record_submitted_op(
