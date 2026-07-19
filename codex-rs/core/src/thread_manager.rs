@@ -1739,7 +1739,7 @@ impl ThreadManagerState {
                 forked_from_thread_id,
             )
             .await;
-        let (session, io) = Box::pin(Session::spawn(SessionSpawnArgs {
+        let (session, io) = Session::spawn(SessionSpawnArgs {
             config,
             allow_provider_model_fallback,
             user_instructions,
@@ -1775,7 +1775,7 @@ impl ThreadManagerState {
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
-        }))
+        })
         .await?;
         let new_thread = self
             .finalize_thread_spawn(session, io, tracked_session_source)
