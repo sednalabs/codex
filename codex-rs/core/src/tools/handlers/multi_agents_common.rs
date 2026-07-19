@@ -29,13 +29,21 @@ pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIME
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
 pub(crate) const MAX_SPAWN_AGENT_MODEL_OVERRIDES: usize = 5;
+const LUNA_MODEL_SLUG: &str = "gpt-5.6-luna";
 
 pub(crate) fn model_supports_multi_agent_backend(
     model: &ModelPreset,
     multi_agent_version: MultiAgentVersion,
 ) -> bool {
-    multi_agent_version != MultiAgentVersion::V2
-        || model.multi_agent_version.is_none()
+    if multi_agent_version != MultiAgentVersion::V2 {
+        return true;
+    }
+    // Luna can run as a V2 child while its top-level catalog default remains V1. Keep the
+    // compatibility rule here so the upstream-synced model catalog stays unchanged.
+    if model.model == LUNA_MODEL_SLUG {
+        return true;
+    }
+    model.multi_agent_version.is_none()
         || model.multi_agent_version == Some(multi_agent_version)
 }
 
