@@ -9,7 +9,6 @@
 
 use super::*;
 use crate::chatwidget::InterruptedTurnNoticeMode;
-use codex_app_server_protocol::ThreadSource;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 
@@ -593,7 +592,7 @@ impl App {
 
         let fork_config = self.side_fork_config();
         match app_server
-            .fork_thread_with_source(fork_config, parent_thread_id, ThreadSource::Side)
+            .fork_side_thread(fork_config, parent_thread_id)
             .await
         {
             Ok(forked) => {
@@ -605,6 +604,14 @@ impl App {
                 }
                 self.side_threads
                     .insert(child_thread_id, SideThreadState::new(parent_thread_id));
+                // `thread/started` is delivered after the fork response; seed navigation before
+                // the first selection without blocking on another app-server read.
+                self.upsert_agent_picker_thread(
+                    child_thread_id,
+                    /*agent_nickname*/ None,
+                    /*agent_role*/ None,
+                    /*is_closed*/ false,
+                );
                 if let Err(err) = app_server
                     .thread_inject_items(child_thread_id, vec![Self::side_boundary_prompt_item()])
                     .await

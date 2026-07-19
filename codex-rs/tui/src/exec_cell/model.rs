@@ -12,16 +12,14 @@ use codex_app_server_protocol::CommandExecutionSource as ExecCommandSource;
 use codex_app_server_protocol::TerminalWaitInfo;
 use codex_protocol::parse_command::ParsedCommand;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct CommandOutput {
     pub(crate) exit_code: i32,
     /// The aggregated stderr + stdout interleaved.
     pub(crate) aggregated_output: String,
-    /// The formatted output of the command, as seen by the model.
-    pub(crate) formatted_output: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ExecCall {
     pub(crate) call_id: String,
     pub(crate) command: Vec<String>,
@@ -48,15 +46,15 @@ impl ExecCell {
         }
     }
 
-    pub(crate) fn with_added_call(
-        &self,
+    pub(crate) fn add_call(
+        &mut self,
         call_id: String,
         command: Vec<String>,
         parsed: Vec<ParsedCommand>,
         source: ExecCommandSource,
         interaction_input: Option<String>,
         terminal_wait: Option<TerminalWaitInfo>,
-    ) -> Option<Self> {
+    ) -> bool {
         let call = ExecCall {
             call_id,
             command,
@@ -69,12 +67,10 @@ impl ExecCell {
             terminal_wait,
         };
         if self.is_exploring_cell() && Self::is_exploring_call(&call) {
-            Some(Self {
-                calls: [self.calls.clone(), vec![call]].concat(),
-                animations_enabled: self.animations_enabled,
-            })
+            self.calls.push(call);
+            true
         } else {
-            None
+            false
         }
     }
 
@@ -99,23 +95,21 @@ impl ExecCell {
     }
 
     pub(crate) fn should_flush(&self) -> bool {
-        !self.is_exploring_cell() && self.calls.iter().all(|c| c.output.is_some())
+        !self.is_exploring_cell() && self.calls.iter().all(|c| c.duration.is_some())
     }
 
     pub(crate) fn mark_failed(&mut self) {
         for call in self.calls.iter_mut() {
-            if call.output.is_none() {
+            if call.duration.is_none() {
                 let elapsed = call
                     .start_time
                     .map(|st| st.elapsed())
                     .unwrap_or_else(|| Duration::from_millis(0));
                 call.start_time = None;
                 call.duration = Some(elapsed);
-                call.output = Some(CommandOutput {
-                    exit_code: 1,
-                    formatted_output: String::new(),
-                    aggregated_output: String::new(),
-                });
+                call.output
+                    .get_or_insert_with(CommandOutput::default)
+                    .exit_code = 1;
             }
         }
     }
@@ -125,13 +119,13 @@ impl ExecCell {
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.calls.iter().any(|c| c.output.is_none())
+        self.calls.iter().any(|c| c.duration.is_none())
     }
 
     pub(crate) fn active_start_time(&self) -> Option<Instant> {
         self.calls
             .iter()
-            .find(|c| c.output.is_none())
+            .find(|c| c.duration.is_none())
             .and_then(|c| c.start_time)
     }
 
