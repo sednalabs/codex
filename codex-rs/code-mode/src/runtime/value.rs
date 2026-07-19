@@ -270,7 +270,10 @@ fn parse_mcp_output_audio(
         return Err("audio expected MCP audio data".to_string());
     }
 
-    if data.to_ascii_lowercase().starts_with("data:") {
+    if data
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
         Ok(data.to_string())
     } else {
         let mime_type = result
