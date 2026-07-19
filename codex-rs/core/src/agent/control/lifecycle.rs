@@ -183,11 +183,11 @@ impl PreparedV2AgentDelivery {
                     self.agent_id,
                 );
             }
-            crate::session::inter_agent_communication(
+            Box::pin(crate::session::inter_agent_communication(
                 &thread.session,
                 submission_id.clone(),
                 communication,
-            )
+            ))
             .await;
             return Ok(submission_id);
         }
