@@ -183,6 +183,8 @@ tui-config-refresh-session-targeted:
 tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications --lib -- --exact --test-threads=1
@@ -285,8 +287,12 @@ tui-transcript-viewport-targeted:
     cargo test -p codex-tui history_cell::messages::tests::raw_markdown_bypasses_the_rich_render_cache --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::messages::tests::visualization_directives_are_not_cached --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::plans::tests::finalized_plan_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
+    cargo test -p codex-tui inline_visualization::tests::transcript_overlay_remeasures_visualization_when_artifact_becomes_available --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_replaces_previous_message --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_insert_preserves_cached_cell_heights --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_remeasures_dynamic_cells_on_same_width_redraw --lib -- --exact --test-threads=1
+    cargo test -p codex-tui status::tests::transcript_overlay_remeasures_status_after_rate_limit_refresh --lib -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1

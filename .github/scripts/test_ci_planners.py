@@ -622,6 +622,23 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_picker_lifecycle_surface_routes_to_both_picker_lanes(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                "codex-rs/tui/src/app/loaded_threads.rs",
+                "codex-rs/tui/src/app/session_lifecycle.rs",
+                "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+            ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.tui-agent-picker-targeted",
+                "codex.tui-agent-picker-tree-targeted",
+            ],
+        )
+
     def test_picker_tree_unique_files_keep_tree_route_exact(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [

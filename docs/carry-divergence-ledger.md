@@ -401,6 +401,10 @@ docs-only refresh commit that records this snapshot.
   turns, and skips the redundant parent-title lookup. The `/side` caller keeps
   the fork persisted and seeds navigation before delayed `thread/started`
   delivery so selection does not race a second liveness read.
+- Fork and fresh-session lifecycle paths adopt upstream's metadata-read
+  de-duplication. Resume and picker backfill reuse discovered server status,
+  while locally live descendant channels remain authoritative and downstream
+  V1 writable versus V2 parent-owned input behavior remains unchanged.
 - Forks created from an existing side conversation inherit the side
   `thread_source` unless the caller explicitly supplies a different source,
   keeping nested side-chat forks hidden from default history surfaces and
@@ -410,7 +414,9 @@ docs-only refresh commit that records this snapshot.
   resume candidates.
 - Primary files:
   - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/loaded_threads.rs`
   - `codex-rs/tui/src/app/session_lifecycle.rs`
+  - `codex-rs/tui/src/app/tests/session_lifecycle_requests.rs`
   - `codex-rs/tui/src/app_server_session.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/app-server/src/filters.rs`

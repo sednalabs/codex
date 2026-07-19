@@ -495,6 +495,10 @@ impl HistoryCell for AgentMarkdownCell {
         raw_lines_from_source(&self.markdown_source)
     }
 
+    fn has_stable_transcript_height(&self) -> bool {
+        self.rendered_lines.is_some()
+    }
+
     fn transcript_copy_markdown(&self) -> Option<&str> {
         Some(&self.markdown_source)
     }
