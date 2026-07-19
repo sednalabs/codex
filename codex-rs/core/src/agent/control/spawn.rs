@@ -1,4 +1,5 @@
 use super::residency::is_v2_resident_session_source;
+use super::residency::V2ResidencySlot;
 use super::*;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;
@@ -291,23 +292,9 @@ impl AgentControl {
         config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
-        let state = self.upgrade()?;
-        let metadata = self
-            .state
-            .agent_metadata_for_thread(thread_id)
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?;
-        let mut lifecycle = metadata.lifecycle.lock().await;
-        if !self.state.metadata_is_current(thread_id, &metadata) {
-            return Err(CodexErr::ThreadNotFound(thread_id));
-        }
-        self.ensure_v2_agent_loaded_under_lifecycle(
-            &state,
-            config,
-            thread_id,
-            &metadata,
-            &mut lifecycle,
-        )
-        .await
+        Box::pin(self.prepare_v2_agent_delivery_with_reload(config, thread_id))
+            .await
+            .map(drop)
     }
 
     pub(super) async fn ensure_v2_agent_loaded_under_lifecycle(
@@ -316,6 +303,7 @@ impl AgentControl {
         mut config: Config,
         thread_id: ThreadId,
         metadata: &AgentMetadata,
+        residency_slot: V2ResidencySlot,
         lifecycle: &mut crate::agent::lifecycle::AgentLifecycleState,
     ) -> CodexResult<()> {
         if state.get_thread(thread_id).await.is_ok() {
@@ -392,10 +380,6 @@ impl AgentControl {
             stored_thread.reasoning_effort.clone(),
             thread_id,
         )?;
-        let residency_slot = self
-            .reserve_v2_residency_slot(state, &config, Some(thread_id))
-            .await?;
-
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);

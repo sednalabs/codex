@@ -318,8 +318,9 @@ User-visible behavior:
 - One generation-scoped lifecycle authority serializes V2 unload, reload,
   message delivery, and explicit close. Queue-only `send_message` mail can move
   into a registry-owned FIFO without waking a cold runtime; `followup_task`
-  reloads once and transfers that FIFO ahead of its triggering message. Failed
-  unload or reload keeps the FIFO recoverable, and explicit close discards it.
+  reloads once on an eviction-independent gate and transfers that FIFO ahead of
+  its triggering message. Failed transitions keep the FIFO recoverable, and
+  explicit close discards it.
   Existing subscriptions spanning a cold reload remain separate follow-up work.
 - Ephemeral V2 children have no reloadable persisted history, so they are not
   eligible for cold eviction; capacity pressure fails closed and leaves the

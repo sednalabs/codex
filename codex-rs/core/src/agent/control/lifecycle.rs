@@ -55,16 +55,48 @@ impl AgentControl {
         config: Config,
         agent_id: ThreadId,
     ) -> CodexResult<PreparedV2AgentDelivery> {
-        let mut delivery = self.prepare_v2_agent_delivery(agent_id).await?;
-        self.ensure_v2_agent_loaded_under_lifecycle(
-            &delivery.state,
-            config,
+        let state = self.upgrade()?;
+        let metadata = self
+            .state
+            .agent_metadata_for_thread(agent_id)
+            .ok_or(CodexErr::ThreadNotFound(agent_id))?;
+        // Eviction never acquires this gate, so residency work cannot invert lifecycle locks.
+        let _reload = metadata.lifecycle.lock_reload().await;
+        let mut lifecycle = metadata.lifecycle.lock().await;
+        if !self.state.metadata_is_current(agent_id, &metadata) {
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        if state.get_thread(agent_id).await.is_err() {
+            drop(lifecycle);
+            let residency_slot = self
+                .reserve_v2_residency_slot(&state, &config, Some(agent_id))
+                .await?;
+            lifecycle = metadata.lifecycle.lock().await;
+            if !self.state.metadata_is_current(agent_id, &metadata) {
+                return Err(CodexErr::ThreadNotFound(agent_id));
+            }
+            self.ensure_v2_agent_loaded_under_lifecycle(
+                &state,
+                config,
+                agent_id,
+                &metadata,
+                residency_slot,
+                &mut lifecycle,
+            )
+            .await?;
+        } else {
+            metadata.clear_cold_status();
+            self.touch_loaded_v2_residency(&state, agent_id).await;
+            self.restore_cold_mail_to_loaded_thread(&state, agent_id, &mut lifecycle)
+                .await?;
+        }
+        Ok(PreparedV2AgentDelivery {
+            control: self.clone(),
+            state,
             agent_id,
-            &delivery.metadata,
-            &mut delivery.lifecycle,
-        )
-        .await?;
-        Ok(delivery)
+            metadata,
+            lifecycle,
+        })
     }
 
     pub(super) async fn uses_v2_lifecycle(
@@ -88,37 +120,46 @@ impl AgentControl {
         lifecycle: &mut AgentLifecycleState,
     ) -> CodexResult<()> {
         let thread = state.get_thread(agent_id).await?;
-        let cold_mail = lifecycle.take_cold_mail();
-        if cold_mail.is_empty() {
+        let (communications, receive_ids): (Vec<_>, Vec<_>) = lifecycle
+            .take_cold_mail()
+            .into_iter()
+            .map(|item| (item.communication, item.receive_id))
+            .unzip();
+        if communications.is_empty() {
             return Ok(());
         }
-        let communications = cold_mail
-            .iter()
-            .map(|item| item.communication.clone())
-            .collect();
         thread
             .session
             .input_queue
             .enqueue_mailbox_communications(communications)
             .await;
-        for receive_id in cold_mail
-            .iter()
-            .filter_map(|item| item.receive_id.as_deref())
-        {
-            crate::agent_communication::emit_agent_communication_receive(receive_id);
+        for receive_id in receive_ids.into_iter().flatten() {
+            crate::agent_communication::emit_agent_communication_receive(&receive_id);
         }
         Ok(())
     }
 }
 
 impl PreparedV2AgentDelivery {
+    fn record_submission(
+        &self,
+        communication: &InterAgentCommunication,
+        context: &AgentCommunicationContext,
+    ) -> String {
+        let submission_id = new_submission_id();
+        let op = Op::InterAgentCommunication {
+            communication: communication.clone(),
+        };
+        self.state.record_submitted_op(self.agent_id, &op);
+        if crate::agent_communication::logging_enabled() {
+            let emit = crate::agent_communication::emit_agent_communication_send;
+            emit(&submission_id, context, communication, self.agent_id);
+        }
+        submission_id
+    }
+
     pub(crate) async fn config_snapshot(&self) -> CodexResult<ThreadConfigSnapshot> {
-        Ok(self
-            .state
-            .get_thread(self.agent_id)
-            .await?
-            .config_snapshot()
-            .await)
+        Ok(self.state.get_thread(self.agent_id).await?.config_snapshot().await)
     }
 
     pub(crate) async fn send(
@@ -141,60 +182,23 @@ impl PreparedV2AgentDelivery {
         interrupt: bool,
     ) -> futures::future::BoxFuture<'static, CodexResult<String>> {
         Box::pin(async move {
-            if !self
-                .control
-                .state
-                .metadata_is_current(self.agent_id, &self.metadata)
-            {
+            if !self.control.state.metadata_is_current(self.agent_id, &self.metadata) {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
             if let Ok(thread) = self.state.get_thread(self.agent_id).await {
                 if interrupt {
-                    self.state
-                        .record_submitted_op(self.agent_id, &Op::Interrupt);
+                    self.state.record_submitted_op(self.agent_id, &Op::Interrupt);
                     thread.session.interrupt_task().await;
                 }
-                let submission_id = new_submission_id();
-                self.state.record_submitted_op(
-                    self.agent_id,
-                    &Op::InterAgentCommunication {
-                        communication: communication.clone(),
-                    },
-                );
-                if crate::agent_communication::logging_enabled() {
-                    crate::agent_communication::emit_agent_communication_send(
-                        &submission_id,
-                        &context,
-                        &communication,
-                        self.agent_id,
-                    );
-                }
-                crate::session::inter_agent_communication(
-                    &thread.session,
-                    submission_id.clone(),
-                    communication,
-                )
-                .await;
+                let submission_id = self.record_submission(&communication, &context);
+                let send = crate::session::inter_agent_communication;
+                send(&thread.session, submission_id.clone(), communication).await;
                 return Ok(submission_id);
             }
             if communication.trigger_turn {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
-            let submission_id = new_submission_id();
-            self.state.record_submitted_op(
-                self.agent_id,
-                &Op::InterAgentCommunication {
-                    communication: communication.clone(),
-                },
-            );
-            if crate::agent_communication::logging_enabled() {
-                crate::agent_communication::emit_agent_communication_send(
-                    &submission_id,
-                    &context,
-                    &communication,
-                    self.agent_id,
-                );
-            }
+            let submission_id = self.record_submission(&communication, &context);
             self.lifecycle.push_cold_mail(ColdMailboxItem {
                 receive_id: Some(submission_id.clone()),
                 communication,

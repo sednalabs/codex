@@ -7,6 +7,7 @@ use tokio::sync::OwnedMutexGuard;
 #[derive(Clone, Debug, Default)]
 pub(super) struct AgentLifecycle {
     state: Arc<Mutex<AgentLifecycleState>>,
+    reload_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Default)]
@@ -23,6 +24,10 @@ pub(super) struct ColdMailboxItem {
 impl AgentLifecycle {
     pub(super) async fn lock(&self) -> OwnedMutexGuard<AgentLifecycleState> {
         Arc::clone(&self.state).lock_owned().await
+    }
+
+    pub(super) async fn lock_reload(&self) -> OwnedMutexGuard<()> {
+        Arc::clone(&self.reload_gate).lock_owned().await
     }
 }
 
@@ -47,4 +52,12 @@ impl AgentLifecycleState {
     pub(super) fn cold_mail_len(&self) -> usize {
         self.cold_mailbox.len()
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn reload_gate_does_not_hold_lifecycle_state() {
+    let lifecycle = AgentLifecycle::default();
+    let _reload = lifecycle.lock_reload().await;
+    assert!(lifecycle.state.try_lock().is_ok());
 }

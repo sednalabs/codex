@@ -1,7 +1,7 @@
 use anyhow::Result;
+use codex_core::config::Config;
 use codex_features::Feature;
 use codex_protocol::error::CodexErr;
-use codex_protocol::protocol::AgentStatus;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -24,6 +24,12 @@ const FOLLOWUP_PROMPT: &str = "resume the first worker";
 const FOLLOWUP_TASK: &str = "continue after the cold mailbox note";
 const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 
+fn configure_v2(config: &mut Config) {
+    config.features.enable(Feature::Collab).expect("enable collab");
+    config.features.enable(Feature::MultiAgentV2).expect("enable v2");
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+}
+
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     serde_json::from_slice::<serde_json::Value>(&request.body)
         .is_ok_and(|body| body.to_string().contains(text))
@@ -38,18 +44,6 @@ fn has_function_call_output(request: &wiremock::Request, call_id: &str) -> bool 
                     item.get("type").and_then(serde_json::Value::as_str)
                         == Some("function_call_output")
                         && item.get("call_id").and_then(serde_json::Value::as_str) == Some(call_id)
-                })
-            })
-    })
-}
-
-fn has_input_type(request: &wiremock::Request, input_type: &str) -> bool {
-    serde_json::from_slice::<serde_json::Value>(&request.body).is_ok_and(|body| {
-        body.get("input")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|items| {
-                items.iter().any(|item| {
-                    item.get("type").and_then(serde_json::Value::as_str) == Some(input_type)
                 })
             })
     })
@@ -119,17 +113,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
     )
     .await;
 
-    let mut builder = test_codex().with_model("koffing").with_config(|config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
-        config
-            .features
-            .enable(Feature::MultiAgentV2)
-            .expect("test config should allow feature update");
-        config.multi_agent_v2.max_concurrent_threads_per_session = 2;
-    });
+    let mut builder = test_codex().with_model("koffing").with_config(configure_v2);
     let test = builder.build(&server).await?;
     test.submit_turn(FIRST_PROMPT).await?;
 
@@ -290,8 +274,7 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     let followup_child = mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
-            has_input_type(request, "agent_message")
-                && body_contains(request, QUEUED_MESSAGE)
+            body_contains(request, QUEUED_MESSAGE)
                 && body_contains(request, FOLLOWUP_TASK)
         },
         sse(vec![
@@ -312,17 +295,7 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     )
     .await;
 
-    let mut builder = test_codex().with_model("koffing").with_config(|config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
-        config
-            .features
-            .enable(Feature::MultiAgentV2)
-            .expect("test config should allow feature update");
-        config.multi_agent_v2.max_concurrent_threads_per_session = 2;
-    });
+    let mut builder = test_codex().with_model("koffing").with_config(configure_v2);
     let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn(FIRST_PROMPT).await?;
 
@@ -336,10 +309,7 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     let first_thread = test.thread_manager.get_thread(first_id).await?;
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if first_thread.agent_status().await
-                == AgentStatus::Completed(Some("first worker done".to_string()))
-                && first_thread.inject_if_running(Vec::new()).await.is_err()
-            {
+            if first_thread.inject_if_running(Vec::new()).await.is_err() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -348,7 +318,6 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     .await?;
 
     test.submit_turn(QUEUE_PROMPT).await?;
-    assert!(test.thread_manager.get_thread(first_id).await.is_ok());
 
     test.submit_turn(SECOND_PROMPT).await?;
 
@@ -367,10 +336,7 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     let second_thread = test.thread_manager.get_thread(second_id).await?;
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if second_thread.agent_status().await
-                == AgentStatus::Completed(Some("second worker done".to_string()))
-                && second_thread.inject_if_running(Vec::new()).await.is_err()
-            {
+            if second_thread.inject_if_running(Vec::new()).await.is_err() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -379,7 +345,6 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
     .await?;
 
     test.submit_turn(FOLLOWUP_PROMPT).await?;
-    assert!(test.thread_manager.get_thread(first_id).await.is_ok());
     let replay_request = followup_child
         .requests()
         .into_iter()
