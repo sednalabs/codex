@@ -313,6 +313,7 @@ tui-brokered-tool-replay-targeted:
 core-multi-agent-orchestration-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents::tests::multi_agent_v2_list_agents_returns_completed_status tools::handlers::multi_agents_v2::wait::tests::completion_rule_distinguishes_any_from_all agent::control::residency::tests::residency_slot_reservation_unloads_oldest_idle_v2_agent agent::control::residency::tests::interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction agent::control::residency::tests::ephemeral_v2_agent_is_not_evicted_without_reloadable_history agent::registry::tests::cold_status_text_stays_compact_when_json_escaped agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts suite::agent_execution::v2_evicted_completed_agent_keeps_final_status suite::agent_execution::v2_cold_mailbox_allows_eviction_and_replays_on_followup --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test --locked -p codex-exec --test all suite::completion_backfill::ignores_unrelated_turn_completion_before_backfilling_primary_turn -- --exact --test-threads=1
 
 # Focused blocking-wait slices split by compile surface so hosted validation
 
@@ -322,6 +323,7 @@ blocking-waits-core-targeted:
     cargo test -p codex-api retryable_by_turn_loop --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all server_overloaded_ -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::auto_remote_compact_retries_server_overloaded -- --exact --test-threads=1
+    CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::pending_input::any_new_input_interrupts_sleep -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 blocking-waits-unified-exec-targeted:

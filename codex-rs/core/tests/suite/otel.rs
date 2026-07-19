@@ -692,6 +692,7 @@ async fn turn_and_completed_response_spans_record_token_usage() {
         .unwrap();
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    codex.shutdown_and_wait().await.unwrap();
 
     let logs = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
 

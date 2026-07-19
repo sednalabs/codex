@@ -8,6 +8,7 @@ const PARENT_PROMPT: &str = "spawn a child and wait for it";
 const CHILD_PROMPT: &str = "child: finish first";
 const SPAWN_CALL_ID: &str = "spawn-call";
 const WAIT_CALL_ID: &str = "wait-call";
+const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
     std::str::from_utf8(&request.body).is_ok_and(|body| body.contains(text))
@@ -31,7 +32,7 @@ async fn ignores_unrelated_turn_completion_before_backfilling_primary_turn() -> 
             responses::ev_response_created("resp-parent-1"),
             responses::ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                "collaboration",
+                MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -60,7 +61,7 @@ async fn ignores_unrelated_turn_completion_before_backfilling_primary_turn() -> 
             responses::ev_response_created("resp-parent-2"),
             responses::ev_function_call_with_namespace(
                 WAIT_CALL_ID,
-                "collaboration",
+                MULTI_AGENT_V2_NAMESPACE,
                 "wait_agent",
                 "{}",
             ),
