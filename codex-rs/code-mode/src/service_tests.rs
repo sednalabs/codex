@@ -791,6 +791,10 @@ audio({
   data: "YXVkaW8=",
   mimeType: "audio/wav",
 });
+audio({
+  type: "audio",
+  data: "DATA:audio/ogg;base64,YXVkaW8=",
+});
 "#
             .to_string(),
             yield_time_ms: None,
@@ -809,6 +813,9 @@ audio({
                 },
                 FunctionCallOutputContentItem::InputAudio {
                     audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
+                },
+                FunctionCallOutputContentItem::InputAudio {
+                    audio_url: "DATA:audio/ogg;base64,YXVkaW8=".to_string(),
                 },
             ],
             error_text: None,
