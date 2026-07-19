@@ -1,5 +1,6 @@
 use super::AgentControl;
 use crate::agent::AgentStatus;
+use crate::agent::lifecycle::ColdMailboxItem;
 use crate::agent::registry::AgentRegistry;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -128,6 +129,16 @@ impl V2Residency {
                 return false;
             };
             let metadata = registry.agent_metadata_for_thread(candidate_thread_id);
+            let mut lifecycle = match metadata.as_ref() {
+                Some(metadata) => {
+                    let lifecycle = metadata.lifecycle.lock().await;
+                    if !registry.metadata_is_current(candidate_thread_id, metadata) {
+                        continue;
+                    }
+                    Some(lifecycle)
+                }
+                None => None,
+            };
             let Some(candidate_thread) = manager
                 .get_thread(candidate_thread_id)
                 .await
@@ -176,10 +187,31 @@ impl V2Residency {
                 self.touch(candidate_thread_id);
                 continue;
             }
+            let pending_mail = candidate_thread
+                .session
+                .input_queue
+                .drain_mailbox_communications()
+                .await;
+            if pending_mail.iter().any(|mail| mail.trigger_turn)
+                || (metadata.is_none() && !pending_mail.is_empty())
+            {
+                candidate_thread
+                    .session
+                    .input_queue
+                    .prepend_mailbox_communications(pending_mail)
+                    .await;
+                self.touch(candidate_thread_id);
+                continue;
+            }
             if let Err(err) = candidate_thread.shutdown_and_wait().await {
                 warn!(
                     "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
                 );
+                candidate_thread
+                    .session
+                    .input_queue
+                    .prepend_mailbox_communications(pending_mail)
+                    .await;
                 self.touch(candidate_thread_id);
                 continue;
             }
@@ -197,9 +229,35 @@ impl V2Residency {
                 .await;
             match removal {
                 RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
+                    if let Some(lifecycle) = lifecycle.as_mut() {
+                        lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                            ColdMailboxItem {
+                                receive_id: None,
+                                communication,
+                            }
+                        }));
+                    }
                     return true;
                 }
-                RemoveThreadIfSameResult::Replaced => self.touch(candidate_thread_id),
+                RemoveThreadIfSameResult::Replaced => {
+                    if let Ok(replacement) = manager.get_thread(candidate_thread_id).await {
+                        replacement
+                            .session
+                            .input_queue
+                            .prepend_mailbox_communications(pending_mail)
+                            .await;
+                    } else {
+                        if let Some(lifecycle) = lifecycle.as_mut() {
+                            lifecycle.extend_cold_mail(pending_mail.into_iter().map(
+                                |communication| ColdMailboxItem {
+                                    receive_id: None,
+                                    communication,
+                                },
+                            ));
+                        }
+                    }
+                    self.touch(candidate_thread_id);
+                }
             }
         }
         false
@@ -283,7 +341,6 @@ async fn is_unloadable(thread: &CodexThread, status: &AgentStatus) -> bool {
         status,
         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
     ) && thread.session.active_turn.lock().await.is_none()
-        && !thread.session.input_queue.has_pending_mailbox_items().await
 }
 
 #[cfg(test)]

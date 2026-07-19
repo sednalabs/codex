@@ -73,10 +73,36 @@ impl InputQueue {
         &self,
         communication: InterAgentCommunication,
     ) {
+        self.enqueue_mailbox_communications(vec![communication])
+            .await;
+    }
+
+    pub(crate) async fn enqueue_mailbox_communications(
+        &self,
+        communications: Vec<InterAgentCommunication>,
+    ) {
+        if communications.is_empty() {
+            return;
+        }
         self.mailbox_pending_mails
             .lock()
             .await
-            .push_back(communication);
+            .extend(communications);
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    pub(crate) async fn prepend_mailbox_communications(
+        &self,
+        communications: Vec<InterAgentCommunication>,
+    ) {
+        if communications.is_empty() {
+            return;
+        }
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        for communication in communications.into_iter().rev() {
+            pending.push_front(communication);
+        }
+        drop(pending);
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
@@ -93,12 +119,15 @@ impl InputQueue {
     }
 
     pub(crate) async fn drain_mailbox_input_items(&self) -> Vec<TurnInput> {
-        self.mailbox_pending_mails
-            .lock()
+        self.drain_mailbox_communications()
             .await
-            .drain(..)
+            .into_iter()
             .map(TurnInput::InterAgentCommunication)
             .collect()
+    }
+
+    pub(crate) async fn drain_mailbox_communications(&self) -> Vec<InterAgentCommunication> {
+        self.mailbox_pending_mails.lock().await.drain(..).collect()
     }
 
     pub(crate) async fn turn_state_for_sub_id(
