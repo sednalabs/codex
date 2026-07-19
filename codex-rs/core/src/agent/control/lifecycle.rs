@@ -13,7 +13,6 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
-use futures::future::BoxFuture;
 use std::sync::Arc;
 use tokio::sync::OwnedMutexGuard;
 
@@ -150,54 +149,25 @@ impl PreparedV2AgentDelivery {
             .await
     }
 
-    /// Type-erases this future because terminal notifications can recursively route agent mail.
-    pub(super) fn send_after_capacity_check(
+    pub(super) async fn send_after_capacity_check(
         mut self,
         communication: InterAgentCommunication,
         context: AgentCommunicationContext,
         interrupt: bool,
-    ) -> BoxFuture<'static, CodexResult<String>> {
-        Box::pin(async move {
-            if !self
-                .control
-                .state
-                .metadata_is_current(self.agent_id, &self.metadata)
-            {
-                return Err(CodexErr::ThreadNotFound(self.agent_id));
+    ) -> CodexResult<String> {
+        if !self
+            .control
+            .state
+            .metadata_is_current(self.agent_id, &self.metadata)
+        {
+            return Err(CodexErr::ThreadNotFound(self.agent_id));
+        }
+        if let Ok(thread) = self.state.get_thread(self.agent_id).await {
+            if interrupt {
+                self.state
+                    .record_submitted_op(self.agent_id, &Op::Interrupt);
+                Box::pin(thread.session.interrupt_task()).await;
             }
-            if let Ok(thread) = self.state.get_thread(self.agent_id).await {
-                if interrupt {
-                    self.state
-                        .record_submitted_op(self.agent_id, &Op::Interrupt);
-                    thread.session.interrupt_task().await;
-                }
-                let submission_id = new_submission_id();
-                self.state.record_submitted_op(
-                    self.agent_id,
-                    &Op::InterAgentCommunication {
-                        communication: communication.clone(),
-                    },
-                );
-                if crate::agent_communication::logging_enabled() {
-                    crate::agent_communication::emit_agent_communication_send(
-                        &submission_id,
-                        &context,
-                        &communication,
-                        self.agent_id,
-                    );
-                }
-                crate::session::inter_agent_communication(
-                    &thread.session,
-                    submission_id.clone(),
-                    communication,
-                )
-                .await;
-                return Ok(submission_id);
-            }
-            if communication.trigger_turn {
-                return Err(CodexErr::ThreadNotFound(self.agent_id));
-            }
-
             let submission_id = new_submission_id();
             self.state.record_submitted_op(
                 self.agent_id,
@@ -213,11 +183,37 @@ impl PreparedV2AgentDelivery {
                     self.agent_id,
                 );
             }
-            self.lifecycle.push_cold_mail(ColdMailboxItem {
-                receive_id: Some(submission_id.clone()),
+            crate::session::inter_agent_communication(
+                &thread.session,
+                submission_id.clone(),
                 communication,
-            });
-            Ok(submission_id)
-        })
+            )
+            .await;
+            return Ok(submission_id);
+        }
+        if communication.trigger_turn {
+            return Err(CodexErr::ThreadNotFound(self.agent_id));
+        }
+
+        let submission_id = new_submission_id();
+        self.state.record_submitted_op(
+            self.agent_id,
+            &Op::InterAgentCommunication {
+                communication: communication.clone(),
+            },
+        );
+        if crate::agent_communication::logging_enabled() {
+            crate::agent_communication::emit_agent_communication_send(
+                &submission_id,
+                &context,
+                &communication,
+                self.agent_id,
+            );
+        }
+        self.lifecycle.push_cold_mail(ColdMailboxItem {
+            receive_id: Some(submission_id.clone()),
+            communication,
+        });
+        Ok(submission_id)
     }
 }

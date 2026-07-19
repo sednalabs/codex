@@ -319,7 +319,8 @@ User-visible behavior:
   message delivery, and explicit close. Queue-only `send_message` mail can move
   into a registry-owned FIFO without waking a cold runtime; `followup_task`
   reloads once and transfers that FIFO ahead of its triggering message. Failed
-  unload or reload keeps the FIFO recoverable, while explicit close discards it.
+  unload or reload keeps the FIFO recoverable, loaded delivery completes mailbox
+  scheduling under the same authority, and explicit close discards the FIFO.
   Existing subscriptions spanning a cold reload remain separate follow-up work.
 - Ephemeral V2 children have no reloadable persisted history, so they are not
   eligible for cold eviction; capacity pressure fails closed and leaves the
@@ -339,6 +340,7 @@ Primary files:
 - `codex-rs/core/src/agent/control/lifecycle.rs`
 - `codex-rs/core/src/agent/control/residency.rs`
 - `codex-rs/core/src/agent/registry.rs`
+- `codex-rs/core/src/tasks/mod.rs`
 - `codex-rs/core/src/thread_manager.rs`
 - `codex-rs/config/src/config_toml.rs`
 - `codex-rs/core/config.schema.json`
