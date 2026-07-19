@@ -474,9 +474,7 @@ const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyb
 
 impl Session {
     /// Spawn and initialize a new session.
-    pub(crate) fn spawn(
-        args: SessionSpawnArgs,
-    ) -> BoxFuture<'static, CodexResult<(Arc<Self>, SessionIo)>> {
+    pub(crate) async fn spawn(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
         let parent_trace = match args.parent_trace {
             Some(trace) => {
                 if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
@@ -492,13 +490,12 @@ impl Session {
         if let Some(trace) = parent_trace.as_ref() {
             let _ = set_parent_from_w3c_trace_context(&thread_spawn_span, trace);
         }
-        Box::pin(
-            Self::spawn_internal(SessionSpawnArgs {
-                parent_trace,
-                ..args
-            })
-            .instrument(thread_spawn_span),
-        )
+        Self::spawn_internal(SessionSpawnArgs {
+            parent_trace,
+            ..args
+        })
+        .instrument(thread_spawn_span)
+        .await
     }
 
     async fn spawn_internal(args: SessionSpawnArgs) -> CodexResult<(Arc<Self>, SessionIo)> {
