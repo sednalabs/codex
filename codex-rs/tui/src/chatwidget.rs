@@ -698,6 +698,8 @@ pub(crate) struct ChatWidget {
     suppress_initial_user_message_submit: bool,
     input_queue: InputQueueState,
     safety_buffering_prompt: Option<UserMessage>,
+    /// Prevents a policy-triggered automatic `continue` turn from recursively retrying itself.
+    cyber_policy_auto_continue_in_flight: bool,
     /// Main chat-surface bindings resolved from `tui.keymap.chat`.
     chat_keymap: ChatKeymap,
     /// Keybinding to show for popping the most-recently queued message back

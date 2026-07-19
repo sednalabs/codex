@@ -2582,6 +2582,13 @@
     "Notice": {
       "additionalProperties": false,
       "properties": {
+        "auto_continue_on_cyber_policy": {
+          "description": "Automatically submits one `continue` follow-up after a cybersecurity policy notice ends a live turn.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "external_config_migration_prompts": {
           "allOf": [
             {
@@ -2626,6 +2633,13 @@
         },
         "hide_rate_limit_model_nudge": {
           "description": "Tracks whether the user opted out of the rate limit model switch reminder.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "hide_safety_buffering_prompt": {
+          "description": "Tracks whether the user opted out of the interactive safety-buffering prompt while Codex continues waiting.",
           "type": [
             "boolean",
             "null"

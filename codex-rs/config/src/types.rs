@@ -846,6 +846,9 @@ pub struct ExternalConfigMigrationPrompts {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct Notice {
+    /// Automatically submits one `continue` follow-up after a cybersecurity policy notice ends a
+    /// live turn.
+    pub auto_continue_on_cyber_policy: Option<bool>,
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,
     /// Tracks whether the user has acknowledged the Windows world-writable directories warning.
@@ -854,6 +857,9 @@ pub struct Notice {
     pub fast_default_opt_out: Option<bool>,
     /// Tracks whether the user opted out of the rate limit model switch reminder.
     pub hide_rate_limit_model_nudge: Option<bool>,
+    /// Tracks whether the user opted out of the interactive safety-buffering prompt while Codex
+    /// continues waiting.
+    pub hide_safety_buffering_prompt: Option<bool>,
     /// Tracks whether the user has seen the model migration prompt
     pub hide_gpt5_1_migration_prompt: Option<bool>,
     /// Tracks whether the user has seen the gpt-5.1-codex-max migration prompt
