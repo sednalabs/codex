@@ -1831,6 +1831,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 agent_path: Some("/root/child-0".to_string()),
                 is_running: true,
                 is_closed: false,
+                created_at: None,
+                updated_at: None,
             })
         );
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
@@ -2037,8 +2039,7 @@ fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()> {
             )
             .expect("create source rollout"),
         )?;
-        let mut app_server =
-            Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
+        let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&config)).await?;
         let started = app_server
             .resume_thread(
                 config,

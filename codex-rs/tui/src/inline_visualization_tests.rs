@@ -2,8 +2,10 @@ use super::*;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryRenderMode;
+use crate::history_cell::TranscriptDetailMode;
 use crate::keymap::RuntimeKeymap;
 use crate::pager_overlay::TranscriptOverlay;
+use crate::pager_overlay::TranscriptOverlayState;
 use crate::streaming::controller::StreamController;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
@@ -288,7 +290,14 @@ fn transcript_overlay_remeasures_visualization_when_artifact_becomes_available()
         Path::new("/workspace"),
         Some(context.clone()),
     );
-    let mut overlay = TranscriptOverlay::new(vec![Arc::new(cell)], RuntimeKeymap::defaults().pager);
+    let keymap = RuntimeKeymap::defaults();
+    let mut overlay = TranscriptOverlay::new(
+        vec![Arc::new(cell)],
+        keymap.pager,
+        keymap.app.copy,
+        keymap.app.toggle_raw_output,
+        TranscriptOverlayState::new(HistoryRenderMode::Rich, TranscriptDetailMode::Verbose),
+    );
     let area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 240, /*height*/ 12,
     );
