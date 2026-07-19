@@ -73,7 +73,8 @@ impl InputQueue {
         &self,
         communication: InterAgentCommunication,
     ) {
-        self.enqueue_mailbox_communications(vec![communication]).await;
+        self.enqueue_mailbox_communications(vec![communication])
+            .await;
     }
 
     pub(crate) async fn enqueue_mailbox_communications(

@@ -130,7 +130,12 @@ fn handle_message_submission(
     expected_model: Option<String>,
 ) -> BoxFuture<'static, Result<FunctionToolOutput, FunctionCallError>> {
     Box::pin(handle_message_submission_inner(
-        invocation, mode, target, message, interrupt, expected_model,
+        invocation,
+        mode,
+        target,
+        message,
+        interrupt,
+        expected_model,
     ))
 }
 
@@ -170,11 +175,13 @@ async fn handle_message_submission_inner(
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
     let delivery = match mode {
-        MessageDeliveryMode::QueueOnly => session
-            .services
-            .agent_control
-            .prepare_v2_agent_delivery(receiver_thread_id)
-            .await,
+        MessageDeliveryMode::QueueOnly => {
+            session
+                .services
+                .agent_control
+                .prepare_v2_agent_delivery(receiver_thread_id)
+                .await
+        }
         MessageDeliveryMode::TriggerTurn => {
             let resume_config = build_agent_resume_config(turn.as_ref())?;
             session
@@ -243,13 +250,16 @@ async fn handle_message_submission_inner(
                     "agent with id {receiver_thread_id} has no runtime config snapshot"
                 ))
             })?;
-            tool_output_json_text(&FollowupTaskResult {
-                task_name: receiver_agent_path.to_string(),
-                effective_model: receiver_config.model,
-                effective_model_provider_id: receiver_config.model_provider_id,
-                effective_reasoning_effort: receiver_config.reasoning_effort,
-                effective_service_tier: receiver_config.service_tier,
-            }, "followup_task")
+            tool_output_json_text(
+                &FollowupTaskResult {
+                    task_name: receiver_agent_path.to_string(),
+                    effective_model: receiver_config.model,
+                    effective_model_provider_id: receiver_config.model_provider_id,
+                    effective_reasoning_effort: receiver_config.reasoning_effort,
+                    effective_service_tier: receiver_config.service_tier,
+                },
+                "followup_task",
+            )
         }
     };
     Ok(FunctionToolOutput::from_text(output, Some(true)))

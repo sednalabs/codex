@@ -384,8 +384,7 @@ async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()>
         .requests()
         .into_iter()
         .find(|request| {
-            request.body_contains_text(QUEUED_MESSAGE)
-                && request.body_contains_text(FOLLOWUP_TASK)
+            request.body_contains_text(QUEUED_MESSAGE) && request.body_contains_text(FOLLOWUP_TASK)
         })
         .expect("follow-up request should contain cold and trigger mail");
     let replay_body = replay_request.body_json().to_string();

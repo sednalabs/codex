@@ -781,13 +781,15 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         )
         .await
         .expect("cold queue-only delivery should succeed");
-    assert!(harness.manager.get_thread(spawned_agent.thread_id).await.is_err());
-    assert_eq!(
-        registered_metadata
-            .lifecycle
-            .lock()
+    assert!(
+        harness
+            .manager
+            .get_thread(spawned_agent.thread_id)
             .await
-            .cold_mail_len(),
+            .is_err()
+    );
+    assert_eq!(
+        registered_metadata.lifecycle.lock().await.cold_mail_len(),
         1
     );
 
@@ -814,11 +816,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         cold_status
     );
     assert_eq!(
-        registered_metadata
-            .lifecycle
-            .lock()
-            .await
-            .cold_mail_len(),
+        registered_metadata.lifecycle.lock().await.cold_mail_len(),
         1
     );
     conflicting_resume_config.model_provider.base_url =
@@ -936,16 +934,20 @@ async fn close_agent_discards_registry_owned_cold_mail() {
         .state
         .agent_metadata_for_thread(agent_id)
         .expect("registered metadata");
-    metadata.lifecycle.lock().await.push_cold_mail(ColdMailboxItem {
-        receive_id: Some("cold-mail".to_string()),
-        communication: InterAgentCommunication::new(
-            AgentPath::root(),
-            AgentPath::try_from("/root/worker").expect("agent path"),
-            Vec::new(),
-            "discard me".to_string(),
-            /*trigger_turn*/ false,
-        ),
-    });
+    metadata
+        .lifecycle
+        .lock()
+        .await
+        .push_cold_mail(ColdMailboxItem {
+            receive_id: Some("cold-mail".to_string()),
+            communication: InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                Vec::new(),
+                "discard me".to_string(),
+                /*trigger_turn*/ false,
+            ),
+        });
 
     harness
         .control

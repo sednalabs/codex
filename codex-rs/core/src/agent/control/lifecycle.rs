@@ -74,7 +74,10 @@ impl AgentControl {
     ) -> bool {
         match state.get_thread(agent_id).await {
             Ok(thread) => thread.multi_agent_version() == Some(MultiAgentVersion::V2),
-            Err(_) => self.state.cold_status(agent_id, /*live_thread*/ None).is_some(),
+            Err(_) => self
+                .state
+                .cold_status(agent_id, /*live_thread*/ None)
+                .is_some(),
         }
     }
 
@@ -125,10 +128,7 @@ impl PreparedV2AgentDelivery {
         interrupt: bool,
     ) -> CodexResult<String> {
         self.control
-            .ensure_execution_capacity_for_turn_start(
-                self.agent_id,
-                communication.trigger_turn,
-            )
+            .ensure_execution_capacity_for_turn_start(self.agent_id, communication.trigger_turn)
             .await?;
         self.send_after_capacity_check(communication, context, interrupt)
             .await

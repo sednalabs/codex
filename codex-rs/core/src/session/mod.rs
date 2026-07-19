@@ -226,10 +226,10 @@ mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 use self::config_lock::export_config_lock_if_configured;
 use self::config_lock::validate_config_lock_if_configured;
+pub(crate) use self::handlers::inter_agent_communication;
 #[cfg(test)]
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
-pub(crate) use self::handlers::inter_agent_communication;
 pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 pub use self::mcp_runtime::McpRuntimeSnapshot;

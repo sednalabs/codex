@@ -31,10 +31,7 @@ impl AgentLifecycleState {
         self.cold_mailbox.push_back(item);
     }
 
-    pub(super) fn extend_cold_mail(
-        &mut self,
-        items: impl IntoIterator<Item = ColdMailboxItem>,
-    ) {
+    pub(super) fn extend_cold_mail(&mut self, items: impl IntoIterator<Item = ColdMailboxItem>) {
         self.cold_mailbox.extend(items);
     }
 
