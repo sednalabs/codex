@@ -1534,7 +1534,11 @@ async fn replayed_cyber_policy_error_never_auto_continues() {
     chat.thread_id = Some(ThreadId::new());
     handle_turn_started(&mut chat, "turn-replay");
     drain_insert_history(&mut rx);
-    let replay_thread_id = thread_id(&chat);
+    let replay_thread_id = chat
+        .thread_id
+        .as_ref()
+        .expect("test thread id should be configured")
+        .to_string();
 
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
