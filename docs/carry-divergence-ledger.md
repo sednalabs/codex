@@ -613,9 +613,10 @@ docs-only refresh commit that records this snapshot.
 - Each registered agent generation now owns one serialized lifecycle authority
   for V2 unload, reload, message delivery, and explicit close. Queue-only mail
   sent to an unloaded agent remains in a registry-owned FIFO without starting a
-  runtime. Recursive cold reload crosses one type-erased session-spawn boundary
-  while loaded delivery remains synchronous. A triggering follow-up reloads
-  once, transfers the FIFO first, and retains it if reload fails.
+  runtime. Recursive cold reload crosses one type-erased session-spawn boundary;
+  the parent-interrupt recursion edge is boxed while loaded delivery remains
+  synchronous. A triggering follow-up reloads once, transfers the FIFO first,
+  and retains it if reload fails.
 - Residency eviction may move pending queue-only mail out of a completed,
   errored, or interrupted runtime instead of pinning that runtime indefinitely.
   Triggering mail remains live and blocks eviction; failed shutdown restores
