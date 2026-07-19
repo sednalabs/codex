@@ -2583,7 +2583,7 @@
       "additionalProperties": false,
       "properties": {
         "auto_continue_on_cyber_policy": {
-          "description": "Automatically submits one `continue` follow-up after a cybersecurity policy notice ends a live turn.",
+          "description": "Automatically submits up to three consecutive `continue` follow-ups after cybersecurity policy notices end live turns.",
           "type": [
             "boolean",
             "null"

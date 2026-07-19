@@ -846,8 +846,8 @@ pub struct ExternalConfigMigrationPrompts {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct Notice {
-    /// Automatically submits one `continue` follow-up after a cybersecurity policy notice ends a
-    /// live turn.
+    /// Automatically submits up to three consecutive `continue` follow-ups after cybersecurity
+    /// policy notices end live turns.
     pub auto_continue_on_cyber_policy: Option<bool>,
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,

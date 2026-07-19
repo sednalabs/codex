@@ -291,7 +291,7 @@ impl ChatWidget {
                 } else {
                     self.last_non_retry_error = None;
                     self.finalize_turn();
-                    self.cyber_policy_auto_continue_in_flight = false;
+                    self.cyber_policy_auto_continue_attempts = 0;
                     self.request_redraw();
                     self.maybe_send_next_queued_input();
                 }

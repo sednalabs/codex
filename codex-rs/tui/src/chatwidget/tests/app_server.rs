@@ -1440,7 +1440,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
 }
 
 #[tokio::test]
-async fn live_cyber_policy_error_auto_continues_once_and_rearms_after_success() {
+async fn live_cyber_policy_error_auto_continues_three_times_and_rearms_after_success() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.config.notices.auto_continue_on_cyber_policy = Some(true);
     chat.thread_id = Some(ThreadId::new());
@@ -1486,17 +1486,38 @@ async fn live_cyber_policy_error_auto_continues_once_and_rearms_after_success() 
     handle_turn_completed(&mut chat, "turn-2", /*duration_ms*/ None);
     drain_insert_history(&mut rx);
 
-    // A completed continuation rearms the one-shot behavior for a later independent turn.
-    handle_turn_started(&mut chat, "turn-3");
-    handle_error(
-        &mut chat,
-        "server fallback message",
-        Some(CodexErrorInfo::CyberPolicy),
-    );
-    assert_matches!(next_submit_op(&mut op_rx), Op::UserTurn { .. });
+    // A completed continuation rearms all three attempts for a later independent turn.
+    for turn_id in ["turn-3", "turn-4", "turn-5"] {
+        handle_turn_started(&mut chat, turn_id);
+        handle_error(
+            &mut chat,
+            "server fallback message",
+            Some(CodexErrorInfo::CyberPolicy),
+        );
+        match next_submit_op(&mut op_rx) {
+            Op::UserTurn {
+                items,
+                model,
+                effort,
+                ..
+            } => {
+                assert_eq!(
+                    items,
+                    vec![UserInput::Text {
+                        text: "continue".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+                );
+                assert_eq!(model, original_model);
+                assert_eq!(effort, original_effort);
+            }
+            other => panic!("expected automatic continue turn, got {other:?}"),
+        }
+        drain_insert_history(&mut rx);
+    }
 
-    // A consecutive refusal of the generated continuation stops instead of looping forever.
-    handle_turn_started(&mut chat, "turn-4");
+    // A fourth consecutive refusal stops instead of looping forever.
+    handle_turn_started(&mut chat, "turn-6");
     handle_error(
         &mut chat,
         "server fallback message",
