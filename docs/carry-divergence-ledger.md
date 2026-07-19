@@ -614,7 +614,7 @@ docs-only refresh commit that records this snapshot.
   for V2 unload, reload, message delivery, and explicit close. Queue-only mail
   sent to an unloaded agent remains in a registry-owned FIFO without starting a
   runtime. Recursive cold reload and delivery cross narrow type-erased
-  session-spawn and lifecycle boundaries while loaded delivery remains
+  message-submission and lifecycle boundaries while loaded delivery remains
   synchronous. A triggering follow-up reloads once, transfers the FIFO first,
   and retains it if reload fails.
 - Residency eviction may move pending queue-only mail out of a completed,
