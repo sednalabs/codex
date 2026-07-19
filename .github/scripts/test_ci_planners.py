@@ -1727,6 +1727,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn(
             "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_rejects_child_model_from_different_backend",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
             "multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override",
             recipe,
         )
