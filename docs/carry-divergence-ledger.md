@@ -1451,6 +1451,9 @@ docs-only refresh commit that records this snapshot.
   - startup plugin sync bounded wait and completion re-arm
   - `codex-rs/core/src/config/edit.rs`
   - `codex-rs/core/src/tools/spec_plan.rs`
+  - `codex-rs/tui/src/test_support.rs` centralizes the existing 8 MiB test
+    stack budget for stack-heavy app and app-server-session regressions; keep
+    their behavioral assertions intact when importing upstream test changes
   - `codex-rs/app-server-daemon/src/backend/pid_tests.rs` removes the PID file
     while its reservation lock remains held, preventing test cleanup races;
     drop this carry when upstream adopts equivalent ordering
