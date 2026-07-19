@@ -183,6 +183,10 @@ tui-config-refresh-session-targeted:
 tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::handle_start_side_seeds_navigation_before_thread_started --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::side_fork_config_is_persistent_and_appends_developer_guardrails --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_server_session::tests::side_fork_excludes_turns_without_clearing_regular_ephemeral_fork --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
