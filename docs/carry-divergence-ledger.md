@@ -418,6 +418,11 @@ docs-only refresh commit that records this snapshot.
 - These fields are independent dimensions: history storage mode must not erase
   whether a thread came from a side conversation, sub-agent, or another
   attributed source.
+- Upstream paginated-thread compatibility views are adopted: full read/resume
+  history, `initialTurnsPage`, and item/turn listing hydrate the stored
+  `ThreadItem` projection rather than rebuilding paginated context through the
+  legacy event-history path. That upstream ownership must continue to preserve
+  downstream `thread_source` alongside `history_mode`.
 - Primary files:
   - `codex-rs/protocol/`
   - `codex-rs/rollout/`
@@ -675,6 +680,10 @@ docs-only refresh commit that records this snapshot.
   earlier world-state contribution relative to permissions, including remote
   compaction and resume reconstruction, so adopting upstream ownership does not
   silently replace the configured realtime wording.
+- Upstream V3 `initialItems` seed the realtime backend's initial history
+  independently. A nonempty seed must not replace, reorder, or suppress the
+  downstream custom realtime-start world-state instruction on the next Codex
+  request.
 - Primary files:
   - `codex-rs/core/src/context/world_state/permissions.rs`
   - `codex-rs/core/src/session/input_queue.rs`
@@ -862,6 +871,12 @@ docs-only refresh commit that records this snapshot.
   `image(...)` and never serialize the complete image-bearing result to text.
   Failed provider responses preserve the same typed content contract, including
   diagnostic text and any screenshot returned with the failure.
+- Upstream dynamic-tool and code-mode audio output is adopted as
+  `InputAudio { audio_url }` and the `audio(...)` helper. It is additive to the
+  downstream optional `detail` carried on dynamic `InputImage`; app-server
+  events, stored thread items, generated schemas, and JSONL previews preserve
+  both. Native computer-use responses remain text/image-only and keep their
+  fail-loud screenshot contract.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.

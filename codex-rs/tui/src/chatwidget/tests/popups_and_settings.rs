@@ -3436,7 +3436,6 @@ async fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
 async fn assert_reasoning_shortcuts_update_effort(
     key_events: [KeyEvent; 2],
     expected_effort: ReasoningEffortConfig,
-    expect_model_update: bool,
 ) {
     for key_event in key_events {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
@@ -3446,14 +3445,12 @@ async fn assert_reasoning_shortcuts_update_effort(
         chat.handle_key_event(key_event);
 
         let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-        if expect_model_update {
-            assert!(
-                events.iter().any(
-                    |event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.4")
-                ),
-                "expected model update event for {key_event:?}; events: {events:?}"
-            );
-        }
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, AppEvent::UpdateModel(_))),
+            "did not expect model update event for {key_event:?}; events: {events:?}"
+        );
         assert!(
             events.iter().any(|event| matches!(
                 event,
@@ -3478,7 +3475,6 @@ async fn reasoning_up_shortcuts_raise_reasoning_effort() {
             KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
         ],
         ReasoningEffortConfig::High,
-        /*expect_model_update*/ true,
     )
     .await;
 }
@@ -3491,7 +3487,6 @@ async fn reasoning_down_shortcuts_lower_reasoning_effort() {
             KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
         ],
         ReasoningEffortConfig::Low,
-        /*expect_model_update*/ false,
     )
     .await;
 }
