@@ -179,10 +179,16 @@ tui-config-refresh-session-targeted:
     cargo test -p codex-tui app::tests::fresh_session_config_uses_current_session_state --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::fresh_session_config_preserves_policy_mutability --lib -- --exact --test-threads=1
 
-# Focused /agent picker usage and remaining-context visibility slice.
+# Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::enqueue_thread_event_does_not_block_when_channel_full --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::side_parent_status_tracks_parent_turn_lifecycle --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::side_parent_status_prioritizes_input_over_approval --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::handle_start_side_seeds_navigation_before_thread_started --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::side_fork_config_is_persistent_and_appends_developer_guardrails --lib -- --exact --test-threads=1
     cargo test -p codex-tui app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it --lib -- --exact --test-threads=1
@@ -274,6 +280,11 @@ tui-transcript-viewport-targeted:
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_supports_proposed_plan --lib -- --exact --test-threads=1
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_requires_finalized_markdown --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::slash_commands::transcript_turn_copy_includes_user_prompt_and_agent_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::finalized_markdown_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::finalized_markdown_cache_misses_when_width_or_render_style_changes --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::raw_markdown_bypasses_the_rich_render_cache --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::visualization_directives_are_not_cached --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::plans::tests::finalized_plan_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_replaces_previous_message --lib -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content -- --exact --test-threads=1
@@ -392,6 +403,7 @@ app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::paginated_thread_name_preserves_metadata_across_read_list_and_resume -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
 
 # Focused MCP server contract slice for approval and tool response ordering.
@@ -510,6 +522,11 @@ core-attestation-targeted:
 
 # missing SQLx migration records.
 state-migration-repair-targeted:
+    cargo test -p codex-state migrations::tests::state_migration_versions_are_unique --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_recency_migration_that_was_applied_as_version_38 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_visible_sort_indexes_migration_that_was_applied_as_version_40 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_remote_control_enabled_migration_that_was_applied_as_version_41 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held --lib -- --exact --test-threads=1
     cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 
 # Codex authoritative usage.sqlite logging contracts.

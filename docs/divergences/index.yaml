@@ -145,6 +145,7 @@
         "codex-rs/memories/write/src/phase2_attestation_tests.rs",
         "codex-rs/memories/write/src/startup_tests.rs",
         "codex-rs/state/src/migrations.rs",
+        "codex-rs/state/src/migrations_tests.rs",
         "codex-rs/state/src/runtime/migration_repair.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/phase2_attestation.rs",
@@ -152,7 +153,8 @@
         "codex-rs/state/migrations/0038_phase2_attested_baselines.sql",
         "codex-rs/state/migrations/0031_device_key_bindings.sql",
         "codex-rs/state/migrations/0032_thread_goals.sql",
-        "codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql"
+        "codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql",
+        "codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql"
       ],
       "behavior": "Downstream records phase-2 output-tree baselines through a memories phase-2 extension storage namespace before consolidation can complete. Existing compatibility tables remain available, while future phase-2 storage migrations use a namespace ledger instead of consuming upstream state migration numbers.",
       "upstream_equivalent": false,
@@ -160,15 +162,17 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.core-attestation-targeted",
+      "guardrail_lane": "codex.core-attestation-targeted; codex.state-migration-repair-targeted",
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
+        "state_migration_versions_are_unique",
+        "repairs_remote_control_enabled_migration_that_was_applied_as_version_41",
         "phase2_attestation::*",
         "memories_startup_phase2_*",
         "runtime::phase2_attestation::*"
       ],
       "owner": "downstream",
-      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage. For already-shipped downstream core state migrations, preserve upstream migration numbers where possible and move downstream additive carry to the next free version with checksum-gated runtime repair for databases that recorded the old downstream version.",
+      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage. For already-shipped downstream core state migrations, preserve upstream migration numbers where possible and move downstream additive carry to the next free version with checksum-gated runtime repair for databases that recorded the old downstream version. The 2026-07-20 sync preserves upstream 0041_threads_name.sql and moves the previously renumbered remote-control-enabled migration from downstream slot 0041 to 0046; the repair path recognizes the exact old checksum before rewriting migration history. After the repaired database applies upstream 0041, pre-sync binaries cannot reopen it because they know the former 0041 checksum, so binary-only rollback requires a pre-upgrade database copy.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
@@ -813,6 +817,8 @@
         "codex-rs/realtime-webrtc/src/lib.rs",
         "codex-rs/realtime-webrtc/src/native.rs",
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
         "codex-rs/tui/src/app_backtrack.rs",
         "codex-rs/tui/src/multi_agents.rs",
         "codex-rs/tui/Cargo.toml",
@@ -825,19 +831,23 @@
         "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/markdown_render_cache.rs",
         "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/history_cell/messages_tests.rs",
         "codex-rs/tui/src/history_cell/plans.rs",
+        "codex-rs/tui/src/history_cell/plans_tests.rs",
         "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/render/highlight.rs",
         "codex-rs/tui/src/status/card.rs",
         "codex-rs/tui/src/status/rate_limits.rs"
       ],
-      "behavior": "Per-thread session state, queued interaction semantics, active-turn status labels, and selected-turn clipboard success or failure feedback stay stable across the TUI surfaces. Selected-turn copy reads finalized raw markdown from source-backed transcript cells inside the selected prompt boundary instead of maintaining a parallel rollback cache, and active status shows \"Compacting context\" while a context compaction item is running. The isolated codex-realtime-webrtc crate retains the macOS offer/answer, audio-track, and local-level transport used by downstream realtime voice while unsupported targets fail explicitly.",
+      "behavior": "Per-thread session state, queued interaction semantics, active-turn status labels, and selected-turn clipboard success or failure feedback stay stable across the TUI surfaces. Replay routing updates active-turn and side-parent state before omitting replay-irrelevant large notifications, while native computer-use completion items remain replayable and downstream realtime audio continues through the dedicated transport. Finalized rich Markdown and plan rendering may cache width/theme/palette-derived lines, but raw transcript and selected-turn copy still read canonical source and visualization directives remain uncached. Selected-turn copy reads finalized raw markdown from source-backed transcript cells inside the selected prompt boundary instead of maintaining a parallel rollback cache, and active status shows \"Compacting context\" while a context compaction item is running. The isolated codex-realtime-webrtc crate retains the macOS offer/answer, audio-track, and local-level transport used by downstream realtime voice while unsupported targets fail explicitly.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.tui-agent-usage-totals-targeted; codex.tui-transcript-viewport-targeted; GitHub blocking-ci Bazel macOS release and clippy jobs",
+      "guardrail_lane": "codex.tui-agent-usage-totals-targeted; codex.tui-agent-picker-targeted; codex.tui-transcript-viewport-targeted; GitHub blocking-ci Bazel macOS release and clippy jobs",
       "tests": [
         "live_app_server_context_compaction_start_updates_status_header",
         "status_snapshot_distinguishes_session_and_thread_token_usage",
@@ -845,7 +855,18 @@
         "transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown",
         "transcript_turn_copy_source_supports_proposed_plan",
         "transcript_turn_copy_source_requires_finalized_markdown",
-        "transcript_overlay_footer_status_snapshot"
+        "transcript_overlay_footer_status_snapshot",
+        "finalized_markdown_reuses_lines_primed_by_transcript_height",
+        "finalized_markdown_cache_misses_when_width_or_render_style_changes",
+        "raw_markdown_bypasses_the_rich_render_cache",
+        "visualization_directives_are_not_cached",
+        "finalized_plan_reuses_lines_primed_by_transcript_height",
+        "thread_event_store_skips_large_replay_irrelevant_notifications",
+        "thread_event_store_tracks_active_turn_lifecycle",
+        "thread_event_store_rebase_preserves_mcp_startup_notifications",
+        "enqueue_thread_event_does_not_block_when_channel_full",
+        "side_parent_status_tracks_parent_turn_lifecycle",
+        "side_parent_status_prioritizes_input_over_approval"
       ],
       "owner": "downstream",
       "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, selected-turn CopyStatus feedback, and the carried non-Linux realtime voice platform split aligned. After upstream replaced rollback with source-preserving forks, selected-turn copy deliberately follows finalized AgentMarkdownCell and ProposedPlanCell source within the selected prompt boundary; do not restore the removed ordinal cache, rollback truncation, or rollback-only error state. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The voice split includes the isolated codex-realtime-webrtc crate, target-specific TUI cpal dependency, and Cargo/Bazel lock graph required by hosted macOS/Windows builds.",
@@ -858,6 +879,8 @@
         "codex-rs/realtime-webrtc/src/lib.rs",
         "codex-rs/realtime-webrtc/src/native.rs",
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
         "codex-rs/tui/src/app_backtrack.rs",
         "codex-rs/tui/Cargo.toml",
         "codex-rs/tui/src/bottom_pane/mod.rs",
@@ -870,9 +893,13 @@
         "codex-rs/tui/src/chatwidget/transcript.rs",
         "codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
         "codex-rs/tui/src/history_cell/mod.rs",
+        "codex-rs/tui/src/history_cell/markdown_render_cache.rs",
         "codex-rs/tui/src/history_cell/messages.rs",
+        "codex-rs/tui/src/history_cell/messages_tests.rs",
         "codex-rs/tui/src/history_cell/plans.rs",
+        "codex-rs/tui/src/history_cell/plans_tests.rs",
         "codex-rs/tui/src/pager_overlay.rs",
+        "codex-rs/tui/src/render/highlight.rs",
         "codex-rs/tui/src/voice.rs"
       ],
       "extraction_target": "TUI status/session contributor slots plus an isolated realtime voice transport seam"
@@ -2185,7 +2212,7 @@
     },
     {
       "id": "app-server-thread-metadata-compatibility",
-      "title": "App-server thread source and history mode compatibility",
+      "title": "App-server thread source, history mode, and name compatibility",
       "status": "live",
       "category": "app-server-protocol",
       "surface": [
@@ -2199,15 +2226,16 @@
         "codex-rs/state/",
         "codex-rs/thread-store/",
         "codex-rs/app-server-protocol/",
-        "codex-rs/app-server/tests/suite/conversation_summary.rs"
+        "codex-rs/app-server/tests/suite/conversation_summary.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs"
       ],
-      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata. App-server, rollout, state, and thread-store paths retain both independent fields; upstream paginated legacy full views hydrate stored ThreadItem projections for read, resume, initial-turn, turn-list, and item-list requests without erasing side, agent, or other source provenance.",
+      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata and state-backed thread names. App-server, rollout, state, and thread-store paths retain all three independent fields; upstream paginated legacy full views hydrate stored ThreadItem projections for read, list, resume, initial-turn, turn-list, and item-list requests without erasing side, agent, or other source provenance.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.app-server-protocol-test; core-ledger-smoke",
+      "guardrail_lane": "codex.app-server-protocol-test; codex.app-server-v2-contract-targeted; core-ledger-smoke",
       "tests": [
         "thread_fork_side_source_persists_and_hides_from_default_list",
         "observed_metadata_rebuilds_history_mode_from_canonical_session_meta",
@@ -2215,11 +2243,12 @@
         "paginated_history_lists_use_projected_turns_and_items",
         "thread_resume_rejoins_running_paginated_thread_with_initial_page",
         "thread_resume_initial_turns_page_matches_requested_turns_list_page",
+        "paginated_thread_name_preserves_metadata_across_read_list_and_resume",
         "typescript_schema_fixtures_match_generated",
         "json_schema_fixtures_match_generated"
       ],
       "owner": "downstream",
-      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata; history_mode and paginated legacy full-view projection remain upstream-owned, while thread_source preservation remains downstream carry.",
+      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata plus state-backed names; history_mode, thread names, and paginated legacy full-view projection remain upstream-owned, while thread_source preservation remains downstream carry.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "thread-metadata-compatibility",
       "hotspot_files": [
@@ -2229,7 +2258,7 @@
         "codex-rs/thread-store/",
         "codex-rs/app-server-protocol/"
       ],
-      "extraction_target": "thread provenance and history-mode coexistence contract"
+      "extraction_target": "thread provenance, history mode, and state-backed name coexistence contract"
     },
     {
       "id": "configured-thread-identity-provenance-contract",

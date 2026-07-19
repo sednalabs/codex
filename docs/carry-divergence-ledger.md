@@ -418,7 +418,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
   - `scripts/codex-resume-recent.sh`
 
-### App-server Thread Source And History Mode Compatibility
+### App-server Thread Source, History Mode, And Name Compatibility
 
 - Preserve downstream `thread_source` provenance alongside upstream
   `history_mode` metadata in thread listing, summary, resume, persisted
@@ -431,6 +431,9 @@ docs-only refresh commit that records this snapshot.
   `ThreadItem` projection rather than rebuilding paginated context through the
   legacy event-history path. That upstream ownership must continue to preserve
   downstream `thread_source` alongside `history_mode`.
+- Upstream state-backed thread names are likewise additive metadata. Named
+  paginated threads must preserve `thread_source`, `history_mode`, and `name`
+  together across read, state-only list, and metadata-only resume responses.
 - Primary files:
   - `codex-rs/protocol/`
   - `codex-rs/rollout/`
@@ -438,6 +441,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/thread-store/`
   - `codex-rs/app-server-protocol/`
   - `codex-rs/app-server/tests/suite/conversation_summary.rs`
+  - `codex-rs/app-server/tests/suite/v2/thread_read.rs`
 
 ### Private Configured Thread Identity Provenance Contract
 
@@ -489,6 +493,14 @@ docs-only refresh commit that records this snapshot.
   for databases that already recorded the old version. The current example is
   preserving upstream `0040_threads_history_mode.sql` while moving downstream
   visible-thread sort indexes to `0044_threads_visible_sort_indexes.sql`.
+  The 2026-07-20 sync likewise preserves upstream
+  `0041_threads_name.sql` and moves the previously renumbered
+  remote-control-enabled migration from downstream slot `0041` to
+  `0046_remote_control_enrollments_enabled.sql`; checksum-gated repair moves
+  already-applied downstream `0041` records before the upstream migration runs.
+  Once that repair and upstream `0041` have run, a pre-sync binary cannot reopen
+  the same database because it knows the old `0041` checksum; rollback therefore
+  requires a pre-upgrade database copy rather than only replacing the binary.
 - Upstream `thread_history_migrations/0002_thread_items_item_type.sql` belongs
   to the separate rebuildable `thread_history_1.sqlite` migrator. It does not
   collide with downstream state migration `0045`, and must not trigger state
@@ -499,6 +511,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/memories/write/src/phase2_attestation_tests.rs`
   - `codex-rs/memories/write/src/startup_tests.rs`
   - `codex-rs/state/src/migrations.rs`
+  - `codex-rs/state/src/migrations_tests.rs`
   - `codex-rs/state/src/runtime/migration_repair.rs`
   - `codex-rs/state/src/runtime/phase2_attestation.rs`
   - `codex-rs/state/migrations/0024_phase2_attestation_roots.sql`
@@ -506,6 +519,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql`
+  - `codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql`
   - `docs/memories.md`
 
 ### Release Metadata And Rebuild Triggers
@@ -1187,6 +1201,11 @@ docs-only refresh commit that records this snapshot.
   visible prompt. After upstream moved retry safety to source-preserving forks,
   this path intentionally reads canonical transcript cells and carries no
   ordinal cache, rollback truncation, or rollback-only error state.
+- Finalized assistant Markdown and proposed plans may cache rich rendered lines
+  by width, syntax-theme revision, terminal palette, and color level. Raw
+  transcript and selected-turn copy remain source-backed, and visualization
+  directives remain uncached because their filesystem-dependent result can
+  change after insertion.
 - Bottom-pane transient views run their pre-draw tick and completion path so
   request-user-input overlays and other timed active views can redraw,
   auto-resolve, and pop through the same active-view seam instead of stalling
@@ -1202,6 +1221,10 @@ docs-only refresh commit that records this snapshot.
   target-scoped `cpal` entry in `codex-rs/tui/Cargo.toml`, and their Cargo and
   Bazel dependency graphs. The WebRTC crate is an intentional macOS transport
   boundary, not an orphan left behind by upstream's removal.
+- Thread replay routing may omit only notifications that are already handled or
+  ignored during replay. It must update active-turn and side-parent state first,
+  retain replay-visible native computer-use completion items, and keep
+  downstream realtime audio forwarding on its dedicated transport.
 - Weekly status-line pacing keeps downstream stale handling and selectable
   render styles.
 - Upgradeable legacy models stay visible in the model picker even when ordinary
@@ -1211,6 +1234,8 @@ docs-only refresh commit that records this snapshot.
   conversation remain application exits.
 - Primary files:
   - `codex-rs/tui/src/app.rs`
+  - `codex-rs/tui/src/app/thread_events.rs`
+  - `codex-rs/tui/src/app/thread_routing.rs`
   - `codex-rs/tui/src/app/side.rs`
   - `codex-rs/tui/src/app/event_dispatch.rs`
   - `codex-rs/tui/src/app_backtrack.rs`
@@ -1239,9 +1264,13 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/history_cell/mod.rs`
+  - `codex-rs/tui/src/history_cell/markdown_render_cache.rs`
   - `codex-rs/tui/src/history_cell/messages.rs`
+  - `codex-rs/tui/src/history_cell/messages_tests.rs`
   - `codex-rs/tui/src/history_cell/plans.rs`
+  - `codex-rs/tui/src/history_cell/plans_tests.rs`
   - `codex-rs/tui/src/pager_overlay.rs`
+  - `codex-rs/tui/src/render/highlight.rs`
   - `codex-rs/tui/src/status/card.rs`
   - `codex-rs/tui/src/status/rate_limits.rs`
   - `docs/config.md`
@@ -1457,6 +1486,9 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server-daemon/src/backend/pid_tests.rs` removes the PID file
     while its reservation lock remains held, preventing test cleanup races;
     drop this carry when upstream adopts equivalent ordering
+  - `codex-rs/tui/src/diff_render.rs` retains the downstream ratatui `0.30.1`
+    `Widget::render` test adapter and tab-free gallery fixtures; production
+    rendering follows upstream's borrowed-file-change implementation
 - Schema-generation adapters that preserve legacy wire deserialization while
   keeping generated app-server schemas on the current public shape, such as
   `#[schemars(!from)]` around `MultiAgentMode` wire aliases, belong with
