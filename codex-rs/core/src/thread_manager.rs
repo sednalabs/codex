@@ -1276,13 +1276,17 @@ impl ThreadManagerState {
             Ok(thread) => thread,
             Err(err) => return (None, Err(err)),
         };
+        self.record_submitted_op(thread_id, &op);
+        let result = thread.submit(op).await;
+        (Some(thread), result)
+    }
+
+    pub(crate) fn record_submitted_op(&self, thread_id: ThreadId, op: &Op) {
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
         {
             log.push((thread_id, op.clone()));
         }
-        let result = thread.submit(op).await;
-        (Some(thread), result)
     }
 
     /// Remove a thread from the manager by ID, returning it when present.

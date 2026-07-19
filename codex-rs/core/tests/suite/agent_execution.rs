@@ -1,7 +1,6 @@
 use anyhow::Result;
 use codex_features::Feature;
 use codex_protocol::error::CodexErr;
-use codex_protocol::protocol::AgentStatus;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
@@ -18,6 +17,10 @@ const FIRST_PROMPT: &str = "spawn the first worker";
 const FIRST_TASK: &str = "first worker task";
 const SECOND_PROMPT: &str = "spawn the second worker";
 const SECOND_TASK: &str = "second worker task";
+const QUEUE_PROMPT: &str = "queue a note for the first worker";
+const QUEUED_MESSAGE: &str = "remember the cold mailbox note";
+const FOLLOWUP_PROMPT: &str = "resume the first worker";
+const FOLLOWUP_TASK: &str = "continue after the cold mailbox note";
 const MULTI_AGENT_V2_NAMESPACE: &str = "agents";
 
 fn body_contains(request: &wiremock::Request, text: &str) -> bool {
@@ -136,7 +139,7 @@ async fn v2_nested_spawn_checks_shared_active_execution_capacity() -> Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v2_evicted_completed_agent_keeps_final_status() -> Result<()> {
+async fn v2_cold_mailbox_allows_eviction_and_replays_on_followup() -> Result<()> {
     let server = start_mock_server().await;
     let first_args = serde_json::to_string(&json!({
         "message": FIRST_TASK,
@@ -154,6 +157,36 @@ async fn v2_evicted_completed_agent_keeps_final_status() -> Result<()> {
                 &first_args,
             ),
             ev_completed("first-response"),
+        ]),
+    )
+    .await;
+
+    let queue_args = serde_json::to_string(&json!({
+        "target": "first",
+        "items": [{"type": "text", "text": QUEUED_MESSAGE}],
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| body_contains(request, QUEUE_PROMPT),
+        sse(vec![
+            ev_response_created("queue-response"),
+            ev_function_call_with_namespace(
+                "queue-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "send_message",
+                &queue_args,
+            ),
+            ev_completed("queue-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| has_function_call_output(request, "queue-call"),
+        sse(vec![
+            ev_response_created("queue-followup-response"),
+            ev_assistant_message("queue-followup-message", "queued"),
+            ev_completed("queue-followup-response"),
         ]),
     )
     .await;
@@ -216,23 +249,50 @@ async fn v2_evicted_completed_agent_keeps_final_status() -> Result<()> {
         |request: &wiremock::Request| has_function_call_output(request, "second-call"),
         sse(vec![
             ev_response_created("second-followup-response"),
-            ev_function_call_with_namespace(
-                "interrupt-call",
-                MULTI_AGENT_V2_NAMESPACE,
-                "interrupt_agent",
-                &serde_json::to_string(&json!({"target": "first"}))?,
-            ),
+            ev_assistant_message("second-followup-message", "spawned"),
             ev_completed("second-followup-response"),
         ]),
     )
     .await;
-    let interrupt_followup = mount_sse_once_match(
+
+    let followup_args = serde_json::to_string(&json!({
+        "target": "first",
+        "message": FOLLOWUP_TASK,
+    }))?;
+    mount_sse_once_match(
         &server,
-        |request: &wiremock::Request| has_function_call_output(request, "interrupt-call"),
+        |request: &wiremock::Request| body_contains(request, FOLLOWUP_PROMPT),
         sse(vec![
-            ev_response_created("interrupt-followup-response"),
-            ev_assistant_message("interrupt-followup-message", "done"),
-            ev_completed("interrupt-followup-response"),
+            ev_response_created("followup-response"),
+            ev_function_call_with_namespace(
+                "followup-call",
+                MULTI_AGENT_V2_NAMESPACE,
+                "followup_task",
+                &followup_args,
+            ),
+            ev_completed("followup-response"),
+        ]),
+    )
+    .await;
+    let followup_child = mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, QUEUED_MESSAGE) && body_contains(request, FOLLOWUP_TASK)
+        },
+        sse(vec![
+            ev_response_created("followup-worker-response"),
+            ev_assistant_message("followup-worker-message", "first worker resumed"),
+            ev_completed("followup-worker-response"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| has_function_call_output(request, "followup-call"),
+        sse(vec![
+            ev_response_created("followup-result-response"),
+            ev_assistant_message("followup-result-message", "resumed"),
+            ev_completed("followup-result-response"),
         ]),
     )
     .await;
@@ -261,16 +321,15 @@ async fn v2_evicted_completed_agent_keeps_final_status() -> Result<()> {
     let first_thread = test.thread_manager.get_thread(first_id).await?;
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if first_thread.agent_status().await
-                == AgentStatus::Completed(Some("first worker done".to_string()))
-                && first_thread.inject_if_running(Vec::new()).await.is_err()
-            {
+            if first_thread.inject_if_running(Vec::new()).await.is_err() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await?;
+
+    test.submit_turn(QUEUE_PROMPT).await?;
 
     test.submit_turn(SECOND_PROMPT).await?;
 
@@ -279,12 +338,42 @@ async fn v2_evicted_completed_agent_keeps_final_status() -> Result<()> {
         Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
-    let interrupt_output = interrupt_followup
-        .function_call_output_text("interrupt-call")
-        .expect("interrupt_agent output should reach the model");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&interrupt_output)?,
-        json!({"previous_status": {"completed": "first worker done"}})
+    let second_id = test
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .find(|id| *id != test.session_configured.thread_id)
+        .expect("second worker should be resident");
+    let second_thread = test.thread_manager.get_thread(second_id).await?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if second_thread.inject_if_running(Vec::new()).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+
+    test.submit_turn(FOLLOWUP_PROMPT).await?;
+    let replay_request = followup_child
+        .requests()
+        .into_iter()
+        .find(|request| {
+            request.body_contains_text(QUEUED_MESSAGE) && request.body_contains_text(FOLLOWUP_TASK)
+        })
+        .expect("follow-up request should contain cold and trigger mail");
+    let replay_body = replay_request.body_json().to_string();
+    let queued_position = replay_body
+        .find(QUEUED_MESSAGE)
+        .expect("cold mail should be present");
+    let followup_position = replay_body
+        .find(FOLLOWUP_TASK)
+        .expect("triggering follow-up should be present");
+    assert!(
+        queued_position < followup_position,
+        "cold mail should precede the triggering follow-up"
     );
 
     Ok(())

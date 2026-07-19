@@ -5,6 +5,25 @@ impl AgentControl {
     /// persisted spawn-edge state.
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
+        if let Some(metadata) = self.state.agent_metadata_for_thread(agent_id) {
+            let mut lifecycle = metadata.lifecycle.lock().await;
+            if !self.state.metadata_is_current(agent_id, &metadata) {
+                return Err(CodexErr::ThreadNotFound(agent_id));
+            }
+            lifecycle.discard_cold_mail();
+            return self
+                .shutdown_live_agent_under_lifecycle(&state, agent_id)
+                .await;
+        }
+        self.shutdown_live_agent_under_lifecycle(&state, agent_id)
+            .await
+    }
+
+    async fn shutdown_live_agent_under_lifecycle(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        agent_id: ThreadId,
+    ) -> CodexResult<String> {
         let result = if let Ok(thread) = state.get_thread(agent_id).await {
             thread.session.ensure_rollout_materialized().await;
             thread.session.flush_rollout().await?;
@@ -28,7 +47,18 @@ impl AgentControl {
     /// agent and any live descendants reached from the in-memory tree.
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-        let known_agent = self.state.agent_metadata_for_thread(agent_id).is_some();
+        let metadata = self.state.agent_metadata_for_thread(agent_id);
+        let known_agent = metadata.is_some();
+        let mut lifecycle = match metadata.as_ref() {
+            Some(metadata) => {
+                let lifecycle = metadata.lifecycle.lock().await;
+                if !self.state.metadata_is_current(agent_id, metadata) {
+                    return Err(CodexErr::ThreadNotFound(agent_id));
+                }
+                Some(lifecycle)
+            }
+            None => None,
+        };
         match state.get_thread(agent_id).await {
             Ok(thread) => {
                 if !thread.config_snapshot().await.ephemeral
@@ -62,7 +92,21 @@ impl AgentControl {
                 warn!("failed to inspect agent before close {agent_id}: {err}");
             }
         }
-        match Box::pin(self.shutdown_agent_tree(agent_id)).await {
+        if let Some(lifecycle) = lifecycle.as_mut() {
+            lifecycle.discard_cold_mail();
+        }
+        let descendant_ids = self.live_thread_spawn_descendants(agent_id).await?;
+        let result = self
+            .shutdown_live_agent_under_lifecycle(&state, agent_id)
+            .await;
+        drop(lifecycle);
+        for descendant_id in descendant_ids {
+            match self.shutdown_live_agent(descendant_id).await {
+                Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        match result {
             Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) if known_agent => {
                 Ok(String::new())
             }

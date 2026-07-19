@@ -3,6 +3,7 @@ use crate::CodexThread;
 use crate::StateDbHandle;
 use crate::ThreadManager;
 use crate::agent::agent_status_from_event;
+use crate::agent::lifecycle::ColdMailboxItem;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::AgentRoleConfig;
@@ -761,6 +762,37 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         Ok(_) => panic!("expected thread to be removed"),
     }
 
+    let cold_communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        agent_path.clone(),
+        Vec::new(),
+        "queued while cold".to_string(),
+        /*trigger_turn*/ false,
+    );
+    harness
+        .control
+        .prepare_v2_agent_delivery(spawned_agent.thread_id)
+        .await
+        .expect("cold queue-only delivery should prepare without reload")
+        .send(
+            cold_communication.clone(),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, ThreadId::new()),
+            /*interrupt*/ false,
+        )
+        .await
+        .expect("cold queue-only delivery should succeed");
+    assert!(
+        harness
+            .manager
+            .get_thread(spawned_agent.thread_id)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        registered_metadata.lifecycle.lock().await.cold_mail_len(),
+        1
+    );
+
     let mut conflicting_resume_config = harness.config.clone();
     conflicting_resume_config.model = Some("different-caller-model".to_string());
     conflicting_resume_config.model_reasoning_effort = Some(ReasoningEffort::High);
@@ -783,6 +815,10 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         harness.control.get_status(spawned_agent.thread_id).await,
         cold_status
     );
+    assert_eq!(
+        registered_metadata.lifecycle.lock().await.cold_mail_len(),
+        1
+    );
     conflicting_resume_config.model_provider.base_url =
         Some("http://runtime-provider.invalid/v1".to_string());
     conflicting_resume_config.model_provider.supports_websockets = false;
@@ -797,6 +833,14 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .get_thread(spawned_agent.thread_id)
         .await
         .expect("reloaded child thread should exist");
+    assert_eq!(
+        reloaded_thread
+            .session
+            .input_queue
+            .drain_mailbox_communications()
+            .await,
+        vec![cold_communication]
+    );
     assert_eq!(
         harness
             .control
@@ -870,6 +914,49 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .into_iter()
         .find(|entry| *entry == expected);
     assert_eq!(captured, Some(expected));
+}
+
+#[tokio::test]
+async fn close_agent_discards_registry_owned_cold_mail() {
+    let harness = AgentControlHarness::new().await;
+    let agent_id = ThreadId::new();
+    harness
+        .control
+        .state
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve registry slot")
+        .commit(AgentMetadata {
+            agent_id: Some(agent_id),
+            ..Default::default()
+        });
+    let metadata = harness
+        .control
+        .state
+        .agent_metadata_for_thread(agent_id)
+        .expect("registered metadata");
+    metadata
+        .lifecycle
+        .lock()
+        .await
+        .push_cold_mail(ColdMailboxItem {
+            receive_id: Some("cold-mail".to_string()),
+            communication: InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                Vec::new(),
+                "discard me".to_string(),
+                /*trigger_turn*/ false,
+            ),
+        });
+
+    harness
+        .control
+        .close_agent(agent_id)
+        .await
+        .expect("closing a known cold agent should succeed");
+
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 0);
+    assert!(harness.control.get_agent_metadata(agent_id).is_none());
 }
 
 #[tokio::test]

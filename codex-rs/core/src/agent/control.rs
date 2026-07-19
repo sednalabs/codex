@@ -69,6 +69,7 @@ const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
 );
 mod execution;
 mod legacy;
+mod lifecycle;
 mod residency;
 mod spawn;
 
@@ -290,6 +291,13 @@ impl AgentControl {
         communication: InterAgentCommunication,
         context: AgentCommunicationContext,
     ) -> CodexResult<String> {
+        if self.uses_v2_lifecycle(state, agent_id).await {
+            return self
+                .prepare_v2_agent_delivery(agent_id)
+                .await?
+                .send_after_capacity_check(communication, context, /*interrupt*/ false)
+                .await;
+        }
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
         let (thread, result) = state

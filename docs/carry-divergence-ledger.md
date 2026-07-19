@@ -606,10 +606,24 @@ docs-only refresh commit that records this snapshot.
   `Interrupted` status behind the current registry generation. Status queries
   and newly created subscriptions expose that cold snapshot, failed reloads
   keep it, and a successful reload clears it. Bridging an already-open cold
-  subscription across reload belongs to the serialized lifecycle follow-up.
+  subscription across reload remains separate follow-up work.
   This is a manual port of the useful mechanism from draft upstream PR #30154
   onto the current tree, extended to keep interrupted identities observable and
   reloadable.
+- Each registered agent generation now owns one serialized lifecycle authority
+  for V2 unload, reload, message delivery, and explicit close. Queue-only mail
+  sent to an unloaded agent remains in a registry-owned FIFO without starting a
+  runtime. Reloads serialize on a gate that eviction never acquires; residency
+  reservation releases the mailbox lock and rechecks the registry generation
+  before reload. A triggering follow-up transfers the FIFO first and retains it
+  if reload fails.
+- Residency eviction may move pending queue-only mail out of a completed,
+  errored, or interrupted runtime instead of pinning that runtime indefinitely.
+  Triggering mail remains live and blocks eviction; failed shutdown restores
+  the exact drained FIFO, identity-checked replacement races receive the FIFO,
+  and explicit close discards cold mail under the same lifecycle authority.
+  Preserve this direct fix for upstream issue #32353 until upstream provides an
+  equivalent generation-safe lifecycle and mailbox-transfer contract.
 - Eviction fails closed for ephemeral V2 sessions without a durable rollout;
   capacity pressure leaves that runtime resident rather than manufacturing a
   cold identity that persisted-history reload cannot restore.
@@ -618,10 +632,14 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
   - `codex-rs/core/src/agent/control.rs`
+  - `codex-rs/core/src/agent/control/legacy.rs`
+  - `codex-rs/core/src/agent/control/lifecycle.rs`
   - `codex-rs/core/src/agent/control/residency.rs`
   - `codex-rs/core/src/agent/control/residency_tests.rs`
   - `codex-rs/core/src/agent/control/spawn.rs`
   - `codex-rs/core/src/agent/control_tests.rs`
+  - `codex-rs/core/src/agent/lifecycle.rs`
+  - `codex-rs/core/src/agent/mod.rs`
   - `codex-rs/core/src/agent/registry.rs`
   - `codex-rs/core/src/agent/registry_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
@@ -631,7 +649,10 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/src/codex_delegate.rs`
   - `codex-rs/core/src/config/mod.rs`
   - `codex-rs/core/src/config/schema_tests.rs`
+  - `codex-rs/core/src/session/input_queue.rs`
+  - `codex-rs/core/src/session/mod.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
+  - `codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`
