@@ -340,7 +340,7 @@ Primary files:
 - `codex-rs/core/src/agent/control/lifecycle.rs`
 - `codex-rs/core/src/agent/control/residency.rs`
 - `codex-rs/core/src/agent/registry.rs`
-- `codex-rs/core/src/tasks/mod.rs`
+- `codex-rs/core/src/session/handlers.rs`
 - `codex-rs/core/src/thread_manager.rs`
 - `codex-rs/config/src/config_toml.rs`
 - `codex-rs/core/config.schema.json`

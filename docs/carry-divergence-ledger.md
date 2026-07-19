@@ -613,8 +613,8 @@ docs-only refresh commit that records this snapshot.
 - Each registered agent generation now owns one serialized lifecycle authority
   for V2 unload, reload, message delivery, and explicit close. Queue-only mail
   sent to an unloaded agent remains in a registry-owned FIFO without starting a
-  runtime. Loaded delivery completes mailbox scheduling behind a boxed scheduler
-  boundary under the same authority. A triggering follow-up reloads once,
+  runtime. Loaded delivery completes mailbox scheduling behind boxed lifecycle
+  and handler boundaries. A triggering follow-up reloads once,
   transfers the FIFO first, and retains it if reload fails.
 - Residency eviction may move pending queue-only mail out of a completed,
   errored, or interrupted runtime instead of pinning that runtime indefinitely.
