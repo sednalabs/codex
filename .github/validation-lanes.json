@@ -1867,6 +1867,9 @@
       ],
       "allowed_paths": [
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
         "codex-rs/tui/src/app/tests.rs",
         "codex-rs/tui/src/app/thread_events.rs",
         "codex-rs/tui/src/app/thread_routing.rs",
@@ -1877,6 +1880,8 @@
       ],
       "required_any_paths": [
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
         "codex-rs/tui/src/app/tests.rs",
         "codex-rs/tui/src/app/thread_events.rs",
         "codex-rs/tui/src/app/thread_routing.rs",

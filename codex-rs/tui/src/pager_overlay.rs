@@ -676,42 +676,54 @@ impl TranscriptOverlay {
         cells
             .iter()
             .enumerate()
-            .flat_map(|(i, c)| {
-                let mut v: Vec<Box<dyn Renderable>> = Vec::new();
-                let base_renderable = if c.as_any().is::<UserHistoryCell>() {
-                    Box::new(CachedRenderable::new(CellRenderable {
-                        cell: c.clone(),
-                        cell_index: i,
-                        style: user_message_style(),
-                        selected_style: Some(user_message_style().reversed()),
-                        highlight_cell: highlight_cell.clone(),
-                        render_mode,
-                        detail_mode,
-                    })) as Box<dyn Renderable>
-                } else {
-                    Box::new(CachedRenderable::new(CellRenderable {
-                        cell: c.clone(),
-                        cell_index: i,
-                        style: Style::default(),
-                        selected_style: None,
-                        highlight_cell: highlight_cell.clone(),
-                        render_mode,
-                        detail_mode,
-                    })) as Box<dyn Renderable>
-                };
-                let mut cell_renderable = base_renderable;
-                if !c.is_stream_continuation() && i > 0 {
-                    cell_renderable = Box::new(InsetRenderable::new(
-                        cell_renderable,
-                        Insets::tlbr(
-                            /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
-                        ),
-                    ));
-                }
-                v.push(cell_renderable);
-                v
+            .map(|(index, cell)| {
+                Self::render_cell(
+                    cell,
+                    index,
+                    highlight_cell.clone(),
+                    render_mode,
+                    detail_mode,
+                )
             })
             .collect()
+    }
+
+    /// Build the renderable for a committed cell, caching its height when the cell is stable.
+    fn render_cell(
+        cell: &Arc<dyn HistoryCell>,
+        index: usize,
+        highlight_cell: HighlightCell,
+        render_mode: HistoryRenderMode,
+        detail_mode: TranscriptDetailMode,
+    ) -> Box<dyn Renderable> {
+        let (style, selected_style) = if cell.as_any().is::<UserHistoryCell>() {
+            (user_message_style(), Some(user_message_style().reversed()))
+        } else {
+            (Style::default(), None)
+        };
+        let cell_renderable = CellRenderable {
+            cell: cell.clone(),
+            cell_index: index,
+            style,
+            selected_style,
+            highlight_cell,
+            render_mode,
+            detail_mode,
+        };
+        let mut cell_renderable: Box<dyn Renderable> = if cell.has_stable_transcript_height() {
+            Box::new(CachedRenderable::new(cell_renderable))
+        } else {
+            Box::new(cell_renderable)
+        };
+        if !cell.is_stream_continuation() && index > 0 {
+            cell_renderable = Box::new(InsetRenderable::new(
+                cell_renderable,
+                Insets::tlbr(
+                    /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+                ),
+            ));
+        }
+        cell_renderable
     }
 
     fn user_prompt_positions(cells: &[Arc<dyn HistoryCell>]) -> Vec<usize> {
@@ -726,7 +738,7 @@ impl TranscriptOverlay {
 
     /// Insert a committed history cell while keeping any cached live tail.
     ///
-    /// The live tail is temporarily removed, the committed cells are rebuilt,
+    /// The live tail is temporarily removed, the new committed cell is appended,
     /// then the tail is reattached. If the tail previously had no leading
     /// spacing because it was the only renderable, we add the missing inset
     /// when the first committed cell arrives.
@@ -738,14 +750,16 @@ impl TranscriptOverlay {
         let follow_bottom = self.view.is_scrolled_to_bottom();
         let had_prior_cells = !self.cells.is_empty();
         let tail_renderable = self.take_live_tail_renderable();
-        self.cells.push(cell);
-        self.user_prompt_positions = Self::user_prompt_positions(&self.cells);
-        self.view.renderables = Self::render_cells(
-            &self.cells,
+        let cell_renderable = Self::render_cell(
+            &cell,
+            self.cells.len(),
             self.highlight_cell.clone(),
             self.render_mode,
             self.detail_mode,
         );
+        self.cells.push(cell);
+        self.user_prompt_positions = Self::user_prompt_positions(&self.cells);
+        self.view.renderables.push(cell_renderable);
         self.view.invalidate_layout();
         if let Some(tail) = tail_renderable {
             let tail = if !had_prior_cells
@@ -1308,6 +1322,9 @@ impl TranscriptOverlay {
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        // Rebuild aggregate offsets once per frame so externally mutable cells are remeasured.
+        // Stable cell renderables retain their own per-width height cache.
+        self.view.invalidate_layout();
         self.clear_expired_footer_status_at(Instant::now());
         self.last_rendered_area = Some(area);
         let top_h = area.height.saturating_sub(3);
@@ -1551,6 +1568,8 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
     use std::time::Instant;
     use tempfile::TempDir;
@@ -1606,6 +1625,60 @@ mod tests {
 
         fn transcript_lines(&self, _width: u16) -> Vec<Line<'static>> {
             self.transcript_lines.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct HeightCountingCell {
+        height_calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::history_cell::HistoryCell for HeightCountingCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![Line::from("counted")]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec![Line::from("counted")]
+        }
+
+        fn desired_transcript_height_for_detail_mode(
+            &self,
+            _width: u16,
+            _render_mode: HistoryRenderMode,
+            _detail_mode: TranscriptDetailMode,
+        ) -> u16 {
+            self.height_calls.fetch_add(1, Ordering::Relaxed);
+            1
+        }
+    }
+
+    #[derive(Debug)]
+    struct DynamicHeightCountingCell {
+        height_calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::history_cell::HistoryCell for DynamicHeightCountingCell {
+        fn display_lines(&self, _width: u16) -> Vec<Line<'static>> {
+            vec![Line::from("dynamic")]
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            vec![Line::from("dynamic")]
+        }
+
+        fn desired_transcript_height_for_detail_mode(
+            &self,
+            _width: u16,
+            _render_mode: HistoryRenderMode,
+            _detail_mode: TranscriptDetailMode,
+        ) -> u16 {
+            self.height_calls.fetch_add(1, Ordering::Relaxed);
+            1
+        }
+
+        fn has_stable_transcript_height(&self) -> bool {
+            false
         }
     }
 
@@ -2535,6 +2608,42 @@ mod tests {
         }));
 
         assert_eq!(overlay.view.scroll_offset, 0);
+    }
+
+    #[test]
+    fn transcript_overlay_insert_preserves_cached_cell_heights() {
+        let height_calls = Arc::new(AtomicUsize::new(0));
+        let mut overlay = transcript_overlay(vec![Arc::new(HeightCountingCell {
+            height_calls: height_calls.clone(),
+        })]);
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+        assert_eq!(height_calls.load(Ordering::Relaxed), 1);
+
+        overlay.insert_cell(Arc::new(TestCell {
+            lines: vec![Line::from("inserted")],
+        }));
+        overlay.render(area, &mut buf);
+
+        assert_eq!(height_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn transcript_overlay_remeasures_dynamic_cells_on_same_width_redraw() {
+        let height_calls = Arc::new(AtomicUsize::new(0));
+        let mut overlay = transcript_overlay(vec![Arc::new(DynamicHeightCountingCell {
+            height_calls: height_calls.clone(),
+        })]);
+        let area = Rect::new(0, 0, 40, 12);
+        let mut buf = Buffer::empty(area);
+
+        overlay.render(area, &mut buf);
+        assert_eq!(height_calls.load(Ordering::Relaxed), 1);
+
+        overlay.render(area, &mut buf);
+        assert_eq!(height_calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]
