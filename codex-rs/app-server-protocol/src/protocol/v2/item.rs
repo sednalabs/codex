@@ -1708,6 +1708,8 @@ pub enum DynamicToolCallOutputContentItem {
         #[ts(optional)]
         detail: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    InputAudio { audio_url: String },
 }
 
 impl From<codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
@@ -1722,6 +1724,9 @@ impl From<codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
                 image_url,
                 detail,
             } => Self::InputImage { image_url, detail },
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio {
+                audio_url,
+            } => Self::InputAudio { audio_url },
         }
     }
 }
@@ -1734,6 +1739,9 @@ impl From<DynamicToolCallOutputContentItem>
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
             DynamicToolCallOutputContentItem::InputImage { image_url, detail } => {
                 Self::InputImage { image_url, detail }
+            }
+            DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                Self::InputAudio { audio_url }
             }
         }
     }

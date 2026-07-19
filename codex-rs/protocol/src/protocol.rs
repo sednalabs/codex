@@ -221,6 +221,8 @@ pub struct ConversationStartParams {
     pub output_modality: RealtimeOutputModality,
     /// Whether to append Codex's startup context to the realtime backend prompt.
     pub include_startup_context: bool,
+    /// Complete role-bearing text items to include in the initial realtime session history.
+    pub initial_items: Vec<ConversationTextParams>,
     pub prompt: Option<Option<String>>,
     pub realtime_session_id: Option<String>,
     pub transport: Option<ConversationStartTransport>,
@@ -427,7 +429,7 @@ pub struct ConversationAudioParams {
     pub frame: RealtimeAudioFrame,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationTextParams {
     pub text: String,
     pub role: ConversationTextRole,

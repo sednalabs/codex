@@ -4749,6 +4749,22 @@
       ],
       "type": "object"
     },
+    "ThreadRealtimeInitialItem": {
+      "description": "EXPERIMENTAL - role-bearing text item included when a realtime V3 session starts.",
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/ConversationTextRole"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "text"
+      ],
+      "type": "object"
+    },
     "ThreadRealtimeListVoicesParams": {
       "description": "EXPERIMENTAL - list voices supported by thread realtime.",
       "type": "object"
@@ -4799,6 +4815,16 @@
           "description": "Set to false to start without Codex's startup context. Omitted or null includes it.",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "initialItems": {
+          "description": "Adds complete role-bearing text items to the initial Frameless Bidi session history.\nThis is only supported by realtime V3 and is sent during session startup. Requests are\nlimited to 128 items and 8,192 estimated text tokens in total.",
+          "items": {
+            "$ref": "#/$defs/ThreadRealtimeInitialItem"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
