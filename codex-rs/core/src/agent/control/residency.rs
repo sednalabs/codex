@@ -1,5 +1,6 @@
 use super::AgentControl;
 use crate::agent::AgentStatus;
+use crate::agent::lifecycle::ColdMailboxItem;
 use crate::agent::registry::AgentRegistry;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -127,7 +128,13 @@ impl V2Residency {
             let Some(candidate_thread_id) = self.pop_lru_candidate(protected_thread_id) else {
                 return false;
             };
-            let metadata = registry.agent_metadata_for_thread(candidate_thread_id);
+            let Some(metadata) = registry.agent_metadata_for_thread(candidate_thread_id) else {
+                continue;
+            };
+            let mut lifecycle = metadata.lifecycle.lock().await;
+            if !registry.metadata_is_current(candidate_thread_id, &metadata) {
+                continue;
+            }
             let Some(candidate_thread) = manager
                 .get_thread(candidate_thread_id)
                 .await
@@ -176,19 +183,38 @@ impl V2Residency {
                 self.touch(candidate_thread_id);
                 continue;
             }
+            let pending_mail = candidate_thread
+                .session
+                .input_queue
+                .drain_mailbox_communications()
+                .await;
+            if pending_mail.iter().any(|mail| mail.trigger_turn) {
+                candidate_thread
+                    .session
+                    .input_queue
+                    .prepend_mailbox_communications(pending_mail)
+                    .await;
+                self.touch(candidate_thread_id);
+                continue;
+            }
             if let Err(err) = candidate_thread.shutdown_and_wait().await {
                 warn!(
                     "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
                 );
+                candidate_thread
+                    .session
+                    .input_queue
+                    .prepend_mailbox_communications(pending_mail)
+                    .await;
                 self.touch(candidate_thread_id);
                 continue;
             }
             let removal = manager
                 .remove_thread_if_same(&candidate_thread_id, &candidate_thread, || {
-                    if let (Some(metadata), Some(status)) = (&metadata, cold_status) {
+                    if let Some(status) = cold_status {
                         registry.publish_cold_status_if_current(
                             candidate_thread_id,
-                            metadata,
+                            &metadata,
                             &candidate_thread,
                             status,
                         );
@@ -197,9 +223,31 @@ impl V2Residency {
                 .await;
             match removal {
                 RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
+                    lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                        ColdMailboxItem {
+                            receive_id: None,
+                            communication,
+                        }
+                    }));
                     return true;
                 }
-                RemoveThreadIfSameResult::Replaced => self.touch(candidate_thread_id),
+                RemoveThreadIfSameResult::Replaced => {
+                    if let Ok(replacement) = manager.get_thread(candidate_thread_id).await {
+                        replacement
+                            .session
+                            .input_queue
+                            .prepend_mailbox_communications(pending_mail)
+                            .await;
+                    } else {
+                        lifecycle.extend_cold_mail(pending_mail.into_iter().map(
+                            |communication| ColdMailboxItem {
+                                receive_id: None,
+                                communication,
+                            },
+                        ));
+                    }
+                    self.touch(candidate_thread_id);
+                }
             }
         }
         false
@@ -283,7 +331,6 @@ async fn is_unloadable(thread: &CodexThread, status: &AgentStatus) -> bool {
         status,
         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
     ) && thread.session.active_turn.lock().await.is_none()
-        && !thread.session.input_queue.has_pending_mailbox_items().await
 }
 
 #[cfg(test)]

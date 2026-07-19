@@ -33,6 +33,7 @@ impl MessageDeliveryMode {
             },
         }
     }
+
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,40 +153,45 @@ async fn handle_message_submission(
             "Follow-up tasks can't target the root agent".to_string(),
         ));
     }
-    if interrupt {
-        session
-            .services
-            .agent_control
-            .interrupt_agent(receiver_thread_id)
-            .await
-            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-    }
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
-    let resume_config = build_agent_resume_config(turn.as_ref())?;
-    session
-        .services
-        .agent_control
-        .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
-        .await
-        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-    let receiver_config = session
-        .services
-        .agent_control
-        .get_agent_config_snapshot(receiver_thread_id)
-        .await
-        .ok_or_else(|| {
-            FunctionCallError::RespondToModel(format!(
-                "agent with id {receiver_thread_id} has no runtime config snapshot"
-            ))
-        })?;
+    let delivery = match mode {
+        MessageDeliveryMode::QueueOnly => session
+            .services
+            .agent_control
+            .prepare_v2_agent_delivery(receiver_thread_id)
+            .await,
+        MessageDeliveryMode::TriggerTurn => {
+            let resume_config = build_agent_resume_config(turn.as_ref())?;
+            session
+                .services
+                .agent_control
+                .prepare_v2_agent_delivery_with_reload(resume_config, receiver_thread_id)
+                .await
+        }
+    }
+    .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let receiver_config = match mode {
+        MessageDeliveryMode::QueueOnly => None,
+        MessageDeliveryMode::TriggerTurn => Some(
+            delivery
+                .config_snapshot()
+                .await
+                .map_err(|err| collab_agent_error(receiver_thread_id, err))?,
+        ),
+    };
     if let Some(expected_model) = expected_model
-        && receiver_config.model != expected_model
+        && receiver_config
+            .as_ref()
+            .is_some_and(|config| config.model != expected_model)
     {
+        let receiver_model = receiver_config
+            .as_ref()
+            .map(|config| config.model.as_str())
+            .unwrap_or_default();
         return Err(FunctionCallError::RespondToModel(format!(
-            "follow-up task was not sent: target {receiver_agent_path} uses model `{}`, not expected model `{expected_model}`",
-            receiver_config.model
+            "follow-up task was not sent: target {receiver_agent_path} uses model `{receiver_model}`, not expected model `{expected_model}`",
         )));
     }
     let author = turn
@@ -199,10 +205,8 @@ async fn handle_message_submission(
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
     };
     let context = AgentCommunicationContext::new(kind, session.thread_id);
-    let result = session
-        .services
-        .agent_control
-        .send_inter_agent_communication(receiver_thread_id, mode.apply(communication), context)
+    let result = delivery
+        .send(mode.apply(communication), context, interrupt)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
     result?;
@@ -220,16 +224,20 @@ async fn handle_message_submission(
 
     let output = match mode {
         MessageDeliveryMode::QueueOnly => String::new(),
-        MessageDeliveryMode::TriggerTurn => tool_output_json_text(
-            &FollowupTaskResult {
+        MessageDeliveryMode::TriggerTurn => {
+            let receiver_config = receiver_config.ok_or_else(|| {
+                FunctionCallError::RespondToModel(format!(
+                    "agent with id {receiver_thread_id} has no runtime config snapshot"
+                ))
+            })?;
+            tool_output_json_text(&FollowupTaskResult {
                 task_name: receiver_agent_path.to_string(),
                 effective_model: receiver_config.model,
                 effective_model_provider_id: receiver_config.model_provider_id,
                 effective_reasoning_effort: receiver_config.reasoning_effort,
                 effective_service_tier: receiver_config.service_tier,
-            },
-            "followup_task",
-        ),
+            }, "followup_task")
+        }
     };
     Ok(FunctionToolOutput::from_text(output, Some(true)))
 }

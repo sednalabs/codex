@@ -314,8 +314,13 @@ User-visible behavior:
   retain final outcomes, while an interrupted identity retains its resumable
   state; all three use a compact cold status for `list_agents` and direct agent
   tools, remain reloadable from persisted history, and cannot be deleted by a
-  stale eviction racing with a replacement thread instance. A later serialized
-  lifecycle slice owns cross-reload subscription and cold-mailbox continuity.
+  stale eviction racing with a replacement thread instance.
+- One generation-scoped lifecycle authority serializes V2 unload, reload,
+  message delivery, and explicit close. Queue-only `send_message` mail can move
+  into a registry-owned FIFO without waking a cold runtime; `followup_task`
+  reloads once and transfers that FIFO ahead of its triggering message. Failed
+  unload or reload keeps the FIFO recoverable, while explicit close discards it.
+  Existing subscriptions spanning a cold reload remain separate follow-up work.
 - Ephemeral V2 children have no reloadable persisted history, so they are not
   eligible for cold eviction; capacity pressure fails closed and leaves the
   existing runtime resident.
@@ -331,6 +336,7 @@ Primary files:
 - `codex-rs/core/src/agent/role_tests.rs`
 - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
 - `codex-rs/core/src/agent/control.rs`
+- `codex-rs/core/src/agent/control/lifecycle.rs`
 - `codex-rs/core/src/agent/control/residency.rs`
 - `codex-rs/core/src/agent/registry.rs`
 - `codex-rs/core/src/thread_manager.rs`

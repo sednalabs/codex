@@ -288,7 +288,7 @@ impl AgentControl {
 
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        mut config: Config,
+        config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
@@ -296,10 +296,34 @@ impl AgentControl {
             .state
             .agent_metadata_for_thread(thread_id)
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let mut lifecycle = metadata.lifecycle.lock().await;
+        if !self.state.metadata_is_current(thread_id, &metadata) {
+            return Err(CodexErr::ThreadNotFound(thread_id));
+        }
+        self.ensure_v2_agent_loaded_under_lifecycle(
+            &state,
+            config,
+            thread_id,
+            &metadata,
+            &mut lifecycle,
+        )
+        .await
+    }
+
+    pub(super) async fn ensure_v2_agent_loaded_under_lifecycle(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        mut config: Config,
+        thread_id: ThreadId,
+        metadata: &AgentMetadata,
+        lifecycle: &mut crate::agent::lifecycle::AgentLifecycleState,
+    ) -> CodexResult<()> {
         if state.get_thread(thread_id).await.is_ok() {
             metadata.clear_cold_status();
-            self.touch_loaded_v2_residency(&state, thread_id).await;
-            return Ok(());
+            self.touch_loaded_v2_residency(state, thread_id).await;
+            return self
+                .restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
+                .await;
         }
 
         let stored_thread = state
@@ -311,7 +335,7 @@ impl AgentControl {
             .await?;
         let stored_source = stored_thread.source.clone();
         let stored_parent_thread_id = stored_thread.parent_thread_id;
-        let history = load_agent_model_context(&state, thread_id, stored_thread.history_mode)
+        let history = load_agent_model_context(state, thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
         let initial_history = InitialHistory::Resumed(ResumedHistory {
@@ -369,17 +393,17 @@ impl AgentControl {
             thread_id,
         )?;
         let residency_slot = self
-            .reserve_v2_residency_slot(&state, &config, Some(thread_id))
+            .reserve_v2_residency_slot(state, &config, Some(thread_id))
             .await?;
 
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);
         let inherited_environments = self
-            .inherited_environments_for_source(&state, Some(&session_source))
+            .inherited_environments_for_source(state, Some(&session_source))
             .await;
         let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
+            .inherited_exec_policy_for_source(state, Some(&session_source), &config)
             .await;
 
         match state
@@ -398,14 +422,17 @@ impl AgentControl {
                 metadata.clear_cold_status();
                 residency_slot.commit(reloaded_thread.thread_id);
                 state.notify_thread_created(reloaded_thread.thread_id);
-                Ok(())
+                self.restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
+                    .await
             }
             Err(err) => {
                 if state.get_thread(thread_id).await.is_ok() {
                     metadata.clear_cold_status();
                     drop(residency_slot);
-                    self.touch_loaded_v2_residency(&state, thread_id).await;
-                    return Ok(());
+                    self.touch_loaded_v2_residency(state, thread_id).await;
+                    return self
+                        .restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
+                        .await;
                 }
                 Err(err)
             }

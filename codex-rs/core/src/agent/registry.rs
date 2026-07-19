@@ -1,4 +1,5 @@
 use crate::agent::AgentStatus;
+use crate::agent::lifecycle::AgentLifecycle;
 use crate::codex_thread::CodexThread;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -47,6 +48,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_role: Option<String>,
     pub(in crate::agent) cold_status: Arc<Mutex<Option<ColdStatus>>>,
     pub(in crate::agent) generation: Arc<()>,
+    pub(in crate::agent) lifecycle: AgentLifecycle,
 }
 
 #[derive(Debug)]
@@ -212,6 +214,20 @@ impl AgentRegistry {
             .values()
             .find(|metadata| metadata.agent_id == Some(thread_id))
             .cloned()
+    }
+
+    pub(in crate::agent) fn metadata_is_current(
+        &self,
+        thread_id: ThreadId,
+        expected: &AgentMetadata,
+    ) -> bool {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .agent_tree
+            .values()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+            .is_some_and(|metadata| Arc::ptr_eq(&metadata.generation, &expected.generation))
     }
 
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {
