@@ -169,6 +169,55 @@ async fn safety_buffering_offers_one_retry_with_app_wording() {
 }
 
 #[tokio::test]
+async fn safety_buffering_prompt_opt_out_keeps_waiting_on_the_current_model() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.notices.hide_safety_buffering_prompt = Some(true);
+    let original_model = chat.current_model().to_string();
+    let original_effort = chat.current_reasoning_effort();
+    let (thread_id, turn_id, _) = start_safety_buffering_test_turn(&mut chat, &mut op_rx);
+
+    let notification = safety_buffering_notification(thread_id, turn_id, Some("faster-model"));
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(notification.clone()),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ModelSafetyBufferingUpdated(notification),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(chat.no_modal_or_popup_active());
+    assert!(!rendered.contains("Retry with a faster model"));
+    assert!(!rendered.contains("Dismiss and keep waiting"));
+    assert!(!rendered.contains("Learn more"));
+    assert!(!rendered.contains("Press enter to confirm or esc to go back"));
+    assert!(!rendered.contains("retry with a faster model for a quicker response"));
+    assert_eq!(
+        chat.bottom_pane
+            .status_widget()
+            .expect("status indicator should remain visible")
+            .details(),
+        Some(SAFETY_BUFFERING_HEADER_TEXT)
+    );
+    assert_eq!(chat.current_model(), original_model);
+    assert_eq!(chat.current_reasoning_effort(), original_effort);
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(
+                event,
+                AppEvent::RetrySafetyBufferedTurn { .. }
+                    | AppEvent::UpdateModel(_)
+                    | AppEvent::UpdateReasoningEffort(_)
+            ),
+            "prompt opt-out unexpectedly changed the active model: {event:?}"
+        );
+    }
+    assert_no_submit_op(&mut op_rx);
+    assert!(chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
 async fn safety_buffering_does_not_offer_retry_in_side_conversation() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_side_conversation_active(/*active*/ true);
@@ -1391,6 +1440,127 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
 }
 
 #[tokio::test]
+async fn live_cyber_policy_error_auto_continues_three_times_and_rearms_after_success() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.notices.auto_continue_on_cyber_policy = Some(true);
+    chat.thread_id = Some(ThreadId::new());
+    let original_model = chat.current_model().to_string();
+    let original_effort = chat.current_reasoning_effort();
+
+    handle_turn_started(&mut chat, "turn-1");
+    drain_insert_history(&mut rx);
+    handle_error(
+        &mut chat,
+        "server fallback message",
+        Some(CodexErrorInfo::CyberPolicy),
+    );
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            items,
+            model,
+            effort,
+            ..
+        } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "continue".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+            assert_eq!(model, original_model);
+            assert_eq!(effort, original_effort);
+        }
+        other => panic!("expected automatic continue turn, got {other:?}"),
+    }
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("This content can't be shown"));
+    assert!(rendered.contains("continue"));
+
+    handle_turn_started(&mut chat, "turn-2");
+    handle_turn_completed(&mut chat, "turn-2", /*duration_ms*/ None);
+    drain_insert_history(&mut rx);
+
+    // A completed continuation rearms all three attempts for a later independent turn.
+    for turn_id in ["turn-3", "turn-4", "turn-5"] {
+        handle_turn_started(&mut chat, turn_id);
+        handle_error(
+            &mut chat,
+            "server fallback message",
+            Some(CodexErrorInfo::CyberPolicy),
+        );
+        match next_submit_op(&mut op_rx) {
+            Op::UserTurn {
+                items,
+                model,
+                effort,
+                ..
+            } => {
+                assert_eq!(
+                    items,
+                    vec![UserInput::Text {
+                        text: "continue".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+                );
+                assert_eq!(model, original_model);
+                assert_eq!(effort, original_effort);
+            }
+            other => panic!("expected automatic continue turn, got {other:?}"),
+        }
+        drain_insert_history(&mut rx);
+    }
+
+    // A fourth consecutive refusal stops instead of looping forever.
+    handle_turn_started(&mut chat, "turn-6");
+    handle_error(
+        &mut chat,
+        "server fallback message",
+        Some(CodexErrorInfo::CyberPolicy),
+    );
+    assert_no_submit_op(&mut op_rx);
+    assert!(!chat.bottom_pane.is_task_running());
+}
+
+#[tokio::test]
+async fn replayed_cyber_policy_error_never_auto_continues() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.notices.auto_continue_on_cyber_policy = Some(true);
+    chat.thread_id = Some(ThreadId::new());
+    handle_turn_started(&mut chat, "turn-replay");
+    drain_insert_history(&mut rx);
+    let replay_thread_id = chat
+        .thread_id
+        .as_ref()
+        .expect("test thread id should be configured")
+        .to_string();
+
+    chat.handle_server_notification(
+        ServerNotification::Error(ErrorNotification {
+            error: AppServerTurnError {
+                message: "server fallback message".to_string(),
+                codex_error_info: Some(CodexErrorInfo::CyberPolicy),
+                additional_details: None,
+            },
+            will_retry: false,
+            thread_id: replay_thread_id,
+            turn_id: "turn-replay".to_string(),
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    assert_no_submit_op(&mut op_rx);
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert!(lines_to_single_string(&cells[0]).contains("This content can't be shown"));
+}
+
+#[tokio::test]
 async fn app_server_safety_access_errors_render_dedicated_notice() {
     let legacy_message = "Invalid prompt: we've limited access to this content for safety reasons.";
     let bio_policy_message = "This content was flagged for possible biological risk.";
@@ -1413,7 +1583,9 @@ async fn app_server_safety_access_errors_render_dedicated_notice() {
     let mut rendered_cases = Vec::new();
     for (case, message) in cases {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-        chat.handle_non_retry_error(message, /*codex_error_info*/ None);
+        chat.handle_non_retry_error(
+            message, /*codex_error_info*/ None, /*from_replay*/ false,
+        );
 
         let cells = drain_insert_history(&mut rx);
         assert_eq!(cells.len(), 1);

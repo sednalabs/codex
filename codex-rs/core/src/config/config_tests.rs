@@ -9267,6 +9267,38 @@ async fn fast_default_opt_out_notice_config_is_respected() -> std::io::Result<()
 }
 
 #[tokio::test]
+async fn unattended_safety_interruption_notice_config_is_respected() -> std::io::Result<()> {
+    let fixture = create_test_fixture()?;
+    let parsed: ConfigToml = toml::from_str(
+        r#"
+[notice]
+auto_continue_on_cyber_policy = true
+hide_safety_buffering_prompt = true
+"#,
+    )
+    .expect("unattended safety interruption notice config should deserialize");
+    let notice = parsed.notice.expect("notice config should be present");
+    assert_eq!(notice.auto_continue_on_cyber_policy, Some(true));
+    assert_eq!(notice.hide_safety_buffering_prompt, Some(true));
+
+    let mut cfg = fixture.cfg.clone();
+    cfg.notice = Some(notice);
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides {
+            cwd: Some(fixture.cwd_path()),
+            ..Default::default()
+        },
+        fixture.codex_home(),
+    )
+    .await?;
+
+    assert_eq!(config.notices.auto_continue_on_cyber_policy, Some(true));
+    assert_eq!(config.notices.hide_safety_buffering_prompt, Some(true));
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() -> anyhow::Result<()>
 {
     let fixture = create_test_fixture()?;

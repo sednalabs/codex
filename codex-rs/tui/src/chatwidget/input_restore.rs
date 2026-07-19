@@ -124,6 +124,7 @@ impl ChatWidget {
     pub(super) fn on_interrupted_turn(&mut self, reason: TurnAbortReason) {
         // Finalize, log a gentle prompt, and clear running state.
         self.finalize_turn();
+        self.cyber_policy_auto_continue_attempts = 0;
         let send_pending_steers_immediately =
             self.input_queue.submit_pending_steers_after_interrupt;
         self.input_queue.submit_pending_steers_after_interrupt = false;

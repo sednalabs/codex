@@ -9,6 +9,8 @@ const LEGACY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
     "Invalid prompt: we've limited access to this content for safety reasons.";
 const BIO_POLICY_SAFETY_ACCESS_BLOCK_PREFIX: &str =
     "This content was flagged for possible biological risk.";
+const CYBER_POLICY_AUTO_CONTINUE_PROMPT: &str = "continue";
+const CYBER_POLICY_AUTO_CONTINUE_MAX_ATTEMPTS: u8 = 3;
 
 fn is_safety_access_block_message(message: &str) -> bool {
     message.starts_with(LEGACY_SAFETY_ACCESS_BLOCK_PREFIX)
@@ -97,6 +99,7 @@ impl ChatWidget {
         from_replay: bool,
     ) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
+        self.cyber_policy_auto_continue_attempts = 0;
         // Use `last_agent_message` from the turn-complete notification as the copy
         // source only when no earlier item-level event (AgentMessageItem, plan
         // commit, review output) already recorded markdown for this turn. This
@@ -342,6 +345,7 @@ impl ChatWidget {
     pub(super) fn on_server_overloaded_error(&mut self, message: String) {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
+        self.cyber_policy_auto_continue_attempts = 0;
 
         let message = if message.trim().is_empty() {
             "Codex is currently experiencing high load.".to_string()
@@ -358,6 +362,7 @@ impl ChatWidget {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.flush_answer_stream_with_separator();
         self.finalize_turn();
+        self.cyber_policy_auto_continue_attempts = 0;
         self.add_to_history(history_cell::new_error_event(message));
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Failed,
@@ -369,12 +374,42 @@ impl ChatWidget {
         self.maybe_send_next_queued_input();
     }
 
-    pub(super) fn on_cyber_policy_error(&mut self) {
+    pub(super) fn on_cyber_policy_error(&mut self, from_replay: bool) {
+        // Policy enforcement remains server-side. These opt-in retries preserve the original
+        // thread and context and use the normal submission path; do not rewrite or drop context,
+        // switch models, or otherwise route around the policy decision here.
+        let should_auto_continue = !from_replay
+            && !self.blocks_direct_input
+            && self
+                .config
+                .notices
+                .auto_continue_on_cyber_policy
+                .unwrap_or(false)
+            && self.cyber_policy_auto_continue_attempts < CYBER_POLICY_AUTO_CONTINUE_MAX_ATTEMPTS;
+        if should_auto_continue {
+            self.cyber_policy_auto_continue_attempts += 1;
+        }
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
         self.add_to_history(history_cell::new_cyber_policy_error_event());
         self.request_redraw();
 
+        // Keep the generated follow-up visible in the transcript without adding it to the user's
+        // cross-session composer history.
+        if should_auto_continue
+            && self.submit_user_message_with_history_record(
+                UserMessage::from(CYBER_POLICY_AUTO_CONTINUE_PROMPT),
+                UserMessageHistoryRecord::Override(UserMessageHistoryOverride {
+                    text: String::new(),
+                    text_elements: Vec::new(),
+                }),
+            )
+        {
+            return;
+        }
+
+        // The bounded retry chain is over. A later user-initiated turn receives a fresh allowance.
+        self.cyber_policy_auto_continue_attempts = 0;
         // After an error ends the turn, try sending the next queued input.
         self.maybe_send_next_queued_input();
     }
@@ -428,6 +463,7 @@ impl ChatWidget {
         &mut self,
         message: String,
         codex_error_info: Option<AppServerCodexErrorInfo>,
+        from_replay: bool,
     ) {
         if codex_error_info
             .as_ref()
@@ -437,7 +473,7 @@ impl ChatWidget {
             .as_ref()
             .is_some_and(is_app_server_cyber_policy_error)
         {
-            self.on_cyber_policy_error();
+            self.on_cyber_policy_error(from_replay);
         } else if is_safety_access_block_message(&message)
             || serde_json::from_str::<serde_json::Value>(&message).is_ok_and(|response| {
                 response["error"]["code"].as_str() == Some("bio_policy")
@@ -448,6 +484,7 @@ impl ChatWidget {
         {
             self.input_queue.submit_pending_steers_after_interrupt = false;
             self.finalize_turn();
+            self.cyber_policy_auto_continue_attempts = 0;
             self.add_to_history(history_cell::new_safety_access_block_event());
             self.request_redraw();
             self.maybe_send_next_queued_input();
