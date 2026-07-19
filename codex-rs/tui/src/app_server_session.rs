@@ -2658,7 +2658,15 @@ mod tests {
         let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
 
         let regular = app_server.fork_thread(config.clone(), thread_id).await?;
-        let side = app_server.fork_side_thread(config, thread_id).await?;
+        let mut side_config = config;
+        side_config.ephemeral = false;
+        let side = app_server.fork_side_thread(side_config, thread_id).await?;
+        let regular_thread = app_server
+            .thread_read(regular.session.thread_id, /*include_turns*/ false)
+            .await?;
+        let side_thread = app_server
+            .thread_read(side.session.thread_id, /*include_turns*/ false)
+            .await?;
 
         assert_eq!(regular.turns.len(), 1);
         assert!(matches!(
@@ -2670,6 +2678,10 @@ mod tests {
                 }]
         ));
         assert_eq!(side.turns, Vec::<Turn>::new());
+        assert!(regular_thread.ephemeral);
+        assert_eq!(regular_thread.thread_source, Some(ThreadSource::User));
+        assert!(!side_thread.ephemeral);
+        assert_eq!(side_thread.thread_source, Some(ThreadSource::Side));
         app_server.shutdown().await?;
         Ok(())
     }

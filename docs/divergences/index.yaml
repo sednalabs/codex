@@ -447,16 +447,20 @@
         "codex-rs/protocol/src/items.rs",
         "codex-rs/protocol/src/legacy_events.rs",
         "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/tui/src/chatwidget/command_lifecycle.rs",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/exec_cell/model.rs",
+        "codex-rs/tui/src/exec_cell/render.rs",
         "codex-rs/core/src/session/mod.rs",
         "codex-rs/rollout-trace/src/protocol_event_tests.rs"
       ],
-      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Canonical command-execution items carry optional live terminal-wait metadata into legacy begin/end events, while reconstructed history leaves the field absent when no persisted value exists. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
+      "behavior": "Unified exec tools support blocking wait semantics and downstream turn-completion metadata through typed tool runtime capabilities for blocking waits and terminal-outcome preservation. Canonical command-execution items carry optional live terminal-wait metadata into legacy begin/end events, while reconstructed history leaves the field absent when no persisted value exists. TUI command cells use duration as completion authority so streamed output remains active, retain downstream terminal-wait presentation, and preserve streamed output when interruption completes an unfinished call as failed. Provider ServerOverloaded responses use cancellable capacity-retry backoff for sampling and compaction instead of terminating the turn immediately.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-carry-core-smoke; codex.blocking-waits-core-targeted; codex.blocking-waits-app-server-targeted",
+      "guardrail_lane": "core-carry-core-smoke; codex.blocking-waits-core-targeted; codex.blocking-waits-unified-exec-targeted; codex.blocking-waits-app-server-targeted; codex.tui-esc-interrupt-targeted",
       "tests": [
         "capacity_retry::tests",
         "server_overloaded_retries_beyond_stream_retry_budget",
@@ -474,6 +478,7 @@
         "core_turn_item_into_thread_item_converts_supported_variants",
         "completion_rule_distinguishes_any_from_all",
         "command_execution_notifications_include_process_id",
+        "live_app_server_command_output_delta_transcript_snapshot",
         "shell_command_approval_emits_task_complete_before_tool_response",
         "exec_command_tool_matches_expected_spec",
         "write_stdin_tool_matches_expected_spec",
@@ -510,7 +515,10 @@
         "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
         "codex-rs/protocol/src/items.rs",
         "codex-rs/protocol/src/legacy_events.rs",
-        "codex-rs/protocol/src/protocol.rs"
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/tui/src/chatwidget/command_lifecycle.rs",
+        "codex-rs/tui/src/exec_cell/model.rs",
+        "codex-rs/tui/src/exec_cell/render.rs"
       ],
       "extraction_target": "tool runtime wait and terminal-outcome capabilities"
     },
@@ -2113,13 +2121,16 @@
       "category": "usage-ledger",
       "surface": [
         "/side TUI command",
+        "TUI side-fork presentation and source bridge",
         "app-server thread_source filtering",
         "usage.sqlite fork lineage"
       ],
       "files": [
         "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
         "codex-rs/tui/src/app/event_dispatch.rs",
         "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/tui/src/chatwidget/tests/slash_commands.rs",
         "codex-rs/app-server-test-client/src/lib.rs",
@@ -2128,7 +2139,7 @@
         "codex-rs/state/usage_migrations/0002_usage_thread_source.sql",
         "scripts/codex-resume-recent.sh"
       ],
-      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, marks usage_threads.thread_source as \"side\" for resume filtering, keeps forks from existing side conversations side-tagged unless explicitly overridden, and treats /quit or /exit inside an active side conversation as a side-local close that returns to the parent session.",
+      "behavior": "Downstream persists /side conversations as resumable and forkable side-tagged threads, stores rollout transcripts, hides them from default history, records usage-ledger lineage/provider rows, and marks usage_threads.thread_source as \"side\" for resume filtering. The upstream-shaped TUI fork presentation maps regular forks to user source and side forks to side source, excludes inherited turns and parent-title lookup only for side forks, and seeds side navigation before delayed thread-started delivery. Forks from existing side conversations remain side-tagged unless explicitly overridden, while /quit or /exit inside an active side conversation closes only that side and returns to the parent session.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2139,18 +2150,23 @@
         "state_runtime_records_direct_fork_snapshot_from_provider_rows",
         "thread_fork_side_source_persists_and_hides_from_default_list",
         "side_fork_config_is_persistent_and_appends_developer_guardrails",
+        "side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it",
+        "side_fork_excludes_turns_without_clearing_regular_ephemeral_fork",
+        "handle_start_side_seeds_navigation_before_thread_started",
         "slash_quit_in_side_conversation_requests_side_exit",
         "slash_exit_in_side_conversation_requests_side_exit",
         "bash -n scripts/codex-resume-recent.sh"
       ],
       "owner": "downstream",
-      "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks.",
+      "notes": "Preserves side chats as a separate filtered history class rather than generic ephemeral forks while adopting upstream's specialized side-fork presentation and liveness path.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "interactive-history-and-ledger",
       "hotspot_files": [
         "codex-rs/tui/src/app/side.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
         "codex-rs/tui/src/app/event_dispatch.rs",
         "codex-rs/tui/src/app_event.rs",
+        "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/tui/src/chatwidget/slash_dispatch.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
         "codex-rs/state/src/runtime/usage.rs",

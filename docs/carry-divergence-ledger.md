@@ -395,6 +395,12 @@ docs-only refresh commit that records this snapshot.
 - Usage-ledger lineage records side forks in `usage_threads` and
   `usage_fork_snapshots`, marks `usage_threads.thread_source = "side"`, and
   writes normal provider-call rows for side turns.
+- The upstream-shaped fork presentation is the single TUI authority for the
+  fork shape: regular presentation maps to `ThreadSource::User`, while side
+  presentation maps to `ThreadSource::Side`, excludes inherited response
+  turns, and skips the redundant parent-title lookup. The `/side` caller keeps
+  the fork persisted and seeds navigation before delayed `thread/started`
+  delivery so selection does not race a second liveness read.
 - Forks created from an existing side conversation inherit the side
   `thread_source` unless the caller explicitly supplies a different source,
   keeping nested side-chat forks hidden from default history surfaces and
@@ -404,6 +410,8 @@ docs-only refresh commit that records this snapshot.
   resume candidates.
 - Primary files:
   - `codex-rs/tui/src/app/side.rs`
+  - `codex-rs/tui/src/app/session_lifecycle.rs`
+  - `codex-rs/tui/src/app_server_session.rs`
   - `codex-rs/app-server/src/request_processors/thread_processor.rs`
   - `codex-rs/app-server/src/filters.rs`
   - `codex-rs/state/src/runtime/usage.rs`
@@ -730,6 +738,10 @@ docs-only refresh commit that records this snapshot.
   and end events and app-server v2 projects it into command items. History
   reconstruction uses `None` when older persisted items do not contain that
   live-only detail.
+- TUI command cells use `duration` rather than output presence as completion
+  authority, so streamed output deltas remain active. Interrupting an
+  unfinished command preserves its streamed output while marking it failed,
+  and downstream `terminal_wait` metadata still drives the active wait label.
 - The downstream intent is to absorb long-running shell waits in the tool layer
   instead of spending model turns on repeated short-poll status checks.
 - Code-mode nested `exec_command` output follows the same model-policy bounded
@@ -779,6 +791,10 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/protocol/src/legacy_events.rs`
   - `codex-rs/protocol/src/protocol.rs`
   - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/tui/src/chatwidget/command_lifecycle.rs`
+  - `codex-rs/tui/src/chatwidget/tests/app_server.rs`
+  - `codex-rs/tui/src/exec_cell/model.rs`
+  - `codex-rs/tui/src/exec_cell/render.rs`
   - `docs/downstream.md`
   - `docs/downstream-regression-matrix.md`
 
