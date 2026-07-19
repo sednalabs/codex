@@ -459,7 +459,6 @@ pub(crate) use self::user_messages::ThreadInputState;
 pub(crate) use self::user_messages::ThreadInputStateRestoreMode;
 pub(crate) use self::user_messages::UserMessage;
 use self::user_messages::UserMessageDisplay;
-#[cfg(test)]
 use self::user_messages::UserMessageHistoryOverride;
 use self::user_messages::UserMessageHistoryRecord;
 use self::user_messages::app_server_text_elements;
