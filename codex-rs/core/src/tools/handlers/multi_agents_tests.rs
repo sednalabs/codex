@@ -26,6 +26,8 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
+use codex_models_manager::bundled_models_response;
+use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -49,6 +51,7 @@ use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -555,8 +558,74 @@ async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "luna_model",
+                "model": "gpt-5.6-luna",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("Luna should be selectable as a MultiAgentV2 child");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.6-luna");
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
-    let (session, mut turn) = make_session_and_context().await;
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut catalog = bundled_models_response().expect("bundled models should parse");
+    let mut incompatible_model = catalog
+        .models
+        .iter()
+        .find(|model| model.slug == "gpt-5.6-luna")
+        .cloned()
+        .expect("bundled catalog should contain Luna");
+    incompatible_model.slug = "v1-only-model".to_string();
+    incompatible_model.display_name = "V1-only model".to_string();
+    incompatible_model.multi_agent_version = Some(MultiAgentVersion::V1);
+    catalog.models.push(incompatible_model);
+    session.services.models_manager = Arc::new(StaticModelsManager::new(
+        /*auth_manager*/ None, catalog,
+    ));
+
     let mut config = (*turn.config).clone();
     config
         .features
@@ -572,18 +641,18 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_name": "incompatible_model",
-                "model": "gpt-5.6-luna",
+                "model": "v1-only-model",
                 "fork_turns": "none"
             })),
         ))
         .await
         .err()
-        .expect("model from a different multi-agent backend should be rejected");
+        .expect("a model assigned only to V1 should be rejected");
 
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Unknown model `gpt-5.6-luna` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.5, gpt-5.2".to_string()
+            "Unknown model `v1-only-model` for spawn_agent. Available models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.2".to_string()
         )
     );
 }
