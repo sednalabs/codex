@@ -79,17 +79,17 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-18`):
+Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `7bd2859b6b53f9202a3cf8efba4d625fa81a2701`
+  `91d3ef41b2ca830d9096b41b583bfad0b20c5724`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `56395bddaf26eb2829387ca6a417bf9128e5b239`
+  `45ac251e178416ff5c3022457ad8d2778c0d4549`
 - `upstream/main`:
-  `56395bddaf26eb2829387ca6a417bf9128e5b239`
+  `45ac251e178416ff5c3022457ad8d2778c0d4549`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1823` downstream ahead
+  `0` upstream ahead, `1881` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -187,6 +187,11 @@ User-visible behavior:
   `true`. A future tagged
   function/namespace migration must preserve app-server input, persisted thread
   state, resume filtering, and native promotion before this carry is removed.
+- Ordinary dynamic-tool and code-mode audio follows upstream preparation,
+  duration-aware accounting, truncation, compaction, and history replay while
+  preserving downstream optional image detail. The upstream audio fixtures are
+  adapted to the flat compatibility record rather than reviving the tagged
+  namespace representation.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`, including atomic two-to-five-pointer `multi_touch` input that never degrades to sequential single-touch calls; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
 - The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chrome/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.

@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-18`
-- downstream integration code tree: `7bd2859b6b53f9202a3cf8efba4d625fa81a2701`
+- Audited on: `2026-07-21`
+- downstream integration code tree: `91d3ef41b2ca830d9096b41b583bfad0b20c5724`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `56395bddaf26eb2829387ca6a417bf9128e5b239`
-- `upstream/main`: `56395bddaf26eb2829387ca6a417bf9128e5b239`
-- downstream branch vs `upstream/main`: `1823` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `45ac251e178416ff5c3022457ad8d2778c0d4549`
+- `upstream/main`: `45ac251e178416ff5c3022457ad8d2778c0d4549`
+- downstream branch vs `upstream/main`: `1881` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1582` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1621` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -444,6 +444,10 @@ docs-only refresh commit that records this snapshot.
 - Upstream state-backed thread names are likewise additive metadata. Named
   paginated threads must preserve `thread_source`, `history_mode`, and `name`
   together across read, state-only list, and metadata-only resume responses.
+- Upstream paginated Git metadata updates and paginated memory eligibility are
+  also adopted. SQLite-only Git patches and memory-mode reconciliation must
+  remain additive to downstream `thread_source`; none may coerce a paginated
+  thread back to legacy history or erase its name or provenance.
 - Primary files:
   - `codex-rs/protocol/`
   - `codex-rs/rollout/`
@@ -942,11 +946,15 @@ docs-only refresh commit that records this snapshot.
   Failed provider responses preserve the same typed content contract, including
   diagnostic text and any screenshot returned with the failure.
 - Upstream dynamic-tool and code-mode audio output is adopted as
-  `InputAudio { audio_url }` and the `audio(...)` helper. It is additive to the
-  downstream optional `detail` carried on dynamic `InputImage`; app-server
-  events, stored thread items, generated schemas, and JSONL previews preserve
-  both. Native computer-use responses remain text/image-only and keep their
-  fail-loud screenshot contract.
+  `InputAudio { audio_url }` and the `audio(...)` helper. Upstream now also owns
+  audio preparation, duration-aware context accounting, output truncation,
+  compaction, and replay through user and tool history. Those paths are
+  additive to the downstream optional `detail` carried on dynamic
+  `InputImage`; app-server events, stored thread items, generated schemas, and
+  JSONL previews preserve both. The two upstream dynamic-tool audio fixtures
+  use downstream's flat `DynamicToolSpec` compatibility record without
+  restoring the tagged namespace shape. Native computer-use responses remain
+  text/image-only and keep their fail-loud screenshot contract.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.
