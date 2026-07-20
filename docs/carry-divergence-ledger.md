@@ -836,6 +836,10 @@ docs-only refresh commit that records this snapshot.
   `android_install_build_from_run`, `browser_observe`, `browser_step`,
   `desktop_observe`, and `desktop_step` dynamic tools into first-party native
   computer-use function tools with Codex-owned schemas.
+- The Android reference bridge exposes atomic two-to-five-pointer
+  `multi_touch` input through `android.input.multi_touch`, validates the whole
+  gesture before dispatch, and reports an explicit unsupported-capability
+  failure instead of synthesizing sequential single-touch input.
 - Namespaced Android-like, browser-like, or desktop-like tools remain ordinary dynamic tools
   so app-specific providers can keep their own tool surfaces without taking
   over the native Codex contract.
