@@ -172,6 +172,33 @@ direct launch block while retaining the downstream proxy-aware backend policy,
 prepared filesystem overrides, metrics, telemetry, and bounded final-output
 behavior around the new upstream seam.
 
+## Upstream shared skill models
+
+Upstream commit `56c11cf658` moves shared host and environment skill metadata,
+policy, dependency, interface, and configuration-rule types into
+`codex-skills`. `codex-core-skills` retains compatibility re-exports, so the
+move preserves type identity, implicit-invocation defaults, and product
+restriction behavior for existing consumers.
+
+Downstream preferred-user skill-name precedence remains implemented in the
+upstream `SkillsService` architecture. Plugin auth routing, dynamic tools, and
+app/read's no-MCP-start projection are unchanged. The merge keeps only the
+still-used compatibility import in the downstream-expanded plugin tests and
+uses upstream's canonical `codex_skills::SkillConfigRules` type.
+
+## Upstream remote compaction optimization
+
+Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
+remote-compaction histories. It caches per-item token estimates, preserves an
+unclamped total while rewriting trailing tool outputs, snapshots input history
+only when rollout tracing is enabled, and reuses the v2 request input before
+removing the compaction trigger for installed history.
+
+The touched compaction runtime was upstream-exact before the merge and required
+no downstream resolution. Existing downstream realtime world-state, hook
+ordering, capacity retry, compaction metadata, and dynamic-media guardrails
+remain independently tracked.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -203,14 +230,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `cedcbccd007ecc4e782014c578f37a9f689bcd97`
+  `6356435334e5115617147841b03071373391e788`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `35c2278dd5c49daf8a4e44468038aed9be9e866e`
+  `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
 - `upstream/main`:
-  `35c2278dd5c49daf8a4e44468038aed9be9e866e`
+  `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1905` downstream ahead
+  `0` upstream ahead, `1908` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

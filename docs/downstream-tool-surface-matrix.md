@@ -11,17 +11,18 @@ Last reviewed: `2026-07-21`.
 
 Review baseline:
 
-- `upstream/main`: `35c2278dd5c49daf8a4e44468038aed9be9e866e`
+- `upstream/main`: `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `35c2278dd5c49daf8a4e44468038aed9be9e866e`
-- downstream integration code tree: `cedcbccd007ecc4e782014c578f37a9f689bcd97`
+  `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
+- downstream integration code tree: `6356435334e5115617147841b03071373391e788`
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
-tools upstream; the upstream hook, connector-metadata, and Windows native
-process-launch changes through `35c2278dd5` do not alter the native-tool
-conclusions below. In particular, this tranche adds no Codex-owned browser,
-Android, or desktop computer-use capability upstream.
+tools upstream; the upstream hook, connector-metadata, Windows native
+process-launch, shared skill-model, and remote-compaction changes through
+`fd3c1dc13d` do not alter the native-tool conclusions below. In particular,
+this tranche adds no Codex-owned browser, Android, or desktop computer-use
+capability upstream.
 
 | Surface                                            | `upstream/main`                                                                                                             | `main`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Live divergence? | Guardrails                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
