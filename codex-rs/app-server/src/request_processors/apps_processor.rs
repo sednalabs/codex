@@ -81,9 +81,9 @@ impl AppsRequestProcessor {
         } = connectors::read_connector_metadata(&config, auth, &app_ids, include_tools)
             .await
             .map_err(|err| internal_error(format!("failed to read app metadata: {err}")))?;
-        let loaded_plugins = self
-            .thread_manager
-            .plugins_manager()
+        let plugins_manager = self.thread_manager.plugins_manager();
+        plugins_manager.set_auth_mode(Some(auth.api_auth_mode()));
+        let loaded_plugins = plugins_manager
             .plugins_for_config(&config.plugins_config_input())
             .await;
         let connector_snapshot =
