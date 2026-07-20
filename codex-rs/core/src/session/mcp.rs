@@ -453,7 +453,7 @@ impl Session {
             mcp_config.auth_keyring_backend_kind,
             &turn_context.approval_policy,
             turn_context.sub_id.clone(),
-            self.get_tx_event(),
+            Some(self.get_tx_event()),
             mcp_startup_cancellation_token,
             turn_context.permission_profile(),
             mcp_runtime_context.clone(),
