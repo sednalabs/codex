@@ -23,7 +23,6 @@ use codex_features::Features;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_model_provider::create_model_provider;
-use codex_protocol::approvals::GuardianAssessmentDecisionSource;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -1902,33 +1901,15 @@ fn guardian_mcp_review_request_ignores_untrusted_connected_account_email() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn guardian_review_decision_maps_to_mcp_tool_decision() {
-    let (session, _) = make_session_and_context().await;
-    let session = Arc::new(session);
-
+#[test]
+fn guardian_review_decision_maps_to_mcp_tool_decision() {
     assert_eq!(
-        mcp_tool_approval_decision_from_guardian(
-            session.as_ref(),
-            "review-id",
-            ReviewDecision::Approved
-        )
-        .await,
+        mcp_tool_approval_decision_from_guardian(ReviewDecision::Approved),
         McpToolApprovalDecision::Accept
     );
-    session.services.guardian_rejections.lock().await.insert(
-        "review-id".to_string(),
-        crate::guardian::GuardianRejection {
-            rationale: "too risky".to_string(),
-            source: GuardianAssessmentDecisionSource::Agent,
-        },
-    );
-    let denial = mcp_tool_approval_decision_from_guardian(
-        session.as_ref(),
-        "review-id",
-        ReviewDecision::Denied,
-    )
-    .await;
+    let denial = mcp_tool_approval_decision_from_guardian(ReviewDecision::denied(
+        "This action was rejected due to unacceptable risk.\nReason: too risky\nThe agent must not attempt to achieve the same outcome",
+    ));
     let McpToolApprovalDecision::Decline {
         message: Some(message),
     } = denial
@@ -1937,12 +1918,7 @@ async fn guardian_review_decision_maps_to_mcp_tool_decision() {
     };
     assert!(message.contains("Reason: too risky"));
     assert!(message.contains("The agent must not attempt to achieve the same outcome"));
-    let timeout = mcp_tool_approval_decision_from_guardian(
-        session.as_ref(),
-        "review-id",
-        ReviewDecision::TimedOut,
-    )
-    .await;
+    let timeout = mcp_tool_approval_decision_from_guardian(ReviewDecision::TimedOut);
     let McpToolApprovalDecision::Decline {
         message: Some(message),
     } = timeout
@@ -1952,12 +1928,7 @@ async fn guardian_review_decision_maps_to_mcp_tool_decision() {
     assert!(message.contains("did not finish before its deadline"));
     assert!(!message.contains("unacceptable risk"));
     assert_eq!(
-        mcp_tool_approval_decision_from_guardian(
-            session.as_ref(),
-            "review-id",
-            ReviewDecision::Abort
-        )
-        .await,
+        mcp_tool_approval_decision_from_guardian(ReviewDecision::Abort),
         McpToolApprovalDecision::Decline { message: None }
     );
 }
