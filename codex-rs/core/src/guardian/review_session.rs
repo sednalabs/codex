@@ -1056,7 +1056,6 @@ pub(crate) fn build_guardian_review_session_config(
         )?);
     }
     for feature in [
-        Feature::SpawnCsv,
         Feature::Collab,
         Feature::MultiAgentV2,
         Feature::CodexHooks,

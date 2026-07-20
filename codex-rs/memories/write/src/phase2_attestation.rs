@@ -342,7 +342,6 @@ fn consolidator_manifest<'a>(
         approval_policy: agent_config.permissions.approval_policy.value().to_string(),
         sandbox_policy,
         disabled_features: &[
-            "SpawnCsv",
             "Collab",
             "MemoryTool",
             "Apps",
