@@ -88,7 +88,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "User has denied this command and the agent should not execute it, but it should continue the session and try something else.",
+          "description": "User has denied this command and the agent should not execute it, but\nit should continue the session and try something else.",
           "properties": {
             "denied": {
               "properties": {

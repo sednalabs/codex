@@ -272,10 +272,7 @@ fn managed_proxy_preflight_argv_unshares_network() {
 
 #[test]
 fn proc_mount_preflight_does_not_bind_the_full_filesystem() {
-    let argv = build_preflight_bwrap_argv(
-        BwrapNetworkMode::FullAccess,
-        /*mount_proc*/ true,
-    )
+    let argv = build_preflight_bwrap_argv(BwrapNetworkMode::FullAccess, /*mount_proc*/ true)
         .expect("build preflight argv")
         .args;
 
@@ -291,12 +288,9 @@ fn proc_mount_preflight_does_not_bind_the_full_filesystem() {
 
 #[test]
 fn network_preflight_preserves_proc_mount_fallback() {
-    let argv = build_preflight_bwrap_argv(
-        BwrapNetworkMode::Isolated,
-        /*mount_proc*/ false,
-    )
-    .expect("build preflight argv")
-    .args;
+    let argv = build_preflight_bwrap_argv(BwrapNetworkMode::Isolated, /*mount_proc*/ false)
+        .expect("build preflight argv")
+        .args;
 
     assert!(argv.windows(2).any(|window| window == ["--tmpfs", "/"]));
     assert!(!argv.iter().any(|arg| arg == "--proc"));
