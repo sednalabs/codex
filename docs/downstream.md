@@ -284,7 +284,10 @@ Why:
   role reload must retain the resolved runtime provider object, reasoning
   summary, and verbosity when the role does not replace them.
 - Keep models with unspecified MultiAgentV2 backend metadata selectable while
-  rejecting models known to belong to a different backend.
+  rejecting models known to belong to a different backend. Luna is the narrow
+  downstream exception: it remains selectable for V2 child work while its
+  upstream catalog entry still defaults top-level Luna sessions to V1. Remove
+  the rule when upstream marks Luna V2-compatible.
 - Surface the effective resolved child settings directly in the tool layer so callers can see what actually launched.
 - Let downstream multi-agent orchestration block on clear tool contracts (`list_agents`, `inspect_agent_tree`, `wait_agent(return_when=...)`) instead of transcript polling.
 - Upstream-native reimplementation is welcome when it preserves the live nested-agent visibility, the cheap `list_agents` surface, the richer `inspect_agent_tree` inspection, and the explicit blocking `wait_agent` contract so we can shrink the divergence without losing the downstream visibility model.
