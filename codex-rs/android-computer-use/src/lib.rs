@@ -636,6 +636,23 @@ async fn run_action(
                 .await?;
             Ok("swiped Android screen".to_string())
         }
+        "multi_touch" => {
+            if !tools.contains("android.input.multi_touch") {
+                return Err(
+                    "Android provider does not expose atomic multi-touch input; operator action is required to install or select a compatible provider. Sequential single-touch fallback is intentionally unavailable."
+                        .to_string(),
+                );
+            }
+            let args = multi_touch_args(action, defaults)?;
+            let pointer_count = args
+                .get("pointers")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            client.call_tool("android.input.multi_touch", args).await?;
+            Ok(format!(
+                "sent atomic Android multi-touch gesture with {pointer_count} pointers"
+            ))
+        }
         "scroll" => {
             let args = scroll_args(action, defaults)?;
             client.call_tool("android.input.swipe", args).await?;
@@ -1490,6 +1507,55 @@ fn input_args(action: &Value, fields: &[&str], defaults: &AndroidProviderDefault
     args
 }
 
+fn multi_touch_args(
+    action: &Value,
+    defaults: &AndroidProviderDefaults,
+) -> Result<Value, String> {
+    let pointers = action
+        .get("pointers")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "multi_touch requires a pointers array.".to_string())?;
+    if !(2..=5).contains(&pointers.len()) {
+        return Err("multi_touch requires between two and five pointers.".to_string());
+    }
+
+    for (index, pointer) in pointers.iter().enumerate() {
+        let pointer = pointer
+            .as_object()
+            .ok_or_else(|| format!("multi_touch pointer {index} must be an object."))?;
+        for coordinate in ["x1", "y1", "x2", "y2"] {
+            let value = pointer.get(coordinate).and_then(Value::as_u64).ok_or_else(|| {
+                format!(
+                    "multi_touch pointer {index} requires non-negative integer {coordinate}."
+                )
+            })?;
+            if value > u64::from(u32::MAX) {
+                return Err(format!(
+                    "multi_touch pointer {index} coordinate {coordinate} exceeds the supported range."
+                ));
+            }
+        }
+    }
+
+    let mut args = json!({
+        "pointers": Value::Array(pointers.clone()),
+    });
+    if let Some(duration) = action.get("duration_ms") {
+        let duration = duration.as_u64().ok_or_else(|| {
+            "multi_touch duration_ms must be an integer from 50 through 2000.".to_string()
+        })?;
+        if !(50..=2000).contains(&duration) {
+            return Err(
+                "multi_touch duration_ms must be an integer from 50 through 2000.".to_string(),
+            );
+        }
+        args["duration_ms"] = Value::from(duration);
+    }
+    copy_serial_or_default(action, &mut args, defaults);
+    copy_if_present(action, &mut args, "timeout_secs");
+    Ok(args)
+}
+
 fn element_args(action: &Value, defaults: &AndroidProviderDefaults) -> Result<Value, String> {
     let mut args = json!({});
     if let Some(selector) = action.get("selector").or_else(|| action.get("target")) {
@@ -2113,6 +2179,76 @@ mod tests {
             ),
             json!({"x": 1, "y": 2, "serial": "device-1"})
         );
+    }
+
+    #[test]
+    fn multi_touch_args_preserves_the_atomic_provider_contract() {
+        let defaults = AndroidProviderDefaults {
+            serial: Some("emulator-5554".to_string()),
+            ..AndroidProviderDefaults::default()
+        };
+        let args = multi_touch_args(
+            &json!({
+                "type": "multi_touch",
+                "pointers": [
+                    {"x1": 100, "y1": 200, "x2": 80, "y2": 180},
+                    {"x1": 300, "y1": 200, "x2": 320, "y2": 180}
+                ],
+                "duration_ms": 240,
+                "timeout_secs": 12
+            }),
+            &defaults,
+        )
+        .expect("valid multi-touch args");
+
+        assert_eq!(
+            args,
+            json!({
+                "pointers": [
+                    {"x1": 100, "y1": 200, "x2": 80, "y2": 180},
+                    {"x1": 300, "y1": 200, "x2": 320, "y2": 180}
+                ],
+                "duration_ms": 240,
+                "serial": "emulator-5554",
+                "timeout_secs": 12
+            })
+        );
+    }
+
+    #[test]
+    fn multi_touch_args_rejects_invalid_pointer_shapes_and_duration() {
+        let defaults = AndroidProviderDefaults::default();
+        for (action, expected_error) in [
+            (
+                json!({"pointers": [{"x1": 1, "y1": 2, "x2": 3, "y2": 4}]}),
+                "between two and five pointers",
+            ),
+            (
+                json!({
+                    "pointers": [
+                        {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+                        {"x1": -1, "y1": 2, "x2": 3, "y2": 4}
+                    ]
+                }),
+                "non-negative integer x1",
+            ),
+            (
+                json!({
+                    "pointers": [
+                        {"x1": 1, "y1": 2, "x2": 3, "y2": 4},
+                        {"x1": 5, "y1": 6, "x2": 7, "y2": 8}
+                    ],
+                    "duration_ms": 49
+                }),
+                "from 50 through 2000",
+            ),
+        ] {
+            let error = multi_touch_args(&action, &defaults).expect_err("invalid multi-touch");
+            assert!(
+                error.contains(expected_error),
+                "expected {expected_error:?} in {error:?}"
+            );
+        }
     }
 
     #[test]
