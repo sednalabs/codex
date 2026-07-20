@@ -93,6 +93,13 @@ Focused lane used for protocol/event-history seams:
 - `codex.native-computer-use-doctor-targeted`
 - `codex.app-server-thread-cwd-targeted`
 
+Upstream hook `additionalContextLimit` behavior is not a downstream
+divergence, but it crosses generated protocol schemas and the downstream TUI
+and tool-surface carry. Exact sync heads therefore keep its config/discovery,
+per-hook spill, app-server response, schema, and hook-browser regressions in
+the hosted `rust-ci`/`rust-ci-full` proof instead of validating only one side
+of that shared seam.
+
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 - Workflow shard names intentionally mirror this document's guardrail lane
