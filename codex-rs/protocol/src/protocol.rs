@@ -4194,7 +4194,7 @@ pub struct ThreadGoalUpdatedEvent {
 }
 
 /// User's decision in response to an ExecApprovalRequest.
-#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq, Display, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Display, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewDecision {
     /// User has approved this command and the agent should execute it.
@@ -4219,8 +4219,7 @@ pub enum ReviewDecision {
 
     /// User has denied this command and the agent should not execute it, but
     /// it should continue the session and try something else.
-    #[default]
-    Denied,
+    Denied { rejection: String },
 
     /// The approval flow timed out before the user or guardian completed a
     /// decision. Downstream may surface this distinctly from an explicit
@@ -4232,7 +4231,21 @@ pub enum ReviewDecision {
     Abort,
 }
 
+impl Default for ReviewDecision {
+    fn default() -> Self {
+        Self::Denied {
+            rejection: "denied".to_string(),
+        }
+    }
+}
+
 impl ReviewDecision {
+    pub fn denied(rejection: impl Into<String>) -> Self {
+        Self::Denied {
+            rejection: rejection.into(),
+        }
+    }
+
     /// Returns an opaque version of the decision without PII. We can't use an ignored flag
     /// on `serde` because the serialization is required by some surfaces.
     pub fn to_opaque_string(&self) -> &'static str {
@@ -4246,7 +4259,7 @@ impl ReviewDecision {
                 NetworkPolicyRuleAction::Allow => "approved_with_network_policy_allow",
                 NetworkPolicyRuleAction::Deny => "denied_with_network_policy_deny",
             },
-            ReviewDecision::Denied => "denied",
+            ReviewDecision::Denied { .. } => "denied",
             ReviewDecision::TimedOut => "timed_out",
             ReviewDecision::Abort => "abort",
         }
@@ -4573,6 +4586,18 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn review_decision_denied_round_trip() -> Result<()> {
+        let decision = ReviewDecision::Denied {
+            rejection: "denied reason".to_string(),
+        };
+        let value = json!({"denied": {"rejection": "denied reason"}});
+
+        assert_eq!(serde_json::to_value(&decision)?, value);
+        assert_eq!(serde_json::from_value::<ReviewDecision>(value)?, decision);
+        Ok(())
+    }
 
     #[test]
     fn feature_thread_source_serializes_as_its_app_owned_label() -> Result<()> {
