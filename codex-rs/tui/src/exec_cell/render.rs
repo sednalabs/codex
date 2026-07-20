@@ -913,6 +913,7 @@ mod tests {
             Vec::new(),
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
+            /*terminal_wait*/ None,
             /*animations_enabled*/ false,
         );
         for line in 1..=160 {
@@ -957,6 +958,7 @@ mod tests {
             Vec::new(),
             ExecCommandSource::Agent,
             /*interaction_input*/ None,
+            /*terminal_wait*/ None,
             /*animations_enabled*/ false,
         );
         let hidden = "\x1b[2m".repeat(300_000);
