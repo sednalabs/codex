@@ -34,7 +34,7 @@ impl AgentControl {
             .state
             .agent_metadata_for_thread(agent_id)
             .ok_or(CodexErr::ThreadNotFound(agent_id))?;
-        let mut lifecycle = metadata.lifecycle.lock().await;
+        let lifecycle = metadata.lifecycle.lock().await;
         if !self.state.metadata_is_current(agent_id, &metadata) {
             return Err(CodexErr::ThreadNotFound(agent_id));
         }
