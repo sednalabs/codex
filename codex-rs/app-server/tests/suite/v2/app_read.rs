@@ -26,6 +26,8 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::login_with_api_key;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -313,7 +315,14 @@ async fn app_read_backend_failure_preserves_fresh_cached_records() -> Result<()>
 }
 
 #[tokio::test]
-async fn app_read_adds_plugin_display_names_without_starting_mcp() -> Result<()> {
+async fn app_read_resynchronizes_plugin_auth_after_external_login_without_starting_mcp()
+-> Result<()> {
+    let access_token = encode_id_token(
+        &ChatGptIdTokenClaims::new()
+            .email("external@example.com")
+            .plan_type("plus")
+            .chatgpt_account_id("account-123"),
+    )?;
     let state = BatchServerState::new(
         json!({
             "apps": [
@@ -321,7 +330,7 @@ async fn app_read_adds_plugin_display_names_without_starting_mcp() -> Result<()>
                 app_response("unclaimed", "Unclaimed", /*icon_url*/ None),
             ]
         }),
-        "chatgpt-token",
+        &access_token,
         "codex",
     );
     let (server_url, server_handle) = start_batch_server(state.clone()).await?;
@@ -355,13 +364,36 @@ enabled = false
         "Disabled Plugin",
         "unclaimed",
     )?;
-    write_auth(codex_home.path())?;
+    login_with_api_key(
+        codex_home.path(),
+        "sk-test-key",
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
         .build()
         .await?;
     timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let login_id = mcp
+        .send_chatgpt_auth_tokens_login_request(
+            access_token,
+            "account-123".to_string(),
+            Some("plus".to_string()),
+        )
+        .await?;
+    let login_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(login_id)),
+    )
+    .await??;
+    assert_eq!(
+        to_response::<LoginAccountResponse>(login_response)?,
+        LoginAccountResponse::ChatgptAuthTokens {}
+    );
 
     let response = read_apps(
         &mut mcp,
