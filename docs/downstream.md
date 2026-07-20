@@ -141,6 +141,15 @@ checksums, so rollback requires a pre-upgrade database copy. The upgrade also
 intentionally removes any unfinished CSV-job rows; ordinary thread rows,
 spawn edges, and external-import history remain intact.
 
+## Upstream completed-hook warning headers
+
+Upstream commit `cf821e8ec8` moves the first line of a completed hook warning
+into its TUI header after `says:`, indents any continuation lines, and avoids
+rendering the warning again in the body. Hooks without a warning keep the
+existing header. The downstream compact-transcript path uses the same header
+shape while continuing to collapse only hook context, so rich, compact, and
+raw transcript views do not disagree about warning content.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -172,14 +181,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `fd41d43d3b2e0d04cd68b174511d93d329cda5f8`
+  `88c1ea182c03c802fca9558e0720657e7714a107`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
+  `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
 - `upstream/main`:
-  `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
+  `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1897` downstream ahead
+  `0` upstream ahead, `1899` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

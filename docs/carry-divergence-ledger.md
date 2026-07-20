@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `fd41d43d3b2e0d04cd68b174511d93d329cda5f8`
+- downstream integration code tree: `88c1ea182c03c802fca9558e0720657e7714a107`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
-- `upstream/main`: `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
-- downstream branch vs `upstream/main`: `1897` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
+- `upstream/main`: `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
+- downstream branch vs `upstream/main`: `1899` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1631` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1632` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -151,6 +151,22 @@ docs-only refresh commit that records this snapshot.
   expected pre-promotion result while `origin/main` still points at the old
   downstream tree. Audit artifact `8476471215` has SHA-256
   `d03dd1c3b7ad0ad3bf4a1d6a3eca8e122d4cf5d385d9eb7e4688b53898dd432e`.
+
+### Completed Hook Warning Headers
+
+- Upstream commit `cf821e8ec8` renders the first line of a completed hook
+  warning in the hook header after `says:` and indents any remaining lines.
+  Warning entries are not repeated in the output body; hooks without warnings
+  retain their existing headers.
+- Downstream's compact transcript renderer shares the same completed-hook
+  semantics while continuing to collapse only context entries. The holistic
+  `verbose_transcript_preserves_hook_context_while_compact_collapses_it`
+  regression protects rich, compact, and raw output together.
+- Hosted mirror run `29781569004` fast-forwarded `origin/upstream-main` to
+  exact upstream `cf821e8ec8`. Sync job `88483784931` passed. Audit job
+  `88483884485` returned the expected pre-promotion exit `4` with
+  `mirror=exact`; artifact `8476818381` has SHA-256
+  `c9a3b5415b61aadc19153316fb9d3a9d0622ad63ab2940e16ca9378a178778e3`.
 
 ## Current Live Divergences
 

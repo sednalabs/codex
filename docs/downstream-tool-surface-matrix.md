@@ -11,15 +11,15 @@ Last reviewed: `2026-07-21`.
 
 Review baseline:
 
-- `upstream/main`: `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
+- `upstream/main`: `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
-- downstream integration code tree: `fd41d43d3b2e0d04cd68b174511d93d329cda5f8`
+  `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
+- downstream integration code tree: `88c1ea182c03c802fca9558e0720657e7714a107`
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
 tools upstream; the upstream hook-ordering and approval-rejection changes
-through `687f05cb94` do not alter the native-tool conclusions below. In
+through `cf821e8ec8` do not alter the native-tool conclusions below. In
 particular, this tranche adds no Codex-owned browser, Android, or desktop
 capability upstream.
 
