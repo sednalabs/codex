@@ -58,10 +58,10 @@ impl ChatWidget {
                 return;
             }
         }
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_started(item),
-            |s| s.handle_command_execution_started_now(item2),
+            item,
+            InterruptManager::push_item_started,
+            Self::handle_command_execution_started_now,
         );
     }
 
@@ -211,10 +211,10 @@ impl ChatWidget {
                 return;
             }
         }
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_completed(item),
-            |s| s.handle_command_execution_completed_now(item2),
+            item,
+            InterruptManager::push_item_completed,
+            Self::handle_command_execution_completed_now,
         );
     }
 
@@ -441,15 +441,9 @@ impl ChatWidget {
         // Unified exec interaction rows intentionally hide command output text in the exec cell and
         // instead render the interaction-specific content elsewhere in the UI.
         let output = if is_unified_exec_interaction {
-            CommandOutput {
-                exit_code,
-                aggregated_output: String::new(),
-            }
+            CommandOutput::new(exit_code, String::new())
         } else {
-            CommandOutput {
-                exit_code,
-                aggregated_output,
-            }
+            CommandOutput::new(exit_code, aggregated_output)
         };
 
         match end_target {
