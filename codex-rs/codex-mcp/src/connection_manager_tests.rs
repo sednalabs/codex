@@ -268,7 +268,7 @@ async fn disabled_permissions_auto_accept_elicitation_with_empty_form_schema() {
         ElicitationRequestRouter::default(),
     );
     let (tx_event, _rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender("server".to_string(), tx_event);
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
 
     let response = sender(
         NumberOrString::Number(1),
@@ -305,7 +305,7 @@ async fn disabled_permissions_do_not_auto_accept_elicitation_with_requested_fiel
         ElicitationRequestRouter::default(),
     );
     let (tx_event, _rx_event) = async_channel::bounded(1);
-    let sender = manager.make_sender("server".to_string(), tx_event);
+    let sender = manager.make_sender("server".to_string(), Some(tx_event));
 
     let response = sender(
         NumberOrString::Number(1),
@@ -370,8 +370,8 @@ async fn shared_elicitation_router_targets_the_exact_pending_request() {
         router,
     );
     let (tx_event, rx_event) = async_channel::bounded(2);
-    let sender_a = manager_a.make_sender("server".to_string(), tx_event.clone());
-    let sender_b = manager_b.make_sender("server".to_string(), tx_event);
+    let sender_a = manager_a.make_sender("server".to_string(), Some(tx_event.clone()));
+    let sender_b = manager_b.make_sender("server".to_string(), Some(tx_event));
     let elicitation = codex_rmcp_client::Elicitation::Mcp(
         CreateElicitationRequestParams::FormElicitationParams {
             meta: None,
@@ -1548,8 +1548,6 @@ fn host_owned_codex_apps_matches_reserved_name_with_server_metadata() {
 #[tokio::test]
 async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-    let (tx_event, rx_event) = async_channel::unbounded();
-    drop(rx_event);
     let codex_home = tempdir().expect("tempdir");
     let mcp_servers = HashMap::from([
         (
@@ -1622,7 +1620,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
         AuthKeyringBackendKind::default(),
         &approval_policy,
         String::new(),
-        tx_event,
+        /*tx_event*/ None,
         cancel_token.clone(),
         PermissionProfile::default(),
         McpRuntimeContext::new(
