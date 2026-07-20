@@ -14,6 +14,7 @@ use codex_core::ThreadManager;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
 use codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR;
+use codex_extension_api::ExtensionRegistryBuilder;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -46,9 +47,24 @@ use wiremock::MockServer;
 
 const AFTER_SECOND_RESUME: &str = "AFTER_SECOND_RESUME";
 const AFTER_ROLLBACK: &str = "AFTER_ROLLBACK";
-// Hosted archive/replay sweeps can cross nextest's 30s slow threshold while
-// rollback persistence catches up under remote-executor load.
+// General compact/resume events retain a broad hosted timeout. The host-only
+// rollback fixtures add an explicit idle boundary and a shorter correlated wait.
 const COMPACT_RESUME_EVENT_TIMEOUT: Duration = Duration::from_secs(60);
+
+struct ThreadIdleCounter {
+    tx: tokio::sync::watch::Sender<u64>,
+}
+
+impl codex_extension_api::ThreadLifecycleContributor<Config> for ThreadIdleCounter {
+    fn on_thread_idle<'a>(
+        &'a self,
+        _input: codex_extension_api::ThreadIdleInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            self.tx.send_modify(|count| *count += 1);
+        })
+    }
+}
 
 fn network_disabled() -> bool {
     std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok()
@@ -142,7 +158,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     let request_log = mount_initial_flow(&server).await;
     let expected_model = "gpt-5.4";
     // 2. Start a new conversation and drive it through the compact/resume/fork steps.
-    let (_home, config, manager, base) =
+    let (_home, config, manager, base, _thread_idle_rx) =
         start_test_conversation(&server, Some(expected_model)).await;
 
     user_turn(&base, "hello world").await;
@@ -299,7 +315,8 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
     let request_log = mount_second_compact_sequence(&server).await;
 
     // 2. Drive the conversation through compact -> resume -> fork -> compact -> resume.
-    let (_home, config, manager, base) = start_test_conversation(&server, /*model*/ None).await;
+    let (_home, config, manager, base, _thread_idle_rx) =
+        start_test_conversation(&server, /*model*/ None).await;
 
     user_turn(&base, "hello world").await;
     compact_conversation(&base).await;
@@ -451,28 +468,41 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
         ev_assistant_message("m3", SECOND_REPLY),
         ev_completed("r3"),
     ]);
-    let sse4 = sse(vec![ev_completed("r4")]);
+    let sse4 = sse(vec![ev_response_created("r4"), ev_completed("r4")]);
 
     let request_log = mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
 
-    let (_home, _config, _manager, base) = start_test_conversation(&server, /*model*/ None).await;
+    let (_home, _config, _manager, base, mut thread_idle_rx) =
+        start_test_conversation(&server, /*model*/ None).await;
 
+    let idle_count_before_first_turn = *thread_idle_rx.borrow();
     user_turn(&base, "hello world").await;
-    compact_conversation(&base).await;
-    user_turn(&base, EDITED_AFTER_COMPACT).await;
-
-    base.submit(Op::ThreadRollback { num_turns: 1 })
-        .await
-        .expect("submit thread rollback");
-    let rollback_event = wait_for_event_with_timeout(
-        &base,
-        |ev| matches!(ev, EventMsg::ThreadRolledBack(_)),
-        COMPACT_RESUME_EVENT_TIMEOUT,
+    wait_for_thread_idle_after(
+        &mut thread_idle_rx,
+        idle_count_before_first_turn,
+        "initial turn",
     )
     .await;
-    let EventMsg::ThreadRolledBack(rollback_event) = rollback_event else {
-        panic!("expected thread rolled back event");
-    };
+
+    let idle_count_before_compaction = *thread_idle_rx.borrow();
+    compact_conversation(&base).await;
+    wait_for_thread_idle_after(
+        &mut thread_idle_rx,
+        idle_count_before_compaction,
+        "compaction turn",
+    )
+    .await;
+
+    let idle_count_before_edited_turn = *thread_idle_rx.borrow();
+    user_turn(&base, EDITED_AFTER_COMPACT).await;
+    wait_for_thread_idle_after(
+        &mut thread_idle_rx,
+        idle_count_before_edited_turn,
+        "edited post-compaction turn",
+    )
+    .await;
+
+    let rollback_event = rollback_turns(&base, 1).await?;
     assert_eq!(rollback_event.num_turns, 1);
 
     user_turn(&base, AFTER_ROLLBACK).await;
@@ -557,10 +587,17 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     )
     .await;
 
-    let (_home, config, _manager, conversation) =
+    let (_home, config, _manager, conversation, mut thread_idle_rx) =
         start_test_conversation(&server, Some(MODEL)).await;
 
+    let idle_count_before_turn_one = *thread_idle_rx.borrow();
     user_turn(&conversation, TURN_ONE_USER).await;
+    wait_for_thread_idle_after(
+        &mut thread_idle_rx,
+        idle_count_before_turn_one,
+        "first settings turn",
+    )
+    .await;
 
     let override_cwd = config.cwd.join(PRETURN_CONTEXT_DIFF_CWD);
     std::fs::create_dir_all(&override_cwd)?;
@@ -581,20 +618,16 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     )
     .await?;
 
+    let idle_count_before_turn_two = *thread_idle_rx.borrow();
     user_turn(&conversation, TURN_TWO_USER).await;
-
-    conversation
-        .submit(Op::ThreadRollback { num_turns: 1 })
-        .await?;
-    let rollback_event = wait_for_event_with_timeout(
-        &conversation,
-        |ev| matches!(ev, EventMsg::ThreadRolledBack(_)),
-        COMPACT_RESUME_EVENT_TIMEOUT,
+    wait_for_thread_idle_after(
+        &mut thread_idle_rx,
+        idle_count_before_turn_two,
+        "turn with persistent settings overrides",
     )
     .await;
-    let EventMsg::ThreadRolledBack(rollback_event) = rollback_event else {
-        panic!("expected thread rolled back event");
-    };
+
+    let rollback_event = rollback_turns(&conversation, 1).await?;
     assert_eq!(rollback_event.num_turns, 1);
 
     user_turn(&conversation, FOLLOWUP_USER).await;
@@ -772,21 +805,84 @@ async fn mount_second_compact_sequence(server: &MockServer) -> ResponseMock {
 async fn start_test_conversation(
     server: &MockServer,
     model: Option<&str>,
-) -> (Arc<TempDir>, Config, Arc<ThreadManager>, Arc<CodexThread>) {
+) -> (
+    Arc<TempDir>,
+    Config,
+    Arc<ThreadManager>,
+    Arc<CodexThread>,
+    tokio::sync::watch::Receiver<u64>,
+) {
     let base_url = format!("{}/v1", server.uri());
     let model = model.map(str::to_string);
-    let mut builder = test_codex().with_config(move |config| {
-        config.model_provider.name = "Non-OpenAI Model provider".to_string();
-        config.model_provider.base_url = Some(base_url);
-        config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
-        if let Some(model) = model {
-            config.model = Some(model);
-        }
-    });
+    let (thread_idle_tx, thread_idle_rx) = tokio::sync::watch::channel(0_u64);
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdleCounter { tx: thread_idle_tx }));
+    let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(move |config| {
+            config.model_provider.name = "Non-OpenAI Model provider".to_string();
+            config.model_provider.base_url = Some(base_url);
+            config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
+            if let Some(model) = model {
+                config.model = Some(model);
+            }
+        });
     let test = Box::pin(builder.build(server))
         .await
         .expect("create conversation");
-    (test.home, test.config, test.thread_manager, test.codex)
+    (
+        test.home,
+        test.config,
+        test.thread_manager,
+        test.codex,
+        thread_idle_rx,
+    )
+}
+
+async fn wait_for_thread_idle_after(
+    thread_idle_rx: &mut tokio::sync::watch::Receiver<u64>,
+    previous_count: u64,
+    phase: &str,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while *thread_idle_rx.borrow_and_update() <= previous_count {
+            thread_idle_rx
+                .changed()
+                .await
+                .expect("thread idle counter should remain available");
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for thread idle after {phase}"));
+}
+
+async fn rollback_turns(
+    conversation: &Arc<CodexThread>,
+    num_turns: u32,
+) -> Result<codex_protocol::protocol::ThreadRolledBackEvent> {
+    let rollback_id = conversation
+        .submit(Op::ThreadRollback { num_turns })
+        .await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = conversation.next_event().await?;
+            if event.id != rollback_id {
+                continue;
+            }
+            match event.msg {
+                EventMsg::ThreadRolledBack(event) => return Ok(event),
+                EventMsg::Error(error) => {
+                    anyhow::bail!("thread rollback failed: {}", error.message);
+                }
+                EventMsg::TurnAborted(event) => {
+                    anyhow::bail!("thread rollback aborted: {event:?}");
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for thread rollback"))?
 }
 
 async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
