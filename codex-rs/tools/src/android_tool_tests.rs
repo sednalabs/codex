@@ -80,6 +80,7 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
         "type_text",
         "key",
         "swipe",
+        "multi_touch",
         "click",
         "long_press",
         "zoom",
@@ -98,13 +99,41 @@ fn canonical_android_dynamic_tool_preserves_supported_android_tool_names() {
         .and_then(|item| item.properties.as_ref())
         .expect("actions[] item properties");
     for property in [
-        "type", "region", "frame", "key", "ms", "package", "selector",
+        "type", "region", "frame", "key", "ms", "package", "pointers", "selector",
     ] {
         assert!(
             action_item_properties.contains_key(property),
             "missing actions[] property {property}"
         );
     }
+    let pointer_schema = action_item_properties
+        .get("pointers")
+        .and_then(|schema| schema.items.as_ref())
+        .expect("multi-touch pointer schema");
+    let pointer_properties = pointer_schema
+        .properties
+        .as_ref()
+        .expect("multi-touch pointer properties");
+    assert_eq!(
+        pointer_properties.keys().cloned().collect::<Vec<_>>(),
+        vec![
+            "x1".to_string(),
+            "x2".to_string(),
+            "y1".to_string(),
+            "y2".to_string(),
+        ]
+    );
+    assert_eq!(
+        pointer_schema.required.as_deref(),
+        Some(
+            &[
+                "x1".to_string(),
+                "y1".to_string(),
+                "x2".to_string(),
+                "y2".to_string(),
+            ][..]
+        )
+    );
     let selector_properties = action_item_properties
         .get("selector")
         .and_then(|schema| schema.properties.as_ref())
