@@ -1991,6 +1991,7 @@
         "codex-rs/core/src/agent/control/spawn.rs",
         "codex-rs/core/src/agent/control_tests.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs",
         "codex-rs/core/src/tools/handlers/spawn.rs",
         "codex-rs/core/src/agent/role.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
@@ -2006,6 +2007,7 @@
         "docs/carry-divergence-ledger.md",
         "docs/divergences/index.yaml",
         "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
         "justfile"
       ],
       "required_any_paths": [
