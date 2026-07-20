@@ -28,6 +28,8 @@ const DEFAULT_MCP_URL_PATH: &str = "/mcp";
 const INSPECT_UI_MAX_ATTEMPTS: usize = 3;
 const INSPECT_UI_RETRY_DELAY: Duration = Duration::from_millis(250);
 const INSTALL_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const MIN_MULTI_TOUCH_DURATION_MS: u64 = 50;
+const MAX_MULTI_TOUCH_DURATION_MS: u64 = 2_000;
 const MCP_TOOL_INTERACTIVE_SESSION_INSTALL_BUILD_FROM_RUN: &str =
     "interactive_session.install_build_from_run";
 
@@ -1507,10 +1509,7 @@ fn input_args(action: &Value, fields: &[&str], defaults: &AndroidProviderDefault
     args
 }
 
-fn multi_touch_args(
-    action: &Value,
-    defaults: &AndroidProviderDefaults,
-) -> Result<Value, String> {
+fn multi_touch_args(action: &Value, defaults: &AndroidProviderDefaults) -> Result<Value, String> {
     let pointers = action
         .get("pointers")
         .and_then(Value::as_array)
@@ -1524,11 +1523,14 @@ fn multi_touch_args(
             .as_object()
             .ok_or_else(|| format!("multi_touch pointer {index} must be an object."))?;
         for coordinate in ["x1", "y1", "x2", "y2"] {
-            let value = pointer.get(coordinate).and_then(Value::as_u64).ok_or_else(|| {
-                format!(
-                    "multi_touch pointer {index} requires non-negative integer {coordinate}."
-                )
-            })?;
+            let value = pointer
+                .get(coordinate)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    format!(
+                        "multi_touch pointer {index} requires non-negative integer {coordinate}."
+                    )
+                })?;
             if value > u64::from(u32::MAX) {
                 return Err(format!(
                     "multi_touch pointer {index} coordinate {coordinate} exceeds the supported range."
@@ -1541,14 +1543,14 @@ fn multi_touch_args(
         "pointers": Value::Array(pointers.clone()),
     });
     if let Some(duration) = action.get("duration_ms") {
-        let duration = duration.as_u64().ok_or_else(|| {
-            "multi_touch duration_ms must be an integer from 50 through 2000.".to_string()
-        })?;
-        if !(50..=2000).contains(&duration) {
-            return Err(
-                "multi_touch duration_ms must be an integer from 50 through 2000.".to_string(),
-            );
-        }
+        let duration = duration
+            .as_u64()
+            .filter(|duration| {
+                (MIN_MULTI_TOUCH_DURATION_MS..=MAX_MULTI_TOUCH_DURATION_MS).contains(duration)
+            })
+            .ok_or_else(|| {
+                "multi_touch duration_ms must be an integer from 50 through 2000.".to_string()
+            })?;
         args["duration_ms"] = Value::from(duration);
     }
     copy_serial_or_default(action, &mut args, defaults);
