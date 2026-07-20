@@ -1,0 +1,71 @@
+name: Prettier patch generation
+
+on:
+  push:
+    branches:
+      - validation/prettier-generation-*
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        with:
+          run_install: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile
+      - name: Format downstream documentation
+        run: >-
+          pnpm exec prettier --write
+          docs/carry-divergence-ledger.md
+          docs/downstream.md
+          docs/downstream-regression-matrix.md
+          docs/downstream-tool-surface-matrix.md
+      - name: Verify and package formatter output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(git diff --name-only)
+          if (( ${#changed[@]} == 0 )); then
+            echo "Prettier produced no patch" >&2
+            exit 1
+          fi
+
+          for path in "${changed[@]}"; do
+            case "${path}" in
+              docs/carry-divergence-ledger.md|docs/downstream.md|docs/downstream-regression-matrix.md|docs/downstream-tool-surface-matrix.md)
+                ;;
+              *)
+                echo "Unexpected formatter output: ${path}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          git diff --check
+          printf '%s\n' "${changed[@]}" > formatted-files.txt
+          git diff --binary -- "${changed[@]}" > prettier.patch
+          sha256sum prettier.patch > prettier.patch.sha256
+          {
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "workflow_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > formatter-receipt.txt
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: prettier-patch
+          path: |
+            prettier.patch
+            prettier.patch.sha256
+            formatted-files.txt
+            formatter-receipt.txt
+          if-no-files-found: error
+          retention-days: 1
