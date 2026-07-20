@@ -61,6 +61,26 @@ schemas, and the TUI hook browser. This is upstream behavior, not a downstream
 divergence; schema refreshes must preserve it alongside the fork's dynamic-tool
 and native computer-use protocol additions.
 
+## Upstream compact-hook continuation ordering
+
+Upstream commit `8c41ed33ce` owns the post-compaction ordering contract. After
+mid-turn auto-compaction, pending `SessionStart` hooks run before sampling
+continues. A stop request ends the turn; otherwise hook-provided context reaches
+the immediately following sample, including when a turn compacts repeatedly.
+Future syncs must preserve this ordering alongside downstream realtime and
+permission-context reconstruction.
+
+## Upstream approval rejection reasons
+
+Upstream commit `e52c35b000` owns structured `ReviewDecision::Denied {
+rejection }` values and their `denied.rejection` wire shape. Rejection reasons
+must remain intact through command, patch, network, MCP, delegated, automatic
+review, and shell-escalation paths, while model-visible text stays bounded.
+Generated schemas must retain this upstream object beside downstream dynamic
+tool, timeout, and native computer-use additions. The fork-specific
+`GuardianUserAuthorization` module path remains an independent compatibility
+detail, not a reason to restore the removed guardian rejection side map.
+
 ## Validation policy
 
 - use tiny local sanity checks first (`git diff --check`, formatting, focused unit tests)
@@ -92,14 +112,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `383ce0cbc1a4d5b237abfc18c649ae0b4b05ddbb`
+  `8c383dcfdf17d109e1e0ed1bb07de0f4714c59d4`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `e4836f998da166aba456f60d2e74eb79d6e2542b`
+  `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
 - `upstream/main`:
-  `e4836f998da166aba456f60d2e74eb79d6e2542b`
+  `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1888` downstream ahead
+  `0` upstream ahead, `1892` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
