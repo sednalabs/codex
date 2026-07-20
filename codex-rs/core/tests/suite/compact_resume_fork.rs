@@ -502,7 +502,7 @@ async fn snapshot_rollback_past_compaction_replays_append_only_history() -> Resu
     )
     .await;
 
-    let rollback_event = rollback_turns(&base, 1).await?;
+    let rollback_event = rollback_turns(&base, /*num_turns*/ 1).await?;
     assert_eq!(rollback_event.num_turns, 1);
 
     user_turn(&base, AFTER_ROLLBACK).await;
@@ -627,7 +627,7 @@ async fn snapshot_rollback_followup_turn_trims_context_updates() -> Result<()> {
     )
     .await;
 
-    let rollback_event = rollback_turns(&conversation, 1).await?;
+    let rollback_event = rollback_turns(&conversation, /*num_turns*/ 1).await?;
     assert_eq!(rollback_event.num_turns, 1);
 
     user_turn(&conversation, FOLLOWUP_USER).await;
