@@ -85,11 +85,9 @@ impl ChatWidget {
     }
 
     pub(super) fn on_context_compaction_started(&mut self, item: ThreadItem) {
-        self.defer_or_handle(
-            item,
-            InterruptManager::push_item_started,
-            |widget, _| widget.handle_context_compaction_started_now(),
-        );
+        self.defer_or_handle(item, InterruptManager::push_item_started, |widget, _| {
+            widget.handle_context_compaction_started_now()
+        });
     }
 
     fn handle_context_compaction_started_now(&mut self) {
@@ -98,11 +96,9 @@ impl ChatWidget {
     }
 
     pub(super) fn on_context_compaction_completed(&mut self, item: ThreadItem) {
-        self.defer_or_handle(
-            item,
-            InterruptManager::push_item_completed,
-            |widget, _| widget.handle_context_compaction_completed_now(),
-        );
+        self.defer_or_handle(item, InterruptManager::push_item_completed, |widget, _| {
+            widget.handle_context_compaction_completed_now()
+        });
     }
 
     fn handle_context_compaction_completed_now(&mut self) {
