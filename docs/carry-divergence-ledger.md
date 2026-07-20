@@ -167,6 +167,16 @@ docs-only refresh commit that records this snapshot.
   `88483884485` returned the expected pre-promotion exit `4` with
   `mirror=exact`; artifact `8476818381` has SHA-256
   `c9a3b5415b61aadc19153316fb9d3a9d0622ad63ab2940e16ca9378a178778e3`.
+- Hosted generation run `29783168837` passed at temporary workflow head
+  `321991090e` against exact integration source `74f7c82f02`. Artifact
+  `8477717271` has archive SHA-256
+  `81d9a3c91629578ac257281815c17e55b928c1a9c4fe50910204a07200ef9131`;
+  its embedded 12-file patch has SHA-256
+  `b13a993db6a856488fe060996de53641843125dc9c79dd8929faa558a8f69a68`.
+  The run regenerated app-server and config schemas, the hook-browser snapshot,
+  Rust formatting, and downstream table formatting, then passed both exact
+  completed-hook regressions. Signed commit `3f15d104d7` records the verified
+  artifact output without the temporary workflow.
 
 ## Current Live Divergences
 
