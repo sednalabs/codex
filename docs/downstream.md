@@ -51,6 +51,16 @@ regular, non-symlink `scope.json` are managed. Ordinary metadata is ignored,
 while project-root and marker symlinks fail closed before detection. Existing
 unchanged imports are not silently backfilled by this sync.
 
+## Upstream hook context limits
+
+Upstream commit `e4836f998d` owns per-hook `additionalContextLimit` behavior.
+An unset value keeps the approximate 2,500-token spill default, while `0`
+disables spilling for that hook. The setting is retained through hook
+discovery and hashing, app-server config and hook-list responses, generated
+schemas, and the TUI hook browser. This is upstream behavior, not a downstream
+divergence; schema refreshes must preserve it alongside the fork's dynamic-tool
+and native computer-use protocol additions.
+
 ## Validation policy
 
 - use tiny local sanity checks first (`git diff --check`, formatting, focused unit tests)
@@ -82,14 +92,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `2b9112879c38bdff1ab4b10aff7adc0e6ca3a37a`
+  `383ce0cbc1a4d5b237abfc18c649ae0b4b05ddbb`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
+  `e4836f998da166aba456f60d2e74eb79d6e2542b`
 - `upstream/main`:
-  `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
+  `e4836f998da166aba456f60d2e74eb79d6e2542b`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1886` downstream ahead
+  `0` upstream ahead, `1888` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

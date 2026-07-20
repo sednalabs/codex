@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `2b9112879c38bdff1ab4b10aff7adc0e6ca3a37a`
+- downstream integration code tree: `383ce0cbc1a4d5b237abfc18c649ae0b4b05ddbb`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
-- `upstream/main`: `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
-- downstream branch vs `upstream/main`: `1886` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `e4836f998da166aba456f60d2e74eb79d6e2542b`
+- `upstream/main`: `e4836f998da166aba456f60d2e74eb79d6e2542b`
+- downstream branch vs `upstream/main`: `1888` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1625` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1626` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -32,6 +32,23 @@ docs-only refresh commit that records this snapshot.
 - Track exact-subject upstream matches separately as historical carry history.
 - Treat the exact-subject upstream match list as a lower bound for "already
   upstreamed" history, not a complete semantic-duplicate detector.
+
+## Latest Upstream-Owned Integration
+
+### Hook Additional-Context Spill Limits
+
+- The 2026-07-21 sync adopts upstream commit `e4836f998d`, which adds a
+  per-command-hook `additionalContextLimit` for events that can emit
+  `additionalContext`.
+- Preserve upstream's exact semantics: an unset limit retains the approximate
+  2,500-token default, `0` disables spilling for that hook, and each hook is
+  evaluated independently before its context reaches the model.
+- Preserve the field through JSON and TOML discovery, hook hashing, app-server
+  config requirements and hook-list responses, generated schemas, and the TUI
+  hook browser. Unsupported events ignore the setting with a warning.
+- The generated app-server schemas are a shared sync seam. Future regeneration
+  must retain this upstream field alongside downstream dynamic-tool and native
+  computer-use protocol additions rather than selecting either parent schema.
 
 ## Current Live Divergences
 
