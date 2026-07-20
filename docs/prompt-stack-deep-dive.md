@@ -168,7 +168,6 @@ config and then applies explicit review-time overrides.
 The important review-time changes are:
 
 - `web_search_mode` is forced to `Disabled`
-- `Feature::SpawnCsv` is disabled
 - `Feature::Collab` is disabled
 - approval policy is forced to `AskForApproval::Never`
 - `base_instructions` is explicitly set to `crate::REVIEW_PROMPT.to_string()`

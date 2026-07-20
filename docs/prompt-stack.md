@@ -82,7 +82,6 @@ PARENT SESSION
       ↓ clone config
 apply review-time restrictions
     ├─ web_search_mode := Disabled
-    ├─ Feature::SpawnCsv := disabled
     ├─ Feature::Collab := disabled
     ├─ approval := AskForApproval::Never
     ├─ base_instructions := REVIEW_PROMPT
