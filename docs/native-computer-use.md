@@ -78,6 +78,14 @@ browser backend registry: Android is a peer native adapter, while the browser
 registry is the routing layer for browser-specific backends such as
 Playwright, in-app browser, and Chrome extension.
 
+The `multi_touch` Android step action sends two to five complete pointer paths
+to `android.input.multi_touch` as one atomic provider call. Codex validates the
+pointer count, non-negative integer coordinates, and the 50–2000 ms duration
+before dispatch. If the provider does not advertise the capability, the action
+fails with an explicit operator-facing message. It must never be approximated
+with sequential taps or swipes because that changes the gesture's ownership
+and timing semantics.
+
 Local Android bridge configuration lives in
 `~/.codex/android-computer-use.json`; the legacy
 `~/.codex/android-dynamic-tools.json` and

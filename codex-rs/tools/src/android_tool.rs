@@ -11,12 +11,13 @@ pub const ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME: &str = "android_install_buil
 const OBSERVE_SCOPE_SCREEN: &str = "screen";
 const OBSERVE_SCOPE_SCREEN_AND_UI: &str = "screen_and_ui";
 
-const STEP_ACTIONS: [&str; 17] = [
+const STEP_ACTIONS: [&str; 18] = [
     "launch_app",
     "tap",
     "type_text",
     "key",
     "swipe",
+    "multi_touch",
     "click",
     "double_click",
     "scroll",
@@ -342,7 +343,19 @@ fn step_action_properties(include_type: bool) -> BTreeMap<String, JsonSchema> {
         ),
         (
             "duration_ms".to_string(),
-            JsonSchema::number(Some("Optional drag or swipe duration in milliseconds.".to_string())),
+            JsonSchema::number(Some(
+                "Optional drag, swipe, or multi-touch duration in milliseconds.".to_string(),
+            )),
+        ),
+        (
+            "pointers".to_string(),
+            JsonSchema::array(
+                multi_touch_pointer_schema(),
+                Some(
+                    "Two to five pointer paths for one atomic Android multi-touch gesture."
+                        .to_string(),
+                ),
+            ),
         ),
         (
             "name".to_string(),
@@ -661,6 +674,36 @@ fn android_selector_schema(description: Option<String>) -> JsonSchema {
     );
     schema.description = description;
     schema
+}
+
+fn multi_touch_pointer_schema() -> JsonSchema {
+    JsonSchema::object(
+        BTreeMap::from([
+            (
+                "x1".to_string(),
+                JsonSchema::integer(Some("Pointer start X coordinate.".to_string())),
+            ),
+            (
+                "y1".to_string(),
+                JsonSchema::integer(Some("Pointer start Y coordinate.".to_string())),
+            ),
+            (
+                "x2".to_string(),
+                JsonSchema::integer(Some("Pointer end X coordinate.".to_string())),
+            ),
+            (
+                "y2".to_string(),
+                JsonSchema::integer(Some("Pointer end Y coordinate.".to_string())),
+            ),
+        ]),
+        Some(vec![
+            "x1".to_string(),
+            "y1".to_string(),
+            "x2".to_string(),
+            "y2".to_string(),
+        ]),
+        Some(false.into()),
+    )
 }
 
 fn bounds_schema(description: Option<String>) -> JsonSchema {
