@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `fabcbce58222db9c52ad6b5b70630764d4382e99`
+- downstream integration code tree: `2b9112879c38bdff1ab4b10aff7adc0e6ca3a37a`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`): `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
 - `upstream/main`: `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
-- downstream branch vs `upstream/main`: `1883` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `1886` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1622` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1625` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -958,8 +958,11 @@ docs-only refresh commit that records this snapshot.
   `InputImage`; app-server events, stored thread items, generated schemas, and
   JSONL previews preserve both. The two upstream dynamic-tool audio fixtures
   use downstream's flat `DynamicToolSpec` compatibility record without
-  restoring the tagged namespace shape. Native computer-use responses remain
-  text/image-only and keep their fail-loud screenshot contract.
+  restoring the tagged namespace shape. Regenerate Cargo and Bazel locks from
+  the merged dependency graph rather than unioning parent entries: upstream's
+  Symphonia lock can name a `bitflags` version that the downstream graph has
+  already superseded. Native computer-use responses remain text/image-only and
+  keep their fail-loud screenshot contract.
 - Computer-use events remain transient in every history mode; live rollout
   tracing maps them to tool-runtime start/end boundaries without writing them
   into thread snapshots.
