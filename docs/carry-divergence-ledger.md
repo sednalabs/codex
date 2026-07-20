@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `88c1ea182c03c802fca9558e0720657e7714a107`
+- downstream integration code tree: `cedcbccd007ecc4e782014c578f37a9f689bcd97`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
-- `upstream/main`: `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
-- downstream branch vs `upstream/main`: `1899` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `35c2278dd5c49daf8a4e44468038aed9be9e866e`
+- `upstream/main`: `35c2278dd5c49daf8a4e44468038aed9be9e866e`
+- downstream branch vs `upstream/main`: `1905` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1632` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1636` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -177,6 +177,55 @@ docs-only refresh commit that records this snapshot.
   Rust formatting, and downstream table formatting, then passed both exact
   completed-hook regressions. Signed commit `3f15d104d7` records the verified
   artifact output without the temporary workflow.
+
+### App-Read Connector Metadata And Auth Routing
+
+- Upstream commit `60272096bc` enriches experimental `app/read` connector
+  metadata with dark-icon URL aliases, distribution channel, install URL, and
+  plugin display names. Plugin display names are derived from loaded plugin
+  declarations without starting MCP servers.
+- Downstream retains auth-dependent app/MCP routing. `app/read` synchronizes the
+  shared `PluginsManager` from the same live ChatGPT auth snapshot used for the
+  metadata request before it projects plugin names. This prevents an external
+  auth transition or embedding-owned auth update from leaving the projection
+  on an older API-key mode.
+- `app_read_resynchronizes_plugin_auth_after_external_login_without_starting_mcp`
+  covers an API-key-to-external-ChatGPT transition, sorted plugin names, and
+  zero MCP startup requests. The complete `suite::v2::app_read::` group is part
+  of `app-server-v2-contract-targeted`.
+- Hosted mirror run `29784292249` fast-forwarded `origin/upstream-main` to exact
+  upstream `60272096bc`; sync job `88492334147` passed and audit job
+  `88492430174` returned the expected pre-promotion exit `4`. Artifact
+  `8477855931` has SHA-256
+  `a4a207bbae70b4f269b1ca605dd34622ddbdd268b1e50acbffe0ddf7d06e5c2c`.
+- Hosted generation run `29784486643` passed all schema and focused app-read
+  tests but failed closed because its disposable packager incorrectly required
+  a non-empty patch. Corrected run `29785333279` passed at workflow head
+  `ddbdf48e675460e04cd1b5238b00d87ac9b3b818` against source
+  `4df3033de87cf8d3b2a716e3d01df75924106bcf`. Artifact `8478473413` has
+  archive SHA-256
+  `68685c9ab347da89c7145972fc504cacbbb9d46330231fe27d395bd2a59cfa1d`;
+  its manifest records `changed_file_count=0` and the canonical empty-patch
+  SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+### Exec-Server Windows Native Spawning
+
+- Upstream commit `35c2278dd5` introduces the shared
+  `codex_sandboxing::spawn_process` seam and routes executor-native pipe, PTY,
+  inherited-file-descriptor, and Windows sandbox launches through it. The exec
+  server now carries permission profiles, workspace roots, proxy state,
+  filesystem overrides, sandbox level, and private-desktop selection into the
+  canonical Windows session spawner.
+- The only merge conflict was the obsolete downstream direct Windows launch
+  block in `core/src/unified_exec/process_manager.rs`. Resolution adopts the
+  upstream shared launcher and drops that duplicate block while preserving the
+  downstream pre-spawn override preparation, proxy-aware effective-backend
+  policy, metrics, telemetry, and unrelated bounded final-output carry.
+- Hosted mirror run `29786347719` fast-forwarded `origin/upstream-main` to exact
+  upstream `35c2278dd5`; sync job `88498617036` passed and audit job
+  `88498704999` returned the expected pre-promotion exit `4`. Artifact
+  `8478603020` has SHA-256
+  `7eab307e0b280aca8b56b15cefce15e5f7b3af706b8af77c98d9c2ab0693b925`.
 
 ## Current Live Divergences
 
@@ -409,10 +458,15 @@ docs-only refresh commit that records this snapshot.
   `inserts_no_profile_for_proxy_selected_elevated_windows_sandbox`, and
   `unified_exec_proxy_blocks_direct_loopback_bypass_on_windows`.
 - Upstream provenance: `4bc2c723ef` introduced proxy-selected elevation for
-  direct exec. Preserve this completion carry until unified exec and adjacent
-  launch policy use the same effective-backend contract upstream.
+  direct exec, and `35c2278dd5` now owns the shared native launcher used by
+  unified exec and exec-server process spawning. The obsolete downstream
+  direct launch block is retired. Preserve the remaining downstream completion
+  carry for override preparation, PowerShell startup, metrics, telemetry, and
+  effective-backend attribution until those adjacent policies are equivalent
+  upstream.
 - Primary files:
   - `codex-rs/windows-sandbox-rs/src/lib.rs`
+  - `codex-rs/sandboxing/src/spawn.rs`
   - `codex-rs/sandboxing/src/windows.rs`
   - `codex-rs/core/src/sandboxing/mod.rs`
   - `codex-rs/core/src/exec.rs`
@@ -438,6 +492,27 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server/src/request_processors/command_exec_processor.rs`
   - `codex-rs/app-server/tests/suite/v2/command_exec.rs`
   - `codex-rs/app-server/README.md`
+
+### App-Read Plugin Auth Synchronization
+
+- Upstream owns the enriched experimental `app/read` metadata contract through
+  `60272096bc`, including plugin display-name projection without MCP startup.
+- Downstream plugin app declarations remain gated by the current auth mode.
+  Before reading plugins, `app/read` copies the live auth snapshot into
+  `PluginsManager`, matching the synchronization already used by neighboring
+  plugin list, installed, and read RPCs.
+- Ordinary serialized login completion already refreshes the manager before the
+  next request on the standard transport. The request-boundary synchronization
+  additionally covers embedding-owned or externally updated auth managers and
+  keeps the metadata and plugin projections on one snapshot.
+- Hosted guardrail:
+  `app_read_resynchronizes_plugin_auth_after_external_login_without_starting_mcp`
+  in `codex.app-server-v2-contract-targeted`, together with the complete
+  `suite::v2::app_read::` group.
+- Primary files:
+  - `codex-rs/app-server/src/request_processors/apps_processor.rs`
+  - `codex-rs/app-server/tests/suite/v2/app_read.rs`
+  - `justfile`
 
 ### Python Code Quality Corrections
 

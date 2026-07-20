@@ -150,6 +150,28 @@ existing header. The downstream compact-transcript path uses the same header
 shape while continuing to collapse only hook context, so rich, compact, and
 raw transcript views do not disagree about warning content.
 
+## Upstream app/read connector metadata
+
+Upstream commit `60272096bc` enriches experimental `app/read` responses with
+dark-icon URLs, distribution channel, install URL, and the display names of
+plugins that declare each app. It accepts both supported dark-icon spellings
+and derives plugin names without starting MCP servers.
+
+Downstream keeps its auth-dependent plugin app routing. `app/read` synchronizes
+the plugin manager from the live ChatGPT auth snapshot before loading plugin
+declarations, so externally updated auth cannot leave connector metadata and
+plugin display names on different auth modes. The focused transition regression
+also proves that this projection does not issue an MCP request.
+
+## Upstream exec-server Windows sandbox spawning
+
+Upstream commit `35c2278dd5` adds a shared native process launcher for pipe,
+PTY, inherited-descriptor, and Windows sandbox execution, and routes exec-server
+Windows sandbox requests through it. The sync drops the fork's superseded
+direct launch block while retaining the downstream proxy-aware backend policy,
+prepared filesystem overrides, metrics, telemetry, and bounded final-output
+behavior around the new upstream seam.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -181,14 +203,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `88c1ea182c03c802fca9558e0720657e7714a107`
+  `cedcbccd007ecc4e782014c578f37a9f689bcd97`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
+  `35c2278dd5c49daf8a4e44468038aed9be9e866e`
 - `upstream/main`:
-  `cf821e8ec850c6d8380feea0e84859dd8ff54cd0`
+  `35c2278dd5c49daf8a4e44468038aed9be9e866e`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1899` downstream ahead
+  `0` upstream ahead, `1905` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

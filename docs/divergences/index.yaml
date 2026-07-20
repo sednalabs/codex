@@ -1682,6 +1682,52 @@
       "extraction_target": "domain-specific runtime capability adapters"
     },
     {
+      "id": "app-read-plugin-auth-synchronization",
+      "title": "App-read plugin auth synchronization",
+      "status": "live",
+      "category": "app-server",
+      "surface_type": "protocol-runtime",
+      "surface": [
+        "experimental app/read connector metadata",
+        "auth-dependent plugin app routing"
+      ],
+      "files": [
+        "codex-rs/app-server/src/request_processors/apps_processor.rs",
+        "codex-rs/app-server/tests/suite/v2/app_read.rs",
+        "justfile"
+      ],
+      "required_markers": {
+        "codex-rs/app-server/src/request_processors/apps_processor.rs": [
+          "plugins_manager.set_auth_mode(Some(auth.api_auth_mode()))"
+        ],
+        "codex-rs/app-server/tests/suite/v2/app_read.rs": [
+          "app_read_resynchronizes_plugin_auth_after_external_login_without_starting_mcp"
+        ],
+        "justfile": [
+          "suite::v2::app_read::"
+        ]
+      },
+      "behavior": "Experimental app/read uses the same live ChatGPT auth snapshot for connector metadata and downstream auth-dependent plugin app projection, preserving upstream dark-icon, distribution, install, and plugin-name fields without starting MCP servers.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "cedcbccd007ecc4e782014c578f37a9f689bcd97",
+        "upstream_commit": "60272096bc125ad7bd8ec26508b19d1e0db2874b"
+      },
+      "guardrail_lane": "codex.app-server-v2-contract-targeted",
+      "tests": [
+        "app_read_deduplicates_orders_partial_misses_and_reuses_cached_metadata",
+        "app_read_resynchronizes_plugin_auth_after_external_login_without_starting_mcp"
+      ],
+      "owner": "downstream",
+      "notes": "Upstream commit 60272096bc owns the enriched app/read metadata contract and no-MCP projection. Standard login completion currently refreshes PluginsManager before the next serialized request, but embedding-owned or externally updated AuthManager state can otherwise leave downstream app routing on an older mode. Keep the request-boundary synchronization until plugin loading consumes auth directly or an equivalent upstream invariant lands.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/app-server/src/request_processors/apps_processor.rs"
+      ],
+      "extraction_target": "upstream request-scoped plugin auth synchronization"
+    },
+    {
       "id": "windows-sandbox-generated-default-normalization",
       "title": "Windows filesystem boundary compatibility after generated-default retirement",
       "status": "live",
@@ -1767,6 +1813,7 @@
         "codex-rs/windows-sandbox-rs/src/lib.rs",
         "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs",
         "codex-rs/sandboxing/src/lib.rs",
+        "codex-rs/sandboxing/src/spawn.rs",
         "codex-rs/sandboxing/src/windows.rs",
         "codex-rs/sandboxing/src/manager.rs",
         "codex-rs/core/src/sandboxing/mod.rs",
@@ -1774,7 +1821,6 @@
         "codex-rs/core/src/exec_tests.rs",
         "codex-rs/core/src/sandbox_tags.rs",
         "codex-rs/core/src/sandbox_tags_tests.rs",
-        "codex-rs/core/src/unified_exec/process_manager.rs",
         "codex-rs/core/src/tools/sandboxing.rs",
         "codex-rs/core/src/tools/runtimes/mod.rs",
         "codex-rs/core/src/tools/runtimes/mod_tests.rs",
@@ -1790,7 +1836,7 @@
         "codex-rs/sandboxing/src/windows.rs": [
           "pub fn resolve_windows_sandbox_filesystem_overrides"
         ],
-        "codex-rs/core/src/unified_exec/process_manager.rs": [
+        "codex-rs/sandboxing/src/spawn.rs": [
           "spawn_windows_sandbox_session_for_level"
         ],
         "codex-rs/core/src/sandbox_tags_tests.rs": [
@@ -1803,7 +1849,7 @@
           "unified_exec_proxy_blocks_direct_loopback_bypass_on_windows"
         ]
       },
-      "behavior": "A managed network proxy selects the elevated Windows sandbox backend even when the configured mode is unelevated. Direct and unified-exec launch paths share the same selector and filesystem-override resolver, PowerShell startup, failure metrics, tool telemetry, and turn metadata use the effective backend, and the elevated firewall prevents direct loopback connections outside the proxy ports.",
+      "behavior": "A managed network proxy selects the elevated Windows sandbox backend even when the configured mode is unelevated. Direct, unified-exec, and exec-server paths use upstream's shared native launcher with the same prepared filesystem overrides; PowerShell startup, failure metrics, tool telemetry, and turn metadata use the effective backend, and the elevated firewall prevents direct loopback connections outside the proxy ports.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1819,11 +1865,11 @@
         "unified_exec_proxy_blocks_direct_loopback_bypass_on_windows"
       ],
       "owner": "downstream",
-      "notes": "Upstream commit 4bc2c723ef selected the elevated backend for proxy-enforced direct exec, but unified exec, override preparation, PowerShell startup, and metric attribution still followed the configured level. Preserve the shared effective-backend decision until upstream carries the complete launch contract.",
+      "notes": "Upstream commit 4bc2c723ef selected the elevated backend for proxy-enforced direct exec. Upstream commit 35c2278dd5 now owns the shared native launcher for unified-exec and exec-server Windows spawning, so the obsolete downstream direct process-manager launch block is removed. Downstream still owns pre-spawn override preparation plus PowerShell, metric, telemetry, tag, and firewall guardrails; preserve those adjacent policies until they are equivalent upstream.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "windows-sandbox-policy-adapter",
       "hotspot_files": [
-        "codex-rs/core/src/unified_exec/process_manager.rs",
+        "codex-rs/sandboxing/src/spawn.rs",
         "codex-rs/sandboxing/src/windows.rs",
         "codex-rs/windows-sandbox-rs/src/unified_exec/mod.rs"
       ],
