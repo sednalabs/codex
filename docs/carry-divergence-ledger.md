@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `8c383dcfdf17d109e1e0ed1bb07de0f4714c59d4`
+- downstream integration code tree: `fd41d43d3b2e0d04cd68b174511d93d329cda5f8`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
-- `upstream/main`: `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
-- downstream branch vs `upstream/main`: `1892` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
+- `upstream/main`: `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
+- downstream branch vs `upstream/main`: `1897` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1628` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1631` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -80,6 +80,77 @@ docs-only refresh commit that records this snapshot.
 - The shared-history assertion repair in `796d4248c5` only adapts a stale audio
   history test to the upstream copy-on-write `raw_items()` accessor. It does not
   introduce runtime carry.
+
+### History And Hook Test API Convergence
+
+- Upstream commit `ec3140db12` adopts the same `raw_items()` audio-history
+  assertion and initializes the Windows command-hook fixture's
+  `additional_context_limit` field.
+- The earlier signed downstream test repair `796d4248c5` is now semantically
+  upstream-owned and must not be counted as live carry.
+
+### Paginated Rollout Lineage Resolution
+
+- Upstream commit `b7e39aa316` adds the canonical bounded resolver for ordered
+  paginated rollout segments, archived ancestors, and explicit history
+  positions.
+- Cycles, missing or mismatched source rollouts, non-paginated sources, and
+  invalid cutoff bounds fail closed. Downstream resume, state, and usage
+  overlays must use this lineage rather than inventing a competing traversal.
+
+### Threadless MCP Connections
+
+- Upstream commit `19940967bd` makes the MCP connection-manager event sender
+  optional for threadless callers.
+- Resource reads, status snapshots, and connector discovery skip session
+  startup notifications, decline interactive elicitations, and continue
+  non-interactive work. Downstream MCP pagination, OAuth, blocking waits, and
+  runtime-snapshot ownership remain independent live carry.
+
+### Linux `/proc` Preflight Isolation
+
+- Upstream commit `44481a1c45` moves the bubblewrap `/proc` probe to a
+  temporary minimal read-only filesystem view while preserving the requested
+  network namespace mode.
+- Conflict resolution retains downstream's constrained-host network-namespace
+  fallback without restoring the command filesystem or working directory to
+  the probe. `proc_mount_preflight_does_not_bind_the_full_filesystem` and
+  `network_preflight_preserves_proc_mount_fallback` guard both halves.
+
+### Absolute Test SQLite Paths
+
+- Upstream commit `81e89fa5af` makes `SqliteConfig::new_for_testing` accept an
+  `AbsolutePathBuf` directly. All downstream-only state fixtures use the same
+  checked `.abs()` conversion; there is no production database-location or MCP
+  behavior divergence.
+
+### CSV Agent-Job Retirement And Migration Collision Repair
+
+- Upstream commit `687f05cb94` removes `spawn_agents_on_csv`,
+  `report_agent_job_result`, their coordinator/runtime state, and the
+  `agent_jobs` / `agent_job_items` tables. The legacy feature and agent-config
+  keys remain accepted as no-ops.
+- Ordinary `spawn_agent`, MultiAgentV2, child model/reasoning selection, role
+  skills, inventory, wait joins, dynamic tools, and native computer use are not
+  part of the deleted CSV subsystem and remain intact.
+- Preserve upstream `0042_drop_agent_jobs.sql` byte-for-byte. Move the
+  already-shipped downstream `0042_external_agent_config_imports.sql` to
+  `0047_external_agent_config_imports.sql`, then checksum-repair exact legacy
+  records from `42` to `47` before SQLx applies upstream `42`.
+- The production-path regression reconstructs exact `origin/main` through
+  version `45`, simultaneously repairs remote-control-enabled `41 -> 46` and
+  external-agent imports `42 -> 47` through `StateRuntime::init`, removes only
+  the two job tables, and preserves thread rows, spawn edges, and the complete
+  external-import record.
+- The table drop intentionally discards unfinished CSV-job coordinator data.
+  After both repairs and upstream migrations run, a pre-sync binary cannot
+  reopen the database because it knows the former `41` and `42` checksums;
+  rollback requires a pre-upgrade database copy.
+- Hosted mirror run `29780661853` fast-forwarded `origin/upstream-main` to
+  exact upstream `687f05cb94`. The sync job passed; the audit's exit `4` is the
+  expected pre-promotion result while `origin/main` still points at the old
+  downstream tree. Audit artifact `8476471215` has SHA-256
+  `d03dd1c3b7ad0ad3bf4a1d6a3eca8e122d4cf5d385d9eb7e4688b53898dd432e`.
 
 ## Current Live Divergences
 
@@ -565,9 +636,17 @@ docs-only refresh commit that records this snapshot.
   remote-control-enabled migration from downstream slot `0041` to
   `0046_remote_control_enrollments_enabled.sql`; checksum-gated repair moves
   already-applied downstream `0041` records before the upstream migration runs.
+  The same sync preserves upstream `0042_drop_agent_jobs.sql` byte-for-byte and
+  moves the already-shipped downstream external-agent import ledger from slot
+  `0042` to `0047_external_agent_config_imports.sql`. The runtime repairs exact
+  known downstream checksums for both `0041` and `0042` before SQLx applies the
+  upstream migrations. The `0042` upgrade deliberately removes only the
+  retired CSV coordinator's `agent_jobs` and `agent_job_items` tables; ordinary
+  threads, spawn edges, and external-agent import records remain intact.
   Once that repair and upstream `0041` have run, a pre-sync binary cannot reopen
-  the same database because it knows the old `0041` checksum; rollback therefore
-  requires a pre-upgrade database copy rather than only replacing the binary.
+  the same database because it knows the old `0041` and `0042` checksums;
+  rollback therefore requires a pre-upgrade database copy rather than only
+  replacing the binary.
 - Upstream `thread_history_migrations/0002_thread_items_item_type.sql` belongs
   to the separate rebuildable `thread_history_1.sqlite` migrator. It does not
   collide with downstream state migration `0045`, and must not trigger state
@@ -587,6 +666,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/migrations/0032_thread_goals.sql`
   - `codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql`
   - `codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql`
+  - `codex-rs/state/migrations/0047_external_agent_config_imports.sql`
   - `docs/memories.md`
 
 ### Release Metadata And Rebuild Triggers

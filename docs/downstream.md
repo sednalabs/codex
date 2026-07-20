@@ -81,9 +81,69 @@ tool, timeout, and native computer-use additions. The fork-specific
 `GuardianUserAuthorization` module path remains an independent compatibility
 detail, not a reason to restore the removed guardian rejection side map.
 
+## Upstream history and hook test convergence
+
+Upstream commit `ec3140db12` now owns the `ContextManager::raw_items()` audio
+history assertion and the Windows hook fixture's
+`additional_context_limit` initializer. This semantically absorbs the earlier
+downstream-only test repair in `796d4248c5`; neither assertion represents live
+runtime carry.
+
+## Upstream paginated rollout lineages
+
+Upstream commit `b7e39aa316` owns bounded local rollout-lineage resolution for
+paginated threads. It follows ordered `history_base` segments, including
+archived ancestors and explicit history positions, while rejecting cycles,
+missing or mismatched sources, non-paginated sources, and invalid cutoffs.
+Downstream history, resume, and usage overlays must consume that canonical
+lineage rather than reconstructing a competing chain.
+
+## Upstream threadless MCP connections
+
+Upstream commit `19940967bd` lets callers create MCP connections without a
+session event channel. Threadless resource reads, status snapshots, and
+connector discovery skip startup notifications, decline interactive
+elicitations, and continue the underlying non-interactive operation. Preserve
+that behavior beside downstream MCP pagination, OAuth, blocking waits, and
+runtime-snapshot safety controls.
+
+## Upstream Linux preflight isolation
+
+Upstream commit `44481a1c45` runs the bubblewrap `/proc` probe with a temporary
+minimal read-only filesystem view instead of the requested command filesystem
+and working directory. The probe still preserves the requested network
+namespace mode. Downstream additionally retains the constrained-host fallback
+that retries the `/proc` mount preflight without network isolation when the
+network namespace itself is unavailable; the fallback must not broaden the
+probe's filesystem view.
+
+## Upstream SQLite tightening and CSV-job retirement
+
+Upstream commit `81e89fa5af` makes the test-only SQLite constructor accept an
+`AbsolutePathBuf` directly. Downstream-only state fixtures use the same checked
+`.abs()` conversion; production database paths and MCP behavior are unchanged.
+
+Upstream commit `687f05cb94` removes the legacy CSV batch-job tools
+`spawn_agents_on_csv` and `report_agent_job_result`, their coordinator/runtime
+state, and the obsolete job tables. The compatibility keys
+`features.enable_fanout` and `agents.job_max_runtime_seconds` still parse as
+no-ops. This does not remove ordinary `spawn_agent`, MultiAgentV2,
+role-configured skills, child-model selection, reasoning-effort selection,
+inventory, wait joins, or native/dynamic tool plumbing.
+
+The fork preserves upstream migration `0042_drop_agent_jobs.sql` exactly and
+moves the already-shipped downstream
+`0042_external_agent_config_imports.sql` to version `0047`. Startup repairs
+the exact legacy `0041` and `0042` checksums to downstream versions `0046` and
+`0047` before applying upstream migrations. A migrated database cannot be
+reopened by the pre-sync binary because that binary knows the former migration
+checksums, so rollback requires a pre-upgrade database copy. The upgrade also
+intentionally removes any unfinished CSV-job rows; ordinary thread rows,
+spawn edges, and external-import history remain intact.
+
 ## Validation policy
 
-- use tiny local sanity checks first (`git diff --check`, formatting, focused unit tests)
+- use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
 - use remote validation as the default measurement surface for substantive work
 - `validation-lab` `profile=smoke`, `targeted`, and `frontier` are the default non-PR remote validation ladder
 - PR and merge-group workflows are promotion surfaces rather than the default inner-loop validator
@@ -112,14 +172,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `8c383dcfdf17d109e1e0ed1bb07de0f4714c59d4`
+  `fd41d43d3b2e0d04cd68b174511d93d329cda5f8`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
+  `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
 - `upstream/main`:
-  `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
+  `687f05cb946d10c96f90dd7ce82e11465c6e20a7`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1892` downstream ahead
+  `0` upstream ahead, `1897` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
