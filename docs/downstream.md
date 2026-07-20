@@ -82,14 +82,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `fabcbce58222db9c52ad6b5b70630764d4382e99`
+  `2b9112879c38bdff1ab4b10aff7adc0e6ca3a37a`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
   `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
 - `upstream/main`:
   `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1883` downstream ahead
+  `0` upstream ahead, `1886` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -191,7 +191,9 @@ User-visible behavior:
   duration-aware accounting, truncation, compaction, and history replay while
   preserving downstream optional image detail. The upstream audio fixtures are
   adapted to the flat compatibility record rather than reviving the tagged
-  namespace representation.
+  namespace representation. Cargo and Bazel locks must be regenerated from the
+  merged graph so Symphonia resolves to the dependency version actually
+  selected downstream; parent lock entries are not safe to union mechanically.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`, including atomic two-to-five-pointer `multi_touch` input that never degrades to sequential single-touch calls; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
 - The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chrome/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.
