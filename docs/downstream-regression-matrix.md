@@ -93,12 +93,25 @@ Focused lane used for protocol/event-history seams:
 - `codex.native-computer-use-doctor-targeted`
 - `codex.app-server-thread-cwd-targeted`
 
-Upstream hook `additionalContextLimit` behavior is not a downstream
-divergence, but it crosses generated protocol schemas and the downstream TUI
-and tool-surface carry. Exact sync heads therefore keep its config/discovery,
-per-hook spill, app-server response, schema, and hook-browser regressions in
-the hosted `rust-ci`/`rust-ci-full` proof instead of validating only one side
-of that shared seam.
+Upstream hook and approval behavior is not a downstream divergence, but it
+crosses generated protocol schemas and downstream context, TUI, and tool
+surfaces. Exact sync heads therefore keep these regressions in hosted
+`rust-ci`/`rust-ci-full` proof instead of validating only one side of each
+shared seam:
+
+- `additionalContextLimit` config/discovery, per-hook spill, app-server
+  response, schema, and hook-browser coverage
+- `mid_turn_auto_compact_session_start_hooks_run_before_each_continuation`
+- `mid_turn_auto_compact_session_start_hook_stop_blocks_continuation`
+- `review_decision_denied_round_trip`
+- `turn_start_exec_approval_invalid_response_v2`
+- `turn_start_file_change_approval_invalid_response_v2`
+- `guardian_review_decision_maps_to_mcp_tool_decision`
+- `approval_denial_messages_are_bounded_for_model_context`
+
+The downstream audio-history assertion uses the upstream copy-on-write
+`raw_items()` accessor; that compatibility assertion is covered by the common
+core test surface and is not a separate live divergence.
 
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 

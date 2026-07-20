@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `383ce0cbc1a4d5b237abfc18c649ae0b4b05ddbb`
+- downstream integration code tree: `8c383dcfdf17d109e1e0ed1bb07de0f4714c59d4`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `e4836f998da166aba456f60d2e74eb79d6e2542b`
-- `upstream/main`: `e4836f998da166aba456f60d2e74eb79d6e2542b`
-- downstream branch vs `upstream/main`: `1888` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
+- `upstream/main`: `e52c35b0001ea3e4a1744b99c4250a5b1a09e44d`
+- downstream branch vs `upstream/main`: `1892` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1626` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1628` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -49,6 +49,37 @@ docs-only refresh commit that records this snapshot.
 - The generated app-server schemas are a shared sync seam. Future regeneration
   must retain this upstream field alongside downstream dynamic-tool and native
   computer-use protocol additions rather than selecting either parent schema.
+
+### Mid-Turn Compaction Hook Ordering
+
+- The sync adopts upstream commit `8c41ed33ce`, which drains pending
+  `SessionStart` hooks immediately after a successful mid-turn auto-compaction
+  and before the next sampling request.
+- A hook stop request ends the turn instead of allowing continuation. Otherwise,
+  the hook's additional context is included in the immediately following
+  sample, and repeated compactions in one turn repeat the same ordering.
+- Preserve this ordering alongside downstream realtime and permission-context
+  reconstruction. The upstream regressions
+  `mid_turn_auto_compact_session_start_hooks_run_before_each_continuation` and
+  `mid_turn_auto_compact_session_start_hook_stop_blocks_continuation` are the
+  focused guardrails.
+
+### Approval Rejection-Reason Propagation
+
+- The sync adopts upstream commit `e52c35b000`, which changes protocol denials
+  from a unit value to `Denied { rejection: String }` and serializes them as a
+  structured `denied.rejection` object.
+- Preserve the specific reason across command, patch, network, MCP, delegated,
+  automatic-review, and shell-escalation paths. Invalid approval responses
+  remain distinguishable from user declines, and model-visible rejection text
+  remains bounded by upstream truncation.
+- Conflict resolution kept upstream's structured denial schema and direct
+  reason propagation while retaining the fork's independent `timed_out`
+  semantics, `GuardianUserAuthorization` module path, dynamic-tool schema, and
+  native computer-use schema additions.
+- The shared-history assertion repair in `796d4248c5` only adapts a stale audio
+  history test to the upstream copy-on-write `raw_items()` accessor. It does not
+  introduce runtime carry.
 
 ## Current Live Divergences
 
