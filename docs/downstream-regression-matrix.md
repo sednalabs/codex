@@ -115,6 +115,25 @@ The downstream audio-history assertion uses the upstream copy-on-write
 `raw_items()` accessor; that compatibility assertion is covered by the common
 core test surface and is not a separate live divergence.
 
+Upstream shared skill-model ownership and remote-compaction efficiency are also
+not downstream divergences, but they cross live carry seams and therefore need
+exact-head hosted proof:
+
+- `codex-skills` model tests cover implicit-invocation defaults and shared
+  product restrictions; plugin-manager tests cover relocated config rules and
+  downstream disabled-skill resolution; `core-runtime-surface-smoke` keeps the
+  preferred-user skill precedence regressions active.
+- `remote_compact_trims_function_call_history_to_fit_context_window`,
+  `remote_compact_rewrites_multiple_trailing_function_call_outputs`,
+  `remote_compact_trim_estimate_uses_session_base_instructions`,
+  `remote_compact_v2_reuses_compaction_trigger_for_followups`,
+  `disabled_thread_context_accepts_trace_calls_without_writing`, and
+  `compaction_contexts_share_identity_across_models` cover the optimized
+  history and tracing paths.
+- Final proof must include exact-head `rust-ci-full` and Bazel in addition to
+  Frontier lanes, because the narrow skill-loader lane does not run the new
+  `codex-skills` package tests or the conflicted plugin-manager test module.
+
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
 - Workflow shard names intentionally mirror this document's guardrail lane

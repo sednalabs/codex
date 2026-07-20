@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `cedcbccd007ecc4e782014c578f37a9f689bcd97`
+- downstream integration code tree: `6356435334e5115617147841b03071373391e788`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `35c2278dd5c49daf8a4e44468038aed9be9e866e`
-- `upstream/main`: `35c2278dd5c49daf8a4e44468038aed9be9e866e`
-- downstream branch vs `upstream/main`: `1905` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
+- `upstream/main`: `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
+- downstream branch vs `upstream/main`: `1908` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1636` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1637` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -226,6 +226,44 @@ docs-only refresh commit that records this snapshot.
   `88498704999` returned the expected pre-promotion exit `4`. Artifact
   `8478603020` has SHA-256
   `7eab307e0b280aca8b56b15cefce15e5f7b3af706b8af77c98d9c2ab0693b925`.
+
+### Shared Skill Model Ownership
+
+- Upstream commit `56c11cf658` moves host and environment skill metadata,
+  policy, dependencies, interface, and configuration-rule models into the
+  lower-level `codex-skills` crate. `codex-core-skills` keeps compatibility
+  re-exports, so existing consumers retain type identity rather than adding a
+  downstream adapter.
+- Implicit invocation still defaults to allowed unless explicitly disabled.
+  Empty product restrictions remain unrestricted, while a non-empty product
+  list still requires a matching product. Host and environment metadata now
+  share that product-restriction implementation.
+- The sole merge conflict was the import block in the downstream-expanded
+  `core-plugins/src/manager_tests.rs`. Resolution keeps the still-used
+  `PluginSkillSnapshots` compatibility import, drops two unused imports, and
+  adopts upstream's canonical `codex_skills::SkillConfigRules` owner.
+- Downstream preferred-user skill precedence, plugin auth projection, dynamic
+  tools, and no-MCP-start app metadata behavior remain separate live carry.
+  The relocation does not create a new downstream divergence.
+
+### Remote Compaction History Efficiency
+
+- Upstream commit `fd3c1dc13d` estimates remote-compaction history items once,
+  updates the unclamped token total as trailing tool outputs are rewritten,
+  and installs the replacement history only after the selected rewrites are
+  complete. It also snapshots compaction input only when rollout tracing is
+  enabled and reuses the v2 prompt input instead of cloning it.
+- The compaction files were upstream-exact before this merge and merged without
+  conflict. Downstream realtime world-state reconstruction, compaction hooks,
+  capacity retry, turn metadata, and dynamic-media accounting remain on their
+  existing seams and are not reclassified as part of this optimization.
+- Hosted mirror run `29788160229` fast-forwarded `origin/upstream-main` to
+  exact upstream `fd3c1dc13d`; sync job `88504053569` passed and audit job
+  `88504128184` returned the expected pre-promotion exit `4`. Artifact
+  `8479246296` was independently downloaded with SHA-256
+  `65100c7f559bdb708290142ae7ff729b9f409e433841dbe660f5ef271b7bfdb1`;
+  its embedded report records `mirror=upstream=fd3c1dc13d` and exact mirror
+  health.
 
 ## Current Live Divergences
 
