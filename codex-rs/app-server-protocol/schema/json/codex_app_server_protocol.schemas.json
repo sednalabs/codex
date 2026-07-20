@@ -4023,7 +4023,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "User has denied this command and the agent should not execute it, but it should continue the session and try something else.",
+          "description": "User has denied this command and the agent should not execute it, but\nit should continue the session and try something else.",
           "properties": {
             "denied": {
               "properties": {
@@ -8507,9 +8507,9 @@
           {
             "properties": {
               "additionalContextLimit": {
-                "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk. `null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is evaluated against the original context; a spilled preview also includes recovery metadata.",
+                "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk.\n`null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is\nevaluated against the original context; a spilled preview also includes recovery\nmetadata.",
                 "format": "uint",
-                "minimum": 0.0,
+                "minimum": 0,
                 "type": [
                   "integer",
                   "null"
@@ -10822,9 +10822,9 @@
       "HookMetadata": {
         "properties": {
           "additionalContextLimit": {
-            "description": "Configured `additionalContext` spill threshold. `null` uses 2,500 tokens; `0` disables spilling.",
+            "description": "Configured `additionalContext` spill threshold.\n`null` uses 2,500 tokens; `0` disables spilling.",
             "format": "uint",
-            "minimum": 0.0,
+            "minimum": 0,
             "type": [
               "integer",
               "null"

@@ -57,9 +57,7 @@ fn origin_main_migrator() -> Migrator {
     let mut migrations = STATE_MIGRATOR
         .migrations
         .iter()
-        .filter(|migration| {
-            migration.version < LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION
-        })
+        .filter(|migration| migration.version < LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
         .cloned()
         .collect::<Vec<_>>();
     migrations.push(Migration::new(
