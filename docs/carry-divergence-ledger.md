@@ -127,9 +127,12 @@ docs-only refresh commit that records this snapshot.
   Remote executor sweeps skip host-local managed-network approval and denial
   fixtures until the remote harness provides a proxy endpoint reachable from the
   target process; environment-specific approval scoping remains covered by unit
-  tests and host-local integration. Compact/resume rollback fixtures keep their
-  event wait above nextest's 30-second slow threshold so hosted remote replay
-  load does not masquerade as a product hang.
+  tests and host-local integration. Compact/resume rollback fixtures remain
+  host-only, wait for the thread-idle lifecycle before rollback admission, and
+  correlate typed rollback errors to the exact submission under a short
+  phase-labelled deadline. This isolates the fixtures from the terminal-event
+  visibility window without claiming the production persist/clear/deliver
+  ordering issue is resolved.
 - The Bazel crate macro accepts and forwards optional unit-test arguments so
   upstream's serialized exec-server unit-test declaration remains analyzable
   until equivalent macro support lands upstream.
