@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `91d3ef41b2ca830d9096b41b583bfad0b20c5724`
+- downstream integration code tree: `fabcbce58222db9c52ad6b5b70630764d4382e99`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `45ac251e178416ff5c3022457ad8d2778c0d4549`
-- `upstream/main`: `45ac251e178416ff5c3022457ad8d2778c0d4549`
-- downstream branch vs `upstream/main`: `1881` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
+- `upstream/main`: `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
+- downstream branch vs `upstream/main`: `1883` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1621` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1622` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -181,6 +181,11 @@ docs-only refresh commit that records this snapshot.
   `GeneratedDefault` provenance and its setup-time metadata normalization.
   Downstream no longer claims that either Windows backend can reserve absent
   `.git`, `.agents`, or `.codex` child names without filesystem interception.
+- The 2026-07-21 sync adopts upstream commit `bd92b056dd`, which distinguishes
+  explicit from inherited allow ACEs when deciding whether a write root needs
+  repair. Preserve that distinction: `SET_ACCESS` cannot replace an inherited
+  `FILE_DELETE_CHILD` grant, so inherited stale rights must not trigger a
+  refresh loop that cannot converge.
 - The `/tmp` special root remains Unix-only. Treating root-relative `/tmp` as a
   Windows drive path would create a split writable-root policy that the legacy
   restricted-token backend cannot enforce.
