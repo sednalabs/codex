@@ -578,6 +578,10 @@ docs-only refresh commit that records this snapshot.
   a known, different backend still fails closed. The targeted role regression
   proves the provider object, reasoning summary, and verbosity together rather
   than checking only the selected model slug.
+- `gpt-5.6-luna` is the narrow exception: downstream advertises and accepts it
+  as a V2 child while the upstream-synced catalog still selects V1 for Luna
+  top-level sessions. Remove this compatibility rule once upstream metadata
+  marks Luna V2-compatible; do not widen it to other v1-tagged models.
 - `core/src/agent/role.rs` stays on the upstream-native layered reload shape;
   downstream no longer carries a duplicate model/reasoning selection pipeline.
 - The live tool-contract schema in

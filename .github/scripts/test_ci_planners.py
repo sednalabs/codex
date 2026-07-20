@@ -1673,6 +1673,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex-rs/core/src/agent/builtins/terminal-babysitter.toml",
                 "codex-rs/core/src/agent/role_tests.rs",
                 "codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+                "codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs",
                 "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
                 "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
                 "codex-rs/core/tests/suite/subagent_notifications.rs",
@@ -1686,6 +1687,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "docs/carry-divergence-ledger.md",
                 "docs/divergences/index.yaml",
                 "docs/downstream-regression-matrix.md",
+                "docs/downstream.md",
                 "justfile",
             ]
         )
@@ -1733,6 +1735,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn(
             "tools::handlers::multi_agents::tests::"
             "multi_agent_v2_spawn_accepts_child_model_without_backend_assignment",
+            recipe,
+        )
+        self.assertIn(
+            "tools::handlers::multi_agents::tests::"
+            "multi_agent_v2_spawn_accepts_luna_compatibility_override",
             recipe,
         )
         self.assertIn(
