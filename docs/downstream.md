@@ -82,14 +82,14 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `91d3ef41b2ca830d9096b41b583bfad0b20c5724`
+  `fabcbce58222db9c52ad6b5b70630764d4382e99`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `45ac251e178416ff5c3022457ad8d2778c0d4549`
+  `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
 - `upstream/main`:
-  `45ac251e178416ff5c3022457ad8d2778c0d4549`
+  `bd92b056ddd91bd7c2ecfea3d8773f7eb5a879a6`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1881` downstream ahead
+  `0` upstream ahead, `1883` downstream ahead
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -609,6 +609,9 @@ User-visible behavior:
 - The compatible restricted token excludes Everyone from its restricting SID
   set while retaining Everyone on the default DACL needed for child-process
   pipes and IPC.
+- Write-root ACL refresh uses effective rights for required access but only
+  explicit allow ACEs when checking stale `FILE_DELETE_CHILD`. An inherited
+  grant does not trigger a repair that `SET_ACCESS` cannot make converge.
 - Proxy-enforced Windows commands use one effective elevated-backend decision
   for filesystem overrides, PowerShell startup, process spawning, and telemetry.
 - Unified exec cannot bypass the managed proxy with an unrelated direct
