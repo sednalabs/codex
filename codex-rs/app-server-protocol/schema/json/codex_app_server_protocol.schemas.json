@@ -9247,7 +9247,7 @@
           "maxSessionAgeDays": {
             "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
             "format": "uint32",
-            "minimum": 0.0,
+            "minimum": 0,
             "type": [
               "integer",
               "null"
@@ -9256,7 +9256,7 @@
           "maxSessions": {
             "description": "Maximum number of sessions to detect. Missing values use the default limit.",
             "format": "uint32",
-            "minimum": 0.0,
+            "minimum": 0,
             "type": [
               "integer",
               "null"
@@ -9458,7 +9458,7 @@
             ]
           },
           "providerId": {
-            "description": "Opaque provider identifier supplied by the caller for analytics attribution. This does not select the migration source.",
+            "description": "Opaque provider identifier supplied by the caller for analytics attribution. This does not\nselect the migration source.",
             "type": [
               "string",
               "null"

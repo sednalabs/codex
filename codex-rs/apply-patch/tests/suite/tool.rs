@@ -127,7 +127,7 @@ fn test_apply_patch_cli_rejects_missing_file_delete() -> anyhow::Result<()> {
         .assert()
         .failure()
         .stderr(format!(
-            "Failed to delete file {}\n",
+            "Failed to delete file {}: No such file or directory (os error 2)\n",
             missing_path.display()
         ));
 
@@ -217,7 +217,7 @@ fn test_apply_patch_cli_delete_directory_fails() -> anyhow::Result<()> {
         .assert()
         .failure()
         .stderr(format!(
-            "Failed to delete file {}\n",
+            "Failed to delete file {}: path is a directory\n",
             expected_dir.display()
         ));
 
