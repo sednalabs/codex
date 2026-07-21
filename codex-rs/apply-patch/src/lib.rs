@@ -347,7 +347,19 @@ pub async fn apply_hunks(
 }
 
 fn format_error_chain(error: &anyhow::Error) -> String {
-    format!("{error:#}")
+    let mut chain = error.chain();
+    let Some(error) = chain.next() else {
+        return String::new();
+    };
+    let mut message = error.to_string();
+    for source in chain {
+        let source = source.to_string();
+        if !message.ends_with(&source) {
+            message.push_str(": ");
+            message.push_str(&source);
+        }
+    }
+    message
 }
 
 /// Applies each parsed patch hunk to the filesystem.
@@ -912,6 +924,16 @@ mod tests {
             format_error_chain(&error),
             "failed to write file: helper startup failed"
         );
+    }
+
+    #[test]
+    fn error_output_does_not_repeat_embedded_source() {
+        let error = anyhow::Error::new(IoError {
+            context: "failed to read file".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        });
+
+        assert_eq!(format_error_chain(&error), "failed to read file: missing");
     }
 
     #[tokio::test]
