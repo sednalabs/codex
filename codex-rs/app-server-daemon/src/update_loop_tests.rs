@@ -3,9 +3,9 @@ use std::sync::Mutex;
 use pretty_assertions::assert_eq;
 
 use super::INSTALL_URL;
-use super::SEDNA_STANDALONE_INSTALLER_URL;
 use super::InstallerHttp;
 use super::InstallerResponse;
+use super::SEDNA_STANDALONE_INSTALLER_URL;
 use super::fetch_installer_script;
 use super::fetch_installer_script_from_url;
 use super::update_modes_for_identities;

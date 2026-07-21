@@ -263,10 +263,7 @@ async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
 }
 
 #[cfg(unix)]
-async fn fetch_installer_script_from_url(
-    http: &impl InstallerHttp,
-    url: &str,
-) -> Result<Vec<u8>> {
+async fn fetch_installer_script_from_url(http: &impl InstallerHttp, url: &str) -> Result<Vec<u8>> {
     match http.get(url).await? {
         InstallerResponse::Success(body) => Ok(body),
         InstallerResponse::Unsuccessful { status } => {
