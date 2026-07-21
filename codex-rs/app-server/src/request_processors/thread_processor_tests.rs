@@ -127,10 +127,10 @@ mod thread_processor_behavior_tests {
     use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::config_types::Settings;
     use codex_protocol::dynamic_tools::DynamicToolCapability;
+    use codex_protocol::models::ActivePermissionProfile;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
-    use codex_protocol::models::ActivePermissionProfile;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::permissions::FileSystemAccessMode;
