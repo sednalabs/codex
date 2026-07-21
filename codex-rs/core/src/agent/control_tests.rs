@@ -48,6 +48,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
+use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -1124,8 +1125,17 @@ async fn ephemeral_spawn_does_not_persist_agent_graph_edge() {
 }
 
 #[tokio::test]
-async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
-    let harness = AgentControlHarness::new().await;
+async fn paginated_subagent_fork_cold_resume_preserves_child_settings() {
+    let (home, mut config) = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    let child_provider_id = "child-provider";
+    let mut child_provider = config.model_provider.clone();
+    child_provider.name = "Child provider".to_string();
+    config
+        .model_providers
+        .insert(child_provider_id.to_string(), child_provider.clone());
+    let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, parent_thread) = harness.start_paginated_thread().await;
     parent_thread
         .inject_user_message_without_turn("paginated parent context".to_string())
@@ -1189,21 +1199,57 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
         ])
         .await;
 
+    let mut child_config = harness.config.clone();
+    child_config.model = Some("gpt-5.4".to_string());
+    child_config.model_provider_id = child_provider_id.to_string();
+    child_config.model_provider = child_provider;
+    child_config.model_reasoning_effort = Some(ReasoningEffort::High);
+    child_config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     let child_thread_id = harness
-        .spawn_anonymous_child(
-            parent_thread_id,
+        .control
+        .spawn_agent_with_metadata(
+            child_config,
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
                 fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                parent_thread_id: Some(parent_thread_id),
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("paginated child fork should succeed")
+        .thread_id;
     let child_thread = harness
         .manager
         .get_thread(child_thread_id)
         .await
         .expect("child thread should be registered");
+    let expected_child_settings = child_thread
+        .config_snapshot()
+        .await
+        .into_thread_settings_snapshot();
+    assert_eq!(
+        (
+            expected_child_settings.model.clone(),
+            expected_child_settings.model_provider_id.clone(),
+            expected_child_settings.reasoning_effort.clone(),
+            expected_child_settings.approvals_reviewer,
+        ),
+        (
+            "gpt-5.4".to_string(),
+            child_provider_id.to_string(),
+            Some(ReasoningEffort::High),
+            ApprovalsReviewer::AutoReview,
+        )
+    );
     assert!(
         history_contains_text(
             child_thread.session.clone_history().await.raw_items(),
@@ -1227,16 +1273,33 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
     let RolloutItem::SessionMeta(meta_line) = &lines[0].item else {
         panic!("child rollout should start with session metadata");
     };
-    assert_eq!(meta_line.meta.history_mode, ThreadHistoryMode::Paginated);
-    assert_eq!(meta_line.meta.parent_thread_id, Some(parent_thread_id));
-    assert_eq!(meta_line.meta.forked_from_id, Some(parent_thread_id));
-    let prefix_end = usize::try_from(
-        meta_line
-            .meta
-            .subagent_history_start_ordinal
-            .expect("paginated child should mark its local history boundary"),
-    )
-    .expect("history boundary should fit in usize");
+    assert_eq!(
+        (
+            meta_line.meta.history_mode,
+            meta_line.meta.parent_thread_id,
+            meta_line.meta.forked_from_id,
+            meta_line.meta.thread_source.clone(),
+        ),
+        (
+            ThreadHistoryMode::Paginated,
+            Some(parent_thread_id),
+            Some(parent_thread_id),
+            Some(ThreadSource::Subagent),
+        )
+    );
+    assert_eq!(
+        lines.iter().map(|line| line.ordinal).collect::<Vec<_>>(),
+        (0..u64::try_from(lines.len()).expect("rollout length should fit in u64"))
+            .map(Some)
+            .collect::<Vec<_>>(),
+        "paginated child records should have contiguous ordinals"
+    );
+    let child_history_start_ordinal = meta_line
+        .meta
+        .subagent_history_start_ordinal
+        .expect("paginated child should mark its local history boundary");
+    let prefix_end = usize::try_from(child_history_start_ordinal)
+        .expect("history boundary should fit in usize");
     let copied_prefix = &lines[1..prefix_end];
     let copied_idless_context = copied_prefix
         .iter()
@@ -1252,8 +1315,25 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
         })
         .expect("copied prefix should contain inherited response item");
     assert!(
-        copied_idless_context.id().is_some_and(|id| !id.is_empty()),
+        copied_idless_context
+            .id()
+            .is_some_and(|id| !id.is_empty()),
         "copied model context should receive response item ids before persistence"
+    );
+    let copied_idless_context_ordinal = copied_prefix
+        .iter()
+        .find(|line| {
+            matches!(
+                &line.item,
+                RolloutItem::ResponseItem(response_item)
+                    if response_item.id() == copied_idless_context.id()
+            )
+        })
+        .and_then(|line| line.ordinal)
+        .expect("copied response item should have an ordinal");
+    assert!(
+        copied_idless_context_ordinal < child_history_start_ordinal,
+        "copied context should remain below the child-owned history boundary"
     );
     let copied_parent_context_count = lines
         .iter()
@@ -1277,6 +1357,117 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix() {
             )
         }),
         "copied non-structural presentation and metadata records should not enter the child rollout"
+    );
+
+    let child_owned_settings = lines[prefix_end..]
+        .iter()
+        .filter_map(|line| match &line.item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                Some((line.ordinal, event.thread_settings.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        child_owned_settings,
+        vec![(
+            Some(child_history_start_ordinal),
+            expected_child_settings.clone(),
+        )],
+        "the first child-owned record should be its sole effective settings snapshot"
+    );
+
+    let stored_child = child_thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ false,
+        )
+        .await
+        .expect("child metadata should be readable");
+    assert_eq!(
+        (
+            stored_child.history_mode,
+            stored_child.thread_source,
+            stored_child.parent_thread_id,
+            stored_child.forked_from_id,
+            stored_child.model,
+            stored_child.model_provider,
+            stored_child.reasoning_effort,
+        ),
+        (
+            ThreadHistoryMode::Paginated,
+            Some(ThreadSource::Subagent),
+            Some(parent_thread_id),
+            Some(parent_thread_id),
+            Some(expected_child_settings.model.clone()),
+            expected_child_settings.model_provider_id.clone(),
+            expected_child_settings.reasoning_effort.clone(),
+        )
+    );
+
+    child_thread
+        .shutdown_and_wait()
+        .await
+        .expect("child thread should shut down before eviction");
+    let registered_metadata = harness
+        .control
+        .get_agent_metadata(child_thread_id)
+        .expect("registered child metadata");
+    let cold_status = AgentStatus::Completed(Some("child persisted".to_string()));
+    let manager_state = harness.control.upgrade().expect("thread manager state");
+    let removal = manager_state
+        .remove_thread_if_same(&child_thread_id, &child_thread, || {
+            harness.control.state.publish_cold_status_if_current(
+                child_thread_id,
+                &registered_metadata,
+                &child_thread,
+                cold_status.clone(),
+            );
+        })
+        .await;
+    assert_eq!(removal, RemoveThreadIfSameResult::Removed);
+    match harness.manager.get_thread(child_thread_id).await {
+        Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, child_thread_id),
+        Err(err) => panic!("expected ThreadNotFound, got {err:?}"),
+        Ok(_) => panic!("expected child thread to be evicted"),
+    }
+
+    assert_ne!(
+        harness.config.model.as_deref(),
+        Some(expected_child_settings.model.as_str()),
+        "the reload caller must carry a conflicting model default"
+    );
+    assert_ne!(
+        harness.config.model_provider_id,
+        expected_child_settings.model_provider_id,
+        "the reload caller must carry a conflicting provider default"
+    );
+    assert_ne!(
+        harness.config.model_reasoning_effort,
+        expected_child_settings.reasoning_effort,
+        "the reload caller must carry a conflicting reasoning default"
+    );
+    assert_ne!(
+        harness.config.approvals_reviewer,
+        expected_child_settings.approvals_reviewer,
+        "the reload caller must carry a conflicting reviewer default"
+    );
+    harness
+        .control
+        .ensure_v2_agent_loaded(harness.config.clone(), child_thread_id)
+        .await
+        .expect("evicted paginated child should cold reload");
+    let reloaded_child = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("reloaded child should be registered");
+    assert_eq!(
+        reloaded_child
+            .config_snapshot()
+            .await
+            .into_thread_settings_snapshot(),
+        expected_child_settings,
+        "cold reload should restore the child's complete effective settings"
     );
 
     let _ = harness
