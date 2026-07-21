@@ -326,6 +326,13 @@ impl AgentControl {
         let history = load_agent_model_context(state, thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let persisted_approvals_reviewer = history.iter().rev().find_map(|item| match item {
+            RolloutItem::TurnContext(turn_context) => turn_context.approvals_reviewer,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                Some(event.thread_settings.approvals_reviewer)
+            }
+            _ => None,
+        });
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),
@@ -380,6 +387,9 @@ impl AgentControl {
             stored_thread.reasoning_effort.clone(),
             thread_id,
         )?;
+        if let Some(approvals_reviewer) = persisted_approvals_reviewer {
+            config.approvals_reviewer = approvals_reviewer;
+        }
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);

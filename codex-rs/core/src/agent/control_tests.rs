@@ -1298,8 +1298,8 @@ async fn paginated_subagent_fork_cold_resume_preserves_child_settings() {
         .meta
         .subagent_history_start_ordinal
         .expect("paginated child should mark its local history boundary");
-    let prefix_end = usize::try_from(child_history_start_ordinal)
-        .expect("history boundary should fit in usize");
+    let prefix_end =
+        usize::try_from(child_history_start_ordinal).expect("history boundary should fit in usize");
     let copied_prefix = &lines[1..prefix_end];
     let copied_idless_context = copied_prefix
         .iter()
@@ -1315,9 +1315,7 @@ async fn paginated_subagent_fork_cold_resume_preserves_child_settings() {
         })
         .expect("copied prefix should contain inherited response item");
     assert!(
-        copied_idless_context
-            .id()
-            .is_some_and(|id| !id.is_empty()),
+        copied_idless_context.id().is_some_and(|id| !id.is_empty()),
         "copied model context should receive response item ids before persistence"
     );
     let copied_idless_context_ordinal = copied_prefix
@@ -1437,18 +1435,15 @@ async fn paginated_subagent_fork_cold_resume_preserves_child_settings() {
         "the reload caller must carry a conflicting model default"
     );
     assert_ne!(
-        harness.config.model_provider_id,
-        expected_child_settings.model_provider_id,
+        harness.config.model_provider_id, expected_child_settings.model_provider_id,
         "the reload caller must carry a conflicting provider default"
     );
     assert_ne!(
-        harness.config.model_reasoning_effort,
-        expected_child_settings.reasoning_effort,
+        harness.config.model_reasoning_effort, expected_child_settings.reasoning_effort,
         "the reload caller must carry a conflicting reasoning default"
     );
     assert_ne!(
-        harness.config.approvals_reviewer,
-        expected_child_settings.approvals_reviewer,
+        harness.config.approvals_reviewer, expected_child_settings.approvals_reviewer,
         "the reload caller must carry a conflicting reviewer default"
     );
     harness
