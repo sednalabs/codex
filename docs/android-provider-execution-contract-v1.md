@@ -362,6 +362,11 @@ means the listed owner remains authoritative and the successor owns only the
 newly frozen Android-specific invariant. `new-gap` means no listed historical
 item owns that exact invariant. No historical item is superseded.
 
+The twelve behavior rows map to eleven implementation successor leaves.
+`w10347` is the deliberate coupled exception: exact target identity and build
+provenance are two inseparable assertions of one session-and-provenance receipt
+boundary. Every other successor owns one behavior row.
+
 ### Exact session targeting
 
 - **Canonical authority:** `android-emulator-mcp` provider manifest, target
@@ -369,7 +374,8 @@ item owns that exact invariant. No historical item is superseded.
   routing.
 - **Existing owner and disposition:** `default:w4284` environment binding and
   lease ownership — **extend-owner**.
-- **Successor and sole invariant:** `default:w10347` ensures every
+- **Successor and coupled boundary:** `default:w10347` owns the one
+  target-and-provenance receipt boundary; its target assertion ensures every
   request/response receipt resolves one identical `(environment, provider,
 session, serial)` tuple.
 - **Natural assertion boundary:** Whole request/response target equality,
@@ -382,8 +388,8 @@ session, serial)` tuple.
   `src/interactive_session.rs`; Solar hosted provider pin.
 - **Existing owner and disposition:** `default:w4387` native install exposure
   and `default:w4398` fixed provider ref — **extend-owner**.
-- **Successor and sole invariant:** `default:w10347` binds run artifact and
-  digest to the same resolved session in its installed-build receipt.
+- **Same coupled-boundary assertion:** `default:w10347` binds run artifact and
+  digest to that same resolved session in its installed-build receipt.
 - **Natural assertion boundary:** Whole install receipt equals the requested
   run/artifact and observed manifest, or returns `build_provenance_mismatch`.
 - **Rollout boundary:** Hosted session uses the pinned provider revision and
@@ -526,10 +532,11 @@ session, serial)` tuple.
 
 ## Unassigned and overlap checks
 
-The matrix has twelve required behaviors and twelve assigned rows. Every row
-has one successor, repository authority, existing-owner disposition, natural
-assertion boundary, and rollout boundary; therefore the unassigned-requirement
-count is **zero**.
+The matrix has twelve required behaviors, twelve assigned rows, and eleven
+implementation successor leaves. Every row has one successor, repository
+authority, existing-owner disposition, natural assertion boundary, and rollout
+boundary. `w10347` intentionally owns the coupled target-and-provenance boundary
+across the first two rows; therefore the unassigned-requirement count is **zero**.
 
 The invariants are intentionally non-overlapping:
 
@@ -548,8 +555,8 @@ paths are allowed; shared ownership of a contract field is not.
 
 ## Confirmed dependency order
 
-The existing dependency edges already express the required serial order; no
-graph repair is needed:
+The existing dependency edges already express the required eleven-leaf serial
+order; no graph repair is needed:
 
 1. `default:w10347` exact session and provenance receipt
 2. `default:w10348` readiness state machine
@@ -589,6 +596,7 @@ scoped evidence and not a substitute.
 ## Acceptance of this contract freeze
 
 This freeze is complete when the matrix remains the only v1 owner map, all
-twelve successor boundaries retain their unique invariant, and changes follow
-the sequence above. It deliberately leaves implementation and acceptance proof
-to the assigned successors.
+eleven successor boundaries retain their non-overlapping allocation (including
+`w10347`'s coupled target-and-provenance boundary), and changes follow the
+sequence above. It deliberately leaves implementation and acceptance proof to
+the assigned successors.
