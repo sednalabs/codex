@@ -214,16 +214,16 @@ also includes a fresh `readiness` result. Hosted capability recovery is not a
 v1 operation kind: it returns `recovery_required` and remains owned by `w4294`
 and `w4337`.
 
-`lifecycle_receipt` contains `action`, `status`, `previous_app_state`, and
-`resulting_app_state`. Its success shape is
+The top-level lifecycle-operation `lifecycle_receipt` contains `action`,
+`status`, `previous_app_state`, and `resulting_app_state`. Its success shape is
 `{ "action": "relaunch", "status": "applied", "previous_app_state":
 "running", "resulting_app_state": "running" }`. A failed lifecycle attempt
 uses `status: "failed"`, gives the resulting state or `"unknown"`, and includes
 `retryability`; it MUST NOT imply that the caller can replay the operation.
 The top-level `lifecycle_receipt` is absent for `observe`, `step`, and
 `install_build_from_run` responses. An install that performs its explicitly
-declared launch instead records the resulting state transition in the nested
-`install_receipt.launch.lifecycle_receipt` defined below.
+declared launch instead records the resulting state transition in the separately
+owned nested `install_receipt.launch.lifecycle_receipt` defined below.
 
 ### Installation receipt and launch state
 
@@ -280,15 +280,25 @@ success receipt. A failure before an installed manifest is observable uses
 build identity.
 
 `launch.requested` MUST equal the normalized v1 `launch_after_install` value.
-If it is `true`, `launch.attempted` MUST be `true`; it MUST NOT silently omit
-the launch outcome. A successful launch sets `performed: true` and carries the
-nested applied lifecycle receipt shown above. If installation succeeds but the
-requested launch fails, the response MUST use `status:
-"installed_launch_failed"`, retain the complete `installed_build`, set
-`attempted: true` and `performed: false`, and return `lifecycle_failed` whose
-required lifecycle receipt is exactly the nested
-`install_receipt.launch.lifecycle_receipt`; the outer error MUST set
-`receipt_path: "install_receipt.launch.lifecycle_receipt"`. That nested receipt has
+The four terminal combinations are exhaustive:
+
+| Install status                    | `requested`              | `attempted` | `performed` | Nested lifecycle receipt |
+| --------------------------------- | ------------------------ | ----------- | ----------- | ------------------------ |
+| `failed` or `provenance_mismatch` | normalized request value | `false`     | `false`     | absent                   |
+| `installed` with launch disabled  | `false`                  | `false`     | `false`     | absent                   |
+| `installed` with launch requested | `true`                   | `true`      | `true`      | applied                  |
+| `installed_launch_failed`         | `true`                   | `true`      | `false`     | failed                   |
+
+Thus `launch.requested: true` requires `attempted: true` only after a
+provenance-verified successful installation; a pre-install failure or
+provenance mismatch preserves the request value but has no launch attempt. A
+successful requested launch carries the nested applied lifecycle receipt shown
+above. If installation succeeds but the requested launch fails, the response
+MUST use `status: "installed_launch_failed"`, retain the complete
+`installed_build`, and return `lifecycle_failed` whose required lifecycle
+receipt is exactly the nested `install_receipt.launch.lifecycle_receipt`; the
+outer error MUST set `receipt_path:
+"install_receipt.launch.lifecycle_receipt"`. That nested receipt has
 `status: "failed"`, previous state, resulting or `"unknown"` state, and
 `retryability`; the top-level `lifecycle_receipt` remains absent. For example:
 
@@ -333,18 +343,26 @@ required lifecycle receipt is exactly the nested
 }
 ```
 
-If `launch.requested` is `false`, `attempted` and `performed` MUST be `false`,
-the nested lifecycle receipt is absent, and installation MUST NOT change
-application state. A failed or provenance-mismatch install also records
-`attempted: false`, `performed: false`, and no nested lifecycle receipt. This
-installation receipt does not substitute for an explicit `lifecycle` operation:
-only installation's declared launch flag may produce its nested `launch`
-receipt.
+For `installed_launch_failed`, `error.retryability` MUST exactly equal
+`install_receipt.launch.lifecycle_receipt.retryability`; both values MUST be
+`do_not_replay` because installation has already applied. A later launch is
+permitted only as a new explicit lifecycle request after a fresh state check,
+never as a replay of the install request. The nested receipt is absent for all
+other table rows except the successful requested launch. This installation
+receipt does not substitute for an explicit `lifecycle` operation: only
+installation's declared launch flag may produce its nested `launch` receipt.
+That nested field is a self-contained `w10347` receipt: its action is always
+`launch`; a successful receipt has a known previous state and a `launching` or
+`running` resulting state, while a failed receipt has its prior state plus a
+resulting or `unknown` state and retryability. `w10353` does not implement or
+own this install-specific field.
 
 ### Lifecycle app-state transitions
 
-Lifecycle receipt app states are exactly `not_running`, `launching`, `running`,
-`stopping`, `stopped`, or `unknown`. The legal successful transitions are:
+This section defines only the top-level receipt for
+`operation.kind: "lifecycle"`, owned by `w10353`. Its app states are exactly
+`not_running`, `launching`, `running`, `stopping`, `stopped`, or `unknown`. The
+legal successful transitions are:
 
 | Operation  | Legal previous state             | Resulting state          |
 | ---------- | -------------------------------- | ------------------------ |
@@ -356,7 +374,12 @@ Lifecycle receipt app states are exactly `not_running`, `launching`, `running`,
 attempt. It requires a fresh observation or readiness check before any further
 lifecycle action. This transition table is `w10353`'s lifecycle invariant;
 `w10348` continues to own readiness gating and does not own application-state
-transitions.
+transitions. The `w10347` install receipt uses the `launch` state vocabulary
+only in its self-contained `install_receipt.launch.lifecycle_receipt`; it does
+not consume this top-level transition primitive implemented by the later
+`w10353` leaf. `w10353` owns the standalone `operation.kind: "lifecycle"`
+transition and its top-level receipt. Shared state names are not shared
+contract-field ownership.
 
 A postcondition result is `satisfied`, `not_satisfied`, `not_evaluated`, or
 `unavailable`. `not_satisfied` means the action dispatch may already have had
@@ -419,7 +442,8 @@ previous state, resulting or `unknown` state, and retryability; it never implies
 that launch, stop, or relaunch is safe to replay. For an
 `installed_launch_failed` response, that required receipt is the exact nested
 `install_receipt.launch.lifecycle_receipt` and its error MUST set that exact
-`receipt_path`; a separate top-level receipt is prohibited.
+`receipt_path`; its outer and nested retryability values MUST be identical and
+`do_not_replay`. A separate top-level receipt is prohibited.
 
 ### Provider-to-Codex projection
 
@@ -525,10 +549,13 @@ session, serial)` tuple.
   and `default:w4398` fixed provider ref — **extend-owner**.
 - **Same coupled-boundary assertion:** `default:w10347` binds the complete run
   artifact tuple (repository, commit, workflow, artifact name, and digest) and
-  observed package/manifest to that same resolved session in its install receipt.
+  observed package/manifest to that same resolved session in its install receipt;
+  it also owns that receipt's install-specific `launch` subreceipt and all four
+  terminal installation outcomes.
 - **Natural assertion boundary:** Whole install receipt equals the requested
   run/artifact tuple and observed manifest, records the declared/performed launch
-  outcome, or returns `build_provenance_mismatch`.
+  outcome and non-replayable launch failure, or returns
+  `build_provenance_mismatch`.
 - **Rollout boundary:** Hosted session uses the pinned provider revision and
   records the build receipt.
 
@@ -605,9 +632,11 @@ session, serial)` tuple.
 - **Existing owner and disposition:** `default:w4294` and `default:w4337` own
   environment recovery, not per-app lifecycle — **new-gap**.
 - **Successor and sole invariant:** `default:w10353` makes lifecycle operations
-  explicit, target-bound actions with a fresh state receipt.
-- **Natural assertion boundary:** Whole lifecycle receipt names previous and
-  resulting app state; no implicit restart.
+  explicit, target-bound actions with a fresh top-level state receipt. It owns
+  only `operation.kind: "lifecycle"`, not the install-specific nested launch
+  receipt owned by `w10347`.
+- **Natural assertion boundary:** Whole top-level lifecycle receipt names
+  previous and resulting app state; no implicit restart.
 - **Rollout boundary:** Provider capability advertisement and recovery
   interaction review.
 
@@ -681,8 +710,9 @@ The invariants are intentionally non-overlapping:
   only decides whether that resolved target is ready.
 - `w10349` resolves the intended UI node; `w10350` proves the outcome after an
   action; `w10351` versions the digest of that resulting observation.
-- `w10352` reports ordered action outcomes; `w10353` owns application process
-  state; `w10354` owns a gesture's atomic input semantics.
+- `w10352` reports ordered action outcomes; `w10347` owns its installation-only
+  nested launch receipt, while `w10353` owns standalone lifecycle-operation
+  process state; `w10354` owns a gesture's atomic input semantics.
 - `w10355` records evidence without changing tool behavior; `w10356` projects
   the settled contract without defining provider runtime behavior; `w10357`
   adjudicates the exact integrated tree and owns no implementation field.
@@ -693,7 +723,9 @@ paths are allowed; shared ownership of a contract field is not.
 ## Confirmed dependency order
 
 The existing dependency edges already express the required eleven-leaf serial
-order; no graph repair is needed:
+order; no graph repair is needed. `w10347`'s installation-only nested launch
+receipt is self-contained and therefore does not depend on the later standalone
+`w10353` lifecycle-operation implementation:
 
 1. `default:w10347` exact session and provenance receipt
 2. `default:w10348` readiness state machine
