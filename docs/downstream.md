@@ -245,6 +245,44 @@ per-event silence timeout from 10 to 15 seconds. The macOS floor remains 30
 seconds, the suite remains excluded on Windows, and production approval policy,
 protocol, request handling, and deadlines are unchanged.
 
+## Upstream buffered code-mode yields
+
+Upstream commit `99efeef650` adds disabled-by-default
+`code_mode_buffered_exec`. When enabled, omitted nested-exec yield times default
+to 30 seconds instead of 10 seconds, while explicit values stay authoritative.
+The declaration reports the effective default. Downstream retains its usage,
+audio, generated-image, native-tool, and `ALL_TOOLS` description additions
+around that upstream behavior.
+
+## Upstream route-aware HTTP clients
+
+Upstream commit `9078e32371` exports a bounded route-aware client pool that
+resolves the exact request URL, reuses clients per resolved route, and prevents
+system-proxy transport redirects from crossing route decisions. The pool has no
+production consumer at this boundary; it is upstream-owned infrastructure and
+a future transport-migration harvest seam, not live downstream carry.
+
+## Upstream external-session limits and attribution
+
+Upstream commit `3bc49e1721` lets trusted local clients choose optional maximum
+session age and count for external-agent detection while preserving the existing
+30-day and 50-session defaults when omitted. Upstream commit `a30aee8d90` adds
+an independent optional provider ID to import completion and failure analytics.
+Neither change weakens downstream repository path containment, imported-session
+identity, or migration-version carry. Custom and zero-limit coverage, an
+operational maximum, and provider-ID data-hygiene bounds remain suitable
+upstream harvests.
+
+## Upstream alpha hotfix release versions
+
+Upstream commit `9970cd706f` adds one shared release-version conversion path and
+maps Python alpha hotfix versions such as `0.116.0a1.post2` to Codex tags such
+as `rust-v0.116.0-alpha.1.2`. The sync adopts the upstream workflow, Python
+runtime, SDK, installer-test, and conversion changes. The shell and PowerShell
+installer conflicts retain downstream's broader SemVer validator because it
+subsumes the new upstream tag shape while preserving Sedna prerelease suffixes
+and optional build metadata.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -276,15 +314,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `e4d86fd279d6dde086c91d5d541ddd51e40c0034`
+  `b8579e9d39253306e64ca59bb82e0b153ae54b42`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `c0cd337766ff27a75623c5baba199389f94f2ab3`
+  `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
 - `upstream/main`:
-  `c0cd337766ff27a75623c5baba199389f94f2ab3`
+  `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1915` downstream ahead
-- downstream-only non-merge commits: `1642` unique, `0` patch-equivalent
+  `0` upstream ahead, `1922` downstream ahead
+- downstream-only non-merge commits: `1646` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -806,6 +844,12 @@ User-visible behavior:
 - The compatible restricted token excludes Everyone from its restricting SID
   set while retaining Everyone on the default DACL needed for child-process
   pipes and IPC.
+- Workspace writes fail closed if the matching root-capability ACE cannot be
+  installed; the restricted child is never launched after a silently failed
+  grant. A direct local-filesystem helper regression asserts the promised write
+  on release-shaped targets and reports the exact Bazel gnullvm loader
+  incompatibility instead of treating it as an ACL denial. Hosted Windows MSVC
+  proof remains required before promotion.
 - Write-root ACL refresh uses effective rights for required access but only
   explicit allow ACEs when checking stale `FILE_DELETE_CHILD`. An inherited
   grant does not trigger a repair that `SET_ACCESS` cannot make converge.
