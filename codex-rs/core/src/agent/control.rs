@@ -154,6 +154,12 @@ pub(crate) struct AgentTreeNode {
     pub(crate) agent_status: Option<AgentStatus>,
     pub(crate) nickname: Option<String>,
     pub(crate) role: Option<String>,
+    /// Effective configuration read from the live thread config snapshot.
+    ///
+    /// These fields are intentionally absent for stale threads: persisted agent metadata does
+    /// not contain a configuration snapshot, and a tree receipt must not infer one.
+    pub(crate) effective_model: Option<String>,
+    pub(crate) effective_reasoning_effort: Option<ReasoningEffort>,
     pub(crate) direct_child_count: usize,
     pub(crate) descendant_count: usize,
 }
@@ -177,6 +183,8 @@ struct AgentTreeRecord {
     agent_status: Option<AgentStatus>,
     nickname: Option<String>,
     role: Option<String>,
+    effective_model: Option<String>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Control-plane handle for multi-agent operations.
@@ -874,6 +882,8 @@ impl AgentControl {
                     agent_status: record.agent_status.clone(),
                     nickname: record.nickname.clone(),
                     role: record.role.clone(),
+                    effective_model: record.effective_model.clone(),
+                    effective_reasoning_effort: record.effective_reasoning_effort.clone(),
                     direct_child_count: tree_children.get(&thread_id).map_or(0, Vec::len),
                     descendant_count: descendant_counts.get(&thread_id).copied().unwrap_or(0),
                 })
@@ -1240,6 +1250,7 @@ impl AgentControl {
         match session_state {
             AgentSessionState::Live => {
                 let thread = state.get_thread(thread_id).await?;
+                let config_snapshot = thread.config_snapshot().await;
                 let metadata =
                     self.state
                         .agent_metadata_for_thread(thread_id)
@@ -1257,6 +1268,8 @@ impl AgentControl {
                     agent_status: Some(thread.agent_status().await),
                     nickname: metadata.agent_nickname,
                     role: metadata.agent_role,
+                    effective_model: Some(config_snapshot.model),
+                    effective_reasoning_effort: config_snapshot.reasoning_effort,
                 })
             }
             AgentSessionState::Stale => {
@@ -1283,6 +1296,8 @@ impl AgentControl {
                     agent_status: None,
                     nickname: metadata.agent_nickname,
                     role: metadata.agent_role,
+                    effective_model: None,
+                    effective_reasoning_effort: None,
                 })
             }
         }

@@ -699,8 +699,35 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "agent_status",
             "nickname",
             "role",
+            "effective_model",
+            "effective_reasoning_effort",
             "direct_child_count",
             "descendant_count"
         ])
+    );
+}
+
+#[test]
+fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = create_send_message_tool()
+    else {
+        panic!("send_message should be a function tool");
+    };
+
+    let output_schema = output_schema.expect("send_message output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "task_name",
+            "handoff_state",
+            "effective_model",
+            "effective_model_provider_id",
+            "effective_reasoning_effort",
+            "effective_service_tier"
+        ])
+    );
+    assert_eq!(
+        output_schema["properties"]["handoff_state"]["enum"],
+        json!(["queued"])
     );
 }
