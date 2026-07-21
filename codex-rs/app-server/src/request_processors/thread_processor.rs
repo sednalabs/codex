@@ -210,14 +210,21 @@ fn merge_persisted_approval_and_permissions(
     let InitialHistory::Resumed(resumed_history) = thread_history else {
         return;
     };
-    let Some(settings) = resumed_history
+    let Some((approval_policy, permission_profile, active_permission_profile)) = resumed_history
         .history
         .iter()
         .rev()
         .find_map(|item| match item {
-            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
-                Some(&event.thread_settings)
-            }
+            RolloutItem::TurnContext(turn_context) => Some((
+                turn_context.approval_policy,
+                turn_context.permission_profile(),
+                None,
+            )),
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => Some((
+                event.thread_settings.approval_policy,
+                event.thread_settings.permission_profile.clone(),
+                event.thread_settings.active_permission_profile.clone(),
+            )),
             _ => None,
         })
     else {
@@ -227,7 +234,7 @@ fn merge_persisted_approval_and_permissions(
     if typesafe_overrides.approval_policy.is_none()
         && !request_overrides.is_some_and(|overrides| overrides.contains_key("approval_policy"))
     {
-        typesafe_overrides.approval_policy = Some(settings.approval_policy);
+        typesafe_overrides.approval_policy = Some(approval_policy);
     }
 
     let has_explicit_permissions = typesafe_overrides.sandbox_mode.is_some()
@@ -242,14 +249,14 @@ fn merge_persisted_approval_and_permissions(
         return;
     }
 
-    match settings.active_permission_profile.as_ref() {
+    match active_permission_profile {
         Some(active_profile) => {
             // Re-select named profiles through config so their identity and current constraints
             // stay paired with the effective permission profile.
-            typesafe_overrides.default_permissions = Some(active_profile.id.clone());
+            typesafe_overrides.default_permissions = Some(active_profile.id);
         }
         None => {
-            typesafe_overrides.permission_profile = Some(settings.permission_profile.clone());
+            typesafe_overrides.permission_profile = Some(permission_profile);
         }
     }
 }
