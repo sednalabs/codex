@@ -11,6 +11,11 @@ use anyhow::Result;
 #[cfg(not(unix))]
 use anyhow::bail;
 #[cfg(unix)]
+use codex_http_client::ClientRouteClass;
+use codex_http_client::HttpClientFactory;
+#[cfg(unix)]
+use codex_http_client::RouteAwareClientPool;
+#[cfg(unix)]
 use futures::FutureExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -49,21 +54,25 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 #[cfg(unix)]
-const UPSTREAM_STANDALONE_INSTALLER_URL: &str = "https://chatgpt.com/codex/install.sh";
+const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
 #[cfg(unix)]
 const SEDNA_STANDALONE_INSTALLER_URL: &str =
     "https://raw.githubusercontent.com/sednalabs/codex/main/scripts/install_sedna_release_asset";
 
 #[cfg(unix)]
-pub(crate) async fn run() -> Result<()> {
+pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
     let mut terminate =
         signal(SignalKind::terminate()).context("failed to install updater shutdown handler")?;
     let running_updater_identity = current_updater_identity().await?;
+    let http = RouteAwareClientPool::new_without_request_logging(
+        http_client_factory,
+        ClientRouteClass::Other,
+    );
     if sleep_or_terminate(INITIAL_UPDATE_DELAY, &mut terminate).await {
         return Ok(());
     }
     loop {
-        match update_once(&running_updater_identity, &mut terminate).await {
+        match update_once(&http, &running_updater_identity, &mut terminate).await {
             Ok(UpdateLoopControl::Continue) | Err(_) => {}
             Ok(UpdateLoopControl::Stop) => return Ok(()),
         }
@@ -74,7 +83,7 @@ pub(crate) async fn run() -> Result<()> {
 }
 
 #[cfg(not(unix))]
-pub(crate) async fn run() -> Result<()> {
+pub(crate) async fn run(_http_client_factory: HttpClientFactory) -> Result<()> {
     bail!("pid-managed updater loop is unsupported on this platform")
 }
 
@@ -94,10 +103,11 @@ enum UpdateLoopControl {
 
 #[cfg(unix)]
 async fn update_once(
+    http: &RouteAwareClientPool,
     running_updater_identity: &ExecutableIdentity,
     terminate: &mut Signal,
 ) -> Result<UpdateLoopControl> {
-    install_latest_standalone().await?;
+    install_latest_standalone(http).await?;
 
     let daemon = Daemon::from_environment()?;
     let managed_codex_bin = resolved_managed_codex_bin(&daemon.managed_codex_bin).await?;
@@ -159,11 +169,11 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 }
 
 #[cfg(unix)]
-async fn install_latest_standalone() -> Result<()> {
+async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
     if release_repository().eq_ignore_ascii_case("sednalabs/codex") {
-        install_latest_sedna_standalone().await
+        install_latest_sedna_standalone(http).await
     } else {
-        install_latest_upstream_standalone().await
+        install_latest_upstream_standalone(http).await
     }
 }
 
@@ -176,15 +186,8 @@ fn release_repository() -> &'static str {
 }
 
 #[cfg(unix)]
-async fn install_latest_upstream_standalone() -> Result<()> {
-    let script = reqwest::get(UPSTREAM_STANDALONE_INSTALLER_URL)
-        .await
-        .context("failed to fetch standalone Codex updater")?
-        .error_for_status()
-        .context("standalone Codex updater request failed")?
-        .bytes()
-        .await
-        .context("failed to read standalone Codex updater")?;
+async fn install_latest_upstream_standalone(http: &impl InstallerHttp) -> Result<()> {
+    let script = fetch_installer_script(http).await?;
 
     let mut child = Command::new("/bin/sh")
         .arg("-s")
@@ -215,15 +218,8 @@ async fn install_latest_upstream_standalone() -> Result<()> {
 }
 
 #[cfg(unix)]
-async fn install_latest_sedna_standalone() -> Result<()> {
-    let script = reqwest::get(SEDNA_STANDALONE_INSTALLER_URL)
-        .await
-        .context("failed to fetch Sedna standalone Codex updater")?
-        .error_for_status()
-        .context("Sedna standalone Codex updater request failed")?
-        .bytes()
-        .await
-        .context("failed to read Sedna standalone Codex updater")?;
+async fn install_latest_sedna_standalone(http: &impl InstallerHttp) -> Result<()> {
+    let script = fetch_installer_script_from_url(http, SEDNA_STANDALONE_INSTALLER_URL).await?;
 
     let mut child = Command::new("bash")
         .args([
@@ -258,6 +254,64 @@ async fn install_latest_sedna_standalone() -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!("Sedna standalone Codex updater exited with status {status}")
+    }
+}
+
+#[cfg(unix)]
+async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
+    fetch_installer_script_from_url(http, INSTALL_URL).await
+}
+
+#[cfg(unix)]
+async fn fetch_installer_script_from_url(
+    http: &impl InstallerHttp,
+    url: &str,
+) -> Result<Vec<u8>> {
+    match http.get(url).await? {
+        InstallerResponse::Success(body) => Ok(body),
+        InstallerResponse::Unsuccessful { status } => {
+            anyhow::bail!("standalone Codex updater request failed with status {status}")
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum InstallerResponse {
+    Success(Vec<u8>),
+    Unsuccessful { status: u16 },
+}
+
+#[cfg(unix)]
+/// HTTP boundary used to download the standalone installer.
+///
+/// Implementations must issue a GET for the supplied URL, return exact response bytes for a
+/// successful status, and report a non-success status without buffering its response body.
+trait InstallerHttp: Send + Sync {
+    fn get<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> impl std::future::Future<Output = Result<InstallerResponse>> + Send + 'a;
+}
+
+#[cfg(unix)]
+impl InstallerHttp for RouteAwareClientPool {
+    async fn get(&self, url: &str) -> Result<InstallerResponse> {
+        let response = RouteAwareClientPool::get(self, url)
+            .send()
+            .await
+            .context("failed to fetch standalone Codex updater")?;
+        if !response.status().is_success() {
+            return Ok(InstallerResponse::Unsuccessful {
+                status: response.status().as_u16(),
+            });
+        }
+        let body = response
+            .bytes()
+            .await
+            .context("failed to read standalone Codex updater")?
+            .to_vec();
+        Ok(InstallerResponse::Success(body))
     }
 }
 
