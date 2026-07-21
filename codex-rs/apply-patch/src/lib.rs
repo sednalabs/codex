@@ -329,7 +329,7 @@ pub async fn apply_hunks(
             Ok(delta)
         }
         Err(error) => {
-            let msg = error.to_string();
+            let msg = format_error_chain(&error);
             writeln!(stderr, "{msg}").map_err(|error| {
                 ApplyPatchFailure::new(ApplyPatchError::from(error), delta.clone())
             })?;
@@ -344,6 +344,10 @@ pub async fn apply_hunks(
             Err(ApplyPatchFailure::new(error, delta))
         }
     }
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    format!("{error:#}")
 }
 
 /// Applies each parsed patch hunk to the filesystem.
@@ -888,6 +892,7 @@ pub fn print_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use codex_exec_server::LOCAL_FS;
     use pretty_assertions::assert_eq;
     use std::fs;
@@ -897,6 +902,16 @@ mod tests {
     /// Helper to construct a patch with the given body.
     fn wrap_patch(body: &str) -> String {
         format!("*** Begin Patch\n{body}\n*** End Patch")
+    }
+
+    #[test]
+    fn error_output_preserves_source_chain() {
+        let error = anyhow!("helper startup failed").context("failed to write file");
+
+        assert_eq!(
+            format_error_chain(&error),
+            "failed to write file: helper startup failed"
+        );
     }
 
     #[tokio::test]
