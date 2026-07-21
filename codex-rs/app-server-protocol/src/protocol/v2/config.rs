@@ -699,6 +699,12 @@ pub struct ExternalAgentConfigDetectParams {
     /// Zero or more working directories to include for repo-scoped detection.
     #[ts(optional = nullable)]
     pub cwds: Option<Vec<PathBuf>>,
+    /// Maximum age in days for detected sessions. Missing values use the default limit.
+    #[ts(optional = nullable)]
+    pub max_session_age_days: Option<u32>,
+    /// Maximum number of sessions to detect. Missing values use the default limit.
+    #[ts(optional = nullable)]
+    pub max_sessions: Option<u32>,
     /// Deprecated field retained for compatibility. This field is ignored; use `migrationSource`
     /// to select the migration source.
     #[ts(optional = nullable)]
@@ -716,6 +722,10 @@ pub struct ExternalAgentConfigImportParams {
     /// Optional identifier for the product that initiated the import.
     #[ts(optional = nullable)]
     pub source: Option<String>,
+    /// Opaque provider identifier supplied by the caller for analytics attribution. This does not
+    /// select the migration source.
+    #[ts(optional = nullable)]
+    pub provider_id: Option<String>,
     /// Migration-source selector used to produce the migration items. Pass the same value to
     /// detection and import; missing or unrecognized values use the default source.
     #[ts(optional = nullable)]

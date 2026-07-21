@@ -1164,6 +1164,7 @@ async fn external_agent_config_import_reports_failed_sync_import_in_completion()
             "externalAgentConfig/import",
             Some(serde_json::json!({
                 "source": "test_import",
+                "providerId": "test-provider-42",
                 "migrationItems": [
                     {
                         "itemType": "CONFIG",
@@ -1261,6 +1262,7 @@ async fn external_agent_config_import_reports_failed_sync_import_in_completion()
     let event_params = &event["event_params"];
     assert_eq!(event_params["import_id"], import_id);
     assert_eq!(event_params["source"], "test_import");
+    assert_eq!(event_params["provider_id"], "test-provider-42");
     assert_eq!(event_params["type"], "CONFIG");
     assert_eq!(event_params["failure_stage"], "import_request_failed");
     assert_eq!(event_params["error_type"], "invalid_existing_config");
@@ -1305,6 +1307,8 @@ async fn external_agent_config_import_completed_tracks_analytics_event() -> Resu
             "externalAgentConfig/import",
             Some(serde_json::json!({
                 "source": "test_import",
+                "providerId": "test-provider-42",
+                "migrationSource": SECONDARY_MIGRATION_SOURCE,
                 "migrationItems": [{
                     "itemType": "SESSIONS",
                     "description": "Migrate recent sessions",
@@ -1355,6 +1359,7 @@ async fn external_agent_config_import_completed_tracks_analytics_event() -> Resu
     let event_params = &event["event_params"];
     assert_eq!(event_params["import_id"], serde_json::json!(import_id));
     assert_eq!(event_params["source"], "test_import");
+    assert_eq!(event_params["provider_id"], "test-provider-42");
     assert_eq!(event_params["type"], "SESSIONS");
     assert_eq!(event_params["success_count"], 0);
     assert_eq!(event_params["failed_count"], 1);
@@ -1369,6 +1374,7 @@ async fn external_agent_config_import_completed_tracks_analytics_event() -> Resu
     let event_params = &event["event_params"];
     assert_eq!(event_params["import_id"], serde_json::json!(import_id));
     assert_eq!(event_params["source"], "test_import");
+    assert_eq!(event_params["provider_id"], "test-provider-42");
     assert_eq!(event_params["type"], "SESSIONS");
     assert_eq!(event_params["failure_stage"], "session_missing");
     assert_eq!(event_params["error_type"], "session_missing");
