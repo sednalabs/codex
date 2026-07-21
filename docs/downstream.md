@@ -806,6 +806,10 @@ User-visible behavior:
 - Thread records preserve downstream `thread_source` provenance alongside
   upstream `history_mode`; list, read, resume, and stored-session paths carry
   both fields independently.
+- Thread-store writes serialize canonical rollout append order with derived
+  SQLite metadata observation and persistence barriers. Concurrent handles to
+  one live thread therefore cannot leave indexed model, provider, reasoning,
+  or cwd metadata ordered differently from the JSONL settings history.
 
 ### Core: MCP forced approvals still participate in session remember keys
 
