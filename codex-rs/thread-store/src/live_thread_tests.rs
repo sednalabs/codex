@@ -165,10 +165,7 @@ impl ThreadStore for GatedThreadStore {
         ThreadStore::archive_thread(self.inner.as_ref(), params)
     }
 
-    fn unarchive_thread(
-        &self,
-        params: ArchiveThreadParams,
-    ) -> ThreadStoreFuture<'_, StoredThread> {
+    fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
         ThreadStore::unarchive_thread(self.inner.as_ref(), params)
     }
 
@@ -348,11 +345,8 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
         .expect("append initial metadata touch");
 
     let append_live_thread = live_thread.clone();
-    let append = tokio::spawn(async move {
-        append_live_thread
-            .append_items(&[compacted_item()])
-            .await
-    });
+    let append =
+        tokio::spawn(async move { append_live_thread.append_items(&[compacted_item()]).await });
     tokio::time::timeout(
         Duration::from_secs(5),
         gated_store.gated_append_persisted.notified(),
