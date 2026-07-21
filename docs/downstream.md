@@ -61,6 +61,12 @@ schemas, and the TUI hook browser. This is upstream behavior, not a downstream
 divergence; schema refreshes must preserve it alongside the fork's dynamic-tool
 and native computer-use protocol additions.
 
+The hook runner additionally preserves stdout and the real exit status when a
+successful hook exits without consuming stdin and the parent observes
+`BrokenPipe`. Other stdin write errors remain fatal. This is temporary direct
+upstream-fix carry with a deterministic cross-platform regression and must be
+dropped when upstream adopts equivalent behavior.
+
 ## Upstream compact-hook continuation ordering
 
 Upstream commit `8c41ed33ce` owns the post-compaction ordering contract. After
@@ -172,6 +178,11 @@ direct launch block while retaining the downstream proxy-aware backend policy,
 prepared filesystem overrides, metrics, telemetry, and bounded final-output
 behavior around the new upstream seam.
 
+The upstream API migration missed one Wine PTY test call site, and the fork's
+argument-comment lint is stricter for one optional exec-server test argument.
+The downstream corrections are validation-only and should be dropped
+individually as soon as upstream carries equivalent fixes.
+
 ## Upstream shared skill models
 
 Upstream commit `56c11cf658` moves shared host and environment skill metadata,
@@ -198,6 +209,25 @@ The touched compaction runtime was upstream-exact before the merge and required
 no downstream resolution. Existing downstream realtime world-state, hook
 ordering, capacity retry, compaction metadata, and dynamic-media guardrails
 remain independently tracked.
+
+## Upstream catalog approval messages
+
+Upstream commit `2be7d3bcd9` lets model catalogs provide approval instructions
+for `never` and `unless_trusted` policies as well as `on_request`. Missing keys
+retain the built-in policy text, while an explicitly empty value suppresses
+only that approval section. This affects model-visible instructions, not policy
+enforcement. Downstream's Schemars 1.2 protocol adapter remains in place
+without changing the new field semantics.
+
+## Upstream explicit outbound proxy routes
+
+Upstream commit `c9ef7eff00` resolves system-proxy failures into explicit
+environment-proxy or direct routes, carries `NO_PROXY` across HTTP and
+WebSocket transports, and uses cached decisions first. It also provides an
+async resolver that keeps serialized platform discovery off Tokio workers, but
+the current production WebSocket connector still uses the synchronous resolver.
+Downstream adopts the route behavior intact and retains only its sha2
+0.11-compatible hexadecimal cache-key encoder.
 
 ## Validation policy
 
