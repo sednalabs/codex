@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `3fe6502c415d9c56c4f20fe199be61d0ba818225`
+- downstream integration code tree: `7e09b99f60209c119e46013338c33b9506e39c73`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `c44c4de7b410993dacb2e88c7084c9c968bc963a`
-- `upstream/main`: `c44c4de7b410993dacb2e88c7084c9c968bc963a`
-- downstream branch vs `upstream/main`: `1953` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `f69f88f8116f541daddada3a056de5772a891f15`
+- `upstream/main`: `f69f88f8116f541daddada3a056de5772a891f15`
+- downstream branch vs `upstream/main`: `1956` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1667` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1669` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -537,6 +537,25 @@ docs-only refresh commit that records this snapshot.
   pre-promotion exit `4`; artifact `8494287133` reports no stale registry
   entries and only the already-covered integration-branch PID-test path missing
   from the older audited `origin/main`.
+
+### Centralized Compacted Rollout Item Construction
+
+- Upstream commit `f69f88f811` centralizes persisted `CompactedItem`
+  construction inside `Session::replace_compacted_history`, after missing
+  response-item IDs have been assigned. Local, remote, remote-v2, and
+  token-budget compaction now pass only the compaction message and window
+  metadata, so persisted replacement history is built from the exact live
+  history rather than cloned independently by each caller.
+- Signed merge `7e09b99f60` adopts the upstream implementation without a
+  carry-specific patch. Downstream capacity retry, realtime world-state,
+  hooks, dynamic media, compaction metadata, and step-scoped extension data
+  remain composed around the centralized upstream boundary.
+- Hosted mirror run `29832500831` advanced `origin/upstream-main` to exact
+  `f69f88f811` in successful sync job `88640491987`. Audit job `88640608492`
+  returned the expected pre-promotion exit `4`; artifact `8495902896` reports
+  an exact mirror, no stale registry entries, and only the already-registered
+  integration-branch PID-test path absent from the older audited
+  `origin/main`.
 
 ## Current Live Divergences
 

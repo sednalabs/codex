@@ -1500,7 +1500,7 @@
         "remote_compact_does_not_charge_inline_audio_payload_as_text"
       ],
       "owner": "downstream",
-      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics. Upstream audio truncation and remote-compaction fixtures must continue to use this flat record until that migration lands losslessly.",
+      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics. Upstream audio truncation and remote-compaction fixtures must continue to use this flat record until that migration lands losslessly. Upstream commit f69f88f811 owns persisted CompactedItem construction after live-history response IDs are assigned; downstream media carry composes around that boundary rather than rebuilding replacement history in compaction callers.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-schema-persistence-compatibility",
       "hotspot_files": [
