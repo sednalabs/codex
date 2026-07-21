@@ -306,6 +306,7 @@ tool and transcript surfaces; it does not expose the provider's wire spelling.
   "bundle_id": "evidence-01",
   "contract_version": "android-provider-execution/v1",
   "request_id": "android-request-01",
+  "operation_kind": "step",
   "resolved_target": {
     "environment_id": "env_01",
     "provider_instance_id": "provider_01",
@@ -336,6 +337,16 @@ Evidence records are append-only receipts. They may redact user-entered text
 and other sensitive payloads, but not the identity tuple, code revisions,
 build identity, action outcomes, observation generations, or artifact digests
 needed to establish what was proven.
+
+`operation_kind` controls the operation-specific receipt fields. A `step`
+record MUST carry `action_batch` and MUST NOT carry `lifecycle_receipt`. A
+`lifecycle` record MUST carry `lifecycle_receipt` with the same action, status,
+previous state, resulting or `unknown` state, and retryability returned to the
+caller; it MUST NOT substitute an `action_batch`. `observe` and
+`install_build_from_run` records carry neither field unless a later compatible
+contract revision explicitly defines one. This keeps a lifecycle transition
+verifiable in the same append-only bundle as its target, revisions, observations,
+and artifact digests.
 
 ## Requirement-to-owner matrix
 
