@@ -27,7 +27,10 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
     let action = update_action::get_update_action();
     let version_file = version_filepath(config);
-    let info = read_version_info(&version_file).ok();
+    let source = current_version_info_source(action);
+    let info = read_version_info(&version_file)
+        .ok()
+        .filter(|info| source_matches(info, &source));
 
     if match &info {
         None => true,
@@ -59,6 +62,14 @@ struct VersionInfo {
     last_checked_at: DateTime<Utc>,
     #[serde(default)]
     dismissed_version: Option<String>,
+    #[serde(default)]
+    source: Option<VersionInfoSource>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+struct VersionInfoSource {
+    action: Option<String>,
+    latest_url: String,
 }
 
 const VERSION_FILENAME: &str = "version.json";
@@ -84,7 +95,26 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
     Ok(serde_json::from_str(&contents)?)
 }
 
+fn current_version_info_source(action: Option<UpdateAction>) -> VersionInfoSource {
+    VersionInfoSource {
+        action: action.map(|action| action.cache_key().to_string()),
+        latest_url: match action {
+            Some(UpdateAction::BrewUpgrade) => HOMEBREW_CASK_API_URL.to_string(),
+            Some(UpdateAction::NpmGlobalLatest)
+            | Some(UpdateAction::BunGlobalLatest)
+            | Some(UpdateAction::StandaloneUnix)
+            | Some(UpdateAction::StandaloneWindows)
+            | None => latest_release_api_url(),
+        },
+    }
+}
+
+fn source_matches(info: &VersionInfo, source: &VersionInfoSource) -> bool {
+    info.source.as_ref() == Some(source)
+}
+
 async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> anyhow::Result<()> {
+    let source = current_version_info_source(action);
     let latest_version = match action {
         Some(UpdateAction::BrewUpgrade) => {
             let HomebrewCaskInfo { version } = create_client()
@@ -115,10 +145,14 @@ async fn check_for_update(version_file: &Path, action: Option<UpdateAction>) -> 
 
     // Preserve any previously dismissed version if present.
     let prev_info = read_version_info(version_file).ok();
+    let dismissed_version = prev_info
+        .filter(|info| source_matches(info, &source))
+        .and_then(|p| p.dismissed_version);
     let info = VersionInfo {
         latest_version,
         last_checked_at: Utc::now(),
-        dismissed_version: prev_info.and_then(|p| p.dismissed_version),
+        dismissed_version,
+        source: Some(source),
     };
 
     let json_line = format!("{}\n", serde_json::to_string(&info)?);
@@ -150,9 +184,11 @@ pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
     }
 
     let version_file = version_filepath(config);
+    let source = current_version_info_source(update_action::get_update_action());
     let latest = get_upgrade_version(config)?;
     // If the user dismissed this exact version previously, do not show the popup.
     if let Ok(info) = read_version_info(&version_file)
+        && source_matches(&info, &source)
         && info.dismissed_version.as_deref() == Some(latest.as_str())
     {
         return None;

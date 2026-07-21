@@ -11,6 +11,7 @@ use std::path::Path;
 use codex_core::config::Config;
 use codex_install_context::InstallContext;
 use codex_install_context::InstallMethod;
+use semver::Version;
 use serde::Deserialize;
 
 use super::CheckStatus;
@@ -22,7 +23,22 @@ use super::npm_global_root_check;
 use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
+const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {
+    Some(repository) => repository,
+    None => "sednalabs/codex",
+};
+const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_PREFIX") {
+    Some(prefix) => prefix,
+    None => "v",
+};
+const CODEX_UPDATE_NPM_PACKAGE: &str = match option_env!("CODEX_UPDATE_NPM_PACKAGE") {
+    Some(package) => package,
+    None => "@openai/codex",
+};
+const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CASK") {
+    Some(cask) => cask,
+    None => "codex",
+};
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
 
 /// Builds the update-health row for the current installation.
@@ -129,13 +145,13 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
     }
 }
 
-fn update_action_label(context: &InstallContext) -> &'static str {
+fn update_action_label(context: &InstallContext) -> String {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
-        InstallMethod::Other => "manual or unknown",
+        InstallMethod::Npm => format!("npm install -g {CODEX_UPDATE_NPM_PACKAGE}"),
+        InstallMethod::Bun => format!("bun install -g {CODEX_UPDATE_NPM_PACKAGE}"),
+        InstallMethod::Brew => format!("brew upgrade --cask {CODEX_UPDATE_BREW_CASK}"),
+        InstallMethod::Standalone { .. } => "standalone installer".to_string(),
+        InstallMethod::Other => "manual or unknown".to_string(),
     }
 }
 
@@ -155,11 +171,20 @@ fn fetch_latest_github_release_version() -> Result<String, String> {
         tag_name: String,
     }
 
-    let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
+    let info = http_get_json::<ReleaseInfo>(&github_latest_release_url())?;
+    extract_version_from_latest_tag(&info.tag_name)
         .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
+}
+
+fn github_latest_release_url() -> String {
+    format!("https://api.github.com/repos/{CODEX_RELEASE_REPOSITORY}/releases/latest")
+}
+
+fn extract_version_from_latest_tag(latest_tag_name: &str) -> Option<String> {
+    [CODEX_RELEASE_TAG_PREFIX, "v", "rust-v"]
+        .into_iter()
+        .find_map(|prefix| latest_tag_name.strip_prefix(prefix))
+        .map(str::to_string)
 }
 
 fn fetch_homebrew_cask_version() -> Result<String, String> {
@@ -186,12 +211,8 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
-    let major = parts.next()?.parse::<u64>().ok()?;
-    let minor = parts.next()?.parse::<u64>().ok()?;
-    let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
+fn parse_version(value: &str) -> Option<Version> {
+    Version::parse(value.trim()).ok()
 }
 
 #[derive(Deserialize)]
@@ -211,7 +232,20 @@ mod tests {
     fn is_newer_compares_plain_semver() {
         assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
         assert_eq!(is_newer("1.2.3", "1.2.4"), Some(false));
-        assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
+        assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), Some(true));
+    }
+
+    #[test]
+    fn extracts_configured_release_tag_versions() {
+        assert_eq!(
+            extract_version_from_latest_tag("v0.134.0-sedna.2+upstream.74"),
+            Some("0.134.0-sedna.2+upstream.74".to_string())
+        );
+        assert_eq!(
+            extract_version_from_latest_tag("rust-v0.143.0"),
+            Some("0.143.0".to_string())
+        );
+        assert_eq!(extract_version_from_latest_tag("release-0.143.0"), None);
     }
 
     #[test]
@@ -221,14 +255,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "npm install -g @openai/codex".to_string()
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Other,
                 package_layout: None,
             }),
-            "manual or unknown"
+            "manual or unknown".to_string()
         );
     }
 }

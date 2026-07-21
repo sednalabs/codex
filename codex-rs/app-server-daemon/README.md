@@ -36,7 +36,7 @@ running app-server version when applicable.
 For a new remote machine:
 
 ```sh
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+curl -fsSL https://github.com/sednalabs/codex/releases/latest/download/install.sh | CODEX_RELEASE_REPOSITORY=sednalabs/codex CODEX_RELEASE_TAG_PREFIX=v sh
 $HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --remote-control
 ```
 

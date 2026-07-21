@@ -32,6 +32,20 @@ const UPDATE_PID_FILE_NAME: &str = "app-server-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const STATE_DIR_NAME: &str = "app-server-daemon";
+const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {
+    Some(repository) => repository,
+    None => "sednalabs/codex",
+};
+const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_PREFIX") {
+    Some(prefix) => prefix,
+    None => "v",
+};
+
+fn standalone_install_command() -> String {
+    format!(
+        "curl -fsSL https://github.com/{CODEX_RELEASE_REPOSITORY}/releases/latest/download/install.sh | CODEX_RELEASE_REPOSITORY={CODEX_RELEASE_REPOSITORY} CODEX_RELEASE_TAG_PREFIX={CODEX_RELEASE_TAG_PREFIX} sh"
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleCommand {
@@ -657,11 +671,12 @@ impl Daemon {
         }
 
         let managed_codex_path = self.managed_codex_bin.display();
+        let install_command = standalone_install_command();
         Err(anyhow!(
             "managed standalone Codex install not found at {managed_codex_path}\n\n\
              This command requires the standalone install managed by the Codex installer, because \
              the daemon starts and updates app-server from that fixed path.\n\n\
-             Install it with:\n  curl -fsSL https://chatgpt.com/codex/install.sh | sh\n\n\
+             Install it with:\n  {install_command}\n\n\
              Then rerun the command you just tried."
         ))
     }

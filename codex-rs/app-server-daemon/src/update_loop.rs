@@ -48,6 +48,16 @@ const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+#[cfg(unix)]
+const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {
+    Some(repository) => repository,
+    None => "sednalabs/codex",
+};
+#[cfg(unix)]
+const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_PREFIX") {
+    Some(prefix) => prefix,
+    None => "v",
+};
 
 #[cfg(unix)]
 pub(crate) async fn run() -> Result<()> {
@@ -155,7 +165,7 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 
 #[cfg(unix)]
 async fn install_latest_standalone() -> Result<()> {
-    let script = reqwest::get("https://chatgpt.com/codex/install.sh")
+    let script = reqwest::get(standalone_installer_url())
         .await
         .context("failed to fetch standalone Codex updater")?
         .error_for_status()
@@ -164,8 +174,12 @@ async fn install_latest_standalone() -> Result<()> {
         .await
         .context("failed to read standalone Codex updater")?;
 
-    let mut child = Command::new("/bin/sh")
-        .arg("-s")
+    let mut command = Command::new("/bin/sh");
+    command.arg("-s");
+    for (key, value) in standalone_installer_env() {
+        command.env(key, value);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -190,6 +204,20 @@ async fn install_latest_standalone() -> Result<()> {
     } else {
         anyhow::bail!("standalone Codex updater exited with status {status}")
     }
+}
+
+#[cfg(unix)]
+fn standalone_installer_url() -> String {
+    format!("https://github.com/{CODEX_RELEASE_REPOSITORY}/releases/latest/download/install.sh")
+}
+
+#[cfg(unix)]
+fn standalone_installer_env() -> [(&'static str, &'static str); 3] {
+    [
+        ("CODEX_RELEASE_REPOSITORY", CODEX_RELEASE_REPOSITORY),
+        ("CODEX_RELEASE_TAG_PREFIX", CODEX_RELEASE_TAG_PREFIX),
+        ("CODEX_NON_INTERACTIVE", "1"),
+    ]
 }
 
 #[cfg(all(test, unix))]

@@ -76,6 +76,11 @@ mod thread_inventory;
 mod title;
 mod updates;
 
+const CODEX_UPDATE_NPM_PACKAGE: &str = match option_env!("CODEX_UPDATE_NPM_PACKAGE") {
+    Some(package) => package,
+    None => "@openai/codex",
+};
+
 use background::background_server_check;
 use git::git_check;
 use output::HumanOutputOptions;
@@ -837,8 +842,9 @@ fn installation_check(show_details: bool) -> DoctorCheck {
                 npm_package_root,
             } => {
                 status = CheckStatus::Fail;
-                summary =
-                    "npm install -g @openai/codex would update a different install".to_string();
+                summary = format!(
+                    "npm install -g {CODEX_UPDATE_NPM_PACKAGE} would update a different install"
+                );
                 remediation = Some(format!(
                     "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
                     running_package_root.display(),
