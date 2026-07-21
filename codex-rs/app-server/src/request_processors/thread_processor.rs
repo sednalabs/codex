@@ -202,6 +202,58 @@ fn merge_persisted_approvals_reviewer(
             });
 }
 
+fn merge_persisted_approval_and_permissions(
+    thread_history: &InitialHistory,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
+    typesafe_overrides: &mut ConfigOverrides,
+) {
+    let InitialHistory::Resumed(resumed_history) = thread_history else {
+        return;
+    };
+    let Some(settings) = resumed_history
+        .history
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                Some(&event.thread_settings)
+            }
+            _ => None,
+        })
+    else {
+        return;
+    };
+
+    if typesafe_overrides.approval_policy.is_none()
+        && !request_overrides.is_some_and(|overrides| overrides.contains_key("approval_policy"))
+    {
+        typesafe_overrides.approval_policy = Some(settings.approval_policy);
+    }
+
+    let has_explicit_permissions = typesafe_overrides.sandbox_mode.is_some()
+        || typesafe_overrides.permission_profile.is_some()
+        || typesafe_overrides.default_permissions.is_some()
+        || request_overrides.is_some_and(|overrides| {
+            overrides.contains_key("sandbox_mode")
+                || overrides.contains_key("permission_profile")
+                || overrides.contains_key("default_permissions")
+        });
+    if has_explicit_permissions {
+        return;
+    }
+
+    match settings.active_permission_profile.as_ref() {
+        Some(active_profile) => {
+            // Re-select named profiles through config so their identity and current constraints
+            // stay paired with the effective permission profile.
+            typesafe_overrides.default_permissions = Some(active_profile.id.clone());
+        }
+        None => {
+            typesafe_overrides.permission_profile = Some(settings.permission_profile.clone());
+        }
+    }
+}
+
 fn normalize_thread_list_cwd_filters(
     cwd: Option<ThreadListCwdFilter>,
 ) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
@@ -3532,6 +3584,11 @@ impl ThreadRequestProcessor {
         request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: &mut ConfigOverrides,
     ) -> Option<ThreadMetadata> {
+        merge_persisted_approval_and_permissions(
+            thread_history,
+            request_overrides.as_ref(),
+            typesafe_overrides,
+        );
         merge_persisted_approvals_reviewer(
             thread_history,
             request_overrides.as_ref(),
