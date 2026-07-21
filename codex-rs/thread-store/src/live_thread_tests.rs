@@ -189,7 +189,7 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, 0));
+    let gated_store = Arc::new(GatedThreadStore::new(local_store, /*gated_append_index*/ 0));
     let thread_id = ThreadId::new();
     let live_thread = LiveThread::create(
         gated_store.clone(),
@@ -279,6 +279,13 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
         .await
         .expect("sqlite metadata read")
         .expect("sqlite metadata");
+    let metadata_cwd = metadata
+        .cwd
+        .canonicalize()
+        .expect("canonicalize sqlite metadata cwd");
+    let expected_metadata_cwd = expected_second_cwd
+        .canonicalize()
+        .expect("canonicalize expected sqlite metadata cwd");
 
     assert_eq!(
         (
@@ -286,7 +293,7 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
             metadata.model,
             metadata.reasoning_effort,
             metadata.model_provider,
-            metadata.cwd,
+            metadata_cwd,
         ),
         (
             vec![
@@ -306,7 +313,7 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
             Some(SECOND_MODEL.to_string()),
             Some(ReasoningEffort::Ultra),
             "second-provider".to_string(),
-            expected_second_cwd,
+            expected_metadata_cwd,
         )
     );
     assert!(
@@ -330,7 +337,7 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, 1));
+    let gated_store = Arc::new(GatedThreadStore::new(local_store, /*gated_append_index*/ 1));
     let thread_id = ThreadId::new();
     let live_thread = LiveThread::create(
         gated_store.clone(),
