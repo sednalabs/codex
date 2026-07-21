@@ -211,6 +211,23 @@ uses `status: "failed"`, gives the resulting state or `"unknown"`, and includes
 `lifecycle_receipt` is absent for `observe`, `step`, and
 `install_build_from_run` responses.
 
+### Lifecycle app-state transitions
+
+Lifecycle receipt app states are exactly `not_running`, `launching`, `running`,
+`stopping`, `stopped`, or `unknown`. The legal successful transitions are:
+
+| Operation  | Legal previous state             | Resulting state          |
+| ---------- | -------------------------------- | ------------------------ |
+| `launch`   | `not_running` or `stopped`       | `launching` or `running` |
+| `stop`     | `launching` or `running`         | `stopping` or `stopped`  |
+| `relaunch` | Any known state except `unknown` | `launching` or `running` |
+
+`unknown` is permitted only as the resulting state of a failed lifecycle
+attempt. It requires a fresh observation or readiness check before any further
+lifecycle action. This transition table is `w10353`'s lifecycle invariant;
+`w10348` continues to own readiness gating and does not own application-state
+transitions.
+
 A postcondition result is `satisfied`, `not_satisfied`, `not_evaluated`, or
 `unavailable`. `not_satisfied` means the action dispatch may already have had
 an effect; it MUST include the post-action observation when one is available.
