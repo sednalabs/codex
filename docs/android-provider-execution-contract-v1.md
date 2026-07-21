@@ -252,6 +252,7 @@ receipt has this shape:
     },
     "launch": {
       "requested": true,
+      "attempted": true,
       "performed": true,
       "lifecycle_receipt": {
         "action": "launch",
@@ -263,6 +264,9 @@ receipt has this shape:
   }
 }
 ```
+
+Its status is exactly `installed`, `provenance_mismatch`, `failed`, or
+`installed_launch_failed`.
 
 `requested_build` preserves the complete request tuple. `installed_build` is
 the provider-observed installed manifest; it records repository, commit,
@@ -276,17 +280,66 @@ success receipt. A failure before an installed manifest is observable uses
 build identity.
 
 `launch.requested` MUST equal the normalized v1 `launch_after_install` value.
-If it is `true`, the provider MUST either report `launch.performed: true` with
-the nested lifecycle receipt or return an error; it MUST NOT silently omit the
-launch outcome. That nested receipt uses the lifecycle state union and `launch`
-transition in the next section, binds the installation-induced app-state change,
-and is copied into evidence. If `launch.requested` is `false`, `performed` MUST
-be `false`, the nested lifecycle receipt is absent, and installation MUST NOT
-change application state. A failed or provenance-mismatch install also records
-`launch.performed: false` and has no nested lifecycle receipt. This installation
-receipt does not substitute for an
-explicit `lifecycle` operation: only installation's declared launch flag may
-produce its nested `launch` receipt.
+If it is `true`, `launch.attempted` MUST be `true`; it MUST NOT silently omit
+the launch outcome. A successful launch sets `performed: true` and carries the
+nested applied lifecycle receipt shown above. If installation succeeds but the
+requested launch fails, the response MUST use `status:
+"installed_launch_failed"`, retain the complete `installed_build`, set
+`attempted: true` and `performed: false`, and return `lifecycle_failed` whose
+required lifecycle receipt is exactly the nested
+`install_receipt.launch.lifecycle_receipt`; the outer error MUST set
+`receipt_path: "install_receipt.launch.lifecycle_receipt"`. That nested receipt has
+`status: "failed"`, previous state, resulting or `"unknown"` state, and
+`retryability`; the top-level `lifecycle_receipt` remains absent. For example:
+
+```json
+{
+  "install_receipt": {
+    "status": "installed_launch_failed",
+    "requested_build": {
+      "repository": "owner/android-app",
+      "commit_sha": "<sha>",
+      "workflow_run_id": 123456,
+      "artifact_name": "android-apk",
+      "artifact_sha256": "sha256:<hex>"
+    },
+    "installed_build": {
+      "repository": "owner/android-app",
+      "commit_sha": "<sha>",
+      "workflow_run_id": 123456,
+      "artifact_name": "android-apk",
+      "artifact_sha256": "sha256:<hex>",
+      "package_name": "com.example.androidapp",
+      "manifest_sha256": "sha256:<hex>"
+    },
+    "launch": {
+      "requested": true,
+      "attempted": true,
+      "performed": false,
+      "lifecycle_receipt": {
+        "action": "launch",
+        "status": "failed",
+        "previous_app_state": "not_running",
+        "resulting_app_state": "unknown",
+        "retryability": "do_not_replay"
+      }
+    }
+  },
+  "error": {
+    "kind": "lifecycle_failed",
+    "retryability": "do_not_replay",
+    "receipt_path": "install_receipt.launch.lifecycle_receipt"
+  }
+}
+```
+
+If `launch.requested` is `false`, `attempted` and `performed` MUST be `false`,
+the nested lifecycle receipt is absent, and installation MUST NOT change
+application state. A failed or provenance-mismatch install also records
+`attempted: false`, `performed: false`, and no nested lifecycle receipt. This
+installation receipt does not substitute for an explicit `lifecycle` operation:
+only installation's declared launch flag may produce its nested `launch`
+receipt.
 
 ### Lifecycle app-state transitions
 
@@ -363,7 +416,10 @@ a dispatched `step` batch MUST carry completed, failed, and not-attempted
 outcomes; retrying the whole batch is never implied by a generic failure
 string. A `lifecycle_failed` error MUST carry the lifecycle receipt with its
 previous state, resulting or `unknown` state, and retryability; it never implies
-that launch, stop, or relaunch is safe to replay.
+that launch, stop, or relaunch is safe to replay. For an
+`installed_launch_failed` response, that required receipt is the exact nested
+`install_receipt.launch.lifecycle_receipt` and its error MUST set that exact
+`receipt_path`; a separate top-level receipt is prohibited.
 
 ### Provider-to-Codex projection
 
@@ -425,8 +481,9 @@ returned to the caller when its status is `failed`; it MUST NOT substitute an
 `action_batch`. An `install_build_from_run` record MUST carry an exact copy of
 the response's `install_receipt`, including the full requested and observed
 build tuples, package and manifest digest, declared launch value, performed
-state, and nested lifecycle receipt when launch occurs; it MUST NOT carry an
-`action_batch` or top-level `lifecycle_receipt`. `operation_kind` MUST exactly
+state, and nested lifecycle receipt when launch is attempted after a successful
+install; it MUST NOT carry an `action_batch` or top-level
+`lifecycle_receipt`. `operation_kind` MUST exactly
 equal both `request.operation.kind` and `response.operation_kind` for the
 request identified by `request_id`; a mismatch rejects the evidence bundle.
 An `observe` record carries none of these operation-specific receipts. This
