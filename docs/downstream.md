@@ -313,6 +313,17 @@ new `connection_manager/tool_catalog.rs` module. The refactor is a cleaner seam
 for separately tracked stale-server lifecycle work, but does not itself unload
 servers or add a native browser, Android, desktop, or computer-use provider.
 
+## Upstream step-scoped extension data
+
+Upstream commit `c44c4de7b4` adds one `ExtensionData` store to each sampling
+step and passes it to context, world-state, turn-input, and tool contributors.
+Compaction and initial-context reconstruction retain that captured store.
+Downstream adopts it as the canonical step-local extension seam: dynamic tools,
+image generation, memories, skills, goals, web search, realtime world state,
+and native computer-use adapters should compose through it rather than adding
+parallel state in hot session code. This is extension infrastructure, not a new
+native browser, Android, desktop, or computer-use provider.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -344,15 +355,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `cd759ef8514283109abc2e089c422189d798e0f7`
+  `3fe6502c415d9c56c4f20fe199be61d0ba818225`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
+  `c44c4de7b410993dacb2e88c7084c9c968bc963a`
 - `upstream/main`:
-  `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
+  `c44c4de7b410993dacb2e88c7084c9c968bc963a`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1951` downstream ahead
-- downstream-only non-merge commits: `1666` unique, `0` patch-equivalent
+  `0` upstream ahead, `1953` downstream ahead
+- downstream-only non-merge commits: `1667` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

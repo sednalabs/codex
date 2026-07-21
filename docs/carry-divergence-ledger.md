@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `cd759ef8514283109abc2e089c422189d798e0f7`
+- downstream integration code tree: `3fe6502c415d9c56c4f20fe199be61d0ba818225`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
-- `upstream/main`: `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
-- downstream branch vs `upstream/main`: `1951` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `c44c4de7b410993dacb2e88c7084c9c968bc963a`
+- `upstream/main`: `c44c4de7b410993dacb2e88c7084c9c968bc963a`
+- downstream branch vs `upstream/main`: `1953` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1666` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1667` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -514,6 +514,29 @@ docs-only refresh commit that records this snapshot.
   expected pre-promotion exit `4`; artifact `8494064503` reports no stale
   registry entries and only the already-covered integration-branch PID-test
   path missing from the older audited `origin/main`.
+
+### Step-Scoped Extension Contributor Data
+
+- Upstream commit `c44c4de7b4` gives each `StepContext` its own
+  `ExtensionData` store and passes it to context, world-state, turn-input, and
+  tool contributors. Initial-context reconstruction and local, remote, and
+  token-budget compaction retain the captured step store rather than creating
+  a parallel capability snapshot.
+- Downstream adopts this as the canonical per-sampling-step extension boundary.
+  Dynamic-tool, image-generation, memories, skills, goal, web-search, and
+  native-computer-use alignment must consume or extend this store rather than
+  adding another step-local registry in hot session code.
+- The two session conflicts preserve upstream's step store while retaining one
+  downstream helper for shared turn-context contribution assembly. Both full
+  initial context and steady-state updates pass the exact active store; the
+  test-only contributor keeps the local `ExtensionFuture` alias and accepts the
+  new parameter.
+- Signed merge `3fe6502c41` preserves `c44c4de7b4` as its second parent.
+  Hosted mirror run `29828505403` advanced `origin/upstream-main` to that exact
+  SHA in sync job `88627328251`. Audit job `88627431159` returned the expected
+  pre-promotion exit `4`; artifact `8494287133` reports no stale registry
+  entries and only the already-covered integration-branch PID-test path missing
+  from the older audited `origin/main`.
 
 ## Current Live Divergences
 
