@@ -168,11 +168,18 @@ atomic action: it MUST NOT be emulated as several independent taps or swipes.
   "action_batch": {
     "batch_id": "batch-01",
     "outcomes": [
-      { "action_id": "a1", "status": "applied", "effect_receipt_id": "effect-01" }
+      {
+        "action_id": "a1",
+        "status": "applied",
+        "effect_receipt_id": "effect-01"
+      }
     ]
   },
   "postcondition": { "status": "satisfied", "evidence_generation": "obs_42" },
-  "evidence": { "bundle_id": "evidence-01", "manifest_sha256": "sha256:<hex>" }
+  "evidence": {
+    "bundle_id": "evidence-01",
+    "manifest_sha256": "sha256:<hex>"
+  }
 }
 ```
 
@@ -196,16 +203,30 @@ the caller to obtain a fresh observation before making a visual claim.
     "kind": "partial_action",
     "retryability": "do_not_replay",
     "message": "a2 did not complete after a1 was applied",
-    "resolved_target": { "session_id": "session_01", "device_serial": "emulator-5554" },
+    "resolved_target": {
+      "session_id": "session_01",
+      "device_serial": "emulator-5554"
+    },
     "batch": {
       "batch_id": "batch-01",
       "outcomes": [
-        { "action_id": "a1", "status": "applied", "effect_receipt_id": "effect-01" },
-        { "action_id": "a2", "status": "failed", "reason": "selector_no_match" },
+        {
+          "action_id": "a1",
+          "status": "applied",
+          "effect_receipt_id": "effect-01"
+        },
+        {
+          "action_id": "a2",
+          "status": "failed",
+          "reason": "selector_no_match"
+        },
         { "action_id": "a3", "status": "not_attempted" }
       ]
     },
-    "post_failure_observation": { "generation": "obs_43", "input_image_present": true }
+    "post_failure_observation": {
+      "generation": "obs_43",
+      "input_image_present": true
+    }
   }
 }
 ```
