@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `6356435334e5115617147841b03071373391e788`
+- downstream integration code tree: `bf736ed0f822fdf0c65563ccd18e9f18f1fb068c`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
-- `upstream/main`: `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
-- downstream branch vs `upstream/main`: `1908` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `c9ef7eff005c3299a5a5f0004c34c6a3eedf2564`
+- `upstream/main`: `c9ef7eff005c3299a5a5f0004c34c6a3eedf2564`
+- downstream branch vs `upstream/main`: `1913` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1637` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1641` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -49,6 +49,19 @@ docs-only refresh commit that records this snapshot.
 - The generated app-server schemas are a shared sync seam. Future regeneration
   must retain this upstream field alongside downstream dynamic-tool and native
   computer-use protocol additions rather than selecting either parent schema.
+- Exact-head Bazel run `29789793659` exposed a pre-existing command-runner race:
+  a successful hook can emit stdout and exit without reading stdin, after which
+  the parent's write observes `BrokenPipe` and previously discarded that valid
+  output. Signed downstream commit `932cbceeb8` treats only `BrokenPipe` as a
+  benign closed-input signal, then preserves the child's actual output and exit
+  status; every other stdin write error retains the existing kill-and-report
+  path.
+- `hook_can_exit_successfully_without_reading_stdin` forces the closed-pipe path
+  with a 2 MiB input on every supported host. The original
+  `session_start_hooks_apply_additional_context_limits_individually` integration
+  test remains enabled under Wine and guards the user-visible spill behavior.
+  Drop this production-and-test carry together when upstream has equivalent
+  successful-early-exit handling and regression coverage.
 
 ### Mid-Turn Compaction Hook Ordering
 
@@ -226,6 +239,13 @@ docs-only refresh commit that records this snapshot.
   `88498704999` returned the expected pre-promotion exit `4`. Artifact
   `8478603020` has SHA-256
   `7eab307e0b280aca8b56b15cefce15e5f7b3af706b8af77c98d9c2ab0693b925`.
+- Upstream's launcher API added inherited file descriptors but missed the Wine
+  PTY regression call site. Signed downstream commit `932cbceeb8` passes the
+  same empty descriptor slice used by the superseded wrapper, restoring the
+  upstream Bazel target without changing runtime behavior. The same commit adds
+  the exact optional-argument comment required by the fork's stricter Windows
+  argument-comment lint. Drop each validation-only hunk independently when its
+  upstream equivalent lands.
 
 ### Shared Skill Model Ownership
 
@@ -274,6 +294,42 @@ docs-only refresh commit that records this snapshot.
   `f467c47a91d4e6d278892d2f80a7347af550d7c6b1afae0b0cbd7e3e8adae491`
   and was applied exactly in signed commit `b350254be3`. The temporary remote
   branch, worktree, and local branch were then removed.
+
+### Catalog Messages For Non-Request Approval Policies
+
+- Upstream commit `2be7d3bcd9` adds model-catalog approval messages for `never`
+  and `unless_trusted`, selects the variant matching the active policy, and
+  retains the built-in text when that catalog key is absent. An explicitly
+  empty value suppresses only the built-in approval section, matching existing
+  `on_request` semantics.
+- The model metadata and prompt changes merged without conflict. The
+  downstream Schemars 1.2 adapter remains the only local shape difference in
+  `openai_models.rs`; the new fields and their deserialization behavior are
+  otherwise upstream-exact. This changes model-visible instructions only, not
+  approval enforcement, sandbox policy, or escalation authorization.
+
+### Explicit Outbound Proxy Route Resolution
+
+- Upstream commit `c9ef7eff00` resolves system-proxy failure into an explicit
+  environment-proxy or direct route, carries `NO_PROXY` through HTTP and
+  WebSocket connections, uses cached decisions before platform lookup, and
+  provides an async resolver that serializes blocking Windows/macOS discovery
+  outside Tokio workers. The current production WebSocket connector still uses
+  the synchronous resolver, so this sync does not claim that live call path has
+  moved off Tokio workers yet.
+- The sole merge conflict was the proxy-cache digest renderer. Resolution takes
+  upstream's complete route design and keeps the existing sha2 0.11-compatible
+  explicit hexadecimal encoder. No proxy policy or credential-bearing value is
+  changed or exposed by that compatibility hunk. Drop the encoder only when the
+  downstream digest line again supports upstream's formatter or upstream adopts
+  an equivalent explicit encoder that passes the locked Cargo and Bazel graphs.
+- Hosted mirror run `29791336871` advanced `origin/upstream-main` to exact
+  `c9ef7eff00`; sync job `88513605376` passed and audit job `88513679966`
+  returned the expected pre-promotion exit `4`. Artifact `8480383914` has
+  GitHub SHA-256
+  `66c768664ada195eb2d39c23e2d3eb2e04ab34e8b01d6f61175b1f4392f08158`
+  and records exact mirror health. Signed two-parent merge `bf736ed0f8`
+  preserves `c9ef7eff00` as its second parent.
 
 ## Current Live Divergences
 

@@ -82,6 +82,12 @@ Wine-backed executor note:
   host-native encrypted request wire-shape assertion; Wine coverage for
   sub-agent execution belongs in runner-locality-specific lanes, not this
   serialization check.
+- `pinned_powershell_runs_under_wine_with_a_pty` compiles the upstream PTY API
+  with an explicit empty inherited-descriptor slice.
+- `hook_can_exit_successfully_without_reading_stdin` deterministically covers a
+  successful hook closing stdin early, while
+  `session_start_hooks_apply_additional_context_limits_individually` remains
+  enabled under Wine to guard the end-to-end spill result.
 
 Focused lane used for protocol/event-history seams:
 
@@ -110,6 +116,10 @@ shared seam:
 - `approval_denial_messages_are_bounded_for_model_context`
 - `completed_stop_hook_multiline_system_message_prefixes_first_line_only`
 - `verbose_transcript_preserves_hook_context_while_compact_collapses_it`
+- `catalog_non_on_request_approval_messages_are_sent_in_initial_permissions`
+- `catalog_approval_messages_select_reviewer_variant`
+- `missing_catalog_key_uses_legacy_approval_text`
+- `empty_catalog_non_on_request_approval_messages_suppress_legacy_approval_text`
 
 The downstream audio-history assertion uses the upstream copy-on-write
 `raw_items()` accessor; that compatibility assertion is covered by the common
@@ -133,6 +143,14 @@ exact-head hosted proof:
 - Final proof must include exact-head `rust-ci-full` and Bazel in addition to
   Frontier lanes, because the narrow skill-loader lane does not run the new
   `codex-skills` package tests or the conflicted plugin-manager test module.
+- Upstream explicit proxy-route coverage includes
+  `unavailable_system_route_resolves_environment_or_direct_explicitly`,
+  `unavailable_system_route_preserves_wss_http_proxy_fallback`,
+  `async_resolution_uses_cached_route_before_global_permit`,
+  `environment_proxy_route_honors_no_proxy_in_a_subprocess`, and the direct,
+  HTTP-proxy, and HTTPS-proxy secure WebSocket integration tests. The existing
+  `system_proxy_cache_key_preserves_url_specific_pac_decisions` regression also
+  guards the retained sha2 0.11 hexadecimal encoder.
 
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
