@@ -169,8 +169,7 @@ async fn workspace_roots_allow_file_and_command_writes() -> Result<()> {
     let (patch_output, patch_success) = request
         .custom_tool_call_output_content_and_success(PATCH_CALL_ID)
         .context("patch result should be present")?;
-    let patch_helper_loader_unsupported =
-        is_gnu_fs_helper_loader_failure(patch_output.as_deref(), patch_success);
+    let patch_helper_loader_unsupported = is_gnu_fs_helper_loader_failure(patch_output.as_deref());
     if patch_helper_loader_unsupported {
         eprintln!(
             "skipping apply_patch assertion: Bazel gnullvm helper re-entry returned 0xc0000142"
@@ -205,9 +204,8 @@ async fn workspace_roots_allow_file_and_command_writes() -> Result<()> {
     }
 }
 
-fn is_gnu_fs_helper_loader_failure(output: Option<&str>, success: Option<bool>) -> bool {
+fn is_gnu_fs_helper_loader_failure(output: Option<&str>) -> bool {
     cfg!(all(windows, target_env = "gnu"))
-        && success == Some(false)
         && output.is_some_and(|output| {
             output.contains("fs sandbox helper failed with status exit code: 0xc0000142")
         })

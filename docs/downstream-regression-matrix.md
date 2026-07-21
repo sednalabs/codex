@@ -490,8 +490,9 @@ Windows hosted harness note:
 - `file_system_local_fs_helper_allows_windows_workspace_root_write` takes that
   exact compatibility path only for the known gnullvm loader status; Windows
   MSVC must execute the positive write assertion before promotion.
-- `workspace_roots_allow_file_and_command_writes` still proves the independent
-  command write when apply-patch helper re-entry is unavailable, and
+- `workspace_roots_allow_file_and_command_writes` identifies that loader status
+  from its exact error output even when the custom-tool envelope has no boolean
+  success field, then still proves the independent command write.
   `error_output_preserves_source_chain` prevents future helper failures from
   being collapsed into a misleading top-level write denial.
 
