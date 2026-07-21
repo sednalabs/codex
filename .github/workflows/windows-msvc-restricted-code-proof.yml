@@ -1,0 +1,116 @@
+name: Windows MSVC Restricted Code SID proof
+
+on:
+  push:
+    branches:
+      - validation/windows-msvc-restricted-code-20260721-042078eba6
+
+permissions:
+  contents: read
+
+jobs:
+  restricted-code:
+    name: Restricted Code SID startup proof
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_CI_TEST_DEBUG: "0"
+      CARGO_PROFILE_CI_TEST_STRIP: symbols
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      RUST_BACKTRACE: "1"
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ env.TARGET }}
+
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ env.TARGET }}
+
+      - name: Build release-profile Codex executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked \
+            --target "${TARGET}" \
+            --release \
+            -p codex-cli \
+            --bin codex
+          codex_exe="${CARGO_TARGET_DIR}/${TARGET}/release/codex.exe"
+          test -f "${codex_exe}"
+          echo "CODEX_TEST_RELEASE_EXE=$(cygpath -w "${codex_exe}")" >> "${GITHUB_ENV}"
+
+      - name: Run all restricted-token startup probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $env:CARGO_BIN_EXE_codex = $env:CODEX_TEST_RELEASE_EXE
+          $failures = [System.Collections.Generic.List[string]]::new()
+
+          function Invoke-Probe {
+            param(
+              [string]$Name,
+              [string[]]$Arguments
+            )
+
+            Write-Host "::group::$Name"
+            & cargo @Arguments
+            $exitCode = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($exitCode -ne 0) {
+              $script:failures.Add("$Name (exit $exitCode)")
+            }
+          }
+
+          $targetArgs = @("--target", $env:TARGET, "--profile", "ci-test")
+          Invoke-Probe "restricted SID entry layout" (@(
+            "test", "--locked") + $targetArgs + @(
+              "-p", "codex-windows-sandbox",
+              "--lib", "token::tests::restricted_sids_include_restricted_code_and_exclude_everyone",
+              "--", "--exact", "--nocapture", "--test-threads=1"
+            ))
+          Invoke-Probe "local fs helper workspace write" (@(
+            "test", "--locked") + $targetArgs + @(
+              "-p", "codex-exec-server",
+              "--test", "file_system_windows",
+              "file_system_local_fs_helper_allows_windows_workspace_root_write",
+              "--", "--exact", "--nocapture"
+            ))
+          Invoke-Probe "remote fs helper read-only denied write" (@(
+            "test", "--locked") + $targetArgs + @(
+              "-p", "codex-exec-server",
+              "--test", "file_system_windows",
+              "file_system_remote_fs_helper_respects_windows_sandbox_write_policy",
+              "--", "--exact", "--nocapture"
+            ))
+
+          $sandboxTests = @(
+            "legacy_non_tty_cmd_emits_output",
+            "legacy_non_tty_powershell_emits_output",
+            "legacy_capture_powershell_emits_output",
+            "legacy_tty_powershell_emits_output_and_accepts_input"
+          )
+          foreach ($testName in $sandboxTests) {
+            Invoke-Probe $testName (@(
+              "test", "--locked") + $targetArgs + @(
+                "-p", "codex-windows-sandbox",
+                "--lib", "unified_exec::tests::$testName",
+                "--", "--exact", "--nocapture", "--test-threads=1"
+              ))
+          }
+
+          if ($failures.Count -ne 0) {
+            Write-Error "Failed probes: $($failures -join '; ')"
+            exit 1
+          }
