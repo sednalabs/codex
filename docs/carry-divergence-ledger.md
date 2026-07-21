@@ -264,6 +264,16 @@ docs-only refresh commit that records this snapshot.
   `65100c7f559bdb708290142ae7ff729b9f409e433841dbe660f5ef271b7bfdb1`;
   its embedded report records `mirror=upstream=fd3c1dc13d` and exact mirror
   health.
+- Hosted exact-head proof run `29788805449` passed at disposable workflow head
+  `bf26fbc18d` against source `c86d398de2`. Jobs `88505945020`,
+  `88505945036`, and `88505945060` respectively passed the remote-compaction,
+  shared-skill/plugin-auth, and formatting/generation fanout. Artifact
+  `8479620777` has archive SHA-256
+  `153794fd6d68a47b0a5fa7738fd21373b435e8909a25fc8a3019d841f1334fc6`;
+  its allowlisted two-file patch has SHA-256
+  `f467c47a91d4e6d278892d2f80a7347af550d7c6b1afae0b0cbd7e3e8adae491`
+  and was applied exactly in signed commit `b350254be3`. The temporary remote
+  branch, worktree, and local branch were then removed.
 
 ## Current Live Divergences
 
