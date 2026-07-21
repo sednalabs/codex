@@ -293,7 +293,7 @@ item owns that exact invariant. No historical item is superseded.
   lease ownership — **extend-owner**.
 - **Successor and sole invariant:** `default:w10347` ensures every
   request/response receipt resolves one identical `(environment, provider,
-  session, serial)` tuple.
+session, serial)` tuple.
 - **Natural assertion boundary:** Whole request/response target equality,
   including a refusal for ambiguous or stale targets.
 - **Rollout boundary:** Provider manifest plus Codex app-server/TUI transport.
