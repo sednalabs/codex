@@ -430,9 +430,25 @@ session, serial)` tuple.
 - **Rollout boundary:** Codex PR validation and backward-compatible native-tool
   rollout.
 
+### Exact-tree acceptance
+
+- **Canonical authority:** The promoted provider, Codex, and consumer revision
+  records, plus their hosted acceptance evidence.
+- **Existing owner and disposition:** `default:w4283` hosted acceptance,
+  `default:w4398` provider pin, and `default:w4422` Codex contract ownership
+  remain authoritative — **extend-owner**.
+- **Successor and sole invariant:** `default:w10357` adjudicates one exact
+  provider/Codex/consumer tree against its complete hosted evidence, without
+  defining an implementation field.
+- **Natural assertion boundary:** One complete acceptance record names immutable
+  revisions, hosted results, and the evidence manifest, or rejects a mixed tree
+  or missing receipt.
+- **Rollout boundary:** Promote only the exact integrated tree accepted by the
+  hosted evidence.
+
 ## Unassigned and overlap checks
 
-The matrix has eleven required behaviors and eleven assigned rows. Every row
+The matrix has twelve required behaviors and twelve assigned rows. Every row
 has one successor, repository authority, existing-owner disposition, natural
 assertion boundary, and rollout boundary; therefore the unassigned-requirement
 count is **zero**.
@@ -495,6 +511,6 @@ scoped evidence and not a substitute.
 ## Acceptance of this contract freeze
 
 This freeze is complete when the matrix remains the only v1 owner map, all
-eleven successor boundaries retain their unique invariant, and changes follow
+twelve successor boundaries retain their unique invariant, and changes follow
 the sequence above. It deliberately leaves implementation and acceptance proof
 to the assigned successors.
