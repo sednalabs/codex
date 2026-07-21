@@ -195,15 +195,20 @@ Readiness states are exactly `target_unresolved`, `provider_unavailable`,
 `device_booting`, `device_ready`, `app_launching`, `app_ready`,
 `recovery_required`, or `stale`. A state other than `app_ready` prevents a
 normal mutating action. An explicit lifecycle operation may proceed only when
-the resolved target supports its named state transition; its response MUST
-include `lifecycle_receipt` and a fresh `readiness` result. Hosted capability
-recovery is not a v1 operation kind: it returns `recovery_required` and remains
-owned by `w4294` and `w4337`.
+the resolved target supports its named state transition. Once a lifecycle
+operation reaches device or app execution, every response, including an error
+response, MUST include `lifecycle_receipt`; a successful lifecycle response
+also includes a fresh `readiness` result. Hosted capability recovery is not a
+v1 operation kind: it returns `recovery_required` and remains owned by `w4294`
+and `w4337`.
 
-A successful lifecycle response includes
-`"lifecycle_receipt": { "action": "relaunch", "previous_app_state":
-"running", "resulting_app_state": "running" }` alongside its fresh
-`readiness` result. `lifecycle_receipt` is absent for `observe`, `step`, and
+`lifecycle_receipt` contains `action`, `status`, `previous_app_state`, and
+`resulting_app_state`. Its success shape is
+`{ "action": "relaunch", "status": "applied", "previous_app_state":
+"running", "resulting_app_state": "running" }`. A failed lifecycle attempt
+uses `status: "failed"`, gives the resulting state or `"unknown"`, and includes
+`retryability`; it MUST NOT imply that the caller can replay the operation.
+`lifecycle_receipt` is absent for `observe`, `step`, and
 `install_build_from_run` responses.
 
 A postcondition result is `satisfied`, `not_satisfied`, `not_evaluated`, or
@@ -257,10 +262,13 @@ the caller to obtain a fresh observation before making a visual claim.
 The error kinds are `target_missing`, `target_ambiguous`, `target_mismatch`,
 `build_provenance_mismatch`, `not_ready`, `selector_no_match`,
 `selector_ambiguous`, `stale_observation`, `postcondition_unmet`,
-`partial_action`, `capability_unsupported`, `provider_unavailable`, and
-`recovery_required`. An error that follows any mutating attempt MUST carry
-completed, failed, and not-attempted outcomes; retrying the whole batch is
-never implied by a generic failure string.
+`partial_action`, `lifecycle_failed`, `capability_unsupported`,
+`provider_unavailable`, and `recovery_required`. A `partial_action` error after
+a dispatched `step` batch MUST carry completed, failed, and not-attempted
+outcomes; retrying the whole batch is never implied by a generic failure
+string. A `lifecycle_failed` error MUST carry the lifecycle receipt with its
+previous state, resulting or `unknown` state, and retryability; it never implies
+that launch, stop, or relaunch is safe to replay.
 
 ### Provider-to-Codex projection
 
