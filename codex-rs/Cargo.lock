@@ -2964,7 +2964,7 @@ dependencies = [
  "codex-utils-plugins",
  "dirs",
  "flate2",
- "http 1.4.0",
+ "http 1.4.2",
  "libc",
  "pretty_assertions",
  "regex",
