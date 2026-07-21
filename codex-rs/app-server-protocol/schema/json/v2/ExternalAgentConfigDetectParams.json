@@ -18,7 +18,7 @@
     "maxSessionAgeDays": {
       "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
@@ -27,7 +27,7 @@
     "maxSessions": {
       "description": "Maximum number of sessions to detect. Missing values use the default limit.",
       "format": "uint32",
-      "minimum": 0.0,
+      "minimum": 0,
       "type": [
         "integer",
         "null"
