@@ -284,7 +284,9 @@ async fn managed_network_selects_elevated_windows_spawn() {
         .expect("absolute cwd");
     let cwd_uri = PathUri::from_abs_path(&cwd);
     let self_exe = std::env::current_exe().expect("current executable");
-    let runtime_paths = ExecServerRuntimePaths::new(self_exe, None).expect("runtime paths");
+    let runtime_paths =
+        ExecServerRuntimePaths::new(self_exe, /*codex_linux_sandbox_exe*/ None)
+            .expect("runtime paths");
     let permissions = PermissionProfile::read_only();
     let mut sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
         permissions.clone(),

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::fs;
 
 use codex_protocol::protocol::HookEventName;
@@ -11,6 +12,43 @@ use super::CommandShell;
 use super::ConfiguredHandler;
 use super::run_command;
 
+#[tokio::test]
+async fn hook_can_exit_successfully_without_reading_stdin() {
+    let temp = tempdir().expect("create temp dir");
+    let source_path = AbsolutePathBuf::try_from(temp.path().join("hook.json"))
+        .expect("absolute hook source path");
+    let handler = ConfiguredHandler {
+        event_name: HookEventName::SessionStart,
+        matcher: None,
+        command: "echo hook-ran".to_string(),
+        timeout_sec: 10,
+        status_message: None,
+        additional_context_limit: Default::default(),
+        source_path,
+        source: HookSource::User,
+        display_order: 0,
+        env: HashMap::new(),
+    };
+    let shell = CommandShell {
+        program: String::new(),
+        args: Vec::new(),
+    };
+
+    let result = run_command(
+        &shell,
+        &handler,
+        /*configured_order*/ 0,
+        &"x".repeat(2 * 1024 * 1024),
+        temp.path(),
+    )
+    .await;
+
+    assert_eq!(result.exit_code, Some(0), "stderr: {}", result.stderr);
+    assert_eq!(result.stdout.trim(), "hook-ran");
+    assert!(result.error.is_none());
+}
+
+#[cfg(windows)]
 #[tokio::test]
 async fn cmd_shell_runs_quoted_hook_command_path() {
     let temp = tempdir().expect("create temp dir");
