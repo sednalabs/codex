@@ -500,6 +500,19 @@ cut-over `codex-tui` app tests. Keep the preset green with the parser test and
 the exact `codex-tui` render/app checks rather than carrying compile coverage
 for a removed crate path.
 
+### Step-Scoped Extension Contributors
+
+- Upstream `StepContext::extension_data` is the single per-sampling-step
+  capability store for context, world-state, turn-input, and tool contributors.
+- Initial-context rebuilds and local, remote, and token-budget compaction must
+  preserve the captured store; a new store during compaction would break
+  request-stable extension capability.
+- Extension API registry tests plus core session, compaction, memories, skills,
+  goal, web-search, and image-generation tests are the hosted guardrail set.
+- Downstream dynamic-tool, image-detail, realtime world-state, and native
+  computer-use carry must compose through this upstream boundary rather than a
+  parallel step-local registry.
+
 ### Complete MCP Tool Catalogue Collection And Refresh
 
 - Guardrails: `core-test-progressive` and GitHub `blocking-ci`.
