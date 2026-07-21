@@ -1,0 +1,67 @@
+name: Generated lockfile patch
+
+on:
+  push:
+    branches:
+      - validation/lock-generation-*
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Prepare Bazel and Cargo tooling
+        uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Refresh generated lockfiles
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo metadata \
+            --manifest-path codex-rs/Cargo.toml \
+            --format-version 1 \
+            >/dev/null
+          just bazel-lock-update
+      - name: Verify and package generated output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          expected=(
+            MODULE.bazel.lock
+            codex-rs/Cargo.lock
+          )
+          if ! diff -u \
+            <(printf '%s\n' "${expected[@]}") \
+            <(printf '%s\n' "${changed[@]}"); then
+            echo "Lock generation changed an unexpected path or omitted an expected lockfile" >&2
+            exit 1
+          fi
+
+          git diff --check
+          printf '%s\n' "${changed[@]}" > generated-files.txt
+          git diff --binary -- "${changed[@]}" > generated-locks.patch
+          sha256sum generated-locks.patch > generated-locks.patch.sha256
+          {
+            echo "source_commit=$(git rev-parse HEAD)"
+            echo "workflow_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > generation-receipt.txt
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: generated-locks-patch
+          path: |
+            generated-locks.patch
+            generated-locks.patch.sha256
+            generated-files.txt
+            generation-receipt.txt
+          if-no-files-found: error
+          retention-days: 1
