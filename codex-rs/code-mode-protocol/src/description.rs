@@ -261,10 +261,14 @@ pub fn build_exec_tool_description(
     enabled_tools: &[ToolDefinition],
     deferred_tools: &[ToolDefinition],
     namespace_descriptions: &BTreeMap<String, ToolNamespaceDescription>,
+    default_exec_yield_time_ms: u64,
     code_mode_only: bool,
 ) -> String {
     let mut sections = Vec::new();
-    sections.push(EXEC_DESCRIPTION_TEMPLATE.to_string());
+    sections.push(EXEC_DESCRIPTION_TEMPLATE.replace(
+        "Defaults to 10000 ms.",
+        &format!("Defaults to {default_exec_yield_time_ms} ms."),
+    ));
     if !deferred_tools.is_empty() {
         sections.push(DEFERRED_NESTED_TOOLS_GUIDANCE.to_string());
     }
@@ -1085,6 +1089,7 @@ mod tests {
             }],
             &[],
             &BTreeMap::new(),
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
         );
         assert!(description.contains(
@@ -1096,8 +1101,13 @@ bar"
 
     #[test]
     fn exec_description_mentions_timeout_helpers() {
-        let description =
-            build_exec_tool_description(&[], &[], &BTreeMap::new(), /*code_mode_only*/ false);
+        let description = build_exec_tool_description(
+            &[],
+            &[],
+            &BTreeMap::new(),
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
+            /*code_mode_only*/ false,
+        );
         assert!(description.contains("`audio(audioUrlOrItem:"));
         assert!(description.contains("`setTimeout(callback: () => void, delayMs?: number)`"));
         assert!(description.contains("`clearTimeout(timeoutId?: number)`"));
@@ -1153,6 +1163,7 @@ bar"
             ],
             &[],
             &namespace_descriptions,
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
         );
         assert_eq!(description.matches("## mcp__sample").count(), 1);
@@ -1195,6 +1206,7 @@ bar"
             }],
             &[],
             &namespace_descriptions,
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
         );
 
@@ -1302,6 +1314,7 @@ bar"
             ],
             &[],
             &BTreeMap::new(),
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
         );
 
@@ -1339,6 +1352,7 @@ bar"
             &[],
             &[deferred_tool],
             &BTreeMap::new(),
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
         );
 
@@ -1362,6 +1376,7 @@ bar"
                 output_schema: None,
             }],
             &BTreeMap::new(),
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ false,
         );
 

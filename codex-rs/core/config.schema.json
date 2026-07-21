@@ -539,6 +539,9 @@
             "code_mode": {
               "$ref": "#/definitions/FeatureToml"
             },
+            "code_mode_buffered_exec": {
+              "type": "boolean"
+            },
             "code_mode_host": {
               "type": "boolean"
             },
@@ -6291,6 +6294,9 @@
         },
         "code_mode": {
           "$ref": "#/definitions/FeatureToml"
+        },
+        "code_mode_buffered_exec": {
+          "type": "boolean"
         },
         "code_mode_host": {
           "type": "boolean"
