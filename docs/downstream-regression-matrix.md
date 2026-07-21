@@ -507,6 +507,9 @@ for a removed crate path.
 - Initial-context rebuilds and local, remote, and token-budget compaction must
   preserve the captured store; a new store during compaction would break
   request-stable extension capability.
+- Persisted compacted items must be constructed only after missing live-history
+  response IDs are assigned, so rollout replacement history remains identical
+  to the history installed in the session.
 - Extension API registry tests plus core session, compaction, memories, skills,
   goal, web-search, and image-generation tests are the hosted guardrail set.
 - Downstream dynamic-tool, image-detail, realtime world-state, and native

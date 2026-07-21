@@ -11,10 +11,10 @@ Last reviewed: `2026-07-21`.
 
 Review baseline:
 
-- `upstream/main`: `c44c4de7b410993dacb2e88c7084c9c968bc963a`
+- `upstream/main`: `f69f88f8116f541daddada3a056de5772a891f15`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `c44c4de7b410993dacb2e88c7084c9c968bc963a`
-- downstream integration code tree: `3fe6502c415d9c56c4f20fe199be61d0ba818225`
+  `f69f88f8116f541daddada3a056de5772a891f15`
+- downstream integration code tree: `7e09b99f60209c119e46013338c33b9506e39c73`
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
@@ -26,9 +26,10 @@ session-detection limits, and provider attribution through `a30aee8d90`, do not
 alter the native-tool conclusions below. The later alpha-hotfix conversion,
 release-distribution mirror and metadata, proxy-aware plugin transport,
 optional installer source, codespell configuration, Wine PTY test changes,
-the behavior-preserving MCP connection-manager module split, and step-scoped
-extension contributor data through `c44c4de7b4` are likewise packaging,
-transport, validation, or internal extension-infrastructure work. In
+the behavior-preserving MCP connection-manager module split, step-scoped
+extension contributor data, and centralized compacted-history construction
+through `f69f88f811` are likewise packaging, transport, validation, or internal
+extension-infrastructure work. In
 particular, this tranche adds no Codex-owned browser, Android, or desktop
 computer-use capability upstream and does not change downstream sub-agent
 model or reasoning-effort selection.

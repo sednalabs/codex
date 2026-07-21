@@ -324,6 +324,16 @@ and native computer-use adapters should compose through it rather than adding
 parallel state in hot session code. This is extension infrastructure, not a new
 native browser, Android, desktop, or computer-use provider.
 
+## Upstream compacted rollout item construction
+
+Upstream commit `f69f88f811` centralizes persisted `CompactedItem`
+construction in `Session::replace_compacted_history`, after assigning missing
+response-item IDs. Compaction callers now pass only message and window
+metadata, ensuring the live and persisted replacement histories use the same
+items. Downstream adopts this boundary without a carry-specific patch;
+capacity retry, realtime world state, hooks, dynamic media, compaction
+metadata, and step-scoped extension data remain composed around it.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -355,15 +365,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `3fe6502c415d9c56c4f20fe199be61d0ba818225`
+  `7e09b99f60209c119e46013338c33b9506e39c73`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `c44c4de7b410993dacb2e88c7084c9c968bc963a`
+  `f69f88f8116f541daddada3a056de5772a891f15`
 - `upstream/main`:
-  `c44c4de7b410993dacb2e88c7084c9c968bc963a`
+  `f69f88f8116f541daddada3a056de5772a891f15`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1953` downstream ahead
-- downstream-only non-merge commits: `1667` unique, `0` patch-equivalent
+  `0` upstream ahead, `1956` downstream ahead
+- downstream-only non-merge commits: `1669` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
