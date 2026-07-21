@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `e4d86fd279d6dde086c91d5d541ddd51e40c0034`
+- downstream integration code tree: `b8579e9d39253306e64ca59bb82e0b153ae54b42`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `c0cd337766ff27a75623c5baba199389f94f2ab3`
-- `upstream/main`: `c0cd337766ff27a75623c5baba199389f94f2ab3`
-- downstream branch vs `upstream/main`: `1915` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
+- `upstream/main`: `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
+- downstream branch vs `upstream/main`: `1922` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1642` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1646` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -370,6 +370,91 @@ docs-only refresh commit that records this snapshot.
   and records exact mirror health. Signed two-parent merge `e4d86fd279` has
   `c0cd337766` as its second parent.
 
+### Buffered Code-Mode Exec Yields
+
+- Upstream commit `99efeef650` adds the disabled-by-default experimental
+  `code_mode_buffered_exec` feature. When enabled, a nested code-mode `exec`
+  call that omits `yield_time_ms` uses 30 seconds instead of 10 seconds; an
+  explicit caller value remains authoritative.
+- The effective default is included in the model-visible code-mode declaration.
+  Merge resolution passes the upstream feature set into `CodeModeService` while
+  retaining downstream usage logging, audio, generated-image, native-tool, and
+  `ALL_TOOLS` description plumbing.
+- `code_mode_buffered_exec_updates_exec_description` is the upstream guardrail.
+  Keep the feature disabled until hosted runtime coverage also proves the
+  implicit default and explicit-value override paths.
+
+### Route-Aware HTTP Client Pool
+
+- Upstream commit `9078e32371` exports `RouteAwareClientPool`, resolves each
+  exact request URL before sending, reuses clients by resolved route, and bounds
+  the cache at 16 routes. `RespectSystemProxy` disables transport redirects so a
+  redirected URL cannot silently reuse the original route.
+- The pool retains custom CA handling, shared Cloudflare cookies, request
+  logging controls, and tracing, but has no production consumer at this
+  boundary. It is upstream-owned transport infrastructure, not new downstream
+  carry. A later bounded harvest may move compatible downstream HTTP consumers
+  behind it; this sync does not broaden into that migration.
+- Guardrails are `request_builder_debug_redacts_url_secrets`,
+  `forwards_exact_urls_and_reuses_clients_by_resolved_route`,
+  `reqwest_default_route_preserves_transport_redirects`, and
+  `bounds_cached_routes_and_rebuilds_an_evicted_route`.
+- Hosted mirror run `29796559999` advanced `origin/upstream-main` to exact
+  `9078e32371`; sync job `88528977294` passed and audit job `88529041993`
+  returned the expected pre-promotion exit `4`. Artifact `8482198577` has
+  GitHub SHA-256
+  `6df324ab5247682493977483be5acb08762da8f528280ef14d894feaba486040`.
+  Signed two-parent merge `00953dde39` preserves `9078e32371` as its second
+  parent.
+
+### External Session Limits And Import Attribution
+
+- Upstream commit `3bc49e1721` adds optional `maxSessionAgeDays` and
+  `maxSessions` detection inputs. Omission retains the 30-day and 50-session
+  defaults; the selected limits are threaded through home-scoped CLA and CUR
+  session discovery without replacing downstream repository containment or
+  imported-session ledger carry.
+- Upstream commit `a30aee8d90` adds optional `providerId` attribution to import
+  completion and failure analytics independently of `migrationSource`; the TUI
+  identifies its selected migration source as the provider.
+- The current upstream tests retain default-limit behavior and prove provider
+  attribution across completion, failure, reducer, and serialization paths.
+  Custom, zero, and maximum-limit coverage and an ingress bound for arbitrary
+  provider IDs remain harvest candidates rather than hidden sync-time carry.
+- Hosted mirror run `29798068332` advanced `origin/upstream-main` to exact
+  `a30aee8d90`; sync job `88533404997` passed and audit job `88533479849`
+  returned pre-promotion exit `4` because current `origin/main` predates the
+  integration registry update for the daemon PID test carry. Artifact
+  `8482730398` has GitHub SHA-256
+  `fc1118a981f67fa7b5fbf6cc5e32901661c10794890fa886dd3b099cbea77882`.
+  Signed two-parent merge `8f866250fa` preserves `a30aee8d90` as its second
+  parent.
+
+### Alpha Hotfix Release Versions
+
+- Upstream commit `9970cd706f` centralizes Python-to-Codex release-version
+  conversion and supports alpha hotfix versions: Python `aN.postM` maps to a
+  Codex `-alpha.N.M` tag. Rust, npm, Python-runtime, Windows, and zsh release
+  workflows now consume that shared conversion, and both public installers
+  accept the resulting tag shape.
+- The only merge conflicts were in `scripts/install/install.sh` and
+  `scripts/install/install.ps1`. Both retain the downstream general SemVer
+  validator because it already accepts `-alpha.N.M` and also preserves Sedna's
+  `-sedna.N` prerelease suffix and optional build metadata. Every other file,
+  workflow, conversion rule, and test from `9970cd706f` is upstream-exact.
+- Guardrails are `test_alpha_hotfix_release_is_valid`,
+  `test_runtime_setup_reads_independent_runtime_pin_and_release_tags`,
+  `test_normalize_codex_version_accepts_release_tags_and_pep440_versions`,
+  `test_release_version_conversions_map_python_versions_to_codex_tags`, and
+  `test_release_version_cli_writes_python_runtime_outputs`.
+- Hosted mirror run `29802575358` advanced `origin/upstream-main` to exact
+  `9970cd706f`; sync job `88546363775` passed and audit job `88546438886`
+  returned the expected pre-promotion exit `4`. Artifact `8484273086` has
+  GitHub SHA-256
+  `9cd08b7ef8d2ff85a6daf0045447b92776144369986b67e0a4beea1c86e02b6e`.
+  Signed two-parent merge `b8579e9d39` preserves `9970cd706f` as its second
+  parent.
+
 ## Current Live Divergences
 
 ### Fork Workflow And Validation Policy
@@ -555,6 +640,10 @@ docs-only refresh commit that records this snapshot.
   so existing launch and runtime dependencies remain readable. This preserves
   the pre-existing backend behavior; it does not make capability-SID deny ACEs
   authoritative for standalone `DELETE` or `FILE_DELETE_CHILD` checks.
+- Because Everyone is absent from the restricting SID set, the matching
+  root-capability allow ACE is mandatory for every promised workspace write.
+  Signed downstream commit `0b66edecaf` makes ACL preparation fail closed with
+  path context instead of launching a child after silently losing that grant.
 - Hosted comparison run `29628256459` proved the remaining limitation:
   `WRITE_RESTRICTED` started successfully but deleted both normalized hostile
   targets, while full restriction without Everyone could not start the process.
@@ -578,7 +667,15 @@ docs-only refresh commit that records this snapshot.
   `windows_restricted_token_supports_full_read_split_write_read_carveouts`, and
   `legacy_write_restricted_deletion_limitation_is_explicit`, plus
   `restricted_sids_exclude_everyone` and
-  `default_dacl_keeps_everyone_for_ipc_compatibility`.
+  `default_dacl_keeps_everyone_for_ipc_compatibility`. The direct helper
+  boundary is `file_system_local_fs_helper_allows_windows_workspace_root_write`;
+  it performs the positive write assertion on release-shaped targets and emits
+  an exact diagnostic instead of misreporting Bazel gnullvm status
+  `0xc0000142` as an ACL denial. Hosted Windows MSVC proof remains mandatory.
+- `workspace_roots_allow_file_and_command_writes` independently retains the
+  successful command-write assertion when gnullvm cannot re-enter the
+  filesystem helper, while `error_output_preserves_source_chain` ensures a real
+  helper failure reaches the caller with its full source chain.
 - The deletion characterization uses PowerShell 7, which adjacent
   restricted-token tests prove can initialize under the compatible token.
   Bazel's gnullvm test executable can still fail during helper re-entry with
@@ -590,9 +687,12 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/sandboxing/src/policy_transforms.rs`
   - `codex-rs/sandboxing/src/policy_transforms_tests.rs`
   - `codex-rs/sandboxing/src/windows.rs`
+  - `codex-rs/apply-patch/src/lib.rs`
   - `codex-rs/core/src/exec_tests.rs`
+  - `codex-rs/core/tests/suite/workspace_roots.rs`
   - `codex-rs/windows-sandbox-rs/src/token.rs`
   - `codex-rs/windows-sandbox-rs/src/token_tests.rs`
+  - `codex-rs/windows-sandbox-rs/src/spawn_prep.rs`
   - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`
   - `codex-rs/exec-server/tests/file_system_windows.rs`
 

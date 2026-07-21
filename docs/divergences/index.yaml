@@ -1751,9 +1751,13 @@
         "codex-rs/sandboxing/src/policy_transforms.rs",
         "codex-rs/sandboxing/src/policy_transforms_tests.rs",
         "codex-rs/sandboxing/src/windows.rs",
+        "codex-rs/apply-patch/src/lib.rs",
         "codex-rs/core/src/exec_tests.rs",
+        "codex-rs/core/tests/suite/workspace_roots.rs",
         "codex-rs/windows-sandbox-rs/src/token.rs",
         "codex-rs/windows-sandbox-rs/src/token_tests.rs",
+        "codex-rs/windows-sandbox-rs/src/spawn_prep.rs",
+        "codex-rs/exec-server/tests/file_system_windows.rs",
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs"
       ],
       "required_markers": {
@@ -1768,6 +1772,14 @@
         "codex-rs/core/src/exec_tests.rs": [
           "windows_restricted_token_supports_full_read_split_write_read_carveouts"
         ],
+        "codex-rs/apply-patch/src/lib.rs": [
+          "format_error_chain(&error)",
+          "error_output_preserves_source_chain"
+        ],
+        "codex-rs/core/tests/suite/workspace_roots.rs": [
+          "workspace_roots_allow_file_and_command_writes",
+          "is_gnu_fs_helper_loader_failure"
+        ],
         "codex-rs/windows-sandbox-rs/src/token.rs": [
           "build_restricted_sid_entries",
           "build_default_dacl_sids"
@@ -1776,11 +1788,17 @@
           "restricted_sids_exclude_everyone",
           "default_dacl_keeps_everyone_for_ipc_compatibility"
         ],
+        "codex-rs/windows-sandbox-rs/src/spawn_prep.rs": [
+          "apply write-root capability ACE to"
+        ],
+        "codex-rs/exec-server/tests/file_system_windows.rs": [
+          "file_system_local_fs_helper_allows_windows_workspace_root_write"
+        ],
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs": [
           "legacy_write_restricted_deletion_limitation_is_explicit"
         ]
       },
-      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible legacy token excludes Everyone from the restricting SID set, retains it on the default DACL for IPC, and uses WRITE_RESTRICTED for launch compatibility. Standalone DELETE and FILE_DELETE_CHILD checks remain an explicit legacy-backend limitation until bounded capability-SID read access makes full restriction safe. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
+      "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible legacy token excludes Everyone from the restricting SID set, retains it on the default DACL for IPC, and uses WRITE_RESTRICTED for launch compatibility. Because Everyone is not a restricting SID, each promised workspace write depends on its root-capability allow ACE; ACL preparation therefore fails closed instead of launching after a lost grant. Apply-patch preserves the filesystem-helper source chain, and the hosted tests distinguish the exact Bazel gnullvm loader incompatibility from ACL denial while requiring positive Windows MSVC proof. Standalone DELETE and FILE_DELETE_CHILD checks remain an explicit legacy-backend limitation until bounded capability-SID read access makes full restriction safe. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1794,16 +1812,20 @@
         "windows_restricted_token_supports_full_read_split_write_read_carveouts",
         "restricted_sids_exclude_everyone",
         "default_dacl_keeps_everyone_for_ipc_compatibility",
+        "file_system_local_fs_helper_allows_windows_workspace_root_write",
+        "workspace_roots_allow_file_and_command_writes",
+        "error_output_preserves_source_chain",
         "legacy_write_restricted_deletion_limitation_is_explicit"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-21 sync adopts upstream commit bd92b056dd and preserves its explicit-versus-inherited ACE distinction so an inherited FILE_DELETE_CHILD grant cannot trigger a non-convergent SET_ACCESS refresh. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. Hosted full-restriction experiments exposed missing launch/runtime read capabilities and an Everyone-write bypass, so the compatible WRITE_RESTRICTED shape is retained and its deletion limitation is characterized rather than misreported as containment. The executable characterization uses PowerShell 7. Exact gnullvm test-binary status 0xc0000142 proves wrapper traversal only; MSVC and other release-shaped targets retain the read and denied-write assertions. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
+      "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-21 sync adopts upstream commit bd92b056dd and preserves its explicit-versus-inherited ACE distinction so an inherited FILE_DELETE_CHILD grant cannot trigger a non-convergent SET_ACCESS refresh. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. Hosted full-restriction experiments exposed missing launch/runtime read capabilities and an Everyone-write bypass, so the compatible WRITE_RESTRICTED shape is retained and its deletion limitation is characterized rather than misreported as containment. Signed commit 0b66edecaf makes the mandatory write-root capability grant fail closed and adds a direct local-filesystem helper regression. The executable characterization uses PowerShell 7. Exact gnullvm test-binary status 0xc0000142 proves wrapper traversal only; MSVC and other release-shaped targets retain the read and denied-write assertions. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "windows-sandbox-policy-adapter",
       "hotspot_files": [
         "codex-rs/protocol/src/permissions.rs",
         "codex-rs/sandboxing/src/windows.rs",
-        "codex-rs/windows-sandbox-rs/src/token.rs"
+        "codex-rs/windows-sandbox-rs/src/token.rs",
+        "codex-rs/windows-sandbox-rs/src/spawn_prep.rs"
       ],
       "extraction_target": "upstream protected-metadata and special-path boundary equivalence"
     },
@@ -2164,7 +2186,7 @@
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
-      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, and a TypeScript SDK manifest that remains paired with the downstream dependency lockfile.",
+      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2174,6 +2196,11 @@
       "tests": [
         "bash -n scripts/install/install.sh",
         "test_custom_repository_and_tag_prefix_drive_latest_urls",
+        "test_alpha_hotfix_release_is_valid",
+        "test_runtime_setup_reads_independent_runtime_pin_and_release_tags",
+        "test_normalize_codex_version_accepts_release_tags_and_pep440_versions",
+        "test_release_version_conversions_map_python_versions_to_codex_tags",
+        "test_release_version_cli_writes_python_runtime_outputs",
         "verify_bazel_clippy_lints.py",
         "verify_cargo_workspace_manifests.py",
         "py_compile of stage_npm_packages.py and policy verifier scripts",
