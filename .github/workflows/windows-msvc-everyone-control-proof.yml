@@ -1,0 +1,110 @@
+name: Windows MSVC Everyone diagnostic control
+
+on:
+  push:
+    branches:
+      - validation/windows-msvc-everyone-control-20260721-042078eba6
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic-control:
+    name: Non-promotable Everyone restricting-SID control
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_BACKTRACE: "1"
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ env.TARGET }}
+
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ env.TARGET }}
+
+      - name: Build release-profile Codex executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked \
+            --target "${TARGET}" \
+            --release \
+            -p codex-cli \
+            --bin codex
+          codex_exe="${CARGO_TARGET_DIR}/${TARGET}/release/codex.exe"
+          test -f "${codex_exe}"
+          echo "CODEX_TEST_RELEASE_EXE=$(cygpath -w "${codex_exe}")" >> "${GITHUB_ENV}"
+
+      - name: Run and aggregate diagnostic probes
+        shell: bash
+        run: |
+          set -uo pipefail
+          failures=()
+
+          run_probe() {
+            local name="$1"
+            shift
+            echo "::group::${name}"
+            "$@"
+            local status=$?
+            echo "::endgroup::"
+            if (( status != 0 )); then
+              failures+=("${name} (exit ${status})")
+            fi
+          }
+
+          export CARGO_BIN_EXE_codex="${CODEX_TEST_RELEASE_EXE}"
+
+          run_probe "direct local filesystem helper workspace write" \
+            cargo test --locked \
+              --target "${TARGET}" \
+              --release \
+              -p codex-exec-server \
+              --test file_system_windows \
+              file_system_local_fs_helper_allows_windows_workspace_root_write \
+              -- --exact --nocapture
+
+          run_probe "remote read-only filesystem helper denied write" \
+            cargo test --locked \
+              --target "${TARGET}" \
+              --release \
+              -p codex-exec-server \
+              --test file_system_windows \
+              file_system_remote_fs_helper_respects_windows_sandbox_write_policy \
+              -- --exact --nocapture
+
+          for test_name in \
+            legacy_non_tty_cmd_emits_output \
+            legacy_non_tty_powershell_emits_output \
+            legacy_capture_powershell_emits_output \
+            legacy_tty_powershell_emits_output_and_accepts_input
+          do
+            run_probe "${test_name}" \
+              cargo test --locked \
+                --target "${TARGET}" \
+                --release \
+                -p codex-windows-sandbox \
+                "unified_exec::tests::${test_name}" \
+                -- --exact --nocapture --test-threads=1
+          done
+
+          if (( ${#failures[@]} != 0 )); then
+            printf 'Diagnostic control failures:\n'
+            printf '  - %s\n' "${failures[@]}"
+            exit 1
+          fi
+
+          echo "All diagnostic control probes passed. This control remains non-promotable."
