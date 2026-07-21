@@ -205,14 +205,22 @@ Every v1 response, including a compatibility or error response, MUST carry
 
 Readiness states are exactly `target_unresolved`, `provider_unavailable`,
 `device_booting`, `device_ready`, `app_launching`, `app_ready`,
-`recovery_required`, or `stale`. A state other than `app_ready` prevents a
-normal mutating action. An explicit lifecycle operation may proceed only when
-the resolved target supports its named state transition. Once a lifecycle
-operation reaches device or app execution, every response, including an error
-response, MUST include `lifecycle_receipt`; a successful lifecycle response
-also includes a fresh `readiness` result. Hosted capability recovery is not a
-v1 operation kind: it returns `recovery_required` and remains owned by `w4294`
-and `w4337`.
+`recovery_required`, or `stale`. The typed state applies operation-specific
+preconditions:
+
+| Operation                | Required precondition                                                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `step`                   | `app_ready`                                                                                                                 |
+| `install_build_from_run` | A resolved provider/session/device at `device_ready` or `app_ready`; the target app need not already be installed or ready. |
+| `lifecycle`              | The resolved target supports its named state transition.                                                                    |
+
+For an install with requested launch, the launch outcome is evaluated only after
+a successful, provenance-verified installation under the installation terminal
+matrix; no pre-install `app_ready` claim is required. Once a lifecycle operation
+reaches device or app execution, every response, including an error response,
+MUST include `lifecycle_receipt`; a successful lifecycle response also includes
+a fresh `readiness` result. Hosted capability recovery is not a v1 operation
+kind: it returns `recovery_required` and remains owned by `w4294` and `w4337`.
 
 The top-level lifecycle-operation `lifecycle_receipt` contains `action`,
 `status`, `previous_app_state`, and `resulting_app_state`. Its success shape is
@@ -567,9 +575,11 @@ session, serial)` tuple.
   provider-device-app state union — **new-gap**; recovery remains with
   `default:w4294` and `default:w4337`.
 - **Successor and sole invariant:** `default:w10348` has one typed readiness
-  state that gates every mutating request.
-- **Natural assertion boundary:** State-machine snapshot for every terminal
-  state and legal transition.
+  state that enforces each operation's explicit precondition: `step` requires
+  `app_ready`, installation permits a resolved `device_ready` or `app_ready`
+  session, and lifecycle follows its named transition.
+- **Natural assertion boundary:** State-machine snapshot and complete
+  operation-to-precondition table for every terminal state and legal transition.
 - **Rollout boundary:** Provider release, with recovery compatibility checked
   against `w4294` and `w4337`.
 
