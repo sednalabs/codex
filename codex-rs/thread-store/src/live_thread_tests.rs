@@ -189,7 +189,10 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, /*gated_append_index*/ 0));
+    let gated_store = Arc::new(GatedThreadStore::new(
+        local_store,
+        /*gated_append_index*/ 0,
+    ));
     let thread_id = ThreadId::new();
     let live_thread = LiveThread::create(
         gated_store.clone(),
@@ -337,7 +340,10 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, /*gated_append_index*/ 1));
+    let gated_store = Arc::new(GatedThreadStore::new(
+        local_store,
+        /*gated_append_index*/ 1,
+    ));
     let thread_id = ThreadId::new();
     let live_thread = LiveThread::create(
         gated_store.clone(),
