@@ -1,0 +1,189 @@
+name: Windows MSVC restricted-token compatibility proof
+
+on:
+  push:
+    branches:
+      - validation/windows-msvc-restricted-code-20260721-17ad4e79c
+
+permissions:
+  contents: read
+
+jobs:
+  restricted-token:
+    name: Restricted-token compatibility proof
+    runs-on: windows-2022
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      RUST_BACKTRACE: "1"
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ env.TARGET }}
+
+      - uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ env.TARGET }}
+
+      - name: Compute cache keys
+        id: lockhash
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hash=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "toolchain_hash=$(sha256sum rust-toolchain.toml | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Cargo home cache
+        id: cache_cargo_home_restore
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-windows-2022-${{ env.TARGET }}-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          restore-keys: |
+            cargo-home-windows-2022-${{ env.TARGET }}-release-
+
+      - name: Build release-profile Codex executable
+        id: build_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          started_at="$(date +%s)"
+          echo "started_at=${started_at}" >> "$GITHUB_OUTPUT"
+          cargo build --locked \
+            --target "${TARGET}" \
+            --release \
+            -p codex-cli \
+            --bin codex
+          finished_at="$(date +%s)"
+          codex_exe="${CARGO_TARGET_DIR}/${TARGET}/release/codex.exe"
+          test -f "${codex_exe}"
+          echo "CODEX_TEST_RELEASE_EXE=$(cygpath -w "${codex_exe}")" >> "$GITHUB_ENV"
+          echo "finished_at=${finished_at}" >> "$GITHUB_OUTPUT"
+          echo "duration_seconds=$((finished_at - started_at))" >> "$GITHUB_OUTPUT"
+
+      - name: Run all restricted-token probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $env:CARGO_BIN_EXE_codex = $env:CODEX_TEST_RELEASE_EXE
+          $failures = [System.Collections.Generic.List[string]]::new()
+          $results = [System.Collections.Generic.List[object]]::new()
+
+          function Invoke-Probe {
+            param(
+              [string]$Name,
+              [string[]]$Arguments
+            )
+
+            Write-Host "::group::$Name"
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            & cargo @Arguments
+            $exitCode = $LASTEXITCODE
+            $stopwatch.Stop()
+            Write-Host "::endgroup::"
+
+            $outcome = if ($exitCode -eq 0) { "PASS" } else { "FAIL" }
+            $duration = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
+            $script:results.Add([pscustomobject]@{
+              Probe = $Name
+              Outcome = $outcome
+              ExitCode = $exitCode
+              DurationSeconds = $duration
+            })
+            Write-Host "::notice title=Probe outcome::$Name $outcome in ${duration}s (exit $exitCode)"
+            if ($exitCode -ne 0) {
+              $script:failures.Add("$Name (exit $exitCode)")
+            }
+          }
+
+          $targetArgs = @("--target", $env:TARGET, "--release")
+          Invoke-Probe "restricted SID entry layout" (@(
+            "test", "--locked") + $targetArgs + @(
+              "-p", "codex-windows-sandbox",
+              "--lib", "token::tests::restricted_sids_include_restricted_code_and_exclude_everyone",
+              "--", "--exact", "--nocapture", "--test-threads=1"
+            ))
+          Invoke-Probe "local fs helper workspace write" (@(
+            "test", "--locked") + $targetArgs + @(
+              "-p", "codex-exec-server",
+              "--test", "file_system_windows",
+              "file_system_local_fs_helper_allows_windows_workspace_root_write",
+              "--", "--exact", "--nocapture"
+            ))
+          Invoke-Probe "remote fs helper read-only denied write" (@(
+            "test", "--locked") + $targetArgs + @(
+              "-p", "codex-exec-server",
+              "--test", "file_system_windows",
+              "file_system_remote_fs_helper_respects_windows_sandbox_write_policy",
+              "--", "--exact", "--nocapture"
+            ))
+
+          $sandboxTests = @(
+            "legacy_non_tty_cmd_emits_output",
+            "legacy_non_tty_powershell_emits_output",
+            "legacy_capture_powershell_emits_output",
+            "legacy_tty_powershell_emits_output_and_accepts_input"
+          )
+          foreach ($testName in $sandboxTests) {
+            Invoke-Probe $testName (@(
+              "test", "--locked") + $targetArgs + @(
+                "-p", "codex-windows-sandbox",
+                "--lib", "unified_exec::tests::$testName",
+                "--", "--exact", "--nocapture", "--test-threads=1"
+              ))
+          }
+
+          @(
+            "### Restricted-token probe results"
+            ""
+            "| Probe | Outcome | Exit code | Duration (seconds) |"
+            "| --- | --- | ---: | ---: |"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          foreach ($result in $results) {
+            "| $($result.Probe) | $($result.Outcome) | $($result.ExitCode) | $($result.DurationSeconds) |" |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+
+          if ($failures.Count -ne 0) {
+            Write-Error "Failed probes: $($failures -join '; ')"
+            exit 1
+          }
+
+      - name: Summarize release build
+        if: ${{ always() }}
+        shell: bash
+        env:
+          BUILD_DURATION_SECONDS: ${{ steps.build_release.outputs.duration_seconds }}
+        run: |
+          {
+            echo "### Release-profile build"
+            echo
+            echo "- Duration seconds: ${BUILD_DURATION_SECONDS:-incomplete}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Cargo home cache
+        if: ${{ always() && !cancelled() && steps.cache_cargo_home_restore.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-home-windows-2022-${{ env.TARGET }}-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
