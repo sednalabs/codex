@@ -474,9 +474,17 @@ unsafe fn create_token_with_caps_from(
     let mut everyone = world_sid()?;
     let psid_everyone = everyone.as_mut_ptr() as *mut c_void;
 
-    // Everyone stays on the IPC DACL, but must not widen the write-restricted token.
-    let mut entries =
-        build_restricted_sid_entries(psid_capabilities, extra_restricting_sids, psid_logon);
+    // DIAGNOSTIC CONTROL ONLY: this disposable branch restores Everyone to the
+    // restricting SID list to isolate restricted-token process startup behavior.
+    // Never promote this widening to production.
+    let mut control_restricting_sids = Vec::with_capacity(extra_restricting_sids.len() + 1);
+    control_restricting_sids.extend_from_slice(extra_restricting_sids);
+    control_restricting_sids.push(psid_everyone);
+    let mut entries = build_restricted_sid_entries(
+        psid_capabilities,
+        &control_restricting_sids,
+        psid_logon,
+    );
 
     let mut new_token: HANDLE = 0;
     let flags = DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED;
