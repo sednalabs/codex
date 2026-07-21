@@ -1018,6 +1018,7 @@ mod tests {
             &[tool],
             &[],
             &BTreeMap::new(),
+            crate::DEFAULT_EXEC_YIELD_TIME_MS,
             /*code_mode_only*/ true,
         );
 
