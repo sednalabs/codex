@@ -121,13 +121,16 @@ mod thread_processor_behavior_tests {
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
+    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::config_types::Settings;
     use codex_protocol::dynamic_tools::DynamicToolCapability;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
     use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+    use codex_protocol::models::ActivePermissionProfile;
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::permissions::FileSystemAccessMode;
@@ -135,8 +138,12 @@ mod thread_processor_behavior_tests {
     use codex_protocol::permissions::FileSystemSandboxEntry;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
+    use codex_protocol::protocol::ThreadSettingsAppliedEvent;
+    use codex_protocol::protocol::ThreadSettingsSnapshot;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnEnvironmentSelections;
     use codex_state::ThreadMetadataBuilder;
     use codex_thread_store::StoredThread;
@@ -842,6 +849,92 @@ mod thread_processor_behavior_tests {
         metadata.model = model.map(ToString::to_string);
         metadata.reasoning_effort = reasoning_effort;
         Ok(metadata)
+    }
+
+    #[test]
+    fn merge_persisted_approval_and_permissions_prefers_later_turn_context() -> Result<()> {
+        let thread_id = ThreadId::from_string("3f941c35-29b3-493b-b0a4-e25800d9aeb0")?;
+        let cwd = test_path_buf("/tmp").abs();
+        let turn_permission_profile = PermissionProfile::read_only();
+        let thread_history = InitialHistory::Resumed(ResumedHistory {
+            conversation_id: thread_id,
+            history: Arc::new(vec![
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+                    ThreadSettingsAppliedEvent {
+                        thread_settings: ThreadSettingsSnapshot {
+                            model: "persisted-model".to_string(),
+                            model_provider_id: "persisted-provider".to_string(),
+                            service_tier: None,
+                            approval_policy: AskForApproval::Never,
+                            approvals_reviewer: ApprovalsReviewer::AutoReview,
+                            permission_profile: PermissionProfile::workspace_write(),
+                            active_permission_profile: Some(ActivePermissionProfile {
+                                id: "persisted-profile".to_string(),
+                                extends: None,
+                            }),
+                            cwd: cwd.clone(),
+                            reasoning_effort: None,
+                            reasoning_summary: None,
+                            personality: None,
+                            collaboration_mode: CollaborationMode {
+                                mode: ModeKind::Default,
+                                settings: Settings {
+                                    model: "persisted-model".to_string(),
+                                    reasoning_effort: None,
+                                    developer_instructions: None,
+                                },
+                            },
+                        },
+                    },
+                )),
+                RolloutItem::TurnContext(TurnContextItem {
+                    turn_id: Some("later-turn".to_string()),
+                    cwd,
+                    workspace_roots: None,
+                    current_date: None,
+                    timezone: None,
+                    approval_policy: AskForApproval::UnlessTrusted,
+                    approvals_reviewer: Some(ApprovalsReviewer::User),
+                    sandbox_policy: SandboxPolicy::ReadOnly {
+                        network_access: false,
+                    },
+                    permission_profile: Some(turn_permission_profile.clone()),
+                    network: None,
+                    file_system_sandbox_policy: None,
+                    model: "turn-model".to_string(),
+                    comp_hash: None,
+                    personality: None,
+                    collaboration_mode: None,
+                    multi_agent_version: None,
+                    multi_agent_mode: None,
+                    realtime_active: None,
+                    effort: None,
+                    summary: ReasoningSummary::Auto,
+                }),
+            ]),
+            rollout_path: None,
+        });
+        let mut typesafe_overrides = ConfigOverrides::default();
+
+        merge_persisted_approval_and_permissions(
+            &thread_history,
+            /*request_overrides*/ None,
+            &mut typesafe_overrides,
+        );
+
+        assert_eq!(
+            (
+                typesafe_overrides.approval_policy,
+                typesafe_overrides.permission_profile,
+                typesafe_overrides.default_permissions,
+            ),
+            (
+                Some(AskForApproval::UnlessTrusted),
+                Some(turn_permission_profile),
+                None,
+            )
+        );
+        Ok(())
     }
 
     #[test]
