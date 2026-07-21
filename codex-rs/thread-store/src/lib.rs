@@ -7,6 +7,8 @@
 mod error;
 mod in_memory;
 mod live_thread;
+#[cfg(test)]
+mod live_thread_tests;
 mod local;
 mod store;
 mod thread_metadata_sync;
