@@ -220,7 +220,7 @@ pub fn create_send_message_tool() -> ToolSpec {
             Some(vec!["target".to_string(), "items".to_string()]),
             Some(false.into()),
         ),
-        output_schema: None,
+        output_schema: Some(send_message_output_schema()),
     })
 }
 
@@ -611,6 +611,36 @@ fn send_input_output_schema() -> Value {
     })
 }
 
+fn send_message_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "task_name": {
+                "type": "string",
+                "description": "Canonical target task name that accepted the handoff."
+            },
+            "handoff_state": {
+                "type": "string",
+                "enum": ["queued"],
+                "description": "The runtime accepted the message for queue-only delivery; it does not represent a model acknowledgement or completion."
+            },
+            "effective_model": { "type": "string" },
+            "effective_model_provider_id": { "type": "string" },
+            "effective_reasoning_effort": { "type": ["string", "null"] },
+            "effective_service_tier": { "type": ["string", "null"] }
+        },
+        "required": [
+            "task_name",
+            "handoff_state",
+            "effective_model",
+            "effective_model_provider_id",
+            "effective_reasoning_effort",
+            "effective_service_tier"
+        ],
+        "additionalProperties": false
+    })
+}
+
 fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
     let include_active_descendants = capabilities
         .subagent_inventory
@@ -738,6 +768,14 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "agent_status": { "type": "string" },
                         "nickname": { "type": ["string", "null"] },
                         "role": { "type": ["string", "null"] },
+                        "effective_model": {
+                            "type": ["string", "null"],
+                            "description": "Effective model from the live thread configuration snapshot. Null for stale threads; this is configuration evidence, not provider-usage proof."
+                        },
+                        "effective_reasoning_effort": {
+                            "type": ["string", "null"],
+                            "description": "Effective reasoning effort from the live thread configuration snapshot. Null for stale threads; this is configuration evidence, not provider-usage proof."
+                        },
                         "direct_child_count": { "type": "number" },
                         "descendant_count": { "type": "number" }
                     },
@@ -748,6 +786,8 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "agent_status",
                         "nickname",
                         "role",
+                        "effective_model",
+                        "effective_reasoning_effort",
                         "direct_child_count",
                         "descendant_count"
                     ],
