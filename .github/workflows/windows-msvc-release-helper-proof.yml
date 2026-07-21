@@ -1,0 +1,58 @@
+name: Windows MSVC release helper proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-helper:
+    name: Release-shaped filesystem helper
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_CI_TEST_DEBUG: "0"
+      CARGO_PROFILE_CI_TEST_STRIP: symbols
+      RUST_BACKTRACE: "1"
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: Build release-shaped Codex executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked \
+            --target "${TARGET}" \
+            --profile ci-test \
+            -p codex-cli \
+            --bin codex
+          codex_exe="${CARGO_TARGET_DIR}/${TARGET}/ci-test/codex.exe"
+          test -f "${codex_exe}"
+          echo "CODEX_TEST_RELEASE_EXE=$(cygpath -w "${codex_exe}")" >> "${GITHUB_ENV}"
+
+      - name: Prove workspace write through release helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          CARGO_BIN_EXE_codex="${CODEX_TEST_RELEASE_EXE}" \
+            cargo test --locked \
+              --target "${TARGET}" \
+              --profile ci-test \
+              -p codex-exec-server \
+              --test file_system_windows \
+              file_system_local_fs_helper_allows_windows_workspace_root_write \
+              -- --exact --nocapture
