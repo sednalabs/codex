@@ -2868,11 +2868,13 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
     .await;
     let rollout_path =
         attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
-    let world_state =
-        Arc::new(build_world_state_from_turn_context(session.as_ref(), &turn_context).await);
+    let step_context = session
+        .capture_step_context(Arc::clone(&turn_context))
+        .await;
+    let world_state = Arc::new(session.build_world_state_for_step(&step_context).await);
 
     session
-        .start_new_context_window(turn_context.as_ref(), world_state)
+        .start_new_context_window(&step_context, world_state)
         .await;
 
     let live_history = session.clone_history().await;
@@ -8399,6 +8401,7 @@ impl codex_extension_api::ContextContributor for PromptExtensionTestContributor 
         &'a self,
         _session_store: &'a codex_extension_api::ExtensionData,
         thread_store: &'a codex_extension_api::ExtensionData,
+        _step_store: &'a codex_extension_api::ExtensionData,
     ) -> codex_extension_api::ExtensionFuture<'a, Vec<codex_extension_api::PromptFragment>> {
         Box::pin(async move {
             thread_store
