@@ -16,7 +16,9 @@ use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::HLOCAL;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
+use windows_sys::Win32::Security::Authorization::GetSecurityInfo;
 use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
+use windows_sys::Win32::Security::Authorization::SET_ACCESS;
 use windows_sys::Win32::Security::Authorization::SE_WINDOW_OBJECT;
 use windows_sys::Win32::Security::Authorization::SetEntriesInAclW;
 use windows_sys::Win32::Security::Authorization::SetSecurityInfo;
@@ -39,6 +41,16 @@ use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_SWITCHDESKTOP;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_WRITE_DAC;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_WRITE_OWNER;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_WRITEOBJECTS;
+use windows_sys::Win32::System::StationsAndDesktops::GetProcessWindowStation;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ACCESSCLIPBOARD;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ACCESSGLOBALATOMS;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_CREATEDESKTOP;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ENUMDESKTOPS;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_ENUMERATE;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_EXITWINDOWS;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_READATTRIBUTES;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_READSCREEN;
+use windows_sys::Win32::UI::WindowsAndMessaging::WINSTA_WRITEATTRIBUTES;
 
 const DESKTOP_ALL_ACCESS: u32 = DESKTOP_READOBJECTS
     | DESKTOP_CREATEWINDOW
@@ -53,6 +65,16 @@ const DESKTOP_ALL_ACCESS: u32 = DESKTOP_READOBJECTS
     | DESKTOP_READ_CONTROL
     | DESKTOP_WRITE_DAC
     | DESKTOP_WRITE_OWNER;
+
+const WINDOW_STATION_ALL_ACCESS: u32 = (WINSTA_ACCESSCLIPBOARD
+    | WINSTA_ACCESSGLOBALATOMS
+    | WINSTA_CREATEDESKTOP
+    | WINSTA_ENUMDESKTOPS
+    | WINSTA_ENUMERATE
+    | WINSTA_EXITWINDOWS
+    | WINSTA_READATTRIBUTES
+    | WINSTA_READSCREEN
+    | WINSTA_WRITEATTRIBUTES) as u32;
 
 pub struct LaunchDesktop {
     _private_desktop: Option<PrivateDesktop>,
@@ -88,6 +110,10 @@ struct PrivateDesktop {
 
 impl PrivateDesktop {
     fn create(logs_base_dir: Option<&Path>) -> Result<Self> {
+        unsafe {
+            grant_window_station_access(logs_base_dir)?;
+        }
+
         let mut rng = SmallRng::from_entropy();
         let name = format!("CodexSandboxDesktop-{:x}", rng.r#gen::<u128>());
         let name_wide = to_wide(&name);
@@ -123,6 +149,104 @@ impl PrivateDesktop {
 
         Ok(Self { handle, name })
     }
+}
+
+unsafe fn grant_window_station_access(logs_base_dir: Option<&Path>) -> Result<()> {
+    let window_station = GetProcessWindowStation();
+    if window_station == 0 {
+        let err = GetLastError() as i32;
+        return Err(anyhow::anyhow!(
+            "GetProcessWindowStation failed: {err} ({})",
+            format_last_error(err)
+        ));
+    }
+
+    let token = get_current_token_for_restriction()?;
+    let logon_sid_result = get_logon_sid_bytes(token);
+    CloseHandle(token);
+    let mut logon_sid = logon_sid_result?;
+
+    let mut existing_security_descriptor: *mut c_void = ptr::null_mut();
+    let mut existing_dacl = ptr::null_mut();
+    let get_security_code = GetSecurityInfo(
+        window_station,
+        SE_WINDOW_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        &mut existing_dacl,
+        ptr::null_mut(),
+        &mut existing_security_descriptor,
+    );
+    if get_security_code != ERROR_SUCCESS {
+        logging::debug_log(
+            &format!("GetSecurityInfo failed for window station: {get_security_code}"),
+            logs_base_dir,
+        );
+        return Err(anyhow::anyhow!(
+            "GetSecurityInfo failed for window station: {get_security_code}"
+        ));
+    }
+
+    let entries = [EXPLICIT_ACCESS_W {
+        grfAccessPermissions: WINDOW_STATION_ALL_ACCESS,
+        grfAccessMode: SET_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: 0,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: logon_sid.as_mut_ptr() as *mut c_void as *mut u16,
+        },
+    }];
+
+    let mut updated_dacl = ptr::null_mut();
+    let set_entries_code = SetEntriesInAclW(
+        entries.len() as u32,
+        entries.as_ptr(),
+        existing_dacl,
+        &mut updated_dacl,
+    );
+    if set_entries_code != ERROR_SUCCESS {
+        if !existing_security_descriptor.is_null() {
+            LocalFree(existing_security_descriptor as HLOCAL);
+        }
+        logging::debug_log(
+            &format!("SetEntriesInAclW failed for window station: {set_entries_code}"),
+            logs_base_dir,
+        );
+        return Err(anyhow::anyhow!(
+            "SetEntriesInAclW failed for window station: {set_entries_code}"
+        ));
+    }
+
+    let set_security_code = SetSecurityInfo(
+        window_station,
+        SE_WINDOW_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        updated_dacl,
+        ptr::null_mut(),
+    );
+    if !updated_dacl.is_null() {
+        LocalFree(updated_dacl as HLOCAL);
+    }
+    if !existing_security_descriptor.is_null() {
+        LocalFree(existing_security_descriptor as HLOCAL);
+    }
+    if set_security_code != ERROR_SUCCESS {
+        logging::debug_log(
+            &format!("SetSecurityInfo failed for window station: {set_security_code}"),
+            logs_base_dir,
+        );
+        return Err(anyhow::anyhow!(
+            "SetSecurityInfo failed for window station: {set_security_code}"
+        ));
+    }
+
+    Ok(())
 }
 
 unsafe fn grant_desktop_access(handle: isize, logs_base_dir: Option<&Path>) -> Result<()> {
