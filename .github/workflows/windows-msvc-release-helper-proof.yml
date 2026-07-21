@@ -1,6 +1,9 @@
 name: Windows MSVC release helper proof
 
 on:
+  push:
+    branches:
+      - validation/windows-msvc-release-helper-20260721-57a5a0140e
   workflow_dispatch:
 
 permissions:
