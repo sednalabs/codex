@@ -159,10 +159,15 @@ async fn file_system_local_fs_helper_allows_windows_workspace_root_write() -> Re
     sandbox.windows_sandbox_level = WindowsSandboxLevel::RestrictedToken;
     sandbox.windows_sandbox_private_desktop = true;
 
-    context
+    let write_result = context
         .file_system
         .write_file(&target_uri, b"allowed".to_vec(), Some(&sandbox))
-        .await?;
+        .await;
+    if is_unsupported_restricted_token_host(&write_result) {
+        eprintln!("skipping release-shaped assertion: {write_result:?}");
+        return Ok(());
+    }
+    write_result?;
 
     assert_eq!(std::fs::read(target_path)?, b"allowed");
     Ok(())
