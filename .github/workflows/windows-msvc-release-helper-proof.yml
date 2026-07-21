@@ -47,7 +47,7 @@ jobs:
           test -f "${codex_exe}"
           echo "CODEX_TEST_RELEASE_EXE=$(cygpath -w "${codex_exe}")" >> "${GITHUB_ENV}"
 
-      - name: Prove workspace write through release helper
+      - name: Prove release helper and restricted-token process startup
         shell: bash
         run: |
           set -euo pipefail
@@ -59,3 +59,24 @@ jobs:
               --test file_system_windows \
               file_system_local_fs_helper_allows_windows_workspace_root_write \
               -- --exact --nocapture
+          CARGO_BIN_EXE_codex="${CODEX_TEST_RELEASE_EXE}" \
+            cargo test --locked \
+              --target "${TARGET}" \
+              --profile ci-test \
+              -p codex-exec-server \
+              --test file_system_windows \
+              file_system_remote_fs_helper_respects_windows_sandbox_write_policy \
+              -- --exact --nocapture
+          for test_name in \
+            legacy_non_tty_cmd_emits_output \
+            legacy_non_tty_powershell_emits_output \
+            legacy_capture_powershell_emits_output \
+            legacy_tty_powershell_emits_output_and_accepts_input
+          do
+            cargo test --locked \
+              --target "${TARGET}" \
+              --profile ci-test \
+              -p codex-windows-sandbox \
+              "${test_name}" \
+              -- --nocapture --test-threads=1
+          done
