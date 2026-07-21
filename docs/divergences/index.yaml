@@ -275,7 +275,7 @@
         ".github/validation-lanes.json",
         "justfile"
       ],
-      "behavior": "Upstream owns configured-default and explicit child model/reasoning selection, role precedence, and final compatibility validation. Downstream preserves flattened named-role schema support under Schemars 1.2, runtime provider/summary/verbosity context across unrelated role reload, compatibility with incomplete reasoning-support metadata and unspecified MultiAgentV2 backend assignments, and a narrow gpt-5.6-luna V2 child compatibility overlay while its top-level catalog default remains V1. It also preserves richer requested/effective spawn diagnostics, the configurable agents namespace, pre-cancelled launch semantics, task-message-free descendant diagnostics, and complete indexed agent-path/model/provider/reasoning/role identity across cold V2 descendant reloads. Capacity-triggered V2 residency eviction shuts a durably backed, unloadable quiescent thread down before identity-checked removal, preserves a bounded Completed, Errored, or Interrupted status behind a registry-generation fence, and clears the cold status when that same identity reloads. A generation-scoped lifecycle authority serializes V2 unload, reload, delivery, and explicit close: queue-only mail moves to a registry-owned FIFO without reloading a cold runtime, same-agent reloads serialize on a gate eviction never acquires, residency reservation releases the mailbox lock and rechecks generation, triggering mail transfers the FIFO first, failed transitions keep every item recoverable, and close discards cold mail deliberately. Ephemeral V2 sessions remain resident because they have no persisted history to reload. Full-history V2 forks preserve context while applying configured or explicit model precedence, and only reject an explicit agent type. The built-in terminal-babysitter role locks gpt-5.4-mini with low reasoning for monitored waits. A populated indexed model makes an absent indexed effort an intentional clear, while legacy rows with no indexed model identity retain rollout model and effort. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
+      "behavior": "Upstream owns configured-default and explicit child model/reasoning selection, role precedence, and final compatibility validation. Downstream preserves flattened named-role schema support under Schemars 1.2, runtime provider/summary/verbosity context across unrelated role reload, compatibility with incomplete reasoning-support metadata and unspecified MultiAgentV2 backend assignments, and a narrow gpt-5.6-luna V2 child compatibility overlay while its top-level catalog default remains V1. It also preserves richer requested/effective spawn diagnostics, the configurable agents namespace, pre-cancelled launch semantics, task-message-free descendant diagnostics, and complete indexed agent-path/model/provider/reasoning/role identity across cold V2 descendant reloads. Paginated cold reloads recover the newest persisted approvals reviewer from TurnContext or ThreadSettingsApplied history instead of inheriting the reload caller's ambient reviewer. Capacity-triggered V2 residency eviction shuts a durably backed, unloadable quiescent thread down before identity-checked removal, preserves a bounded Completed, Errored, or Interrupted status behind a registry-generation fence, and clears the cold status when that same identity reloads. A generation-scoped lifecycle authority serializes V2 unload, reload, delivery, and explicit close: queue-only mail moves to a registry-owned FIFO without reloading a cold runtime, same-agent reloads serialize on a gate eviction never acquires, residency reservation releases the mailbox lock and rechecks generation, triggering mail transfers the FIFO first, failed transitions keep every item recoverable, and close discards cold mail deliberately. Ephemeral V2 sessions remain resident because they have no persisted history to reload. Full-history V2 forks preserve context while applying configured or explicit model precedence, and only reject an explicit agent type. The built-in terminal-babysitter role locks gpt-5.4-mini with low reasoning for monitored waits. A populated indexed model makes an absent indexed effort an intentional clear, while legacy rows with no indexed model identity retain rollout model and effort. Richer agent inventory, inspect-tree exposure, wait-agent fields, mailbox wakeups, optional-target mailbox-only waits, return_when semantics, and explicit spawn-agent authorization guidance are declared through a typed tool runtime capability provider.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -297,6 +297,7 @@
         "spawn_agent_preserves_configured_defaults_through_unrelated_role",
         "spawn_agent_rejects_reasoning_effort_unsupported_by_role_model",
         "spawned_full_history_v2_child_uses_model_precedence_without_dropping_context",
+        "paginated_subagent_fork_cold_resume_preserves_child_settings",
         "read_thread_keeps_complete_indexed_identity_during_rollout_overlay",
         "ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
         "close_agent_discards_registry_owned_cold_mail",
@@ -2186,16 +2187,20 @@
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
-      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata.",
+      "behavior": "Downstream keeps patched build, packaging, install, and test-stability artifacts along with configuration files tailored to the fork’s CI and release policy, including temporary Bazel macro compatibility for upstream crate declarations, an explicit cargo-deny ratchet exception for the downstream Android MCP transport, containment-checked Python SDK runtime archive staging, a single absolute cold-run deadline for each 16 MiB exec-server byte-budget stress sequence, lock-held app-server daemon PID test cleanup, deterministic pending-input and tracing-span observation barriers, thread-idle synchronization plus submission-correlated errors for host-only compact/resume rollback fixtures, a sha2 0.11-compatible explicit lowercase hexadecimal encoder for all-platform proxy cache keys, a TypeScript SDK manifest that remains paired with the downstream dependency lockfile, and broad SemVer installer validation that accepts upstream alpha-hotfix tags while retaining Sedna prerelease suffixes and build metadata. The upstream optional releases.openai.com installer source remains available only for the default openai/codex plus rust-v origin; custom repository or tag-prefix routing stays on GitHub and cannot be redirected to OpenAI's release channel by the opt-in flag.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "core-carry-core-smoke; codex.build-policy-sanity; codex.sdk-python-targeted; GitHub blocking-ci multi-platform Bazel tests",
+      "guardrail_lane": "core-carry-core-smoke; codex.build-policy-sanity; codex.sdk-python-targeted; GitHub blocking-ci repo-checks and multi-platform Bazel tests",
       "tests": [
         "bash -n scripts/install/install.sh",
         "test_custom_repository_and_tag_prefix_drive_latest_urls",
+        "test_releases_latest_installs_verified_package",
+        "test_releases_asset_download_falls_back_to_github",
+        "test_releases_exact_rejects_wrong_binary_version",
+        "test_releases_exact_legacy_fallback_reuses_offline_install",
         "test_alpha_hotfix_release_is_valid",
         "test_runtime_setup_reads_independent_runtime_pin_and_release_tags",
         "test_normalize_codex_version_accepts_release_tags_and_pep440_versions",
@@ -2253,23 +2258,29 @@
         "codex-rs/tui/src/update_versions.rs",
         "codex-rs/tui/src/version.rs",
         "scripts/install_sedna_release_asset",
+        "scripts/install/install.sh",
+        "scripts/install/install.ps1",
+        "scripts/install/test_install_sh.py",
         "scripts/resolve_sedna_release_version"
       ],
-      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows.",
+      "behavior": "Update discovery, prompts, and installer routing follow Sedna prerelease tags and GitHub-hosted assets while preserving the upstream-derived version line and keeping host installation outside public build workflows. Upstream's optional releases.openai.com source remains intact for the default openai/codex and rust-v origin, while configured repository and tag-prefix overrides deliberately bypass that OpenAI-only source and retain their GitHub metadata and asset URLs.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.build-policy-sanity; codex.workflow-ci-sanity",
+      "guardrail_lane": "codex.build-policy-sanity; codex.workflow-ci-sanity; GitHub blocking-ci repo-checks",
       "tests": [
         "resolve_sedna_release_version.py tests",
         "scripts/resolve_sedna_release_version --help",
         "update prompt and version tests",
+        "test_custom_repository_and_tag_prefix_drive_latest_urls",
+        "test_releases_latest_installs_verified_package",
+        "test_releases_asset_download_falls_back_to_github",
         "sedna-release workflow policy checks"
       ],
       "owner": "downstream",
-      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern.",
+      "notes": "Keeps public GitHub workflows limited to building, publishing, and verifying assets; production installation remains an operator-controlled private concern. The releases.openai.com preference is intentionally origin-scoped so a downstream release repository can never consume OpenAI metadata or assets accidentally.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "release-update-routing",
       "hotspot_files": [
@@ -2360,10 +2371,13 @@
         "codex-rs/state/",
         "codex-rs/thread-store/",
         "codex-rs/app-server-protocol/",
+        "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor_tests.rs",
         "codex-rs/app-server/tests/suite/conversation_summary.rs",
-        "codex-rs/app-server/tests/suite/v2/thread_read.rs"
+        "codex-rs/app-server/tests/suite/v2/thread_read.rs",
+        "codex-rs/app-server/tests/suite/v2/thread_resume.rs"
       ],
-      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata and state-backed thread names. App-server, rollout, state, and thread-store paths retain all three independent fields; upstream paginated legacy full views hydrate stored ThreadItem projections for read, list, resume, initial-turn, turn-list, and item-list requests without erasing side, agent, or other source provenance. Upstream paginated Git metadata updates and memory eligibility remain additive and must not coerce history mode or erase name or source provenance.",
+      "behavior": "Downstream preserves thread_source provenance alongside upstream history_mode metadata and state-backed thread names. App-server, rollout, state, and thread-store paths retain all three independent fields; upstream paginated legacy full views hydrate stored ThreadItem projections for read, list, resume, initial-turn, turn-list, and item-list requests without erasing side, agent, or other source provenance. Cold app-server resume also restores the newest persisted approval policy and permission profile alongside model, provider, reasoning effort, approvals reviewer, cwd, and named active permission profile, while explicit resume overrides remain authoritative. Upstream paginated Git metadata updates and memory eligibility remain additive and must not coerce history mode or erase name or source provenance.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -2377,6 +2391,8 @@
         "paginated_history_lists_use_projected_turns_and_items",
         "thread_resume_rejoins_running_paginated_thread_with_initial_page",
         "thread_resume_initial_turns_page_matches_requested_turns_list_page",
+        "thread_resume_preserves_goal_first_and_fork_settings",
+        "merge_persisted_approval_and_permissions_prefers_later_turn_context",
         "paginated_thread_name_preserves_metadata_across_read_list_and_resume",
         "update_thread_metadata_updates_paginated_git_info_in_sqlite_only",
         "backfill_sessions_preserves_existing_paginated_memory_mode",
@@ -2385,7 +2401,7 @@
         "json_schema_fixtures_match_generated"
       ],
       "owner": "downstream",
-      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata plus state-backed names; history_mode, thread names, paginated legacy full-view projection, paginated Git metadata, and paginated memory eligibility remain upstream-owned, while thread_source preservation remains downstream carry.",
+      "notes": "Records compatibility between downstream source attribution and upstream history storage metadata plus state-backed names; history_mode, thread names, paginated legacy full-view projection, paginated Git metadata, and paginated memory eligibility remain upstream-owned, while thread_source preservation remains downstream carry. The cold-resume repair scans persisted settings newest-first so a later TurnContext supersedes an older ThreadSettingsApplied snapshot and ambient restart defaults cannot erase goal or fork permissions.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "thread-metadata-compatibility",
       "hotspot_files": [
@@ -2424,7 +2440,7 @@
         "persist_waits_for_append_observation_before_flushing_pending_metadata"
       ],
       "owner": "downstream",
-      "notes": "The race became visible while integrating upstream thread-settings persistence. Preserve the complete append-observe-project-acknowledge boundary rather than narrowing the permit to individual store calls; independently reopened handles remain a store-level policy boundary.",
+      "notes": "The race became visible while integrating upstream thread-settings persistence. Preserve the complete append-observe-project-acknowledge boundary rather than narrowing the permit to individual store calls; independently reopened handles remain a store-level policy boundary. The ordering regression canonicalizes both JSONL and SQLite cwd values before whole-object comparison so Windows verbatim path prefixes do not obscure a real metadata-order mismatch; the assertion remains otherwise holistic.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "direct-upstream-fix",
       "hotspot_files": [
@@ -2528,7 +2544,7 @@
       "files": [
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/connectors/src/connector_runtime/mod.rs",
-        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs",
         "codex-rs/codex-mcp/src/rmcp_client.rs",
         "codex-rs/codex-mcp/src/rmcp_client_tests.rs",
         "codex-rs/codex-mcp/src/tool_catalog_cache.rs",
@@ -2547,7 +2563,7 @@
           "streamable_http_discovers_and_calls_later_page_tool"
         ]
       },
-      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
+      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. Upstream's focused connection_manager/tool_catalog.rs module retains the downstream generation-aware snapshot, fetch-ticket, and atomic publication adapter instead of duplicating those methods in the parent manager. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-test-progressive",
@@ -2560,7 +2576,7 @@
         "regular_mcp_definition_cache_preserves_live_session_state"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [

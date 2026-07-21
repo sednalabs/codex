@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `b8579e9d39253306e64ca59bb82e0b153ae54b42`
+- downstream integration code tree: `cd759ef8514283109abc2e089c422189d798e0f7`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
-- `upstream/main`: `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
-- downstream branch vs `upstream/main`: `1922` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
+- `upstream/main`: `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
+- downstream branch vs `upstream/main`: `1951` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1646` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1666` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -454,6 +454,66 @@ docs-only refresh commit that records this snapshot.
   `9cd08b7ef8d2ff85a6daf0045447b92776144369986b67e0a4beea1c86e02b6e`.
   Signed two-parent merge `b8579e9d39` preserves `9970cd706f` as its second
   parent.
+
+### Release Distribution And Proxy-Aware Plugin Transport
+
+- Upstream commits `cc875d61ce` and `a148e0b50a` mirror verified Rust release
+  artifacts and channel metadata to the upstream release distribution service.
+  Upstream commits `94bb6a09a6` and `d937bfac84` route startup and remote plugin
+  HTTP through system proxy settings. These are upstream-owned distribution and
+  transport changes, not native browser or computer-use providers.
+- The upstream dependency update exposed a stale `http 1.4.0` Bazel lock key
+  while Cargo selected `1.4.2`. Hosted lock-generation run `29822424437`
+  produced the one-line lock repair, and signed commit `d3fd36dfa0` carries
+  exactly that generated result.
+- Hosted mirror run `29821981506` advanced `origin/upstream-main` to exact
+  `d937bfac84`; sync job `88606503410` passed. The audit job returned the
+  expected pre-promotion exit `4`, with artifact `8491750051` preserving the
+  exact-mirror and downstream-divergence evidence.
+
+### Optional Upstream Installer Source And Wine PTY Contract
+
+- Upstream commit `765675a122` adds an opt-in `releases.openai.com` metadata and
+  asset source with GitHub fallback, verified binary-version checks, legacy
+  package fallback, and matching POSIX and PowerShell installer behavior.
+- Downstream keeps its existing repository and tag-prefix adapter as a narrow
+  origin boundary. The upstream source is used unchanged for the default
+  `openai/codex` plus `rust-v` origin; any configured repository or tag prefix
+  bypasses the OpenAI-only channel and retains GitHub metadata and asset URLs.
+  `test_custom_repository_and_tag_prefix_drive_latest_urls` enables the new
+  upstream preference flag while proving that custom routing remains isolated.
+- Upstream commit `7982aa27ff` only extends codespell's accepted vocabulary.
+  Upstream commit `b9800de486` supplies the named empty `inherited_fds` argument
+  in the Wine PTY test, superseding the earlier downstream uncommented call-site
+  repair.
+- Signed merge `bf5fe13611` preserves `b9800de486` as its second parent.
+  Hosted mirror run `29826519611` fast-forwarded `origin/upstream-main` to that
+  exact SHA in sync job `88620996988`. Audit job `88621089852` returned exit
+  `4` only because the audited `origin/main` predates this integration branch's
+  PID-test registry update; the artifact reports an exact usable mirror and no
+  stale registry entries.
+
+### Focused MCP Connection-Manager Modules
+
+- Upstream commit `2d85e6d3a6` moves required-server startup validation and
+  tool listing, lookup, metadata attachment, and Codex Apps cache refresh into
+  focused `connection_manager/required.rs` and
+  `connection_manager/tool_catalog.rs` modules without changing the public
+  manager API or intended behavior.
+- Conflict resolution adopts that upstream structure and relocates only the
+  existing downstream generation-aware catalogue adapter: live lookup awaits
+  the atomic catalogue snapshot, while hard refresh begins and publishes the
+  shared connector and regular-cache fetch tickets through `ManagedClient`.
+  No duplicate parent-module implementation remains.
+- This extraction is a useful seam for the separately tracked stale-MCP
+  lifecycle work, but it does not itself unload a server or add a native tool
+  provider. Signed merge `cd759ef851` preserves `2d85e6d3a6` as its second
+  parent.
+- Hosted mirror run `29827916758` advanced `origin/upstream-main` to exact
+  `2d85e6d3a6` in sync job `88625450309`. Audit job `88625559435` returned the
+  expected pre-promotion exit `4`; artifact `8494064503` reports no stale
+  registry entries and only the already-covered integration-branch PID-test
+  path missing from the older audited `origin/main`.
 
 ## Current Live Divergences
 
@@ -922,7 +982,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/usage_migrations/0002_usage_thread_source.sql`
   - `scripts/codex-resume-recent.sh`
 
-### App-server Thread Source, History Mode, And Name Compatibility
+### App-server Thread Source, History Mode, Name, And Resume-Settings Compatibility
 
 - Preserve downstream `thread_source` provenance alongside upstream
   `history_mode` metadata in thread listing, summary, resume, persisted
@@ -942,6 +1002,16 @@ docs-only refresh commit that records this snapshot.
   also adopted. SQLite-only Git patches and memory-mode reconciliation must
   remain additive to downstream `thread_source`; none may coerce a paginated
   thread back to legacy history or erase its name or provenance.
+- Cold app-server resume restores the newest persisted approval policy and
+  permission profile together with the already preserved model, provider,
+  reasoning effort, approvals reviewer, cwd, and named active permission
+  profile. Explicit resume-request overrides remain authoritative.
+- Settings history is scanned newest-first across both `TurnContext` and
+  `ThreadSettingsApplied`, so a later turn context supersedes an older snapshot.
+  `thread_resume_preserves_goal_first_and_fork_settings` exercises a goal-first
+  thread and its fork against conflicting restart defaults, while
+  `merge_persisted_approval_and_permissions_prefers_later_turn_context` locks
+  the chronology rule directly.
 - Primary files:
   - `codex-rs/protocol/`
   - `codex-rs/rollout/`
@@ -969,6 +1039,10 @@ docs-only refresh commit that records this snapshot.
   `persist_waits_for_append_observation_before_flushing_pending_metadata`
   deterministically guard both races through the real local JSONL and SQLite
   store boundary.
+- The ordering regression compares the full projected metadata after
+  canonicalizing both cwd values. This keeps the holistic assertion intact on
+  Windows, where SQLite may expose a verbatim `\\?\` prefix, instead of
+  weakening it to field-by-field checks.
 - Primary files:
   - `codex-rs/thread-store/src/live_thread.rs`
   - `codex-rs/thread-store/src/live_thread_tests.rs`
@@ -1062,16 +1136,24 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/migrations/0047_external_agent_config_imports.sql`
   - `docs/memories.md`
 
-### Release Metadata And Rebuild Triggers
+### Release Metadata, Installer Routing, And Rebuild Triggers
 
 - Release builds embed canonical release identity plus compact provenance
   metadata.
 - Version metadata rebuilds when git state changes, including shared worktree
   git state.
+- Public POSIX and PowerShell installers retain the downstream release
+  repository and tag-prefix adapter. Upstream's optional release-distribution
+  source is available only when those values remain `openai/codex` and
+  `rust-v`; custom downstream origins always resolve and download through their
+  configured GitHub repository.
 - Primary files:
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`
+  - `scripts/install/install.sh`
+  - `scripts/install/install.ps1`
+  - `scripts/install/test_install_sh.py`
 
 ### Sub-agent selection compatibility, inventory metadata, and wait joins
 
@@ -1165,6 +1247,12 @@ docs-only refresh commit that records this snapshot.
   Legacy rows with no
   indexed model identity retain their rollout model and effort, while a
   populated indexed model makes an absent indexed effort an intentional clear.
+- A paginated V2 child reload also restores the newest persisted
+  `approvals_reviewer` from its own `TurnContext` or `ThreadSettingsApplied`
+  history instead of inheriting the reload caller's ambient reviewer.
+  `paginated_subagent_fork_cold_resume_preserves_child_settings` proves model,
+  provider, reasoning, reviewer, identity, and copied-history boundaries
+  together; exact hosted run `29822598887` passed that named regression.
 - Capacity-triggered V2 residency eviction first materializes and shuts down an
   unloadable quiescent thread, then removes only the exact `Arc<CodexThread>` it
   examined. A concurrently installed replacement is never removed by a stale
@@ -1623,7 +1711,7 @@ docs-only refresh commit that records this snapshot.
 - Primary files:
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/connectors/src/connector_runtime/mod.rs`
-  - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs`
   - `codex-rs/codex-mcp/src/runtime.rs`
   - `codex-rs/codex-mcp/src/resource_client.rs`
   - `codex-rs/codex-mcp/src/rmcp_client.rs`

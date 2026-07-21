@@ -283,6 +283,36 @@ installer conflicts retain downstream's broader SemVer validator because it
 subsumes the new upstream tag shape while preserving Sedna prerelease suffixes
 and optional build metadata.
 
+## Upstream release distribution and plugin proxy routing
+
+Upstream commits `cc875d61ce` and `a148e0b50a` publish verified Rust release
+artifacts and channel metadata to the upstream distribution service. Commits
+`94bb6a09a6` and `d937bfac84` make plugin startup and remote-plugin transport
+honor system proxy settings. The accompanying generated lock repair is carried
+as one exact `http 1.4.0` to `1.4.2` key correction; these changes do not add a
+native browser, Android, desktop, or computer-use provider.
+
+## Upstream optional installer source
+
+Upstream commit `765675a122` adds opt-in `releases.openai.com` metadata and
+asset downloads, GitHub fallback, installed-version verification, and legacy
+package fallback to both installers. Downstream composes that feature with its
+release-origin adapter: the upstream source is available for the default
+`openai/codex` plus `rust-v` origin, while any configured repository or tag
+prefix remains on its own GitHub metadata and asset URLs. Commit `7982aa27ff`
+is codespell configuration only, and `b9800de486` supplies the explicit empty
+inherited-descriptor argument in the Wine PTY test.
+
+## Upstream MCP connection-manager structure
+
+Upstream commit `2d85e6d3a6` splits required-server validation and tool-catalog
+operations into focused connection-manager modules without changing the public
+API. Downstream adopts the new structure and keeps its existing
+generation-aware async catalogue snapshot and publication adapter only in the
+new `connection_manager/tool_catalog.rs` module. The refactor is a cleaner seam
+for separately tracked stale-server lifecycle work, but does not itself unload
+servers or add a native browser, Android, desktop, or computer-use provider.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -314,15 +344,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `b8579e9d39253306e64ca59bb82e0b153ae54b42`
+  `cd759ef8514283109abc2e089c422189d798e0f7`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
+  `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
 - `upstream/main`:
-  `9970cd706fc4f25bbb97b42f4b68d993dabe91e2`
+  `2d85e6d3a616dc1fac258a5320c7a00a5e5bceb2`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1922` downstream ahead
-- downstream-only non-merge commits: `1646` unique, `0` patch-equivalent
+  `0` upstream ahead, `1951` downstream ahead
+- downstream-only non-merge commits: `1666` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -572,6 +602,9 @@ User-visible behavior:
 - Full-history forks keep their conversation and agent identity while accepting
   configured or explicit child model/reasoning selection; they still reject an
   explicit `agent_type` because that would change the preserved identity.
+- Paginated cold V2 reload restores the child's newest persisted
+  `approvals_reviewer` alongside its indexed model, provider, reasoning, role,
+  and agent path, rather than inheriting the reload caller's ambient reviewer.
 - Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
 Primary files:
@@ -806,10 +839,17 @@ User-visible behavior:
 - Thread records preserve downstream `thread_source` provenance alongside
   upstream `history_mode`; list, read, resume, and stored-session paths carry
   both fields independently.
+- Goal-first and forked threads cold-resume their newest persisted approval
+  policy and permissions together with model, provider, reasoning effort,
+  approvals reviewer, cwd, and active named permission profile. Explicit resume
+  overrides still win, and a later `TurnContext` supersedes an older settings
+  snapshot.
 - Thread-store writes serialize canonical rollout append order with derived
   SQLite metadata observation and persistence barriers. Concurrent handles to
   one live thread therefore cannot leave indexed model, provider, reasoning,
-  or cwd metadata ordered differently from the JSONL settings history.
+  or cwd metadata ordered differently from the JSONL settings history. The
+  holistic ordering assertion canonicalizes both cwd values so Windows verbatim
+  prefixes do not masquerade as metadata drift.
 
 ### Core: MCP forced approvals still participate in session remember keys
 
