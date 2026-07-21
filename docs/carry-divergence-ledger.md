@@ -951,6 +951,29 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server/tests/suite/conversation_summary.rs`
   - `codex-rs/app-server/tests/suite/v2/thread_read.rs`
 
+### Thread-store History And Metadata Ordering
+
+- A clone-shared asynchronous operation permit serializes each `LiveThread`
+  mutation that can change canonical JSONL history, derive SQLite metadata, or
+  acknowledge a pending metadata generation. This keeps rollout order and the
+  indexed model, provider, reasoning, cwd, and related metadata projection in
+  one observable order.
+- The same boundary covers inherited-history persistence, explicit persist and
+  flush barriers, shutdown, discard, memory-mode updates, and direct metadata
+  updates. Read-only history and rollout-path access remains concurrent.
+- The permit is owned across awaits rather than holding a synchronous mutex.
+  This preserves async runtime safety while preventing one clone's `persist()`
+  from acknowledging metadata before another clone has observed its already
+  appended settings event.
+- `concurrent_appends_keep_sqlite_metadata_in_canonical_history_order` and
+  `persist_waits_for_append_observation_before_flushing_pending_metadata`
+  deterministically guard both races through the real local JSONL and SQLite
+  store boundary.
+- Primary files:
+  - `codex-rs/thread-store/src/live_thread.rs`
+  - `codex-rs/thread-store/src/live_thread_tests.rs`
+  - `codex-rs/thread-store/src/lib.rs`
+
 ### Private Configured Thread Identity Provenance Contract
 
 - Keep configured-identity provenance storage out of generic `ThreadMetadata`.

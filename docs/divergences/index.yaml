@@ -2398,6 +2398,42 @@
       "extraction_target": "thread provenance, history mode, and state-backed name coexistence contract"
     },
     {
+      "id": "thread-store-history-metadata-serialization",
+      "title": "Thread-store canonical history and metadata serialization",
+      "status": "live",
+      "category": "thread-metadata",
+      "surface": [
+        "LiveThread canonical JSONL append order",
+        "SQLite metadata projection",
+        "persist, flush, shutdown, and discard barriers"
+      ],
+      "files": [
+        "codex-rs/thread-store/src/live_thread.rs",
+        "codex-rs/thread-store/src/live_thread_tests.rs",
+        "codex-rs/thread-store/src/lib.rs"
+      ],
+      "behavior": "Downstream serializes each clone-shared LiveThread mutation that can append canonical history, observe and project SQLite metadata, or acknowledge a pending metadata generation. The asynchronous owned permit covers append, inherited-history persistence, persist, flush, shutdown, discard, memory-mode updates, and direct metadata updates while leaving read-only history access concurrent, so indexed model, provider, reasoning, cwd, and related metadata cannot be reordered relative to the JSONL settings history.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "632aa189aa0764f2face1e611617a14f00bd495d",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub blocking-ci and rust-ci-full codex-thread-store tests",
+      "tests": [
+        "concurrent_appends_keep_sqlite_metadata_in_canonical_history_order",
+        "persist_waits_for_append_observation_before_flushing_pending_metadata"
+      ],
+      "owner": "downstream",
+      "notes": "The race became visible while integrating upstream thread-settings persistence. Preserve the complete append-observe-project-acknowledge boundary rather than narrowing the permit to individual store calls; independently reopened handles remain a store-level policy boundary.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/thread-store/src/live_thread.rs",
+        "codex-rs/thread-store/src/live_thread_tests.rs"
+      ],
+      "extraction_target": "clone-shared LiveThread mutation ordering contract"
+    },
+    {
       "id": "configured-thread-identity-provenance-contract",
       "title": "Private configured thread identity provenance contract",
       "status": "live",
