@@ -229,6 +229,22 @@ the current production WebSocket connector still uses the synchronous resolver.
 Downstream adopts the route behavior intact and retains only its sha2
 0.11-compatible hexadecimal cache-key encoder.
 
+## Upstream managed-profile proxy lookup
+
+Upstream commit `88fac6fe10` includes permission profiles supplied by
+`requirements.toml` when resolving the active profile's network proxy settings.
+Duplicate profile IDs still fail closed, inheritance is resolved before proxy
+construction, and top-level managed network constraints remain authoritative.
+Downstream Windows elevated-backend and firewall enforcement continues after
+the shared `NetworkProxySpec` is resolved.
+
+## Upstream patch-approval test stabilization
+
+Upstream commit `c0cd337766` increases the patch-approval test helper's Linux
+per-event silence timeout from 10 to 15 seconds. The macOS floor remains 30
+seconds, the suite remains excluded on Windows, and production approval policy,
+protocol, request handling, and deadlines are unchanged.
+
 ## Validation policy
 
 - use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
@@ -260,14 +276,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-21`):
 
 - downstream integration code tree:
-  `6356435334e5115617147841b03071373391e788`
+  `e4d86fd279d6dde086c91d5d541ddd51e40c0034`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
+  `c0cd337766ff27a75623c5baba199389f94f2ab3`
 - `upstream/main`:
-  `fd3c1dc13d0a0941af406e1bc1f697c9d14110ea`
+  `c0cd337766ff27a75623c5baba199389f94f2ab3`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1908` downstream ahead
+  `0` upstream ahead, `1915` downstream ahead
+- downstream-only non-merge commits: `1642` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

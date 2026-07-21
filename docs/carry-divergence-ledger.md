@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-21`
-- downstream integration code tree: `bf736ed0f822fdf0c65563ccd18e9f18f1fb068c`
+- downstream integration code tree: `e4d86fd279d6dde086c91d5d541ddd51e40c0034`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `c9ef7eff005c3299a5a5f0004c34c6a3eedf2564`
-- `upstream/main`: `c9ef7eff005c3299a5a5f0004c34c6a3eedf2564`
-- downstream branch vs `upstream/main`: `1913` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `c0cd337766ff27a75623c5baba199389f94f2ab3`
+- `upstream/main`: `c0cd337766ff27a75623c5baba199389f94f2ab3`
+- downstream branch vs `upstream/main`: `1915` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1641` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1642` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -302,6 +302,11 @@ docs-only refresh commit that records this snapshot.
   retains the built-in text when that catalog key is absent. An explicitly
   empty value suppresses only the built-in approval section, matching existing
   `on_request` semantics.
+- A selected catalog value is the complete approval-section replacement: it
+  does not receive the built-in `request_permissions`, approved-prefix, or
+  auto-review supplements. Preserve that upstream behavior so an explicit
+  empty value continues to suppress the section rather than being repopulated
+  downstream.
 - The model metadata and prompt changes merged without conflict. The
   downstream Schemars 1.2 adapter remains the only local shape difference in
   `openai_models.rs`; the new fields and their deserialization behavior are
@@ -330,6 +335,40 @@ docs-only refresh commit that records this snapshot.
   `66c768664ada195eb2d39c23e2d3eb2e04ab34e8b01d6f61175b1f4392f08158`
   and records exact mirror health. Signed two-parent merge `bf736ed0f8`
   preserves `c9ef7eff00` as its second parent.
+
+### Managed Permission Profile Network Proxy Resolution
+
+- Upstream commit `88fac6fe10` merges permission profiles supplied by
+  `requirements.toml` with configured profiles before resolving the selected
+  profile's network proxy settings. It reuses the same fail-closed duplicate-ID
+  handling and resolved-profile inheritance used by initial permission
+  selection.
+- This upstream lookup repair does not weaken managed constraints or broaden
+  profile selection. Top-level network requirements are still applied after
+  profile lookup, and downstream Windows carry begins only after the resulting
+  `NetworkProxySpec` has been resolved.
+- `system_requirements_define_managed_permission_profiles` and
+  `turn_start_accepts_managed_network_profile_from_requirements` guard the core
+  loader and app-server turn projection. The production hunk and both tests are
+  upstream-exact in the integration tree.
+
+### Patch Approval Test Stabilization
+
+- Upstream commit `c0cd337766` gives the patch-approval test helper a
+  15-second per-event silence timeout. It preserves the existing request,
+  completion, call-ID, decision, and patch-application assertions and changes
+  no runtime approval behavior.
+- The effective Linux timeout increases from 10 to 15 seconds; the shared
+  macOS floor remains 30 seconds, and the approvals suite remains excluded on
+  Windows. Keep this as upstream-owned test stabilization rather than creating
+  downstream timeout carry.
+- Hosted mirror run `29792987228` advanced `origin/upstream-main` to exact
+  `c0cd337766`; sync job `88518517425` passed and audit job `88518586023`
+  returned the expected pre-promotion exit `4`. Artifact `8480980477` has
+  GitHub SHA-256
+  `f60f0297a8bd882869dffdc4277e48c7e589531bff81a44093119fe861a841b3`
+  and records exact mirror health. Signed two-parent merge `e4d86fd279` has
+  `c0cd337766` as its second parent.
 
 ## Current Live Divergences
 
@@ -473,6 +512,27 @@ docs-only refresh commit that records this snapshot.
   - `docs/contributing.md`
   - `docs/downstream.md`
 
+### Hook Command Early-Exit Output Preservation
+
+- Signed downstream commit `932cbceeb8` preserves a successful hook's stdout,
+  stderr, and exit status when the hook closes stdin before consuming the full
+  payload and the parent observes `BrokenPipe`. Every other stdin write error
+  keeps the existing kill-and-report behavior.
+- The direct `hook_can_exit_successfully_without_reading_stdin` regression and
+  the production change are one temporary carry unit. Drop both when upstream
+  adopts equivalent successful-early-exit handling; do not replace them with a
+  Wine-only skip.
+
+### Upstream Launcher Validation Repairs
+
+- Signed downstream commit `932cbceeb8` supplies the empty inherited-descriptor
+  slice missed by the upstream Wine PTY API migration and adds the exact
+  optional sandbox-executable comment required by downstream's Windows
+  argument lint.
+- These validation-only hunks are independent. Drop the Wine call-site repair
+  when upstream updates that caller, and drop the comment when upstream adopts
+  an equivalent annotation or the downstream lint no longer requires it.
+
 ### Windows Filesystem Boundary Compatibility
 
 - The 2026-07-16 sync adopts upstream commit `5a85351dfe`, which retires the
@@ -538,6 +598,11 @@ docs-only refresh commit that records this snapshot.
 
 ### Windows Proxy-Aware Backend Selection
 
+- Upstream commit `88fac6fe10` owns requirements-defined profile lookup while
+  resolving the active network proxy specification. Downstream Windows carry
+  starts after that `NetworkProxySpec` exists and continues to own effective
+  backend selection, prepared filesystem overrides, telemetry, firewall
+  enforcement, and direct-bypass denial.
 - A managed network proxy is an effective elevated-backend requirement on
   Windows, regardless of whether the configured sandbox level is elevated or
   restricted token.

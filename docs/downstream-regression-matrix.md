@@ -84,6 +84,9 @@ Wine-backed executor note:
   serialization check.
 - `pinned_powershell_runs_under_wine_with_a_pty` compiles the upstream PTY API
   with an explicit empty inherited-descriptor slice.
+- `managed_network_selects_elevated_windows_spawn` carries the exact optional
+  sandbox-executable argument comment required by the Windows lint graph. This
+  validation-only hunk drops independently from the Wine PTY repair.
 - `hook_can_exit_successfully_without_reading_stdin` deterministically covers a
   successful hook closing stdin early, while
   `session_start_hooks_apply_additional_context_limits_individually` remains
@@ -120,6 +123,11 @@ shared seam:
 - `catalog_approval_messages_select_reviewer_variant`
 - `missing_catalog_key_uses_legacy_approval_text`
 - `empty_catalog_non_on_request_approval_messages_suppress_legacy_approval_text`
+- `approval_messages_preserve_missing_and_empty_values`
+- `system_requirements_define_managed_permission_profiles`
+- `turn_start_accepts_managed_network_profile_from_requirements`
+- `approval_matrix_covers_group::apply_patch`
+- `approving_apply_patch_for_session_skips_future_prompts_for_same_file`
 
 The downstream audio-history assertion uses the upstream copy-on-write
 `raw_items()` accessor; that compatibility assertion is covered by the common
