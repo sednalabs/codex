@@ -57,7 +57,12 @@ state.
    explicit compatibility translation. The response MUST set
    `compatibility_mode: "legacy-translated"`, record the resolved target, and
    never silently fill an ambiguous target from a different session.
-5. A visual claim requires native `inputImage` content for its observation.
+5. A native-v1 `install_build_from_run` request MUST declare
+   `install.launch_after_install`. The compatibility translation for a legacy
+   install input that omits that field MUST normalize the existing default of
+   `true` into that explicit v1 value and record it in the install receipt; it
+   MUST NOT leave an application launch implicit.
+6. A visual claim requires native `inputImage` content for its observation.
    Artifact paths, XML, logs, and digest text are receipts, not visual
    substitutes.
 
@@ -134,7 +139,10 @@ manifest actually observed by the provider, not an unverified caller hint.
 
 `operation.kind` is one of `observe`, `step`, `install_build_from_run`, or
 `lifecycle`. `step`, `install_build_from_run`, and `lifecycle` are mutating.
-A lifecycle operation MUST include
+An `install_build_from_run` operation MUST include `target.expected_build` and
+`"install": { "launch_after_install": true | false }`. The v1 flag declares
+whether installation may launch the app; it is not an inferred lifecycle
+operation. A lifecycle operation MUST include
 `"lifecycle": { "action": "launch" | "stop" | "relaunch" }` and a
 `target.app`; it receives a typed lifecycle receipt rather than being implied by
 a `step`. `actions` is ordered and each `action_id` is unique within a request.
@@ -212,8 +220,73 @@ and `w4337`.
 "running", "resulting_app_state": "running" }`. A failed lifecycle attempt
 uses `status: "failed"`, gives the resulting state or `"unknown"`, and includes
 `retryability`; it MUST NOT imply that the caller can replay the operation.
-`lifecycle_receipt` is absent for `observe`, `step`, and
-`install_build_from_run` responses.
+The top-level `lifecycle_receipt` is absent for `observe`, `step`, and
+`install_build_from_run` responses. An install that performs its explicitly
+declared launch instead records the resulting state transition in the nested
+`install_receipt.launch.lifecycle_receipt` defined below.
+
+### Installation receipt and launch state
+
+An `install_build_from_run` response MUST carry `install_receipt`; a successful
+receipt has this shape:
+
+```json
+{
+  "install_receipt": {
+    "status": "installed",
+    "requested_build": {
+      "repository": "owner/android-app",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+      "workflow_run_id": 123456,
+      "artifact_name": "android-apk",
+      "artifact_sha256": "sha256:<hex>"
+    },
+    "installed_build": {
+      "repository": "owner/android-app",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+      "workflow_run_id": 123456,
+      "artifact_name": "android-apk",
+      "artifact_sha256": "sha256:<hex>",
+      "package_name": "com.example.androidapp",
+      "manifest_sha256": "sha256:<hex>"
+    },
+    "launch": {
+      "requested": true,
+      "performed": true,
+      "lifecycle_receipt": {
+        "action": "launch",
+        "status": "applied",
+        "previous_app_state": "not_running",
+        "resulting_app_state": "running"
+      }
+    }
+  }
+}
+```
+
+`requested_build` preserves the complete request tuple. `installed_build` is
+the provider-observed installed manifest; it records repository, commit,
+workflow run, artifact name, artifact digest, and the package and manifest
+digest actually installed. On `status: "installed"`, its repository, commit,
+workflow, artifact name, and artifact digest MUST equal `requested_build`; a
+mismatch MUST use `status: "provenance_mismatch"` and return
+`build_provenance_mismatch` with both requested and observed values, not a
+success receipt. A failure before an installed manifest is observable uses
+`status: "failed"`, returns `install_failed`, and MUST NOT claim an observed
+build identity.
+
+`launch.requested` MUST equal the normalized v1 `launch_after_install` value.
+If it is `true`, the provider MUST either report `launch.performed: true` with
+the nested lifecycle receipt or return an error; it MUST NOT silently omit the
+launch outcome. That nested receipt uses the lifecycle state union and `launch`
+transition in the next section, binds the installation-induced app-state change,
+and is copied into evidence. If `launch.requested` is `false`, `performed` MUST
+be `false`, the nested lifecycle receipt is absent, and installation MUST NOT
+change application state. A failed or provenance-mismatch install also records
+`launch.performed: false` and has no nested lifecycle receipt. This installation
+receipt does not substitute for an
+explicit `lifecycle` operation: only installation's declared launch flag may
+produce its nested `launch` receipt.
 
 ### Lifecycle app-state transitions
 
@@ -282,7 +355,7 @@ the caller to obtain a fresh observation before making a visual claim.
 ```
 
 The error kinds are `target_missing`, `target_ambiguous`, `target_mismatch`,
-`build_provenance_mismatch`, `not_ready`, `selector_no_match`,
+`build_provenance_mismatch`, `install_failed`, `not_ready`, `selector_no_match`,
 `selector_ambiguous`, `stale_observation`, `postcondition_unmet`,
 `partial_action`, `lifecycle_failed`, `capability_unsupported`,
 `provider_unavailable`, and `recovery_required`. A `partial_action` error after
@@ -324,6 +397,7 @@ tool and transcript surfaces; it does not expose the provider's wire spelling.
     "repository": "owner/android-app",
     "commit_sha": "0123456789abcdef0123456789abcdef01234567",
     "workflow_run_id": 123456,
+    "artifact_name": "android-apk",
     "artifact_sha256": "sha256:<hex>"
   },
   "before_observation": "obs_41",
@@ -344,16 +418,20 @@ build identity, action outcomes, observation generations, or artifact digests
 needed to establish what was proven.
 
 `operation_kind` controls the operation-specific receipt fields. A `step`
-record MUST carry `action_batch` and MUST NOT carry `lifecycle_receipt`. A
-`lifecycle` record MUST carry `lifecycle_receipt` with the same action, status,
-previous state, resulting or `unknown` state, and retryability returned to the
-caller when its status is `failed`; it MUST NOT substitute an `action_batch`.
-`operation_kind` MUST exactly equal both `request.operation.kind` and
-`response.operation_kind` for the request identified by `request_id`; a mismatch
-rejects the evidence bundle. `observe` and `install_build_from_run` records carry
-neither field unless a later compatible contract revision explicitly defines one.
-This keeps a lifecycle transition verifiable in the same append-only bundle as
-its target, revisions, observations, and artifact digests.
+record MUST carry `action_batch` and MUST NOT carry a lifecycle or install
+receipt. A `lifecycle` record MUST carry `lifecycle_receipt` with the same
+action, status, previous state, resulting or `unknown` state, and retryability
+returned to the caller when its status is `failed`; it MUST NOT substitute an
+`action_batch`. An `install_build_from_run` record MUST carry an exact copy of
+the response's `install_receipt`, including the full requested and observed
+build tuples, package and manifest digest, declared launch value, performed
+state, and nested lifecycle receipt when launch occurs; it MUST NOT carry an
+`action_batch` or top-level `lifecycle_receipt`. `operation_kind` MUST exactly
+equal both `request.operation.kind` and `response.operation_kind` for the
+request identified by `request_id`; a mismatch rejects the evidence bundle.
+An `observe` record carries none of these operation-specific receipts. This
+keeps an installation or lifecycle transition verifiable in the same append-only
+bundle as its target, revisions, observations, and artifact digests.
 
 ## Requirement-to-owner matrix
 
@@ -388,10 +466,12 @@ session, serial)` tuple.
   `src/interactive_session.rs`; Solar hosted provider pin.
 - **Existing owner and disposition:** `default:w4387` native install exposure
   and `default:w4398` fixed provider ref — **extend-owner**.
-- **Same coupled-boundary assertion:** `default:w10347` binds run artifact and
-  digest to that same resolved session in its installed-build receipt.
+- **Same coupled-boundary assertion:** `default:w10347` binds the complete run
+  artifact tuple (repository, commit, workflow, artifact name, and digest) and
+  observed package/manifest to that same resolved session in its install receipt.
 - **Natural assertion boundary:** Whole install receipt equals the requested
-  run/artifact and observed manifest, or returns `build_provenance_mismatch`.
+  run/artifact tuple and observed manifest, records the declared/performed launch
+  outcome, or returns `build_provenance_mismatch`.
 - **Rollout boundary:** Hosted session uses the pinned provider revision and
   records the build receipt.
 
@@ -586,7 +666,8 @@ scoped evidence and not a substitute.
   actions inside a resolved Android target.
 - **Build installation alone proves provenance — rejected.** `w4387` exposes
   installation and `w4398` pins a provider revision; `w10347` still must bind
-  the installed manifest and session receipt to the requested artifact.
+  the installed manifest, declared launch outcome, and session receipt to the
+  complete requested artifact tuple.
 - **The generic provider-contract tree is superseded — rejected.** `w4422`,
   `w4432`, and `w4434` retain adapter-neutral ownership. `w10356` is the
   Android v1 projection and compatibility consumer of that work.
