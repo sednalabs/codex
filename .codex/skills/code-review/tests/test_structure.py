@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).resolve().parent.parent
 SKILL = ROOT / "SKILL.md"
 REFERENCES = ROOT / "references"
 
