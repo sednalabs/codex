@@ -343,7 +343,8 @@ record MUST carry `action_batch` and MUST NOT carry `lifecycle_receipt`. A
 `lifecycle` record MUST carry `lifecycle_receipt` with the same action, status,
 previous state, resulting or `unknown` state, and retryability returned to the
 caller when its status is `failed`; it MUST NOT substitute an `action_batch`.
-`observe` and
+`operation_kind` MUST exactly equal `operation.kind` in the request and response
+identified by `request_id`; a mismatch rejects the evidence bundle. `observe` and
 `install_build_from_run` records carry neither field unless a later compatible
 contract revision explicitly defines one. This keeps a lifecycle transition
 verifiable in the same append-only bundle as its target, revisions, observations,
