@@ -15,6 +15,7 @@ use app_test_support::test_absolute_path;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use chrono::Utc;
+use codex_app_server_protocol::ActivePermissionProfile;
 use codex_app_server_protocol::ApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientInfo;
@@ -29,6 +30,7 @@ use codex_app_server_protocol::McpToolCallAppContext;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
@@ -580,18 +582,81 @@ async fn thread_resume_preserves_persisted_approvals_reviewer() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Result<()> {
+async fn thread_resume_preserves_goal_first_and_fork_settings() -> Result<()> {
+    #[derive(Debug, PartialEq)]
+    struct RestoredThreadSettings {
+        model: String,
+        model_provider: String,
+        reasoning_effort: Option<ReasoningEffort>,
+        approvals_reviewer: ApprovalsReviewer,
+        approval_policy: AskForApproval,
+        sandbox: SandboxPolicy,
+        active_permission_profile: Option<ActivePermissionProfile>,
+        cwd: AbsolutePathBuf,
+    }
+
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path(), &server.uri())?;
+    let goal_workspace = TempDir::new()?;
+    let fork_workspace = TempDir::new()?;
     let config_path = codex_home.path().join("config.toml");
-    let config = std::fs::read_to_string(&config_path)?;
     std::fs::write(
         &config_path,
-        config.replace("personality = true\n", "personality = true\ngoals = true\n"),
+        format!(
+            r#"
+model = "gpt-5.3-codex"
+model_reasoning_effort = "medium"
+approval_policy = "never"
+approvals_reviewer = "user"
+default_permissions = ":read-only"
+model_provider = "mock_provider"
+
+[features]
+personality = true
+goals = true
+
+[model_providers.mock_provider]
+name = "Initial ambient provider"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[model_providers.goal_provider]
+name = "Goal thread provider"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[model_providers.fork_provider]
+name = "Fork thread provider"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[model_providers.restart_provider]
+name = "Cold restart ambient provider"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[permissions.goal-profile.filesystem]
+":workspace_roots" = "read"
+
+[permissions.fork-profile.filesystem]
+":workspace_roots" = "write"
+"#,
+            server_uri = server.uri(),
+        ),
     )?;
 
-    let (thread_id, fork_thread_id) = {
+    let goal_cwd = AbsolutePathBuf::from_absolute_path(goal_workspace.path().canonicalize()?)?;
+    let fork_cwd = AbsolutePathBuf::from_absolute_path(fork_workspace.path().canonicalize()?)?;
+
+    let (thread_id, expected_goal_settings, fork_thread_id, expected_fork_settings) = {
         let mut mcp = TestAppServer::builder()
             .with_codex_home(codex_home.path())
             .without_managed_config()
@@ -602,7 +667,15 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
         let start_id = mcp
             .send_thread_start_request_with_auto_env(ThreadStartParams {
                 model: Some("gpt-5.2-codex".to_string()),
+                model_provider: Some("goal_provider".to_string()),
+                cwd: Some(goal_cwd.display().to_string()),
+                approval_policy: Some(AskForApproval::UnlessTrusted),
                 approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                permissions: Some("goal-profile".to_string()),
+                config: Some(std::collections::HashMap::from([(
+                    "model_reasoning_effort".to_string(),
+                    json!("high"),
+                )])),
                 ..Default::default()
             })
             .await?;
@@ -611,7 +684,44 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
             mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
         )
         .await??;
-        let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+        let ThreadStartResponse {
+            thread,
+            model,
+            model_provider,
+            cwd,
+            approval_policy,
+            approvals_reviewer,
+            sandbox,
+            active_permission_profile,
+            reasoning_effort,
+            ..
+        } = to_response::<ThreadStartResponse>(start_resp)?;
+        let expected_goal_settings = RestoredThreadSettings {
+            model: "gpt-5.2-codex".to_string(),
+            model_provider: "goal_provider".to_string(),
+            reasoning_effort: Some(ReasoningEffort::High),
+            approvals_reviewer: ApprovalsReviewer::AutoReview,
+            approval_policy: AskForApproval::UnlessTrusted,
+            sandbox: sandbox.clone(),
+            active_permission_profile: Some(ActivePermissionProfile {
+                id: "goal-profile".to_string(),
+                extends: None,
+            }),
+            cwd: goal_cwd,
+        };
+        assert_eq!(
+            RestoredThreadSettings {
+                model,
+                model_provider,
+                reasoning_effort,
+                approvals_reviewer,
+                approval_policy,
+                sandbox,
+                active_permission_profile,
+                cwd,
+            },
+            expected_goal_settings
+        );
         let rollout_path = thread.path.clone().expect("thread path");
 
         for objective in [
@@ -652,7 +762,16 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
         let fork_id = mcp
             .send_thread_fork_request(ThreadForkParams {
                 thread_id: thread.id.clone(),
+                model: Some("gpt-5.4".to_string()),
+                model_provider: Some("fork_provider".to_string()),
+                cwd: Some(fork_cwd.display().to_string()),
+                approval_policy: Some(AskForApproval::Never),
                 approvals_reviewer: Some(ApprovalsReviewer::User),
+                permissions: Some("fork-profile".to_string()),
+                config: Some(std::collections::HashMap::from([(
+                    "model_reasoning_effort".to_string(),
+                    json!("ultra"),
+                )])),
                 ..Default::default()
             })
             .await?;
@@ -663,22 +782,60 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
         .await??;
         let ThreadForkResponse {
             thread: fork_thread,
+            model,
+            model_provider,
+            cwd,
+            approval_policy,
             approvals_reviewer,
+            sandbox,
+            active_permission_profile,
+            reasoning_effort,
             ..
         } = to_response::<ThreadForkResponse>(fork_resp)?;
-        assert_eq!(approvals_reviewer, ApprovalsReviewer::User);
+        let expected_fork_settings = RestoredThreadSettings {
+            model: "gpt-5.4".to_string(),
+            model_provider: "fork_provider".to_string(),
+            reasoning_effort: Some(ReasoningEffort::Ultra),
+            approvals_reviewer: ApprovalsReviewer::User,
+            approval_policy: AskForApproval::Never,
+            sandbox: sandbox.clone(),
+            active_permission_profile: Some(ActivePermissionProfile {
+                id: "fork-profile".to_string(),
+                extends: None,
+            }),
+            cwd: fork_cwd,
+        };
+        assert_eq!(
+            RestoredThreadSettings {
+                model,
+                model_provider,
+                reasoning_effort,
+                approvals_reviewer,
+                approval_policy,
+                sandbox,
+                active_permission_profile,
+                cwd,
+            },
+            expected_fork_settings
+        );
 
-        (thread.id, fork_thread.id)
+        (
+            thread.id,
+            expected_goal_settings,
+            fork_thread.id,
+            expected_fork_settings,
+        )
     };
 
-    let config = std::fs::read_to_string(&config_path)?;
-    std::fs::write(
-        config_path,
-        config.replace(
-            "approval_policy = \"never\"\n",
-            "approval_policy = \"never\"\napprovals_reviewer = \"user\"\n",
-        ),
-    )?;
+    let mut restart_config =
+        std::fs::read_to_string(&config_path)?.parse::<toml_edit::DocumentMut>()?;
+    restart_config["model"] = toml_edit::value("gpt-5.4-mini");
+    restart_config["model_reasoning_effort"] = toml_edit::value("low");
+    restart_config["approval_policy"] = toml_edit::value("on-request");
+    restart_config["approvals_reviewer"] = toml_edit::value("auto_review");
+    restart_config["default_permissions"] = toml_edit::value(":danger-full-access");
+    restart_config["model_provider"] = toml_edit::value("restart_provider");
+    std::fs::write(config_path, restart_config.to_string())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -686,9 +843,9 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
         .build()
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    for (thread_id, expected_reviewer) in [
-        (thread_id, ApprovalsReviewer::AutoReview),
-        (fork_thread_id, ApprovalsReviewer::User),
+    for (thread_id, expected_settings) in [
+        (thread_id, expected_goal_settings),
+        (fork_thread_id, expected_fork_settings),
     ] {
         let resume_id = mcp
             .send_thread_resume_request(ThreadResumeParams {
@@ -702,10 +859,30 @@ async fn thread_resume_preserves_goal_first_and_fork_approvals_reviewer() -> Res
         )
         .await??;
         let ThreadResumeResponse {
-            approvals_reviewer, ..
+            model,
+            model_provider,
+            cwd,
+            approval_policy,
+            approvals_reviewer,
+            sandbox,
+            active_permission_profile,
+            reasoning_effort,
+            ..
         } = to_response::<ThreadResumeResponse>(resume_resp)?;
 
-        assert_eq!(approvals_reviewer, expected_reviewer);
+        assert_eq!(
+            RestoredThreadSettings {
+                model,
+                model_provider,
+                reasoning_effort,
+                approvals_reviewer,
+                approval_policy,
+                sandbox,
+                active_permission_profile,
+                cwd,
+            },
+            expected_settings
+        );
     }
 
     Ok(())
