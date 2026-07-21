@@ -37,7 +37,6 @@ jobs:
 
           mapfile -t changed < <(git diff --name-only | sort)
           expected=(
-            MODULE.bazel.lock
             codex-rs/Cargo.lock
           )
           if ! diff -u \
