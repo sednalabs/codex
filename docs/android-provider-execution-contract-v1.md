@@ -132,12 +132,16 @@ manifest actually observed by the provider, not an unverified caller hint.
 }
 ```
 
-`operation.kind` is one of `observe`, `step`, or `install_build_from_run`.
-Only `step` and `install_build_from_run` are mutating. `actions` is ordered and
-each `action_id` is unique within a request. A selector action references the
-observation generation that informed it; a coordinate action also carries the
-coordinate frame identity from that observation. A multi-touch gesture is one
-atomic action: it MUST NOT be emulated as several independent taps or swipes.
+`operation.kind` is one of `observe`, `step`, `install_build_from_run`, or
+`lifecycle`. `step`, `install_build_from_run`, and `lifecycle` are mutating.
+A lifecycle operation MUST include
+`"lifecycle": { "action": "launch" | "stop" | "relaunch" }` and a
+`target.app`; it receives a typed lifecycle receipt rather than being implied by
+a `step`. `actions` is ordered and each `action_id` is unique within a request.
+A selector action references the observation generation that informed it; a
+coordinate action also carries the coordinate frame identity from that
+observation. A multi-touch gesture is one atomic action: it MUST NOT be
+emulated as several independent taps or swipes.
 
 ### Readiness, response, and postconditions
 
@@ -163,7 +167,11 @@ atomic action: it MUST NOT be emulated as several independent taps or swipes.
     "generation": "obs_42",
     "coordinate_frame_id": "android-frame-42",
     "input_image": { "content_type": "image/png", "present": true },
-    "ui_digest": { "generation": "ui-42", "stable": true }
+    "ui_digest": {
+      "generation": "ui-42",
+      "source_observation_id": "obs_42",
+      "stable": true
+    }
   },
   "action_batch": {
     "batch_id": "batch-01",
@@ -186,8 +194,17 @@ atomic action: it MUST NOT be emulated as several independent taps or swipes.
 Readiness states are exactly `target_unresolved`, `provider_unavailable`,
 `device_booting`, `device_ready`, `app_launching`, `app_ready`,
 `recovery_required`, or `stale`. A state other than `app_ready` prevents a
-mutating action unless the operation itself is an explicitly scoped recovery
-or lifecycle action.
+normal mutating action. An explicit lifecycle operation may proceed only when
+the resolved target supports its named state transition; its response MUST
+include `lifecycle_receipt` and a fresh `readiness` result. Hosted capability
+recovery is not a v1 operation kind: it returns `recovery_required` and remains
+owned by `w4294` and `w4337`.
+
+A successful lifecycle response includes
+`"lifecycle_receipt": { "action": "relaunch", "previous_app_state":
+"running", "resulting_app_state": "running" }` alongside its fresh
+`readiness` result. `lifecycle_receipt` is absent for `observe`, `step`, and
+`install_build_from_run` responses.
 
 A postcondition result is `satisfied`, `not_satisfied`, `not_evaluated`, or
 `unavailable`. `not_satisfied` means the action dispatch may already have had
@@ -199,14 +216,19 @@ the caller to obtain a fresh observation before making a visual claim.
 
 ```json
 {
+  "contract_version": "android-provider-execution/v1",
+  "request_id": "android-request-01",
+  "compatibility_mode": "native-v1",
+  "resolved_target": {
+    "environment_id": "env_01",
+    "provider_instance_id": "provider_01",
+    "session_id": "session_01",
+    "device_serial": "emulator-5554"
+  },
   "error": {
     "kind": "partial_action",
     "retryability": "do_not_replay",
     "message": "a2 did not complete after a1 was applied",
-    "resolved_target": {
-      "session_id": "session_01",
-      "device_serial": "emulator-5554"
-    },
     "batch": {
       "batch_id": "batch-01",
       "outcomes": [
@@ -224,8 +246,9 @@ the caller to obtain a fresh observation before making a visual claim.
       ]
     },
     "post_failure_observation": {
+      "observation_id": "obs_43",
       "generation": "obs_43",
-      "input_image_present": true
+      "input_image": { "content_type": "image/png", "present": true }
     }
   }
 }
@@ -238,6 +261,18 @@ The error kinds are `target_missing`, `target_ambiguous`, `target_mismatch`,
 `recovery_required`. An error that follows any mutating attempt MUST carry
 completed, failed, and not-attempted outcomes; retrying the whole batch is
 never implied by a generic failure string.
+
+### Provider-to-Codex projection
+
+Provider wire fields in this contract use `snake_case`. At the Codex boundary,
+the provider's `observation.input_image.present: true` MUST be projected as an
+actual native `inputImage` content item in `content[]`, using a data URL or
+another Codex-supported image reference; the JSON descriptor alone is not a
+visual result. The typed receipt, including `ui_digest`, remains in
+`structuredContent`. `ui_digest.source_observation_id` MUST equal the enclosing
+`observation.observation_id`, and its generation describes that same source
+observation. Codex retains `inputImage` and `content[]` naming in its public
+tool and transcript surfaces; it does not expose the provider's wire spelling.
 
 ### Evidence record
 
