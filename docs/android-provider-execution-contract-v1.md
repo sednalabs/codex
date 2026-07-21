@@ -143,12 +143,16 @@ coordinate action also carries the coordinate frame identity from that
 observation. A multi-touch gesture is one atomic action: it MUST NOT be
 emulated as several independent taps or swipes.
 
+Every v1 response, including a compatibility or error response, MUST carry
+`operation_kind` equal to the request's `operation.kind`.
+
 ### Readiness, response, and postconditions
 
 ```json
 {
   "contract_version": "android-provider-execution/v1",
   "request_id": "android-request-01",
+  "operation_kind": "step",
   "compatibility_mode": "native-v1",
   "resolved_target": {
     "environment_id": "env_01",
@@ -240,6 +244,7 @@ the caller to obtain a fresh observation before making a visual claim.
 {
   "contract_version": "android-provider-execution/v1",
   "request_id": "android-request-01",
+  "operation_kind": "step",
   "compatibility_mode": "native-v1",
   "resolved_target": {
     "environment_id": "env_01",
