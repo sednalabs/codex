@@ -63,6 +63,7 @@ windows-sys = { version = "0.52", features = [
 
 [dev-dependencies]
 anyhow = { workspace = true }
+codex-utils-cargo-bin = { workspace = true }
 codex-test-binary-support = { workspace = true }
 ctor = { workspace = true }
 http = { workspace = true }
