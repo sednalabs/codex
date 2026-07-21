@@ -284,19 +284,151 @@ means the listed owner remains authoritative and the successor owns only the
 newly frozen Android-specific invariant. `new-gap` means no listed historical
 item owns that exact invariant. No historical item is superseded.
 
-| Requirement | Canonical repository and code authority | Existing Ops owner and disposition | Successor and sole invariant | Natural assertion boundary | Rollout boundary |
-| --- | --- | --- | --- | --- | --- |
-| Exact session targeting | `android-emulator-mcp`: provider manifest, target resolution, `src/tools.rs`; Codex: `ComputerUseCallParams` and provider routing | `default:w4284` environment binding and lease ownership — **extend-owner** | `default:w10347`: every request/response receipt resolves one identical `(environment, provider, session, serial)` tuple | Whole request/response target equality, including a refusal for ambiguous or stale targets | Provider manifest plus Codex app-server/TUI transport |
-| Build provenance | `android-emulator-mcp`: `src/interactive_session.rs`; Solar hosted provider pin | `default:w4387` native install exposure and `default:w4398` fixed provider ref — **extend-owner** | `default:w10347`: installed-build receipt binds run artifact and digest to the same resolved session | Whole install receipt equals requested run/artifact and observed manifest, or returns `build_provenance_mismatch` | Hosted session uses the pinned provider revision and records the build receipt |
-| Readiness | `android-emulator-mcp`: boot/app probes and `src/tools.rs` | No existing owner defines the typed provider-device-app state union — **new-gap**; recovery remains with `default:w4294`/`default:w4337` | `default:w10348`: one typed readiness state gates every mutating request | State-machine snapshot for each terminal state and legal transition | Provider release, with recovery compatibility checked against `w4294`/`w4337` |
-| Selector behavior | `android-emulator-mcp`: `src/ui.rs`, `src/tools.rs`, schema snapshot | `default:w4242` bridge/action path — **extend-owner** | `default:w10349`: a selector result is unique or returns normalized, bounded candidates | Complete selector result object for unique, no-match, ambiguous, and index-out-of-range cases | Provider schema snapshot and Codex compatibility translation |
-| Postconditions and stable frames | `android-emulator-mcp`: `src/verification.rs`, `src/tools.rs` | `default:w4242` post-action capture — **extend-owner** | `default:w10350`: semantic completion uses a typed postcondition and stable observation, never an implicit sleep | Complete postcondition result plus post-action observation generation | Provider contract test; Codex surfaces the resulting receipt unchanged |
-| UI digest | `android-emulator-mcp`: UI normalization/output and tool schema | No historical owner defines stable observed-generation semantics — **new-gap** | `default:w10351`: digest facts, source observation, and generation move together | Complete digest object has one stable generation and references its observation | Provider digest/schema rollout; consumers treat it as supplemental to pixels |
-| Action batches | `android-emulator-mcp`: bridge/action execution; Codex: native step schema | `default:w4242` batched computer-style bridge — **extend-owner** | `default:w10352`: every action in a batch has an explicit terminal outcome | Whole ordered outcomes array distinguishes applied, failed, and not-attempted | Provider bridge rollout; Codex declares retry guidance without replaying a partial batch |
-| Application lifecycle | `android-emulator-mcp`: app launch/stop/relaunch controls in `src/tools.rs` and session helpers | `default:w4294`/`default:w4337` own environment recovery, not per-app lifecycle — **new-gap** | `default:w10353`: lifecycle operations are explicit, target-bound actions with a fresh state receipt | Whole lifecycle receipt names previous and resulting app state; no implicit restart | Provider capability advertisement and recovery interaction review |
-| Gestures | `android-emulator-mcp`: input execution and provider capabilities; Codex capability gate | `default:w4242` computer-style action bridge — **extend-owner** | `default:w10354`: multi-touch/scroll vocabulary is advertised and atomically executed or explicitly unsupported | One gesture receipt proves capability use; no decomposition into unrelated single-touch actions | Provider capability manifest, then Codex native tool projection |
-| Evidence recording | `android-emulator-mcp`: artifact/receipt writing; Solar: hosted consumer evidence | `default:w4283` hosted acceptance and `default:w4398` provider pin — **extend-owner** | `default:w10355`: evidence manifest joins target, revisions, build, observations, outcomes, and digests | Entire manifest verifies referenced identity and artifact hashes | Hosted stock-app and Solar flows publish the immutable review bundle |
-| Codex projection | Codex: Android tool schema, protocol, app-server, TUI, transcript | `default:w4422` provider contract, `default:w4432` capability registry, and `default:w4434` observation/action traceability — **extend-owner** | `default:w10356`: v1 fields project through native Android tools without changing provider ownership | Whole `ComputerUse` request/response/transcript item preserves target, receipt, error, and native image semantics | Codex PR validation and backward-compatible native-tool rollout |
+### Exact session targeting
+
+- **Canonical authority:** `android-emulator-mcp` provider manifest, target
+  resolution, and `src/tools.rs`; Codex `ComputerUseCallParams` and provider
+  routing.
+- **Existing owner and disposition:** `default:w4284` environment binding and
+  lease ownership — **extend-owner**.
+- **Successor and sole invariant:** `default:w10347` ensures every
+  request/response receipt resolves one identical `(environment, provider,
+  session, serial)` tuple.
+- **Natural assertion boundary:** Whole request/response target equality,
+  including a refusal for ambiguous or stale targets.
+- **Rollout boundary:** Provider manifest plus Codex app-server/TUI transport.
+
+### Build provenance
+
+- **Canonical authority:** `android-emulator-mcp`
+  `src/interactive_session.rs`; Solar hosted provider pin.
+- **Existing owner and disposition:** `default:w4387` native install exposure
+  and `default:w4398` fixed provider ref — **extend-owner**.
+- **Successor and sole invariant:** `default:w10347` binds run artifact and
+  digest to the same resolved session in its installed-build receipt.
+- **Natural assertion boundary:** Whole install receipt equals the requested
+  run/artifact and observed manifest, or returns `build_provenance_mismatch`.
+- **Rollout boundary:** Hosted session uses the pinned provider revision and
+  records the build receipt.
+
+### Readiness
+
+- **Canonical authority:** `android-emulator-mcp` boot/app probes and
+  `src/tools.rs`.
+- **Existing owner and disposition:** No existing owner defines the typed
+  provider-device-app state union — **new-gap**; recovery remains with
+  `default:w4294` and `default:w4337`.
+- **Successor and sole invariant:** `default:w10348` has one typed readiness
+  state that gates every mutating request.
+- **Natural assertion boundary:** State-machine snapshot for every terminal
+  state and legal transition.
+- **Rollout boundary:** Provider release, with recovery compatibility checked
+  against `w4294` and `w4337`.
+
+### Selector behavior
+
+- **Canonical authority:** `android-emulator-mcp` `src/ui.rs`, `src/tools.rs`,
+  and its schema snapshot.
+- **Existing owner and disposition:** `default:w4242` bridge/action path —
+  **extend-owner**.
+- **Successor and sole invariant:** `default:w10349` returns a unique selector
+  result or normalized, bounded candidates.
+- **Natural assertion boundary:** Complete selector result object for unique,
+  no-match, ambiguous, and index-out-of-range cases.
+- **Rollout boundary:** Provider schema snapshot and Codex compatibility
+  translation.
+
+### Postconditions and stable frames
+
+- **Canonical authority:** `android-emulator-mcp` `src/verification.rs` and
+  `src/tools.rs`.
+- **Existing owner and disposition:** `default:w4242` post-action capture —
+  **extend-owner**.
+- **Successor and sole invariant:** `default:w10350` uses a typed
+  postcondition and stable observation, never an implicit sleep.
+- **Natural assertion boundary:** Complete postcondition result plus
+  post-action observation generation.
+- **Rollout boundary:** Provider contract test; Codex surfaces the resulting
+  receipt unchanged.
+
+### UI digest
+
+- **Canonical authority:** `android-emulator-mcp` UI normalization/output and
+  tool schema.
+- **Existing owner and disposition:** No historical owner defines stable
+  observed-generation semantics — **new-gap**.
+- **Successor and sole invariant:** `default:w10351` moves digest facts, source
+  observation, and generation together.
+- **Natural assertion boundary:** Complete digest object has one stable
+  generation and references its observation.
+- **Rollout boundary:** Provider digest/schema rollout; consumers treat it as
+  supplemental to pixels.
+
+### Action batches
+
+- **Canonical authority:** `android-emulator-mcp` bridge/action execution;
+  Codex native step schema.
+- **Existing owner and disposition:** `default:w4242` batched computer-style
+  bridge — **extend-owner**.
+- **Successor and sole invariant:** `default:w10352` assigns every batch action
+  an explicit terminal outcome.
+- **Natural assertion boundary:** Whole ordered outcomes array distinguishes
+  applied, failed, and not-attempted actions.
+- **Rollout boundary:** Provider bridge rollout; Codex declares retry guidance
+  without replaying a partial batch.
+
+### Application lifecycle
+
+- **Canonical authority:** `android-emulator-mcp` app launch/stop/relaunch
+  controls in `src/tools.rs` and session helpers.
+- **Existing owner and disposition:** `default:w4294` and `default:w4337` own
+  environment recovery, not per-app lifecycle — **new-gap**.
+- **Successor and sole invariant:** `default:w10353` makes lifecycle operations
+  explicit, target-bound actions with a fresh state receipt.
+- **Natural assertion boundary:** Whole lifecycle receipt names previous and
+  resulting app state; no implicit restart.
+- **Rollout boundary:** Provider capability advertisement and recovery
+  interaction review.
+
+### Gestures
+
+- **Canonical authority:** `android-emulator-mcp` input execution and provider
+  capabilities; Codex capability gate.
+- **Existing owner and disposition:** `default:w4242` computer-style action
+  bridge — **extend-owner**.
+- **Successor and sole invariant:** `default:w10354` advertises and atomically
+  executes multi-touch/scroll vocabulary or explicitly reports it unsupported.
+- **Natural assertion boundary:** One gesture receipt proves capability use;
+  there is no decomposition into unrelated single-touch actions.
+- **Rollout boundary:** Provider capability manifest, then Codex native tool
+  projection.
+
+### Evidence recording
+
+- **Canonical authority:** `android-emulator-mcp` artifact/receipt writing;
+  Solar hosted consumer evidence.
+- **Existing owner and disposition:** `default:w4283` hosted acceptance and
+  `default:w4398` provider pin — **extend-owner**.
+- **Successor and sole invariant:** `default:w10355` joins target, revisions,
+  build, observations, outcomes, and digests in its evidence manifest.
+- **Natural assertion boundary:** Entire manifest verifies referenced identity
+  and artifact hashes.
+- **Rollout boundary:** Hosted stock-app and Solar flows publish the immutable
+  review bundle.
+
+### Codex projection
+
+- **Canonical authority:** Codex Android tool schema, protocol, app-server,
+  TUI, and transcript.
+- **Existing owner and disposition:** `default:w4422` provider contract,
+  `default:w4432` capability registry, and `default:w4434` observation/action
+  traceability — **extend-owner**.
+- **Successor and sole invariant:** `default:w10356` projects v1 fields through
+  native Android tools without changing provider ownership.
+- **Natural assertion boundary:** Whole `ComputerUse` request/response/transcript
+  item preserves target, receipt, error, and native-image semantics.
+- **Rollout boundary:** Codex PR validation and backward-compatible native-tool
+  rollout.
 
 ## Unassigned and overlap checks
 
