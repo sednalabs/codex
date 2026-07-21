@@ -23,12 +23,14 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         use ratatui_macros::line;
         use ratatui_macros::text;
+        let installation_options_url = crate::version::installation_options_url();
+        let release_notes_url = crate::version::latest_release_notes_url();
         let update_instruction = if let Some(update_action) = self.update_action {
             line!["Run ", update_action.command_str().cyan(), " to update."]
         } else {
             line![
                 "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
+                installation_options_url.cyan().underlined(),
                 " for installation options."
             ]
         };
@@ -43,9 +45,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
+            release_notes_url.cyan().underlined(),
         ];
 
         let inner_width = content
@@ -60,7 +60,10 @@ impl HistoryCell for UpdateAvailableHistoryCell {
         let update_instruction = if let Some(update_action) = self.update_action {
             format!("Run {} to update.", update_action.command_str())
         } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
+            format!(
+                "See {} for installation options.",
+                crate::version::installation_options_url()
+            )
         };
         vec![
             Line::from("Update available!"),
@@ -68,7 +71,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             Line::from(update_instruction),
             Line::from(""),
             Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
+            Line::from(crate::version::latest_release_notes_url()),
         ]
     }
 

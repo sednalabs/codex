@@ -65,6 +65,7 @@ libc = { workspace = true }
 os_info = { workspace = true }
 owo-colors = { workspace = true }
 regex-lite = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 shlex = { workspace = true }
