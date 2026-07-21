@@ -36,6 +36,8 @@ pub struct LiveThread {
     thread_id: ThreadId,
     history_mode: ThreadHistoryMode,
     thread_store: Arc<dyn ThreadStore>,
+    // Keep canonical writes and their derived metadata projection ordered across cloned handles.
+    persistence_operation_lock: Arc<Mutex<()>>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
 }
@@ -102,6 +104,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
+            persistence_operation_lock: Arc::new(Mutex::new(())),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -129,10 +132,13 @@ impl LiveThread {
                 })?,
         );
         let live_thread = Self::create(thread_store, params).await?;
-        if let Err(err) = live_thread
-            .persist_appended_items(inherited_model_context)
-            .await
-        {
+        let append_result = {
+            let _operation_guard = live_thread.persistence_operation_lock.lock().await;
+            live_thread
+                .persist_appended_items(inherited_model_context)
+                .await
+        };
+        if let Err(err) = append_result {
             if let Err(discard_err) = live_thread.discard().await {
                 warn!(
                     "failed to discard thread persistence after inherited context append failed: {discard_err}"
@@ -176,6 +182,7 @@ impl LiveThread {
             thread_id,
             history_mode,
             thread_store,
+            persistence_operation_lock: Arc::new(Mutex::new(())),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -187,6 +194,7 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         let items = self.persist_appended_items(raw_items).await?;
         if items.is_empty() {
             return Ok(());
@@ -241,23 +249,27 @@ impl LiveThread {
     }
 
     pub async fn persist(&self) -> ThreadStoreResult<()> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         self.thread_store.persist_thread(self.thread_id).await?;
         self.flush_pending_metadata_update().await
     }
 
     pub async fn flush(&self) -> ThreadStoreResult<()> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         self.thread_store.flush_thread(self.thread_id).await?;
         self.flush_pending_metadata_update_for_existing_history()
             .await
     }
 
     pub async fn shutdown(&self) -> ThreadStoreResult<()> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         self.flush_pending_metadata_update_for_existing_history()
             .await?;
         self.thread_store.shutdown_thread(self.thread_id).await
     }
 
     pub async fn discard(&self) -> ThreadStoreResult<()> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         self.thread_store.discard_thread(self.thread_id).await
     }
 
@@ -292,6 +304,7 @@ impl LiveThread {
         mode: ThreadMemoryMode,
         include_archived: bool,
     ) -> ThreadStoreResult<()> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         self.flush_pending_metadata_update().await?;
         self.thread_store
             .update_thread_metadata(UpdateThreadMetadataParams {
@@ -311,6 +324,7 @@ impl LiveThread {
         patch: ThreadMetadataPatch,
         include_archived: bool,
     ) -> ThreadStoreResult<StoredThread> {
+        let _operation_guard = self.persistence_operation_lock.lock().await;
         self.flush_pending_metadata_update().await?;
         self.thread_store
             .update_thread_metadata(UpdateThreadMetadataParams {
