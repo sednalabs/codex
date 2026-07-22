@@ -414,6 +414,7 @@ app-server-thread-cwd-targeted:
 # Focused app-server v2 contract slice for high-signal client-facing RPCs.
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-app-server-transport serialize_outgoing_message_preserves_wire_shape --lib -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::app_read:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
