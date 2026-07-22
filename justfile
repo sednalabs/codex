@@ -423,8 +423,10 @@ app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-transport serialize_outgoing_message_preserves_wire_shape --lib -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::app_read:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::paginated_thread_name_preserves_metadata_across_read_list_and_resume -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_preserves_goal_first_and_fork_settings -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
 
 # Focused MCP server contract slice for approval and tool response ordering.
@@ -569,7 +571,7 @@ core-runtime-surface-smoke:
 # Focused skill-loader hermeticity and skill-catalog budget slice.
 skill-loader-fixture-hermeticity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core-skills --lib --no-tests=fail -- loader::tests::non_git_repo_skills_search_does_not_walk_parents loader::tests::skill_roots_include_admin_with_lowest_priority --exact
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --lib --no-tests=fail -- provider::host::tests::host_catalog_entries_carry_their_prompt_scope render::tests::ordering_follows_render_policy render::tests::description_selection_follows_render_policy render::tests::omission_marker_is_charged_to_catalog_budget render::tests::character_fallback_counts_multibyte_metadata_by_characters render::tests::catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --lib --no-tests=fail -- provider::host::tests::host_catalog_entries_carry_their_prompt_scope render::tests::ordering_follows_render_policy render::tests::description_selection_follows_render_policy render::tests::omission_marker_is_charged_to_catalog_budget render::tests::character_fallback_counts_multibyte_metadata_by_characters render::tests::catalog_report_counts_partial_description_truncation render::tests::catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget render::tests::catalog_preserves_report_when_no_fragment_fits_budget --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --test skills_extension --no-tests=fail -- moderate_budget_pressure_keeps_every_catalog_entry extreme_budget_pressure_removes_descriptions_before_omitting_entries --exact
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
