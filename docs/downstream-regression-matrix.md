@@ -592,6 +592,12 @@ for a removed crate path.
   approval/permission merge. The app-server fork and protocol lanes are the
   required hosted proof for that combined boundary; run `29909770697` passed
   them on signed merge head `c673caf16f`.
+- Unified-exec lifecycle conflicts keep upstream's interaction lock, output
+  close guard, trailing-output grace, and network-denial join, while the
+  process-owned bounded transcript and bounded source-task join remain the
+  final-output authority. `WriteStdinInteractionEvent` is the sole ordered
+  publication seam for downstream terminal-wait metadata; internal blocking
+  polls must not emit duplicate interactions.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package
