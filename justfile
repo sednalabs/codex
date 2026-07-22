@@ -329,6 +329,10 @@ blocking-waits-core-targeted:
 
 blocking-waits-unified-exec-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process::tests::source_transcript_preserves_exec_end_when_delta_receiver_lags --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::async_watcher::tests::streaming_output_finishes_on_close_without_waiting_for_grace --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::async_watcher::tests::streaming_output_keeps_grace_as_fallback_without_close --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::async_watcher::tests::exit_watcher_waits_for_late_network_denial_before_classifying_end --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::pruning_does_not_evict_live_process_while_exited_process_is_finalizing --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::failed_initial_end_for_unstored_process_prefers_source_transcript --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::failed_exec_end_uses_fallback_when_source_transcript_is_empty --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_formats_large_output_summary --exact
@@ -552,9 +556,11 @@ core-runtime-surface-smoke:
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
     cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1
 
-# Focused skill-loader fixture hermeticity slice.
+# Focused skill-loader hermeticity and skill-catalog budget slice.
 skill-loader-fixture-hermeticity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core-skills --lib --no-tests=fail -- loader::tests::non_git_repo_skills_search_does_not_walk_parents loader::tests::skill_roots_include_admin_with_lowest_priority --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --lib --no-tests=fail -- render::tests::omission_marker_is_charged_to_catalog_budget render::tests::character_fallback_counts_multibyte_metadata_by_characters render::tests::catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --test skills_extension --no-tests=fail -- moderate_budget_pressure_keeps_every_catalog_entry --exact
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:
