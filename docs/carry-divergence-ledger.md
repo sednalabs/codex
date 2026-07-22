@@ -1084,6 +1084,13 @@ docs-only refresh commit that records this snapshot.
   thread and its fork against conflicting restart defaults, while
   `merge_persisted_approval_and_permissions_prefers_later_turn_context` locks
   the chronology rule directly.
+- When upstream refactors app-server fork initialization, retain its shared
+  `thread_history` construction and reviewer scan over the untruncated source
+  history. Reapply only the downstream `thread_source` fallback,
+  `core_dynamic_tools` conversion, and persisted approval/permission merge;
+  this makes the three carry points explicit rather than preserving a parallel
+  fork implementation. Hosted app-server fork and protocol lanes are the
+  regression receipt for this combined shape.
 - Primary files:
   - `codex-rs/protocol/`
   - `codex-rs/rollout/`
