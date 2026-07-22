@@ -365,6 +365,19 @@ That nested field is a self-contained `w10347` receipt: its action is always
 resulting or `unknown` state and retryability. `w10353` does not implement or
 own this install-specific field.
 
+If the provider observes a successful installation but cannot persist its
+active-build metadata or install history, it MUST retain the applicable
+`installed` or `installed_launch_failed` receipt row and its complete
+`installed_build`; it MUST NOT downgrade the response to `failed`. When the
+declared launch was applied, the provider returns
+`post_install_persistence_failed` with `retryability: "do_not_replay"`,
+`receipt_path: "install_receipt"`, and the affected persistence details. If the
+declared launch failed, the required outer error remains `lifecycle_failed` so
+that its nested lifecycle receipt remains the canonical failure record; the
+provider may additionally expose the persistence details as response
+diagnostics. In every case, the caller must obtain a fresh state check rather
+than replaying the install request.
+
 ### Lifecycle app-state transitions
 
 This section defines only the top-level receipt for
