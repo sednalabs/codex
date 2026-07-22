@@ -668,6 +668,14 @@ docs-only refresh commit that records this snapshot.
   `filters`, optional login-shell default, and flattened paragraph
   descriptions. Targeted hosted repair `29903579393` proved both affected
   lanes on signed head `bebe996608`. The
+  2026-07-22 Frontier Max harvest `29922887214` passed every selected lane
+  except `codex.workflow-ci-sanity` at integration head `859d82a942`; that
+  sentinel found a stale exact command-count assertion after four guarded
+  unified-exec regressions were added. The repaired planner assertion verifies
+  that every unified-exec Cargo command carries `RUST_MIN_STACK` without
+  coupling the check to the recipe's size, while mixed-sensitivity recipes keep
+  their narrower counts. Exact-head targeted run `29927093758` passed the
+  workflow sentinel in job `88947042183` at signed head `6c4ab0214b`. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. After the `a26bc337cf` upstream merge, the combined
