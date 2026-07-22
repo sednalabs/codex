@@ -297,6 +297,7 @@
         "spawn_agent_preserves_configured_defaults_through_unrelated_role",
         "spawn_agent_rejects_reasoning_effort_unsupported_by_role_model",
         "spawned_full_history_v2_child_uses_model_precedence_without_dropping_context",
+        "spawn_agent_can_fork_parent_thread_history_with_sanitized_items",
         "paginated_subagent_fork_cold_resume_preserves_child_settings",
         "read_thread_keeps_complete_indexed_identity_during_rollout_overlay",
         "ensure_v2_agent_loaded_reloads_registered_unloaded_agent",
@@ -1192,12 +1193,10 @@
       "guardrail_lane": "codex.skill-loader-fixture-hermeticity-targeted",
       "tests": [
         "non_git_repo_skills_search_does_not_walk_parents",
-        "skill_roots_include_admin_with_lowest_priority",
-        "catalog_report_counts_partial_description_truncation",
-        "catalog_preserves_report_when_no_fragment_fits_budget"
+        "skill_roots_include_admin_with_lowest_priority"
       ],
       "owner": "downstream",
-      "notes": "Keep the fixture boundary narrow: preserve explicit project-layer inputs without changing production discovery semantics. Remove this carry when upstream fixtures provide equivalent isolation. Upstream fe6aa9d16c adds SkillRenderReport accounting; signed validation commit 0c0249b14a extends the existing lane over partial-description truncation and the no-fragment report without adding runtime carry.",
+      "notes": "Keep the fixture boundary narrow: preserve explicit project-layer inputs without changing production discovery semantics. Remove this carry when upstream fixtures provide equivalent isolation.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "test-fixture-hermeticity",
       "hotspot_files": [
@@ -1293,6 +1292,7 @@
         "thread_resume_preserves_goal_first_and_fork_settings",
         "catalog_report_counts_partial_description_truncation",
         "catalog_preserves_report_when_no_fragment_fits_budget",
+        "post_sampling_token_estimate_is_disabled_by_always_on_sinks",
         "live_app_server_turn_completion_repairs_dropped_message_deltas",
         "raw_mode_toggle_transcript_snapshot",
         "session_header_clamps_to_narrow_width",

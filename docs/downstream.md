@@ -365,15 +365,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `0c0249b14a7afa54dffd7d260cde8b331e8d92bb`
+  `f0df4fc3df0a7846bcb172643e89a0d59a6f5988`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
+  `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
 - `upstream/main`:
-  `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
+  `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2010` downstream ahead
-- downstream-only non-merge commits: `1710` unique, `0` patch-equivalent
+  `0` upstream ahead, `2014` downstream ahead
+- downstream-only non-merge commits: `1713` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
