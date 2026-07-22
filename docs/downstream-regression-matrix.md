@@ -573,7 +573,7 @@ for a removed crate path.
   `missing_path_behavior: None` explicitly. App-server permissions retain their
   stable two-field projection; this keeps ordinary missing paths strict and
   reserves `skip` for upstream's deliberate metadata protections.
-- `codex-memories-write` keeps the workspace-standard
+- `codex-memories-write` and `codex-mcp-server` keep the workspace-standard
   `#![recursion_limit = "256"]` so upstream's startup-prewarm async
   instrumentation remains buildable in the locked GitHub-hosted release lane.
 - When an upstream merge changes workspace manifests, regenerate
