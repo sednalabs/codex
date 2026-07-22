@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `f0df4fc3df0a7846bcb172643e89a0d59a6f5988`
+- downstream integration code tree: `bde9e265679d8a78b9d6fc911827ccfe82ac1ff4`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`): `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
 - `upstream/main`: `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
-- downstream branch vs `upstream/main`: `2014` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `2016` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1713` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1715` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -694,6 +694,13 @@ docs-only refresh commit that records this snapshot.
   `10cc57c95c` as its second parent. Signed follow-up `0c0249b14a` adds the
   slow-inventory, resume-settings, and skill-report guards to the existing
   app-server and skill lanes; no new workflow or production adapter was added.
+- Exact-head targeted run `29940786871` found five retained downstream tests
+  that still called helpers removed by the upstream migration. Signed commit
+  `bde9e26567` moves those tests onto `MockResponsesConfig`, typed
+  `read_response`, and typed `read_notification` rather than restoring the old
+  parsing helpers. Exact-head hosted run `29942410506` passed both
+  `codex.app-server-v2-contract-targeted` and
+  `core-runtime-surface-smoke` on that repair.
 - Hosted mirror run `29938416267` advanced `origin/upstream-main` to exact
   `10cc57c95c` in successful sync job `88985838499`. Audit job `88985969985`
   returned expected pre-promotion exit `4` because `origin/main` still held

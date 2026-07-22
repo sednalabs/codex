@@ -218,7 +218,10 @@ exact-head hosted proof:
   shape with
   `mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls` and
   `thread_resume_preserves_goal_first_and_fork_settings`, in addition to the
-  complete app/read group.
+  complete app/read group. Exact-head hosted run `29942410506` also proves the
+  remaining downstream-expanded dynamic-tool, fork, review, safety, and
+  external-agent tests use the typed helper shape rather than restoring the
+  removed parsing helpers.
 - Upstream `c5779ed6bb` owns live-parent history-mode and MultiAgentV2
   usage-hint selection during forks. The existing
   `codex.core-subagent-model-pinning-targeted` lane pins

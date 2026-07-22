@@ -197,6 +197,15 @@ app/read's no-MCP-start projection are unchanged. The merge keeps only the
 still-used compatibility import in the downstream-expanded plugin tests and
 uses upstream's canonical `codex_skills::SkillConfigRules` type.
 
+## Upstream typed app-server test helpers
+
+Upstream commit `10cc57c95c` centralizes typed app-server initialization,
+request, response, notification, thread-start, and mock-response helpers.
+Downstream-expanded tests use those same helpers rather than maintaining a
+parallel JSON-RPC parsing harness. Exact-head hosted run `29942410506` passed
+the app-server V2 contract and core-runtime surface lanes after signed commit
+`bde9e26567` migrated the remaining retained tests.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
@@ -365,15 +374,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `f0df4fc3df0a7846bcb172643e89a0d59a6f5988`
+  `bde9e265679d8a78b9d6fc911827ccfe82ac1ff4`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
   `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
 - `upstream/main`:
   `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2014` downstream ahead
-- downstream-only non-merge commits: `1713` unique, `0` patch-equivalent
+  `0` upstream ahead, `2016` downstream ahead
+- downstream-only non-merge commits: `1715` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
