@@ -590,7 +590,8 @@ for a removed crate path.
   full-source approvals-reviewer scan, then layer only the downstream
   `thread_source` fallback, dynamic-tool conversion, and persisted
   approval/permission merge. The app-server fork and protocol lanes are the
-  required hosted proof for that combined boundary.
+  required hosted proof for that combined boundary; run `29909770697` passed
+  them on signed merge head `c673caf16f`.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package
