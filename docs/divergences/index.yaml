@@ -1204,6 +1204,40 @@
       "extraction_target": "upstreamable explicit project-layer fixture isolation for skill-loader tests"
     },
     {
+      "id": "git-attribution-extension-api-test-alignment",
+      "title": "Git-attribution extension-API test alignment",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "test-only",
+      "surface": [
+        "git-attribution contributor test fixture",
+        "extension contributor lifecycle API compatibility"
+      ],
+      "files": [
+        "codex-rs/ext/git-attribution/src/git_attribution_tests.rs"
+      ],
+      "behavior": "The upstream git-attribution test helper constructs WorldStateContributionInput with the current session, thread, and turn stores only. It does not restore the removed step-scoped store or change production contributor behavior.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "03886698f22ed10e8de3cc99c6411ce685db54a3",
+        "upstream_commit": "fd51e505401b7b2da958edc269e4d7280be86bd5"
+      },
+      "guardrail_lane": "core-runtime-surface-smoke",
+      "tests": [
+        "installed_contributor_composes_policy_changes",
+        "policy_resolution_recovers_after_unauthorized",
+        "policy_resolution_retries_after_auth_refresh"
+      ],
+      "owner": "downstream",
+      "notes": "Upstream fd51e50540 removed step-scoped contributor data before upstream ab816f3ca0 added a test helper that still initialized the deleted field. Hosted run 29934195127 exposed the compile failure. Keep only the two-line test-fixture deletion and remove it as soon as upstream adopts the no-step-store fixture shape.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "test-fixture-compatibility",
+      "hotspot_files": [
+        "codex-rs/ext/git-attribution/src/git_attribution_tests.rs"
+      ],
+      "extraction_target": "upstream no-step-store git-attribution test fixture"
+    },
+    {
       "id": "ci-workflow-automation",
       "title": "CI/workflow automation and validation lanes",
       "status": "live",
@@ -1310,10 +1344,11 @@
         "remote_control_waits_for_account_id_before_enrolling",
         "jsonrpc_request_conversion_preserves_serde_enum_decoding",
         "serialize_outgoing_message_preserves_wire_shape",
+        "live_app_server_turn_completion_repairs_dropped_message_deltas",
         "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
-      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Upstream owns paginated legacy full-view compatibility and stored ThreadItem projection; downstream must preserve thread_source and history_mode through those views rather than rebuilding bounded paginated context through legacy event history. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Upstream direct JSON-RPC conversion, explicit request wire names, outgoing-message serialization, typed method lookup, and previous-response-not-found retry remain authoritative; downstream composes only bounded remote-event delivery, native computer-use requests, generated-schema compatibility, and provider-confirmed model identity around those paths. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Upstream owns paginated legacy full-view compatibility and stored ThreadItem projection; downstream must preserve thread_source and history_mode through those views rather than rebuilding bounded paginated context through legacy event history. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Upstream direct JSON-RPC conversion, explicit request wire names, outgoing-message serialization, typed method lookup, and previous-response-not-found retry remain authoritative; downstream composes only bounded remote-event delivery, native computer-use requests, generated-schema compatibility, and provider-confirmed model identity around those paths. Upstream 80f3c3141e owns final-agent-message completion summaries and dropped-delta repair; downstream preserves provider-confirmed final model metadata and status refresh around that summary rather than carrying a second completion path. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
