@@ -553,10 +553,10 @@ fn bwrap_bootstrap_policy_adds_helper_and_minimal_runtime_roots() {
     std::fs::create_dir_all(&workspace).expect("create workspace");
     let workspace = AbsolutePathBuf::from_absolute_path(&workspace).expect("absolute workspace");
     let requested = FileSystemSandboxPolicy::restricted(vec![
-        codex_protocol::permissions::FileSystemSandboxEntry {
-            path: codex_protocol::permissions::FileSystemPath::Path { path: workspace },
-            access: codex_protocol::permissions::FileSystemAccessMode::Write,
-        },
+        codex_protocol::permissions::FileSystemSandboxEntry::new(
+            codex_protocol::permissions::FileSystemPath::Path { path: workspace },
+            codex_protocol::permissions::FileSystemAccessMode::Write,
+        ),
     ]);
     let current_exe =
         AbsolutePathBuf::from_absolute_path(std::env::current_exe().expect("current exe"))
@@ -574,6 +574,15 @@ fn bwrap_bootstrap_policy_adds_helper_and_minimal_runtime_roots() {
     let bootstrap = file_system_policy_with_bwrap_bootstrap_roots(&requested);
 
     assert!(bootstrap.include_platform_defaults());
+    assert!(bootstrap.entries.iter().any(|entry| {
+        matches!(
+            &entry.path,
+            codex_protocol::permissions::FileSystemPath::Special {
+                value: codex_protocol::permissions::FileSystemSpecialPath::Minimal,
+            }
+        ) && entry.access == codex_protocol::permissions::FileSystemAccessMode::Read
+            && entry.missing_path_behavior.is_none()
+    }));
     assert!(
         bootstrap.can_read_path_with_cwd(current_exe_parent.as_path(), temp_dir.path()),
         "bwrap must be able to exec the inner sandbox helper stage"
