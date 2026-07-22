@@ -441,7 +441,7 @@ async fn moderate_budget_pressure_keeps_every_catalog_entry() -> TestResult {
         .await;
 
     let fragments = registry.context_contributors()[0]
-        .contribute_thread_context(&session_store, &thread_store, &ExtensionData::new("step"))
+        .contribute_thread_context(&session_store, &thread_store)
         .await;
     assert_eq!(1, fragments.len());
     let rendered = fragments[0].text();
