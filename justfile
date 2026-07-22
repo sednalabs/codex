@@ -433,11 +433,14 @@ app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_preserves_goal_first_and_fork_settings -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::realtime_conversation::websocket_v3_routes_handoffs_by_session_mode -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::git_attribution::git_attribution_follows_authenticated_workspace_policy -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::git_attribution::cold_resume_replaces_legacy_attribution_without_duplication -- --exact --test-threads=1
 
 # Focused MCP server contract slice for approval and tool response ordering.
 mcp-server-contract-targeted:
     cargo test --locked -p codex-mcp-server --test all suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response -- --exact --test-threads=1
     cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_patch_approval_triggers_elicitation -- --exact --test-threads=1
+    cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_codex_tool_passes_base_instructions -- --exact --test-threads=1
 
 # Focused exec-server protocol slice for websocket, process, and policy lifecycle.
 exec-server-targeted:
@@ -452,6 +455,7 @@ cli-surface-targeted:
     cargo test --locked -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
     cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
     cargo test --locked -p codex-cli --test debug_clear_memories -- --test-threads=1
+    cargo test --locked -p codex-cli --test login debug_prompt_input_follows_authenticated_attribution_setting -- --exact --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
 
@@ -533,6 +537,7 @@ build-policy-sanity:
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:
     cargo test --locked -p codex-tools code_mode_ --lib -- --test-threads=1
+    cargo test --locked -p codex-tools raw_tool_json_matches_value_encoding --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict suite::code_mode::code_mode_native_browser_result_forwards_screenshot_as_input_image suite::code_mode::code_mode_failed_native_browser_result_forwards_input_image suite::code_mode::code_mode_can_call_hidden_dynamic_tools suite::code_mode::code_mode_excludes_configured_nested_tool_namespaces --exact
 
 # Focused tool-context serialization slice for custom/function/abort outputs.
@@ -569,8 +574,8 @@ core-ledger-smoke:
 
 # one bounded runtime shard.
 core-runtime-surface-smoke:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event suite::realtime_conversation::conversation_flushes_assistant_deltas_every_200ms_for_v3_handoff --exact
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- session::tests::build_initial_context_includes_turn_context_fragments_from_extensions session::tests::record_context_updates_includes_turn_context_fragments_on_steady_state_turns session::turn_tests::post_sampling_token_estimate_is_disabled_by_always_on_sinks realtime_conversation::bem_tests::maps_bem_channels_to_realtime_phases realtime_conversation::bem_tests::client_prefixes_override_only_their_configured_channels realtime_conversation::bem_tests::empty_client_prefixes_do_not_match_every_message realtime_conversation::bem_tests::buffers_streamed_text_until_the_bem_channel_is_complete realtime_conversation::bem_tests::buffers_a_client_prefix_until_the_streamed_header_is_complete realtime_conversation::bem_tests::preserves_unrecognized_output_when_the_stream_finishes --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event suite::realtime_conversation::conversation_flushes_assistant_deltas_every_200ms_for_v3_handoff suite::guardian_review::guardian_session_prewarms_and_is_reused_for_first_review --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- session::tests::build_initial_context_includes_turn_context_fragments_from_extensions session::tests::record_context_updates_includes_turn_context_fragments_on_steady_state_turns session::turn_tests::post_sampling_token_estimate_is_disabled_by_always_on_sinks guardian::review_session::tests::guardian_review_session_config_change_invalidates_cached_session realtime_conversation::bem_tests::maps_bem_channels_to_realtime_phases realtime_conversation::bem_tests::client_prefixes_override_only_their_configured_channels realtime_conversation::bem_tests::empty_client_prefixes_do_not_match_every_message realtime_conversation::bem_tests::buffers_streamed_text_until_the_bem_channel_is_complete realtime_conversation::bem_tests::buffers_a_client_prefix_until_the_streamed_header_is_complete realtime_conversation::bem_tests::preserves_unrecognized_output_when_the_stream_finishes --exact
     cargo test --locked -p codex-git-attribution --lib -- --test-threads=1
     cargo test -p codex-core-skills preferred_user_skill_names_from_stack_collects_user_and_session_layers --lib -- --exact --test-threads=1
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
