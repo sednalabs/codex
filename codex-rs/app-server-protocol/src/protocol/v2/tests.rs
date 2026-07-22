@@ -621,12 +621,14 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
                         value: FileSystemSpecialPath::Root,
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::GlobPattern {
                         pattern: "**/*.env".to_string(),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
             ]),
         }
@@ -663,12 +665,14 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
                         path: read_only_api_path,
                     },
                     access: FileSystemAccessMode::Read,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path {
                         path: read_write_api_path,
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
             ]),
         }

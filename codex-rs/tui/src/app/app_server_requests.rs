@@ -625,12 +625,14 @@ mod tests {
                                     path: absolute_path(read_path).into(),
                                 },
                                 access: codex_app_server_protocol::FileSystemAccessMode::Read,
+                                missing_path_behavior: None,
                             },
                             codex_app_server_protocol::FileSystemSandboxEntry {
                                 path: codex_app_server_protocol::FileSystemPath::Path {
                                     path: absolute_path(write_path).into(),
                                 },
                                 access: codex_app_server_protocol::FileSystemAccessMode::Write,
+                                missing_path_behavior: None,
                             },
                         ]),
                     }),

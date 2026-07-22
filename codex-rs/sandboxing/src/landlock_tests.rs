@@ -103,12 +103,14 @@ fn permission_profile_can_model_split_policy_without_legacy_landlock_flag() {
                 value: FileSystemSpecialPath::ProjectRoots { subpath: None },
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: nested.clone(),
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
     ]);
     let network_sandbox_policy = NetworkSandboxPolicy::Restricted;
