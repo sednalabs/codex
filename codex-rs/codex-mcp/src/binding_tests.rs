@@ -23,6 +23,7 @@ use super::PreparedMcpCall;
 use crate::binding_clients::McpBindingClients;
 use crate::connection_manager::McpConnectionManager;
 use crate::rmcp_client::ManagedClient;
+use crate::rmcp_client::ToolCatalogueSnapshot;
 use crate::server::McpServerMetadata;
 use crate::server::McpServerOrigin;
 use crate::tools::ToolFilter;
@@ -86,12 +87,19 @@ async fn test_step(
             icons: None,
             website_url: None,
         },
-        tools: vec![tool.clone()],
+        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
+            observed_generation: 0,
+            tools: vec![tool.clone()],
+        })),
+        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
+        server_name: label.to_string(),
+        is_codex_apps_mcp_server: false,
         tool_filter: ToolFilter::default(),
         tool_timeout: None,
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: supports_sandbox_state_meta,
         codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
     });
     let clients = Arc::new(McpBindingClients::new(HashMap::from([(
         SERVER_NAME.to_string(),

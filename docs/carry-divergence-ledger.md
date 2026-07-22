@@ -1742,6 +1742,10 @@ docs-only refresh commit that records this snapshot.
   and list-changed fetches publish the raw complete catalogue to the applicable
   shared cache before per-client filtering; the removed `codex_apps_cache.rs`
   implementation is not carried.
+- Test fixtures that instantiate `ManagedClient` must mirror the upstream
+  revisioned catalogue shape: an atomic complete `ToolCatalogueSnapshot`, its
+  refresh lock, and explicit server identity. They must not restore the removed
+  mutable `tools` field merely to keep downstream binding coverage compiling.
 - Upstream commits `3307ea8b63` and `1bbdb32789` are adopted as complementary
   cache safety: a server can disable shared tool-catalog caching, remotely
   sourced environment variables bypass that cache, and cached definitions do

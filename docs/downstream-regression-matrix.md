@@ -541,6 +541,9 @@ for a removed crate path.
   `preparation_holds_catalog_authority_until_it_finishes` are required beside
   the pagination checks. A live `list_changed` replacement must advance the
   manager revision without publishing a partial or locally filtered snapshot.
+- Binding and connection-manager fixtures construct the same atomic complete
+  snapshot, refresh lock, and server identity as the live `ManagedClient`; the
+  removed mutable `tools` fixture field must not reappear.
 - Installed-app fixtures may expose multiple uniquely named MCP tools for one
   connector identity so app-runtime deduplication remains covered; they must not
   use duplicate MCP wire tool names, which the complete-catalogue boundary

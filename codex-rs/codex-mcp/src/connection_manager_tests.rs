@@ -262,12 +262,19 @@ async fn create_test_manager_with_ready_apps_client(
     let managed_client = ManagedClient {
         client,
         server_info: create_test_server_info("Codex Apps"),
-        tools: vec![tool],
+        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
+            observed_generation: 0,
+            tools: vec![tool],
+        })),
+        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
+        server_name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        is_codex_apps_mcp_server: true,
         tool_filter: ToolFilter::default(),
         tool_timeout: Some(Duration::from_secs(5)),
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: false,
         codex_apps_tools_cache_context: Some(cache_context.clone()),
+        tool_catalog_cache_context: None,
     };
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
