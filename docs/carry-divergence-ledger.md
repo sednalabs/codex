@@ -626,7 +626,11 @@ docs-only refresh commit that records this snapshot.
   fail-closed sandbox setup error. Carried core and sandbox test fixtures also
   set `missing_path_behavior: None` explicitly; the app-server projection
   intentionally remains its stable two-field API. `skip` remains limited to
-  upstream's deliberate metadata-protection cases. The
+  upstream's deliberate metadata-protection cases. The downstream
+  `codex-memories-write` leaf crate keeps the workspace-standard
+  `#![recursion_limit = "256"]`: upstream's deeper startup-prewarm async
+  instrumentation otherwise exceeds the compiler's default query depth in the
+  GitHub-hosted locked release build. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. After the `a26bc337cf` upstream merge, the combined
