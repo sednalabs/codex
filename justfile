@@ -426,8 +426,9 @@ mcp-server-contract-targeted:
     cargo test --locked -p codex-mcp-server --test all suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response -- --exact --test-threads=1
     cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_patch_approval_triggers_elicitation -- --exact --test-threads=1
 
-# Focused exec-server protocol slice for websocket startup and process basics.
+# Focused exec-server protocol slice for websocket, process, and policy lifecycle.
 exec-server-targeted:
+    cargo test --locked -p codex-exec-server --lib -- --test-threads=1
     cargo test --locked -p codex-exec-server --test initialize -- --test-threads=1
     cargo test --locked -p codex-exec-server --test websocket -- --test-threads=1
     cargo test --locked -p codex-exec-server --test process exec_server_starts_process_over_websocket -- --exact --test-threads=1
@@ -554,6 +555,7 @@ core-ledger-smoke:
 core-runtime-surface-smoke:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- session::tests::build_initial_context_includes_turn_context_fragments_from_extensions session::tests::record_context_updates_includes_turn_context_fragments_on_steady_state_turns --exact
+    cargo test --locked -p codex-git-attribution --lib -- --test-threads=1
     cargo test -p codex-core-skills preferred_user_skill_names_from_stack_collects_user_and_session_layers --lib -- --exact --test-threads=1
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
     cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1
