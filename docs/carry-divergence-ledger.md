@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-21`
-- downstream integration code tree: `7e09b99f60ef92cc1fa3db766340c80b690279af`
+- Audited on: `2026-07-22`
+- downstream integration code tree: `c148908ba6d406e02ea5007f829124a000c7ef6e`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `f69f88f8116f541daddada3a056de5772a891f15`
-- `upstream/main`: `f69f88f8116f541daddada3a056de5772a891f15`
-- downstream branch vs `upstream/main`: `1956` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `32f4687b8c43fb4062405106e761f85983aa96cc`
+- `upstream/main`: `32f4687b8c43fb4062405106e761f85983aa96cc`
+- downstream branch vs `upstream/main`: `1997` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1669` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1700` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -585,6 +585,33 @@ docs-only refresh commit that records this snapshot.
   integration-branch PID-test path absent from the older audited
   `origin/main`.
 
+### Git Attribution World State And Exec-Server Policy Callbacks
+
+- Upstream commit `ab816f3ca0` adds an extension-owned git-attribution world
+  state contributor. It resolves and caches the workspace policy by
+  authentication generation, replaces legacy or stale instruction fragments,
+  retries after authorization refresh, and fails disabled on timeout or
+  settings errors. The new crate is registered in the workspace without adding
+  a downstream adapter or moving Dynamic Tools, image plumbing, realtime world
+  state, or native computer use into a hot core path.
+- Upstream commit `32f4687b8c` lets exec-server issue bounded reverse JSON-RPC
+  requests for network policy decisions. Response correlation, request limits,
+  timeouts, disconnect and process cleanup, malformed-input denial, and
+  inherited-stream lifetime handling are upstream-owned and fail closed.
+- The integration merge was clean. Cargo and Bazel metadata retained the exact
+  upstream crate shape, and no downstream production patch was added. Generic
+  callback transport is not a native browser, Android, or desktop tool handler,
+  and it does not replace downstream Windows effective-backend selection,
+  filesystem override preparation, telemetry, or firewall enforcement.
+- Signed merge `7036a16d3a` preserves `32f4687b8c` as its second parent. Signed
+  follow-up `c148908ba6` extends existing hosted recipes to run the complete
+  exec-server and git-attribution unit seams rather than pinning a brittle list
+  of individual upstream tests.
+- Hosted mirror run `29933738199` advanced `origin/upstream-main` to exact
+  `32f4687b8c` in successful sync job `88969800383`. Audit job `88969938211`
+  returned the expected pre-promotion exit `4` and uploaded its artifact; this
+  records intentional live downstream divergence rather than a mirror failure.
+
 ## Current Live Divergences
 
 ### Fork Workflow And Validation Policy
@@ -871,6 +898,11 @@ docs-only refresh commit that records this snapshot.
   starts after that `NetworkProxySpec` exists and continues to own effective
   backend selection, prepared filesystem overrides, telemetry, firewall
   enforcement, and direct-bypass denial.
+- Upstream commit `32f4687b8c` now owns exec-server's bounded reverse-RPC
+  transport for client policy decisions and keeps those callbacks alive until
+  inherited process streams close. Do not recreate that transport downstream;
+  the remaining carry begins at the distinct Windows launch and enforcement
+  policy after a decision is available.
 - A managed network proxy is an effective elevated-backend requirement on
   Windows, regardless of whether the configured sandbox level is elevated or
   restricted token.

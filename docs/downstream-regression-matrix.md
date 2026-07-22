@@ -199,6 +199,16 @@ exact-head hosted proof:
   HTTP-proxy, and HTTPS-proxy secure WebSocket integration tests. The existing
   `system_proxy_cache_key_preserves_url_specific_pac_decisions` regression also
   guards the retained sha2 0.11 hexadecimal encoder.
+- `core-runtime-surface-smoke` runs the complete upstream
+  `codex-git-attribution` unit seam, including world-state replacement,
+  unauthorized recovery, auth-generation cache invalidation, and fail-disabled
+  retry behavior. This is extension-boundary proof, not a new downstream carry.
+- `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
+  before its existing initialize, WebSocket, and process integration tests.
+  That covers bounded reverse-RPC correlation and cleanup, fail-closed network
+  decisions, process cancellation, and keeping callbacks alive while inherited
+  streams keep the proxy alive without freezing the recipe to today's test
+  count.
 
 GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 
