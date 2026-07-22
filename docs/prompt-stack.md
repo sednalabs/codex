@@ -30,9 +30,10 @@ Related pages:
   may first appear. `default` and `worker` have no embedded role config,
   `explorer` has an effectively empty built-in config file, and the wait lanes
   inherit the parent stack before their built-in role config is layered on.
-- Commit attribution and realtime-mode guidance are developer-layer
-  instructions. They shape model behavior, but they are not hard
-  protocol-enforced guarantees.
+- Git attribution and realtime-mode guidance are developer-layer instructions.
+  Attribution is extension-owned contextual world state controlled by
+  authenticated workspace policy; both shape model behavior rather than acting
+  as hard protocol-enforced guarantees.
 
 ## Visual maps
 
@@ -58,7 +59,7 @@ per-turn developer bundle
     ├─ apps / connectors
     ├─ skills
     ├─ plugins
-    └─ commit attribution instruction
+    └─ git-attribution extension world state
                 ↓
 contextual user/environment bundle
     ├─ user_instructions
@@ -215,7 +216,12 @@ The main files to re-check when this behavior changes are:
 - `codex-rs/core/src/agent/role.rs`
 - `codex-rs/core/templates/collaboration_mode/default.md`
 - `codex-rs/core/templates/collaboration_mode/plan.md`
-- `codex-rs/core/src/commit_attribution.rs`
+- `codex-rs/ext/git-attribution/src/lib.rs`
+- `codex-rs/ext/git-attribution/src/policy.rs`
+- `codex-rs/ext/git-attribution/src/world_state.rs`
+- `codex-rs/app-server/src/extensions.rs`
+- `codex-rs/mcp-server/src/message_processor.rs`
+- `codex-rs/core/src/event_mapping.rs`
 - `codex-rs/core/src/context_manager/updates.rs`
 - `codex-rs/core/prompt.md`
 - `codex-rs/core/review_prompt.md`

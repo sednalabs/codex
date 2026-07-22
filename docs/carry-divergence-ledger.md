@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `ce7c9f98153ed40ef468cd7c35b12d063e1c5c90`
+- downstream integration code tree: `0ecb2c0f026f04c720f6368b4e4d8911345f02a6`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `4ebd976312b9088b3c845724e08d79c9f77505f4`
-- `upstream/main`: `4ebd976312b9088b3c845724e08d79c9f77505f4`
-- downstream branch vs `upstream/main`: `2024` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `12c115d558b9fec378b4445636a327b05e7de8cc`
+- `upstream/main`: `12c115d558b9fec378b4445636a327b05e7de8cc`
+- downstream branch vs `upstream/main`: `2027` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1720` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1722` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -807,6 +807,40 @@ docs-only refresh commit that records this snapshot.
   records that exact output; neither schema was hand-edited or generated
   locally. Exact-head validation run `29956395279` passed both previously
   failing app-server lanes at that repair.
+
+### Attribution Entry Points, Code-Mode CI, Guardian Paths, And Response Requests
+
+- Hosted mirror run `29957773023` advanced `origin/upstream-main` to exact
+  `12c115d558`; sync job `89051059848` passed and audit job `89051332617`
+  returned the expected pre-promotion exit `4`. The clean visible local
+  `upstream-main` worktree was fast-forwarded to the same SHA.
+- Upstream `88eb3a2b8a` installs authenticated workspace-policy git attribution
+  in app-server, MCP server, and CLI prompt-debug entry points. Downstream keeps
+  its app-server hook seam beside that upstream contributor; process-level
+  `chatgpt_base_url` remains the policy authority, and attribution fragments
+  remain contextual developer state. Upstream `2c49493b5b` had already made the
+  prior two-line test-fixture carry equivalent, and `88eb3a2b8a` removes the
+  obsolete contributor-composition helper and test entirely.
+- Upstream `7fd7a2f9a2` removes the broad non-Windows Bazel exclusion for the
+  code-mode integration suite while retaining the two narrow Windows
+  exclusions. This increases hosted coverage of downstream native-browser image
+  forwarding and flat dynamic-tool metadata without adding or changing a tool
+  provider.
+- Upstream `bbfc3f0152` stores Guardian review cwd reuse identity as `PathUri`.
+  Model, provider, reasoning, permissions, MCP configuration, and the other
+  reuse-key fields remain independent invalidation boundaries; downstream split
+  sandbox-policy coverage remains orthogonal.
+- Upstream `12c115d558` serializes Responses tool definitions once as shared raw
+  JSON and compares incremental WebSocket prefixes in place. The merged tree
+  preserves downstream provider-confirmed response identity, receiver retention,
+  retry behavior, native computer-use exports, dynamic-tool schemas, and image
+  items. This is allocation and request-construction work, not a new capability.
+- Signed two-parent merge `f7165094c8` has first parent `1c186d9664` and exact
+  upstream second parent `12c115d558`; it merged without textual conflicts.
+  Signed validation commit `0ecb2c0f02` extends existing targeted recipes over
+  attribution entry points, Guardian reuse identity, raw Responses tool JSON,
+  and the newly unskipped code-mode carry seams. No parallel workflow or
+  production adapter was added.
 
 ## Current Live Divergences
 
