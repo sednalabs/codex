@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `bde9e265679d8a78b9d6fc911827ccfe82ac1ff4`
+- downstream integration code tree: `c132d50f17ef07018817dfdaca569a170208af88`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
-- `upstream/main`: `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
-- downstream branch vs `upstream/main`: `2016` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `f343d1237d8d360e8224997a846acde0b04a17cd`
+- `upstream/main`: `f343d1237d8d360e8224997a846acde0b04a17cd`
+- downstream branch vs `upstream/main`: `2019` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1715` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1717` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -739,6 +739,26 @@ docs-only refresh commit that records this snapshot.
   `66bd101fff` in its successful sync job. The audit returned expected
   pre-promotion exit `4` with `mirror=exact, tree_equal=False`; the clean visible
   local `upstream-main` worktree was then fast-forwarded to the same exact SHA.
+
+### Core-Compatible Skill Catalogs And Long-Line Highlighting
+
+- Upstream `2c49493b5b` removes the obsolete step store from git-attribution
+  tests, matching the already-integrated downstream extension-input shape.
+- Upstream `5381edb133` skips syntax highlighting when one input line exceeds
+  4 KiB while preserving the existing whole-input limits and plain-text
+  fallback. The downstream `ExecCall` fixture requires only
+  `terminal_wait: None`; the runtime and snapshot stay upstream-owned.
+- Upstream `f343d1237d` suppresses skill omission notices for core-compatible
+  catalogs while preserving `SkillRenderReport` counts for both rendering
+  policies. The existing skill lane follows the renamed policy-aware test and
+  keeps the no-fragment report guard.
+- Hosted mirror run `29943868334` advanced `origin/upstream-main` to exact
+  `f343d1237d`; sync job `89004234423` passed and audit job `89004349014`
+  returned the expected pre-promotion exit `4`. Signed two-parent merge
+  `c40e573af9` preserves exact upstream `f343d1237d` as its second parent.
+- Signed validation repair `c132d50f17` supplies the downstream fixture field,
+  updates the renamed skill test selector, and adds both long-line TUI tests to
+  `tui-transcript-viewport-targeted`. No upstream production hunk was changed.
 
 ## Current Live Divergences
 

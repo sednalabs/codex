@@ -206,6 +206,16 @@ parallel JSON-RPC parsing harness. Exact-head hosted run `29942410506` passed
 the app-server V2 contract and core-runtime surface lanes after signed commit
 `bde9e26567` migrated the remaining retained tests.
 
+## Upstream skill-catalog notices and long-line highlighting
+
+Upstream commit `f343d1237d` keeps omission counts in skill render reports but
+suppresses omission notices for core-compatible catalogs. Downstream follows
+the renamed policy-aware regression in the existing skill lane. Upstream commit
+`5381edb133` falls back to plain text when one syntax-highlighted line exceeds
+4 KiB; downstream adds its unit and transcript snapshot tests to the existing
+TUI transcript/viewport lane and supplies the downstream-only `terminal_wait`
+fixture field without changing upstream runtime behavior.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
@@ -374,15 +384,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `bde9e265679d8a78b9d6fc911827ccfe82ac1ff4`
+  `c132d50f17ef07018817dfdaca569a170208af88`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
+  `f343d1237d8d360e8224997a846acde0b04a17cd`
 - `upstream/main`:
-  `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
+  `f343d1237d8d360e8224997a846acde0b04a17cd`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2016` downstream ahead
-- downstream-only non-merge commits: `1715` unique, `0` patch-equivalent
+  `0` upstream ahead, `2019` downstream ahead
+- downstream-only non-merge commits: `1717` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
