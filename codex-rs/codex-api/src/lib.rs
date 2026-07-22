@@ -40,6 +40,7 @@ pub use crate::common::ResponseEvent;
 pub use crate::common::ResponseModelIdentity;
 pub use crate::common::ResponseStream;
 pub use crate::common::ResponsesApiRequest;
+pub use crate::common::ResponsesApiTools;
 pub use crate::common::ResponsesWsRequest;
 pub use crate::common::StreamOptions;
 pub use crate::common::TextControls;
