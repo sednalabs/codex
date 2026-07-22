@@ -1125,6 +1125,7 @@ fn read_only_sandbox(readable_root: PathBuf) -> FileSystemSandboxContext {
                 path: readable_root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         }]),
         NetworkSandboxPolicy::Restricted,
     ))
@@ -1138,6 +1139,7 @@ fn workspace_write_sandbox(writable_root: PathBuf) -> FileSystemSandboxContext {
                 path: writable_root,
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         }]),
         NetworkSandboxPolicy::Restricted,
     ))
@@ -1357,12 +1359,14 @@ async fn remote_exec_materializes_target_roots_before_sandbox_selection() -> Res
                     value: FileSystemSpecialPath::Root,
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             },
         ]),
         NetworkSandboxPolicy::Restricted,

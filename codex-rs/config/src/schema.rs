@@ -164,6 +164,27 @@ pub fn config_schema() -> Schema {
         .into_root_schema_for::<ConfigToml>()
 }
 
+fn add_shell_environment_policy_constraints(value: &mut Value) {
+    let Some(policy) = value
+        .get_mut("definitions")
+        .and_then(Value::as_object_mut)
+        .and_then(|definitions| definitions.get_mut("ShellEnvironmentPolicyToml"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let Some(all_of) = policy
+        .entry("allOf")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+    else {
+        return;
+    };
+    for fields in [["exclude", "filters"], ["filters", "include_only"]] {
+        all_of.push(json!({ "not": { "required": fields } }));
+    }
+}
+
 pub fn canonicalize(value: &Value) -> Value {
     canonicalize_with_key(/*key*/ None, value)
 }
@@ -200,6 +221,7 @@ pub fn config_schema_json() -> anyhow::Result<Vec<u8>> {
     let schema = config_schema();
     let mut value = serde_json::to_value(schema)?;
     normalize_legacy_option_schema(&mut value);
+    add_shell_environment_policy_constraints(&mut value);
     let value = canonicalize(&value);
     let json = serde_json::to_vec_pretty(&value)?;
     Ok(json)

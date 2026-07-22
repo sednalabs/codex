@@ -166,15 +166,19 @@ impl ManagedClient {
                 );
             }
 
-            self.tool_catalogue.load().tools.clone()
+            filter_tools(self.tool_catalogue.load().tools.clone(), &self.tool_filter)
         }
         .boxed()
     }
 
-    async fn refresh_tools_if_changed(&self) {
+    /// Replaces the complete tool snapshot after an MCP list_changed notification.
+    ///
+    /// The caller uses the return value to invalidate any prepared calls that
+    /// were bound to the previous catalog revision.
+    pub(crate) async fn refresh_tools_if_changed(&self) -> bool {
         let notified_generation = self.client.tool_list_generation();
         if self.tool_catalogue.load().observed_generation == notified_generation {
-            return;
+            return false;
         }
 
         let Ok(_refresh_guard) = self.tool_refresh_lock.acquire().await else {
@@ -182,11 +186,11 @@ impl ManagedClient {
                 server_name = %self.server_name,
                 "MCP tool catalogue refresh semaphore closed"
             );
-            return;
+            return false;
         };
         let notified_generation = self.client.tool_list_generation();
         if self.tool_catalogue.load().observed_generation == notified_generation {
-            return;
+            return false;
         }
 
         let fetch_tickets =
@@ -203,6 +207,7 @@ impl ManagedClient {
         {
             Ok(catalogue) => {
                 self.publish_tool_catalogue(catalogue, fetch_tickets);
+                true
             }
             Err(error) => {
                 warn!(
@@ -217,6 +222,7 @@ impl ManagedClient {
                         tools: current.tools.clone(),
                     })
                 });
+                false
             }
         }
     }
@@ -268,7 +274,6 @@ impl ManagedClient {
             _ => unreachable!("MCP tool catalogue fetch ticket requires cache context"),
         }
 
-        let tools = filter_tools(tools, &self.tool_filter);
         self.tool_catalogue.rcu(|current| {
             if current.observed_generation > generation {
                 Arc::clone(current)
@@ -279,7 +284,7 @@ impl ManagedClient {
                 })
             }
         });
-        self.tool_catalogue.load().tools.clone()
+        filter_tools(self.tool_catalogue.load().tools.clone(), &self.tool_filter)
     }
 }
 
@@ -653,6 +658,59 @@ impl AsyncManagedClient {
             return Ok(client);
         }
         self.client.clone().await
+    }
+
+    /// Refreshes a ready client's catalog and reports whether it changed.
+    pub(crate) async fn refresh_tools_if_changed(&self) -> bool {
+        match self.client().await {
+            Ok(client) => client.refresh_tools_if_changed().await,
+            Err(_) => false,
+        }
+    }
+
+    /// Captures the ready client revision that is current now.
+    ///
+    /// A recovered Codex Apps connection replaces the failed startup future for
+    /// future steps, but cannot reroute a call that was already prepared.
+    fn ready_client_snapshot(&self) -> Option<ManagedClientFuture> {
+        if let Some(client) = self
+            .startup_reconnect
+            .as_ref()
+            .and_then(|reconnect| reconnect.current_client())
+        {
+            return Some(futures::future::ready(Ok(client)).boxed().shared());
+        }
+        match self.client.peek() {
+            Some(Ok(_)) => Some(self.client.clone()),
+            Some(Err(_)) | None => None,
+        }
+    }
+
+    /// Captures one ready client and derives its model-visible tools.
+    ///
+    /// A fresh client waits for initial startup even when metadata is cached.
+    /// After a failed startup, cached tools remain available to metadata-only
+    /// callers while recovery runs, but a model step still requires one exact
+    /// ready client.
+    pub(crate) async fn capture_ready_client_and_tools(
+        &self,
+        catalog_override: Option<Vec<ToolInfo>>,
+    ) -> Option<(Arc<ManagedClient>, Vec<ToolInfo>)> {
+        if !self.startup_complete.load(Ordering::Acquire) {
+            let _ = self.client().await;
+        }
+        self.reconnect_failed_startup().await;
+        let client = if self.has_cached_tools() {
+            self.ready_client_snapshot()?
+        } else {
+            self.client().await.ok()?;
+            self.ready_client_snapshot()?
+        };
+        let managed_client = Arc::new(client.await.ok()?);
+        let tools = catalog_override
+            .unwrap_or_else(|| managed_client.tool_catalogue.load().tools.clone());
+        let tools = filter_tools(tools, &managed_client.tool_filter);
+        Some((Arc::clone(&managed_client), self.prepare_tools(tools)))
     }
 
     pub(crate) async fn reconnect_failed_startup(&self) {
@@ -1096,8 +1154,6 @@ async fn start_server_task(
             &[("cache", "miss")],
         );
     }
-    let tools = filter_tools(tools, &tool_filter);
-
     let managed = ManagedClient {
         client: Arc::clone(&client),
         server_info,

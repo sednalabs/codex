@@ -1720,6 +1720,20 @@ docs-only refresh commit that records this snapshot.
 - Tool-list change notifications advance a generation. Codex discards and
   retries a walk that crosses generations, atomically swaps only a complete
   replacement, and retains the last complete snapshot when refresh fails.
+- Upstream commit `65f8bf6853` binds prepared calls to the exact client and
+  catalog revision advertised to a model step. A later catalog revision rejects
+  an obsolete prepared call before it reaches the server; it does not reroute
+  an already advertised callable through a replacement connection.
+- The 2026-07-22 integration keeps that upstream authority fence while retaining
+  downstream raw complete snapshots and last-known-good failure behavior. Every
+  successful `list_changed` publication observed by tool exposure or binding
+  capture advances the shared manager revision. Per-client filtering happens
+  only after the raw snapshot is published, so one client's filter cannot
+  erase another client's catalog or cache entry.
+- A hard Codex Apps refresh captures its raw replacement before publication,
+  publishes it under the same revision write lock as the app override, and
+  then exposes the model-filtered tools. This keeps the app override local to
+  the newly created binding even if a shared cache publication races later.
 - The 2026-07-15 sync re-homes this contract on upstream's
   `connector_runtime` and `tool_catalog_cache` ownership. Startup, hard-refresh,
   and list-changed fetches publish the raw complete catalogue to the applicable
@@ -1764,6 +1778,22 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/core/src/session/mcp.rs`
   - `codex-rs/core/src/state/service.rs`
+
+### Typed Cyber-Policy Retry Boundary
+
+- The optional `notices.auto_continue_on_cyber_policy` carry reacts only to the
+  typed `CodexErrorInfo::CyberPolicy` signal from a live app-server turn. It
+  does not match server error text or retry untrusted content.
+- A retry remains on the original thread and ordinary submission path, keeps
+  the selected model, reasoning effort, and complete context unchanged, and is
+  disabled for replayed events and direct-input-blocked sessions. It is capped
+  at three attempts and re-arms only after a successful turn start.
+- This is an operator opt-in for transient server-side outcomes, not a bypass
+  of policy enforcement. Any future sync must preserve the typed, same-thread,
+  bounded contract or replace it with an upstream-equivalent control signal.
+- Primary files:
+  - `codex-rs/tui/src/chatwidget/turn_runtime.rs`
+  - `codex-rs/tui/src/chatwidget/tests/app_server.rs`
 
 ### MCP Server Safety Policy Extensions
 

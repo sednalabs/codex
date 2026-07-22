@@ -534,6 +534,13 @@ for a removed crate path.
   catalogue adapter boundary. Keep the generation-aware async snapshot,
   fetch-ticket, and atomic publication calls there rather than restoring a
   second implementation in `connection_manager.rs`.
+- Prepared calls bind the exact ready client and catalog revision advertised for
+  the model step. `prepared_call_keeps_captured_connection_and_authority_after_refresh`,
+  `prepared_call_is_rejected_after_catalog_refresh`,
+  `stale_prepared_call_does_not_run_preparation`, and
+  `preparation_holds_catalog_authority_until_it_finishes` are required beside
+  the pagination checks. A live `list_changed` replacement must advance the
+  manager revision without publishing a partial or locally filtered snapshot.
 - Installed-app fixtures may expose multiple uniquely named MCP tools for one
   connector identity so app-runtime deduplication remains covered; they must not
   use duplicate MCP wire tool names, which the complete-catalogue boundary
@@ -543,6 +550,15 @@ for a removed crate path.
   `mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools`,
   and `regular_mcp_definition_cache_preserves_live_session_state` must remain
   green alongside the downstream complete-catalogue checks.
+
+### Typed Cyber-Policy Retry Boundary
+
+- `live_cyber_policy_error_auto_continues_three_times_and_rearms_after_success`
+  proves the explicit opt-in retry is bounded, same-thread, same-model, and
+  re-armed only by a successful live turn start.
+- `replayed_cyber_policy_error_never_auto_continues` proves transcript replay
+  cannot create a new submission. The predicate must remain the typed
+  `CodexErrorInfo::CyberPolicy` value rather than error-text matching.
 
 ## Validation notes
 

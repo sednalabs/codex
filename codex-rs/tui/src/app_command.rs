@@ -91,7 +91,6 @@ pub(crate) enum AppCommand {
     SetThreadName {
         name: String,
     },
-    Shutdown,
     Review {
         target: ReviewTarget,
     },
@@ -235,11 +234,6 @@ impl AppCommand {
 
     pub(crate) fn set_thread_name(name: String) -> Self {
         Self::SetThreadName { name }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn shutdown() -> Self {
-        Self::Shutdown
     }
 
     pub(crate) fn review(target: ReviewTarget) -> Self {

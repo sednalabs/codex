@@ -58,11 +58,12 @@ async fn init_backend(user_agent_suffix: &str) -> anyhow::Result<BackendContext>
 
     #[cfg(debug_assertions)]
     if use_mock {
+        let http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
         return Ok(BackendContext {
             backend: Arc::new(codex_cloud_tasks_mock_client::MockClient),
             base_url,
             environment_http: RouteAwareClientPool::new_without_request_logging(
-                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+                http_client_factory,
                 ClientRouteClass::Api,
             ),
         });
@@ -2144,14 +2145,7 @@ mod tests {
     use codex_cloud_tasks_client::TaskStatus;
     use codex_cloud_tasks_client::TaskSummary;
     use codex_cloud_tasks_mock_client::MockClient;
-    use codex_tui::ComposerAction;
-    use codex_tui::ComposerInput;
-    use crossterm::event::KeyCode;
-    use crossterm::event::KeyEvent;
-    use crossterm::event::KeyModifiers;
     use pretty_assertions::assert_eq;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
 
     struct StubGitInfo {
         default_branch: Option<String>,
@@ -2376,34 +2370,5 @@ mod tests {
             parse_task_id("https://chatgpt.com/codex/tasks/task_i_123456?foo=bar").expect("url id");
         assert_eq!(url.0, "task_i_123456");
         assert!(parse_task_id("   ").is_err());
-    }
-
-    #[test]
-    #[ignore = "very slow"]
-    fn composer_input_renders_typed_characters() {
-        let mut composer = ComposerInput::new();
-        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        match composer.input(key) {
-            ComposerAction::Submitted(_) => panic!("unexpected submission"),
-            ComposerAction::None => {}
-        }
-
-        let area = Rect::new(0, 0, 20, 5);
-        let mut buf = Buffer::empty(area);
-        composer.render_ref(area, &mut buf);
-
-        let found = buf.content().iter().any(|cell| cell.symbol() == "a");
-        assert!(found, "typed character was not rendered: {buf:?}");
-
-        composer.set_hint_items(vec![("⌃O", "env"), ("⌃C", "quit")]);
-        composer.render_ref(area, &mut buf);
-        let footer = buf
-            .content()
-            .iter()
-            .skip((area.width as usize) * (area.height as usize - 1))
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(footer.contains("⌃O env"));
     }
 }
