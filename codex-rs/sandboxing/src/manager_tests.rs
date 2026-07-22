@@ -452,10 +452,12 @@ fn transform_linux_seccomp_uses_bwrap_for_direct_runtime_profiles() {
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: docs },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             },
         ]),
         NetworkSandboxPolicy::Restricted,
