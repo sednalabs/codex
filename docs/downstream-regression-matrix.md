@@ -569,6 +569,11 @@ for a removed crate path.
   that the synthetic `:minimal` bootstrap root keeps
   `missing_path_behavior: None`. This preserves fail-closed setup behavior when
   upstream evolves filesystem-entry metadata.
+- When an upstream merge changes workspace manifests, regenerate
+  `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
+  SHA-256 in the carry ledger. Do not hand-merge generated package entries;
+  `sedna.release-linux-smoke` and the app-server targeted lanes must then prove
+  the resulting lock under `--locked`.
 - Config validation follows upstream's authoritative layer-stack
   materialization. The removed template-interpolation helper and its tests are
   intentionally absent and should not be reintroduced to satisfy stale carry.
