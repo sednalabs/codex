@@ -289,6 +289,8 @@ tui-transcript-viewport-targeted:
     cargo test -p codex-tui history_cell::messages::tests::visualization_directives_are_not_cached --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::tests::raw_mode_toggle_transcript_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::tests::session_header_clamps_to_narrow_width --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::tests::single_line_command_over_highlight_limit_uses_plain_text_fallback --lib -- --exact --test-threads=1
+    cargo test -p codex-tui render::highlight::tests::long_single_line_bash_skips_highlighting_and_preserves_text --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::plans::tests::finalized_plan_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
     cargo test -p codex-tui custom_terminal::tests::terminal_draw_coalesces_wrapped_hyperlink_output --lib -- --exact --test-threads=1
     cargo test -p codex-tui bottom_pane::chat_composer::tests::default_unified_mention_popup_snapshot --lib -- --exact --test-threads=1
@@ -571,7 +573,7 @@ core-runtime-surface-smoke:
 # Focused skill-loader hermeticity and skill-catalog budget slice.
 skill-loader-fixture-hermeticity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core-skills --lib --no-tests=fail -- loader::tests::non_git_repo_skills_search_does_not_walk_parents loader::tests::skill_roots_include_admin_with_lowest_priority --exact
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --lib --no-tests=fail -- provider::host::tests::host_catalog_entries_carry_their_prompt_scope render::tests::ordering_follows_render_policy render::tests::description_selection_follows_render_policy render::tests::omission_marker_is_charged_to_catalog_budget render::tests::character_fallback_counts_multibyte_metadata_by_characters render::tests::catalog_report_counts_partial_description_truncation render::tests::catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget render::tests::catalog_preserves_report_when_no_fragment_fits_budget --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --lib --no-tests=fail -- provider::host::tests::host_catalog_entries_carry_their_prompt_scope render::tests::ordering_follows_render_policy render::tests::description_selection_follows_render_policy render::tests::omission_notice_follows_render_policy_and_is_charged_to_catalog_budget render::tests::character_fallback_counts_multibyte_metadata_by_characters render::tests::catalog_report_counts_partial_description_truncation render::tests::catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget render::tests::catalog_preserves_report_when_no_fragment_fits_budget --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --test skills_extension --no-tests=fail -- moderate_budget_pressure_keeps_every_catalog_entry extreme_budget_pressure_removes_descriptions_before_omitting_entries --exact
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.

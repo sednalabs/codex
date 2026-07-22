@@ -1961,6 +1961,7 @@ fn single_line_command_over_highlight_limit_uses_plain_text_fallback() {
             start_time: Some(Instant::now()),
             duration: None,
             interaction_input: None,
+            terminal_wait: None,
         },
         /*animations_enabled*/ true,
     );
