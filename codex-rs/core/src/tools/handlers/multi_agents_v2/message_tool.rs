@@ -254,18 +254,16 @@ async fn handle_message_submission_inner(
             },
             "send_message",
         ),
-        MessageDeliveryMode::TriggerTurn => {
-            tool_output_json_text(
-                &FollowupTaskResult {
-                    task_name: receiver_agent_path.to_string(),
-                    effective_model: receiver_config.model,
-                    effective_model_provider_id: receiver_config.model_provider_id,
-                    effective_reasoning_effort: receiver_config.reasoning_effort,
-                    effective_service_tier: receiver_config.service_tier,
-                },
-                "followup_task",
-            )
-        }
+        MessageDeliveryMode::TriggerTurn => tool_output_json_text(
+            &FollowupTaskResult {
+                task_name: receiver_agent_path.to_string(),
+                effective_model: receiver_config.model,
+                effective_model_provider_id: receiver_config.model_provider_id,
+                effective_reasoning_effort: receiver_config.reasoning_effort,
+                effective_service_tier: receiver_config.service_tier,
+            },
+            "followup_task",
+        ),
     };
     Ok(FunctionToolOutput::from_text(output, Some(true)))
 }
