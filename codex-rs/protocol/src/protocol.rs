@@ -2247,6 +2247,10 @@ impl TokenUsage {
         self.cached_input_tokens.max(0)
     }
 
+    pub fn cache_write_input(&self) -> i64 {
+        self.cache_write_input_tokens.max(0)
+    }
+
     pub fn non_cached_input(&self) -> i64 {
         (self.input_tokens - self.cached_input()).max(0)
     }
@@ -2311,13 +2315,21 @@ impl fmt::Display for FinalOutput {
 
         write!(
             f,
-            "Token usage: total={} input={}{} output={}{}",
+            "Token usage: total={} input={}{}{} output={}{}",
             format_with_separators(token_usage.blended_total()),
             format_with_separators(token_usage.non_cached_input()),
             if token_usage.cached_input() > 0 {
                 format!(
                     " (+ {} cached)",
                     format_with_separators(token_usage.cached_input())
+                )
+            } else {
+                String::new()
+            },
+            if token_usage.cache_write_input() > 0 {
+                format!(
+                    " cache-write={}",
+                    format_with_separators(token_usage.cache_write_input())
                 )
             } else {
                 String::new()
@@ -6468,7 +6480,7 @@ mod tests {
         let token_usage = TokenUsage {
             input_tokens: 5,
             cached_input_tokens: 0,
-            cache_write_input_tokens: 0,
+            cache_write_input_tokens: 2,
             output_tokens: 3,
             reasoning_output_tokens: 0,
             total_tokens: 8,
@@ -6476,7 +6488,7 @@ mod tests {
 
         assert_eq!(
             format_token_usage_summary(Some(&token_usage)),
-            "Token usage: total=8 input=5 output=3"
+            "Token usage: total=8 input=5 cache-write=2 output=3"
         );
     }
 
