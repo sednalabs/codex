@@ -1244,6 +1244,8 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
         ServerNotification::TurnCompleted(TurnCompletedNotification {
             thread_id: "thread-1".to_string(),
             turn: completed_turn,
+            final_model: None,
+            model_snapshot: None,
         }),
         /*replay_kind*/ None,
     );
