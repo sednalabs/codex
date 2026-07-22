@@ -238,6 +238,8 @@ exact-head hosted proof:
   retains the no-fragment report guard. Upstream `5381edb133` owns the 4 KiB
   per-line syntax-highlight limit; `codex.tui-transcript-viewport-targeted`
   runs both the highlight fallback unit test and the rendered command snapshot.
+  Exact-head hosted run `29944328610` passed both lanes plus their workflow,
+  core-runtime, and downstream-doc integration guards.
 - `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
   before its existing initialize, WebSocket, and process integration tests.
   That covers bounded reverse-RPC correlation and cleanup, fail-closed network
