@@ -2906,20 +2906,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_stack_sensitive_targeted_recipes_set_rust_min_stack(self) -> None:
         recipes = just_recipe_bodies(REPO_ROOT / "justfile")
 
-        multi_agent_recipe = "\n".join(
-            recipes["core-multi-agent-orchestration-targeted"]
-        )
-        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 3)
-
-        blocking_waits_core_recipe = "\n".join(
-            recipes["blocking-waits-core-targeted"]
-        )
-        self.assertEqual(blocking_waits_core_recipe.count("RUST_MIN_STACK="), 1)
-
-        unified_exec_recipe = "\n".join(
-            recipes["blocking-waits-unified-exec-targeted"]
-        )
-        self.assertEqual(unified_exec_recipe.count("RUST_MIN_STACK="), 8)
+        for recipe_name in (
+            "core-multi-agent-orchestration-targeted",
+            "blocking-waits-core-targeted",
+            "blocking-waits-unified-exec-targeted",
+        ):
+            cargo_lines = [
+                line for line in recipes[recipe_name] if "cargo " in line
+            ]
+            self.assertTrue(cargo_lines, recipe_name)
+            self.assertEqual(
+                [line for line in cargo_lines if "RUST_MIN_STACK=" not in line],
+                [],
+                recipe_name,
+            )
 
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,
