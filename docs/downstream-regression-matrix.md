@@ -578,6 +578,14 @@ for a removed crate path.
   startup-prewarm async instrumentation remains buildable in the locked
   GitHub-hosted release lane. GitHub validation-lab release sentinel
   `29893833019` is the carried regression receipt.
+- `interrupt_tool_records_history_entries` owns the integration boundary that
+  an aborted tool result reaches serialized history; the exact abort-message
+  presentation remains covered by the focused `tools::parallel` unit tests.
+  The checked-in config schema is generated: nullable shell-environment
+  filters, the optional login-shell default, and description whitespace must
+  follow the generator exactly. Frontier Max harvest `29896241048` found this
+  transition and targeted hosted repair `29903579393` passed both affected
+  lanes on signed head `bebe996608`.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package

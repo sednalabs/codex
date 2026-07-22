@@ -632,7 +632,14 @@ docs-only refresh commit that records this snapshot.
   `#![recursion_limit = "256"]`: upstream's deeper startup-prewarm async
   instrumentation otherwise exceeds the compiler's default query depth in the
   GitHub-hosted locked release build. GitHub validation-lab release sentinel
-  `29893833019` proved the complete root set on signed head `b637026177`. The
+  `29893833019` proved the complete root set on signed head `b637026177`.
+  Frontier Max harvest `29896241048` then exposed two upstream-generated seam
+  transitions: `interrupt_tool_records_history_entries` now checks the stable
+  serialized abort marker while `tools::parallel` owns the exact message
+  formatting, and `config.schema.json` tracks the generator's nullable
+  `filters`, optional login-shell default, and flattened paragraph
+  descriptions. Targeted hosted repair `29903579393` proved both affected
+  lanes on signed head `bebe996608`. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. After the `a26bc337cf` upstream merge, the combined
