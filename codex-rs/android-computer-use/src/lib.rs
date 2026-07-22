@@ -422,16 +422,20 @@ async fn observe_ui(
     for attempt in 0..INSPECT_UI_MAX_ATTEMPTS {
         match client.call_tool(tool_name, inspect_args.clone()).await {
             Ok(observation) => return Ok(observation),
-            Err(err)
-                if attempt + 1 < INSPECT_UI_MAX_ATTEMPTS && should_retry_inspect_ui_error(&err) =>
-            {
-                tokio::time::sleep(INSPECT_UI_RETRY_DELAY).await;
+            Err(err) => {
+                if should_retry_inspect_ui_error(&err) {
+                    if attempt + 1 < INSPECT_UI_MAX_ATTEMPTS {
+                        tokio::time::sleep(INSPECT_UI_RETRY_DELAY).await;
+                        continue;
+                    }
+                    return Err(format!("{tool_name} failed after maximum retry attempts"));
+                }
+                return Err(err);
             }
-            Err(err) => return Err(err),
         }
     }
 
-    Err(format!("{tool_name} failed after maximum retry attempts"))
+    unreachable!("observe_ui loop always returns on success or error");
 }
 
 fn prefer_stable_ui(arguments: &Value) -> bool {
