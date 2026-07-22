@@ -44,6 +44,7 @@ fn full_access_restricted_policy_skips_platform_sandbox_when_network_is_enabled(
             value: FileSystemSpecialPath::Root,
         },
         access: FileSystemAccessMode::Write,
+        missing_path_behavior: None,
     }]);
 
     assert_eq!(
@@ -68,10 +69,12 @@ fn root_write_policy_with_carveouts_still_uses_platform_sandbox() {
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: blocked },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         },
     ]);
 
@@ -92,6 +95,7 @@ fn full_access_restricted_policy_still_uses_platform_sandbox_for_restricted_netw
             value: FileSystemSpecialPath::Root,
         },
         access: FileSystemAccessMode::Write,
+        missing_path_behavior: None,
     }]);
 
     assert_eq!(
@@ -179,6 +183,7 @@ fn normalize_additional_permissions_rejects_glob_read_grants() {
                     pattern: "**/*.env".to_string(),
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: None,
         }),
@@ -201,6 +206,7 @@ fn normalize_additional_permissions_preserves_deny_globs() {
                     pattern: "**/*.env".to_string(),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: std::num::NonZeroUsize::new(2),
         }),
@@ -217,6 +223,7 @@ fn normalize_additional_permissions_preserves_deny_globs() {
                         pattern: "**/*.env".to_string(),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 }],
                 glob_scan_max_depth: std::num::NonZeroUsize::new(2),
             }),
@@ -315,6 +322,7 @@ fn intersect_permission_profiles_accepts_child_path_granted_for_requested_cwd() 
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: None,
         }),
@@ -348,6 +356,7 @@ fn intersect_permission_profiles_materializes_cwd_grant_for_reuse() {
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: None,
         }),
@@ -399,10 +408,12 @@ fn intersect_permission_profiles_deduplicates_materialized_grants() {
                         value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path { path: cwd.clone() },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
             ],
             glob_scan_max_depth: None,
@@ -435,12 +446,14 @@ fn intersect_permission_profiles_materializes_cwd_deny_entries() {
                         value: FileSystemSpecialPath::Root,
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Special {
                         value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
             ],
             glob_scan_max_depth: None,
@@ -458,10 +471,12 @@ fn intersect_permission_profiles_materializes_cwd_deny_entries() {
                             value: FileSystemSpecialPath::Root,
                         },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::Path { path: request_cwd },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: None,
@@ -490,10 +505,12 @@ fn intersect_permission_profiles_drops_deny_entries_without_filesystem_grants() 
                         value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::Path { path: secret },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
             ],
             glob_scan_max_depth: None,
@@ -528,12 +545,14 @@ fn intersect_permission_profiles_rejects_concrete_grants_matched_by_requested_de
                         value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                     },
                     access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::GlobPattern {
                         pattern: "**/*.env".to_string(),
                     },
                     access: FileSystemAccessMode::Deny,
+                    missing_path_behavior: None,
                 },
             ],
             glob_scan_max_depth: std::num::NonZeroUsize::new(2),
@@ -566,12 +585,14 @@ fn intersect_permission_profiles_materializes_relative_deny_globs_for_reuse() {
             value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
         },
         access: FileSystemAccessMode::Write,
+        missing_path_behavior: None,
     };
     let deny_env_files = FileSystemSandboxEntry {
         path: FileSystemPath::GlobPattern {
             pattern: "**/*.env".to_string(),
         },
         access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
     };
     let permissions = PermissionProfile {
         file_system: Some(FileSystemPermissions {
@@ -594,12 +615,14 @@ fn intersect_permission_profiles_materializes_relative_deny_globs_for_reuse() {
                             path: request_cwd.clone(),
                         },
                         access: FileSystemAccessMode::Write,
+                        missing_path_behavior: None,
                     },
                     FileSystemSandboxEntry {
                         path: FileSystemPath::GlobPattern {
                             pattern: request_cwd.join("**/*.env").to_string_lossy().into_owned(),
                         },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: std::num::NonZeroUsize::new(2),
@@ -645,6 +668,7 @@ fn intersect_permission_profiles_drops_broader_cwd_grant_for_requested_child_pat
                     value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             }],
             glob_scan_max_depth: None,
         }),
@@ -665,12 +689,14 @@ fn intersect_permission_profiles_uses_granted_bounded_glob_scan_depth() {
             value: FileSystemSpecialPath::Root,
         },
         access: FileSystemAccessMode::Write,
+        missing_path_behavior: None,
     };
     let deny_env_files = FileSystemSandboxEntry {
         path: FileSystemPath::GlobPattern {
             pattern: "**/*.env".to_string(),
         },
         access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
     };
     let requested = PermissionProfile {
         file_system: Some(FileSystemPermissions {
@@ -703,6 +729,7 @@ fn intersect_permission_profiles_uses_granted_bounded_glob_scan_depth() {
                             .into_owned(),
                         },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: std::num::NonZeroUsize::new(4),
@@ -720,12 +747,14 @@ fn intersect_permission_profiles_uses_granted_unbounded_glob_scan_depth() {
             value: FileSystemSpecialPath::Root,
         },
         access: FileSystemAccessMode::Write,
+        missing_path_behavior: None,
     };
     let deny_env_files = FileSystemSandboxEntry {
         path: FileSystemPath::GlobPattern {
             pattern: "**/*.env".to_string(),
         },
         access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
     };
     let requested = PermissionProfile {
         file_system: Some(FileSystemPermissions {
@@ -758,6 +787,7 @@ fn intersect_permission_profiles_uses_granted_unbounded_glob_scan_depth() {
                             .into_owned(),
                         },
                         access: FileSystemAccessMode::Deny,
+                        missing_path_behavior: None,
                     },
                 ],
                 glob_scan_max_depth: None,
@@ -783,12 +813,14 @@ fn merge_file_system_policy_with_additional_permissions_preserves_unreadable_roo
                     value: FileSystemSpecialPath::Root,
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path {
                     path: denied_path.clone(),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             },
         ]),
         &FileSystemPermissions::from_read_write_roots(
@@ -801,6 +833,7 @@ fn merge_file_system_policy_with_additional_permissions_preserves_unreadable_roo
         merged_policy.entries.contains(&FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: denied_path },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         }),
         true
     );
@@ -808,6 +841,7 @@ fn merge_file_system_policy_with_additional_permissions_preserves_unreadable_roo
         merged_policy.entries.contains(&FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: allowed_path },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         }),
         true
     );
@@ -820,6 +854,7 @@ fn merge_file_system_policy_with_additional_permissions_carries_bounded_glob_sca
             pattern: "**/*.env".to_string(),
         },
         access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
     };
     let merged_policy = merge_file_system_policy_with_additional_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -827,6 +862,7 @@ fn merge_file_system_policy_with_additional_permissions_carries_bounded_glob_sca
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         }]),
         &FileSystemPermissions {
             entries: vec![deny_env_files.clone()],
@@ -841,6 +877,7 @@ fn merge_file_system_policy_with_additional_permissions_carries_bounded_glob_sca
                     value: FileSystemSpecialPath::Root,
                 },
                 access: FileSystemAccessMode::Write,
+                missing_path_behavior: None,
             },
             deny_env_files,
         ]);
@@ -863,10 +900,12 @@ fn effective_file_system_sandbox_policy_returns_base_policy_without_additional_p
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: denied_path },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         },
     ]);
 
@@ -891,12 +930,14 @@ fn effective_file_system_sandbox_policy_merges_additional_write_roots() {
                 value: FileSystemSpecialPath::Root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Path {
                 path: denied_path.clone(),
             },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         },
     ]);
     let additional_permissions = PermissionProfile {
@@ -914,6 +955,7 @@ fn effective_file_system_sandbox_policy_merges_additional_write_roots() {
         effective_policy.entries.contains(&FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: denied_path },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         }),
         true
     );
@@ -921,6 +963,7 @@ fn effective_file_system_sandbox_policy_merges_additional_write_roots() {
         effective_policy.entries.contains(&FileSystemSandboxEntry {
             path: FileSystemPath::Path { path: allowed_path },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         }),
         true
     );

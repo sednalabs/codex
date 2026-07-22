@@ -1529,8 +1529,16 @@ fn clone_git_plugin_source(
             /*cwd*/ None,
         )?;
     }
-    if let Some(target) = sha.or(ref_name) {
-        run_git(&["checkout", target], Some(destination))?;
+    if let Some(sha) = sha {
+        run_git(&["checkout", sha], Some(destination))?;
+        let checked_out_sha = run_git_output(&["rev-parse", "HEAD"], Some(destination))?;
+        if !checked_out_sha.eq_ignore_ascii_case(sha) {
+            return Err(format!(
+                "checked out Git SHA {checked_out_sha} does not match requested SHA {sha}"
+            ));
+        }
+    } else if let Some(ref_name) = ref_name {
+        run_git(&["checkout", ref_name], Some(destination))?;
     } else if sparse_checkout_path.is_some() {
         run_git(&["checkout"], Some(destination))?;
     }
@@ -1538,6 +1546,10 @@ fn clone_git_plugin_source(
 }
 
 fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
+    run_git_output(args, cwd).map(drop)
+}
+
+fn run_git_output(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     let mut command = Command::new("git");
     command.args(args);
     command.env("GIT_OPTIONAL_LOCKS", "0");
@@ -1552,7 +1564,7 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
         GIT_COMMAND_TIMEOUT,
     )?;
     if output.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
 
     Err(format!(

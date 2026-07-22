@@ -194,6 +194,8 @@ where
     pub last_known_cursor_pos: Position,
     /// Count of visible history rows rendered above the viewport in inline mode.
     visible_history_rows: u16,
+    #[cfg(test)]
+    screen_size_override: Option<Size>,
 }
 
 impl<B> Drop for Terminal<B>
@@ -271,6 +273,8 @@ where
             last_known_screen_size: screen_size,
             last_known_cursor_pos: cursor_pos,
             visible_history_rows: 0,
+            #[cfg(test)]
+            screen_size_override: None,
         }
     }
 
@@ -280,7 +284,10 @@ where
         screen_size: Size,
         cursor_pos: Position,
     ) -> Self {
-        Self::with_screen_size_and_cursor_position(backend, screen_size, cursor_pos)
+        let mut terminal =
+            Self::with_screen_size_and_cursor_position(backend, screen_size, cursor_pos);
+        terminal.screen_size_override = Some(screen_size);
+        terminal
     }
 
     /// Get a Frame object which provides a consistent view into the terminal state for rendering.
@@ -589,6 +596,10 @@ where
 
     /// Queries the real size of the backend.
     pub fn size(&self) -> io::Result<Size> {
+        #[cfg(test)]
+        if let Some(size) = self.screen_size_override {
+            return Ok(size);
+        }
         self.backend.size().map_err(backend_error_to_io)
     }
 }

@@ -2005,10 +2005,12 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "codex-http-client",
  "codex-protocol",
  "codex-utils-rustls-provider",
  "crypto_box",
  "ed25519-dalek",
+ "http 1.4.0",
  "jsonwebtoken",
  "pretty_assertions",
  "rand 0.9.4",
@@ -2416,6 +2418,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -2842,6 +2845,7 @@ dependencies = [
  "codex-shell-command",
  "codex-shell-escalation",
  "codex-skills",
+ "codex-skills-extension",
  "codex-state",
  "codex-terminal-detection",
  "codex-test-binary-support",
@@ -3520,7 +3524,6 @@ dependencies = [
  "pretty_assertions",
  "rand 0.9.4",
  "regex-lite",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serial_test",
@@ -3787,6 +3790,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-home-dir",
  "codex-utils-rustls-provider",
+ "codex-windows-sandbox",
  "globset",
  "pretty_assertions",
  "rama-core",
@@ -3810,6 +3814,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4166,6 +4171,7 @@ dependencies = [
  "codex-exec-server",
  "codex-extension-api",
  "codex-mcp",
+ "codex-models-manager",
  "codex-otel",
  "codex-protocol",
  "codex-skills",

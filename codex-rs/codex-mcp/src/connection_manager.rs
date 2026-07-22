@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::binding_clients::McpBindingClients;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::ElicitationRequestRouter;
 use crate::elicitation::ElicitationReviewerHandle;
@@ -71,6 +72,8 @@ use rmcp::model::RequestId;
 use rmcp::model::Resource;
 use rmcp::model::ResourceTemplate;
 use serde_json::Value as JsonValue;
+use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -108,6 +111,9 @@ pub struct McpConnectionManager {
     clients: HashMap<String, AsyncManagedClient>,
     server_metadata: HashMap<String, McpServerMetadata>,
     required_servers: Vec<String>,
+    tool_catalog_revision: Arc<RwLock<u64>>,
+    codex_apps_tools_override: RwLock<Option<Vec<ToolInfo>>>,
+    codex_apps_refresh_lock: Mutex<()>,
     tool_plugin_provenance: Arc<ToolPluginProvenance>,
     prefix_mcp_tool_names: bool,
     elicitation_requests: ElicitationRequestManager,
@@ -351,6 +357,9 @@ impl McpConnectionManager {
             clients,
             server_metadata,
             required_servers,
+            tool_catalog_revision: Arc::new(RwLock::new(0)),
+            codex_apps_tools_override: RwLock::new(None),
+            codex_apps_refresh_lock: Mutex::new(()),
             tool_plugin_provenance,
             prefix_mcp_tool_names,
             elicitation_requests: elicitation_requests.clone(),
@@ -392,6 +401,9 @@ impl McpConnectionManager {
             clients: HashMap::new(),
             server_metadata: HashMap::new(),
             required_servers: Vec::new(),
+            tool_catalog_revision: Arc::new(RwLock::new(0)),
+            codex_apps_tools_override: RwLock::new(None),
+            codex_apps_refresh_lock: Mutex::new(()),
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
             prefix_mcp_tool_names,
             elicitation_requests: ElicitationRequestManager::new(
@@ -403,6 +415,14 @@ impl McpConnectionManager {
             ),
             startup_cancellation_token: CancellationToken::new(),
         }
+    }
+
+    pub fn empty(prefix_mcp_tool_names: bool) -> Self {
+        Self::new_uninitialized_with_permission_profile(
+            &Constrained::allow_any(AskForApproval::OnRequest),
+            &PermissionProfile::default(),
+            prefix_mcp_tool_names,
+        )
     }
 
     pub fn has_servers(&self) -> bool {
@@ -524,69 +544,10 @@ impl McpConnectionManager {
         &self,
         include_server: impl Fn(&str) -> bool,
     ) -> HashMap<String, Vec<Resource>> {
-        let mut join_set = JoinSet::new();
-
-        let clients_snapshot = &self.clients;
-
-        for (server_name, async_managed_client) in clients_snapshot
-            .iter()
-            .filter(|(server_name, _)| include_server(server_name))
-        {
-            let server_name = server_name.clone();
-            let Ok(managed_client) = async_managed_client.client().await else {
-                continue;
-            };
-            let timeout = managed_client.tool_timeout;
-            let client = managed_client.client.clone();
-
-            join_set.spawn(async move {
-                let mut collected: Vec<Resource> = Vec::new();
-                let mut cursor: Option<String> = None;
-
-                loop {
-                    let params = cursor.as_ref().map(|next| {
-                        PaginatedRequestParams::default().with_cursor(Some(next.clone()))
-                    });
-                    let response = match client.list_resources(params, timeout).await {
-                        Ok(result) => result,
-                        Err(err) => return (server_name, Err(err)),
-                    };
-
-                    collected.extend(response.resources);
-
-                    match response.next_cursor {
-                        Some(next) => {
-                            if cursor.as_ref() == Some(&next) {
-                                return (
-                                    server_name,
-                                    Err(anyhow!("resources/list returned duplicate cursor")),
-                                );
-                            }
-                            cursor = Some(next);
-                        }
-                        None => return (server_name, Ok(collected)),
-                    }
-                }
-            });
-        }
-
-        let mut aggregated: HashMap<String, Vec<Resource>> = HashMap::new();
-
-        while let Some(join_res) = join_set.join_next().await {
-            match join_res {
-                Ok((server_name, Ok(resources))) => {
-                    aggregated.insert(server_name, resources);
-                }
-                Ok((server_name, Err(err))) => {
-                    warn!("Failed to list resources for MCP server '{server_name}': {err:#}");
-                }
-                Err(err) => {
-                    warn!("Task panic when listing resources for MCP server: {err:#}");
-                }
-            }
-        }
-
-        aggregated
+        self.ready_clients_matching(&include_server)
+            .await
+            .list_all_resources(|_| true)
+            .await
     }
 
     /// Returns resource templates from servers selected by `include_server`.
@@ -595,73 +556,27 @@ impl McpConnectionManager {
         &self,
         include_server: impl Fn(&str) -> bool,
     ) -> HashMap<String, Vec<ResourceTemplate>> {
-        let mut join_set = JoinSet::new();
+        self.ready_clients_matching(&include_server)
+            .await
+            .list_all_resource_templates(|_| true)
+            .await
+    }
 
-        let clients_snapshot = &self.clients;
-
-        for (server_name, async_managed_client) in clients_snapshot
+    async fn ready_clients_matching(
+        &self,
+        include_server: &impl Fn(&str) -> bool,
+    ) -> McpBindingClients {
+        let mut clients = HashMap::new();
+        for (server, client) in self
+            .clients
             .iter()
-            .filter(|(server_name, _)| include_server(server_name))
+            .filter(|(server, _)| include_server(server))
         {
-            let server_name_cloned = server_name.clone();
-            let Ok(managed_client) = async_managed_client.client().await else {
-                continue;
-            };
-            let client = managed_client.client.clone();
-            let timeout = managed_client.tool_timeout;
-
-            join_set.spawn(async move {
-                let mut collected: Vec<ResourceTemplate> = Vec::new();
-                let mut cursor: Option<String> = None;
-
-                loop {
-                    let params = cursor.as_ref().map(|next| {
-                        PaginatedRequestParams::default().with_cursor(Some(next.clone()))
-                    });
-                    let response = match client.list_resource_templates(params, timeout).await {
-                        Ok(result) => result,
-                        Err(err) => return (server_name_cloned, Err(err)),
-                    };
-
-                    collected.extend(response.resource_templates);
-
-                    match response.next_cursor {
-                        Some(next) => {
-                            if cursor.as_ref() == Some(&next) {
-                                return (
-                                    server_name_cloned,
-                                    Err(anyhow!(
-                                        "resources/templates/list returned duplicate cursor"
-                                    )),
-                                );
-                            }
-                            cursor = Some(next);
-                        }
-                        None => return (server_name_cloned, Ok(collected)),
-                    }
-                }
-            });
-        }
-
-        let mut aggregated: HashMap<String, Vec<ResourceTemplate>> = HashMap::new();
-
-        while let Some(join_res) = join_set.join_next().await {
-            match join_res {
-                Ok((server_name, Ok(templates))) => {
-                    aggregated.insert(server_name, templates);
-                }
-                Ok((server_name, Err(err))) => {
-                    warn!(
-                        "Failed to list resource templates for MCP server '{server_name}': {err:#}"
-                    );
-                }
-                Err(err) => {
-                    warn!("Task panic when listing resource templates for MCP server: {err:#}");
-                }
+            if let Ok(client) = client.client().await {
+                clients.insert(server.clone(), Arc::new(client));
             }
         }
-
-        aggregated
+        McpBindingClients::new(clients)
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.

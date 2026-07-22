@@ -933,7 +933,7 @@ async fn unauthorized_recovery_reports_mode_and_step_names() {
         /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        crate::test_support::transport_default_auth_route_config(),
     )
     .await;
     let managed = UnauthorizedRecovery {
@@ -1108,15 +1108,12 @@ impl ExternalAuth for StaticExternalAuth {
 
 #[tokio::test]
 async fn external_auth_provider_can_install_headers() {
-    let mut headers = reqwest::header::HeaderMap::new();
+    let mut headers = http::HeaderMap::new();
     headers.insert(
-        reqwest::header::AUTHORIZATION,
-        reqwest::header::HeaderValue::from_static("Bearer external"),
+        http::header::AUTHORIZATION,
+        http::HeaderValue::from_static("Bearer external"),
     );
-    headers.insert(
-        "x-external-auth",
-        reqwest::header::HeaderValue::from_static("enabled"),
-    );
+    headers.insert("x-external-auth", http::HeaderValue::from_static("enabled"));
     let auth = CodexAuth::Headers(AuthHeaders::new(headers));
     let codex_home = tempdir().expect("tempdir");
     let manager = AuthManager::new(
@@ -1126,7 +1123,7 @@ async fn external_auth_provider_can_install_headers() {
         /*forced_chatgpt_workspace_id*/ None,
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        crate::test_support::transport_default_auth_route_config(),
     )
     .await;
 
@@ -1347,7 +1344,7 @@ async fn build_config(
         forced_login_method,
         forced_chatgpt_workspace_id,
         chatgpt_base_url: None,
-        auth_route_config: None,
+        auth_route_config: crate::test_support::transport_default_auth_route_config(),
     }
 }
 
@@ -1532,7 +1529,7 @@ async fn auth_manager_rejects_env_personal_access_token_workspace_mismatch() {
         Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         /*chatgpt_base_url*/ None,
         AuthKeyringBackendKind::default(),
-        /*auth_route_config*/ None,
+        crate::test_support::transport_default_auth_route_config(),
     )
     .await;
 
@@ -1584,7 +1581,7 @@ async fn auth_manager_rejects_stored_personal_access_token_workspace_mismatch() 
             Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
             /*chatgpt_base_url*/ None,
             AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
+            crate::test_support::transport_default_auth_route_config(),
         )
         .await;
 
@@ -1618,7 +1615,7 @@ async fn personal_access_token_does_not_offer_unauthorized_recovery() {
             /*forced_chatgpt_workspace_id*/ None,
             /*chatgpt_base_url*/ None,
             AuthKeyringBackendKind::default(),
-            /*auth_route_config*/ None,
+            crate::test_support::transport_default_auth_route_config(),
         )
         .await,
     );
@@ -1760,7 +1757,7 @@ async fn enforce_login_restrictions_logs_out_for_personal_access_token_workspace
         forced_login_method: None,
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         chatgpt_base_url: None,
-        auth_route_config: None,
+        auth_route_config: crate::test_support::transport_default_auth_route_config(),
     };
 
     let err = super::enforce_login_restrictions(&config)
@@ -1884,7 +1881,7 @@ async fn enforce_login_restrictions_logs_out_for_agent_identity_workspace_mismat
         forced_login_method: None,
         forced_chatgpt_workspace_id: Some(vec![WORKSPACE_ID_ALLOWED.to_string()]),
         chatgpt_base_url: Some(chatgpt_base_url),
-        auth_route_config: None,
+        auth_route_config: crate::test_support::transport_default_auth_route_config(),
     };
 
     let err = super::enforce_login_restrictions_with_agent_identity_authapi_base_url(
