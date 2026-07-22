@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-22`
-- downstream integration code tree: `c148908ba6d406e02ea5007f829124a000c7ef6e`
+- downstream integration code tree: `03886698f22ed10e8de3cc99c6411ce685db54a3`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `32f4687b8c43fb4062405106e761f85983aa96cc`
-- `upstream/main`: `32f4687b8c43fb4062405106e761f85983aa96cc`
-- downstream branch vs `upstream/main`: `1997` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
+- `upstream/main`: `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
+- downstream branch vs `upstream/main`: `2000` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1700` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1702` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -612,6 +612,33 @@ docs-only refresh commit that records this snapshot.
   returned the expected pre-promotion exit `4` and uploaded its artifact; this
   records intentional live downstream divergence rather than a mirror failure.
 
+### TUI Presentation And Turn Completion Convergence
+
+- Upstream commits `9ee63da142`, `c00e2e851c`, and `730ec92003` respectively
+  size unified mention popups from visible results, normalize whitespace-only
+  lines in agent messages, and clamp session headers at narrow terminal widths.
+  Upstream commit `ff8d521ba1` coalesces wrapped cells with one OSC 8 destination
+  into a single terminal hyperlink and closes it before ordinary content.
+- Upstream commit `80f3c3141e` includes the last non-empty final agent message in
+  turn-completion summaries. App-server, exec, and TUI consumers can therefore
+  repair dropped message deltas while avoiding duplicate item rendering and
+  preserving a full persisted backfill when the summary is not the full view.
+- Five conflict files were resolved by composition. App-server completion keeps
+  downstream provider-confirmed model metadata alongside upstream summary
+  items. TUI completion keeps downstream model-status refresh, compaction
+  status, cyber-policy retry reset, and ratatui color conversion while adopting
+  upstream summary replay, delta repair, and hyperlink coalescing. Both Guardian
+  and upstream agent-message test imports remain; no broad ours/theirs strategy
+  was used.
+- Signed merge `c78f0b4bec` preserves `ff8d521ba1` as its second parent. Hosted
+  targeted run `29934195127` passed workflow sanity, exec-server, and bounded
+  unified-exec jobs, then exposed one stale upstream git-attribution test-helper
+  field in core-runtime job `88971494184`. Signed test-only repair `03886698f2`
+  removes that obsolete field without changing production extension behavior.
+- Hosted mirror run `29935755138` advanced `origin/upstream-main` to exact
+  `ff8d521ba1` in successful sync job `88976767550`. Audit job `88976904847`
+  returned the expected pre-promotion exit `4`.
+
 ## Current Live Divergences
 
 ### Fork Workflow And Validation Policy
@@ -791,6 +818,22 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/Cargo.lock`
   - `docs/contributing.md`
   - `docs/downstream.md`
+
+### Git Attribution Extension-API Test Alignment
+
+- Upstream `fd51e50540` removed step-scoped contributor data before upstream
+  `ab816f3ca0` added a git-attribution test helper that still constructed and
+  passed `WorldStateContributionInput.step_store`. The resulting crate test did
+  not compile at the combined upstream head.
+- Signed carry `03886698f2` deletes only that unused test store and initializer
+  field. Production git-attribution policy resolution, cache behavior, world
+  state, and retry semantics remain byte-for-byte upstream.
+- `core-runtime-surface-smoke` runs the whole `codex-git-attribution` library
+  test seam, so compile compatibility and all three upstream behavior tests are
+  proved together. Remove this two-line carry as soon as upstream drops the
+  stale field or otherwise supplies equivalent no-step-store fixture coverage.
+- Primary file:
+  - `codex-rs/ext/git-attribution/src/git_attribution_tests.rs`
 
 ### Hook Command Early-Exit Output Preservation
 
