@@ -569,9 +569,10 @@ for a removed crate path.
   that the synthetic `:minimal` bootstrap root keeps
   `missing_path_behavior: None`. This preserves fail-closed setup behavior when
   upstream evolves filesystem-entry metadata.
-- Carried filesystem-policy fixtures and app-server permission projections set
-  `missing_path_behavior: None` explicitly. This keeps ordinary missing paths
-  strict and reserves `skip` for upstream's deliberate metadata protections.
+- Carried core and sandbox filesystem-policy fixtures set
+  `missing_path_behavior: None` explicitly. App-server permissions retain their
+  stable two-field projection; this keeps ordinary missing paths strict and
+  reserves `skip` for upstream's deliberate metadata protections.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package

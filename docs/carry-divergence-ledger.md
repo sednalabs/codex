@@ -623,9 +623,10 @@ docs-only refresh commit that records this snapshot.
   stage. After upstream `87f71e35b8` added optional missing-path behavior, the
   synthetic `:minimal` bootstrap root is constructed with the upstream default
   (`None`), not `skip`, so a missing mandatory runtime substrate remains a
-  fail-closed sandbox setup error. Carried test fixtures and app-server
-  projections also set `missing_path_behavior: None` explicitly; `skip` remains
-  limited to upstream's deliberate metadata-protection cases. The
+  fail-closed sandbox setup error. Carried core and sandbox test fixtures also
+  set `missing_path_behavior: None` explicitly; the app-server projection
+  intentionally remains its stable two-field API. `skip` remains limited to
+  upstream's deliberate metadata-protection cases. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. After the `a26bc337cf` upstream merge, the combined
