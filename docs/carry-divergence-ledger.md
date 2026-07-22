@@ -636,11 +636,12 @@ docs-only refresh commit that records this snapshot.
 - Queue-only `send_message` returns a structured receipt containing the canonical target plus its effective model, provider, reasoning effort, and service tier. `handoff_state: queued` means the runtime accepted the handoff; it is deliberately not an agent acknowledgement or completion signal.
 - Upstream harvest decision, refreshed 2026-07-22:
 
-  | Candidate | Decision | Reason |
-  | --- | --- | --- |
-  | Current `openai/codex` main | Carry locally | No equivalent terminal-babysitter Luna fallback or live inspect/send configuration receipt exists. |
-  | Open and draft upstream PRs matching the runtime surfaces | Carry locally | No relevant candidate was found. |
-  | Historical agent-identity auth/task stack reverted by `be757855` | Ignore | It concerns backend identity and task lifecycle, not this model/configuration receipt seam. |
+  | Candidate                                                        | Decision      | Reason                                                                                             |
+  | ---------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+  | Current `openai/codex` main                                      | Carry locally | No equivalent terminal-babysitter Luna fallback or live inspect/send configuration receipt exists. |
+  | Open and draft upstream PRs matching the runtime surfaces        | Carry locally | No relevant candidate was found.                                                                   |
+  | Historical agent-identity auth/task stack reverted by `be757855` | Ignore        | It concerns backend identity and task lifecycle, not this model/configuration receipt seam.        |
+
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
