@@ -154,6 +154,32 @@ async fn token_usage_update_uses_runtime_context_window() {
 }
 
 #[tokio::test]
+async fn token_usage_update_preserves_cache_write_tokens() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let usage = TokenUsage {
+        input_tokens: 5,
+        cached_input_tokens: 1,
+        cache_write_input_tokens: 3,
+        output_tokens: 3,
+        total_tokens: 8,
+        ..Default::default()
+    };
+    let token_info = TokenUsageInfo {
+        total_token_usage: usage.clone(),
+        last_token_usage: usage.clone(),
+        model_context_window: None,
+    };
+
+    handle_token_count(&mut chat, Some(token_info));
+
+    assert_eq!(chat.token_usage(), usage);
+    assert_eq!(
+        chat.token_usage().to_string(),
+        "Token usage: total=7 input=4 (+ 1 cached) cache-write=3 output=3"
+    );
+}
+
+#[tokio::test]
 async fn status_line_git_summary_items_render_values() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_git_summary = Some(StatusLineGitSummary {
