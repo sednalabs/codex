@@ -36,6 +36,7 @@ async fn session_summary_skips_resume_hint_until_rollout_exists() {
 async fn session_summary_includes_resume_hint_for_persisted_rollout() {
     let usage = TokenUsage {
         input_tokens: 10,
+        cache_write_input_tokens: 4,
         output_tokens: 2,
         total_tokens: 12,
         ..Default::default()
@@ -54,7 +55,7 @@ async fn session_summary_includes_resume_hint_for_persisted_rollout() {
     .expect("summary");
     assert_eq!(
         summary.usage_line,
-        Some("Token usage: total=12 input=10 output=2".to_string())
+        Some("Token usage: total=12 input=10 cache-write=4 output=2".to_string())
     );
     assert_eq!(
         summary.resume_hint,
