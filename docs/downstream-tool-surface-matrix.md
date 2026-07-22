@@ -7,14 +7,14 @@ It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
 divergences.
 
-Last reviewed: `2026-07-21`.
+Last reviewed: `2026-07-22`.
 
 Review baseline:
 
-- `upstream/main`: `f69f88f8116f541daddada3a056de5772a891f15`
+- `upstream/main`: `65ae4c26e088913176a50d6daeb742d00942caee`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `f69f88f8116f541daddada3a056de5772a891f15`
-- downstream integration code tree: `7e09b99f60ef92cc1fa3db766340c80b690279af`
+  `65ae4c26e088913176a50d6daeb742d00942caee`
+- downstream integration code tree: `4672949c57966f7ee51a66ad7664b28de09b0a61`
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
@@ -27,9 +27,11 @@ alter the native-tool conclusions below. The later alpha-hotfix conversion,
 release-distribution mirror and metadata, proxy-aware plugin transport,
 optional installer source, codespell configuration, Wine PTY test changes,
 the behavior-preserving MCP connection-manager module split, explicit
-extension session/turn capability ownership, and centralized compacted-history
-construction through `fd51e50540` are likewise packaging, transport,
-validation, or internal extension-infrastructure work. In
+extension session/turn capability ownership, centralized compacted-history
+construction through `fd51e50540`, live-runtime MCP resource access,
+skill-catalog pressure and ordering changes, and the disabled-by-default
+`mcp_2026_07_28` registration through `65ae4c26e0` are likewise packaging,
+transport, validation, or internal extension-infrastructure work. In
 particular, this tranche adds no Codex-owned browser, Android, or desktop
 computer-use capability upstream and does not change downstream sub-agent
 model or reasoning-effort selection.

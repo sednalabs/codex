@@ -175,6 +175,12 @@ exact-head hosted proof:
   product restrictions; plugin-manager tests cover relocated config rules and
   downstream disabled-skill resolution; `core-runtime-surface-smoke` keeps the
   preferred-user skill precedence regressions active.
+- `codex.skill-loader-fixture-hermeticity-targeted` covers upstream extension
+  catalog prompt-scope propagation, core-compatible ordering, extension-order
+  preservation, description selection, and the rule that descriptions are
+  shed before names and locators under extreme metadata pressure. Its fixture
+  construction uses the current no-step-store extension API and optional MCP
+  resource client.
 - `remote_compact_trims_function_call_history_to_fit_context_window`,
   `remote_compact_rewrites_multiple_trailing_function_call_outputs`,
   `remote_compact_trim_estimate_uses_session_base_instructions`,
@@ -249,6 +255,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     The `codex.skill-loader-fixture-hermeticity-targeted` lane pins the two
     skill-loader fixture assertions that suppress or ignore ambient parent
     project layers, so hosted-runner repository state cannot change the result.
+    It also pins extension-catalog ordering, prompt scope, description policy,
+    and moderate and extreme metadata-pressure behavior on the same hosted
+    Rust slice.
     The workflow summary parser
     understands nextest
     retry-status lines so structured harvest artifacts show persistent retry

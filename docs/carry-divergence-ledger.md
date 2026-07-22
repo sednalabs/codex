@@ -271,6 +271,18 @@ docs-only refresh commit that records this snapshot.
   cannot fit. Downstream adopts that renderer unchanged; the focused skill lane
   now runs its token, character, multibyte, omission, and fairness regressions
   so later syncs do not restore first-entry-wins truncation accidentally.
+- Upstream commit `bd9a28a839` further preserves skill discoverability under
+  extreme pressure by removing descriptions before omitting names and locators.
+  Commit `2ffe8cd579` also makes core-compatible extension catalogs preserve
+  core's system, admin, repo, and user ordering while extension-compatible
+  catalogs retain insertion order; host entries carry their prompt scope into
+  that decision. The same focused lane now pins both rendering policies, prompt
+  scope propagation, and moderate and extreme pressure behavior.
+- Upstream commit `f21f98936c` contains the exact extension-API fixture updates
+  independently added in downstream commits `ec042322e2` and `ddb5443d28`:
+  thread startup supplies the optional MCP resource client and context
+  contribution no longer passes the removed step store. Treat those two local
+  repairs as upstream-equivalent validation history, not live carry.
 
 ### Remote Compaction History Efficiency
 
@@ -1822,6 +1834,11 @@ docs-only refresh commit that records this snapshot.
   published `McpRuntime` snapshot. Do not restore per-binding resource clients;
   `session_resource_client_follows_published_mcp_runtime` is the focused hosted
   regression for refresh behavior.
+- Upstream commit `65ae4c26e0` registers disabled-by-default experimental
+  feature `mcp_2026_07_28` in core, the generated config schema, and app-server
+  feature enablement. It does not yet change the runtime resource or prepared
+  call contracts above; adopt the registration unchanged so later protocol
+  implementation can remain upstream-owned.
 - Centralized ownership does not by itself unload quiescent threads retained by
   `ThreadManager`. Capacity-triggered V2 residency eviction now calls
   `shutdown_and_wait()` before generation-fenced, thread-instance-checked
@@ -2300,6 +2317,10 @@ docs-only refresh commit that records this snapshot.
 
 The following carry commits have exact-subject matches on `upstream/main`. They
 should not be treated as current fork-only behavior by title alone.
+
+Two additional validation-only repairs have behavior-equivalent upstream
+coverage despite different subjects: `ec042322e2` and `ddb5443d28` are both
+absorbed by upstream `f21f98936c` and must not be counted as live carry.
 
 ```text
 027afb885 -> 3b1c78a5c | [skill-creator] Add forward-testing instructions (#13600)
