@@ -631,7 +631,8 @@ docs-only refresh commit that records this snapshot.
   `codex-responses-api-proxy` release binary roots keep the workspace-standard
   `#![recursion_limit = "256"]`: upstream's deeper startup-prewarm async
   instrumentation otherwise exceeds the compiler's default query depth in the
-  GitHub-hosted locked release build. The
+  GitHub-hosted locked release build. GitHub validation-lab release sentinel
+  `29893833019` proved the complete root set on signed head `b637026177`. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. After the `a26bc337cf` upstream merge, the combined
