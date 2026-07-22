@@ -21,7 +21,6 @@ use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
 use crate::TypedRequestError;
-use crate::request_method_name;
 use crate::server_notification_requires_delivery;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
@@ -534,20 +533,22 @@ impl RemoteAppServerClient {
     where
         T: DeserializeOwned,
     {
-        let method = request_method_name(&request);
+        let method = request.method_name();
         let response =
             self.request(request)
                 .await
                 .map_err(|source| TypedRequestError::Transport {
-                    method: method.clone(),
+                    method: method.to_string(),
                     source,
                 })?;
         let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.clone(),
+            method: method.to_string(),
             source,
         })?;
-        serde_json::from_value(result)
-            .map_err(|source| TypedRequestError::Deserialize { method, source })
+        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
+            method: method.to_string(),
+            source,
+        })
     }
 
     pub async fn notify(&self, notification: ClientNotification) -> IoResult<()> {
@@ -694,20 +695,22 @@ impl RemoteAppServerRequestHandle {
     where
         T: DeserializeOwned,
     {
-        let method = request_method_name(&request);
+        let method = request.method_name();
         let response =
             self.request(request)
                 .await
                 .map_err(|source| TypedRequestError::Transport {
-                    method: method.clone(),
+                    method: method.to_string(),
                     source,
                 })?;
         let result = response.map_err(|source| TypedRequestError::Server {
-            method: method.clone(),
+            method: method.to_string(),
             source,
         })?;
-        serde_json::from_value(result)
-            .map_err(|source| TypedRequestError::Deserialize { method, source })
+        serde_json::from_value(result).map_err(|source| TypedRequestError::Deserialize {
+            method: method.to_string(),
+            source,
+        })
     }
 }
 
