@@ -1050,7 +1050,7 @@ async fn thread_fork_treats_explicit_null_thread_instructions_as_missing() -> Re
         responses::mount_sse_sequence(&server, vec![body.clone(), body.clone(), body]).await;
 
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path(), &server.uri())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let conversation_id = create_fake_rollout(
         codex_home.path(),
@@ -1580,7 +1580,7 @@ async fn thread_fork_ephemeral_remains_pathless_and_omits_listing() -> Result<()
 async fn thread_fork_side_source_persists_and_hides_from_default_list() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path(), &server.uri())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let preview = "Saved user message";
     let conversation_id = create_fake_rollout(

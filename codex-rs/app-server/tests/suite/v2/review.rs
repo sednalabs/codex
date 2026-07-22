@@ -229,21 +229,15 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
             },
         })
         .await?;
-    let review_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(review_req)),
-    )
-    .await??;
-    let ReviewStartResponse { turn, .. } = to_response::<ReviewStartResponse>(review_resp)?;
+    let ReviewStartResponse { turn, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(review_req)).await??;
     let turn_id = turn.id.clone();
 
-    let token_usage_notif: JSONRPCNotification = timeout(
+    let token_usage: ThreadTokenUsageUpdatedNotification = timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("thread/tokenUsage/updated"),
+        mcp.read_notification("thread/tokenUsage/updated"),
     )
     .await??;
-    let token_usage: ThreadTokenUsageUpdatedNotification =
-        serde_json::from_value(token_usage_notif.params.expect("params must be present"))?;
     assert_eq!(token_usage.turn_id, turn_id);
     assert_eq!(token_usage.token_usage.total.total_tokens, 123);
     assert_eq!(token_usage.token_usage.total.input_tokens, 123);
@@ -251,13 +245,11 @@ async fn review_start_emits_token_usage_summary_when_usage_available() -> Result
 
     let mut review_body: Option<String> = None;
     for _ in 0..10 {
-        let review_notif: JSONRPCNotification = timeout(
+        let completed: ItemCompletedNotification = timeout(
             DEFAULT_READ_TIMEOUT,
-            mcp.read_stream_until_notification_message("item/completed"),
+            mcp.read_notification("item/completed"),
         )
         .await??;
-        let completed: ItemCompletedNotification =
-            serde_json::from_value(review_notif.params.expect("params must be present"))?;
         match completed.item {
             ThreadItem::ExitedReviewMode { review, .. } => {
                 assert_eq!(completed.turn_id, turn_id);
