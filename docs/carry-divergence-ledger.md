@@ -265,6 +265,12 @@ docs-only refresh commit that records this snapshot.
 - Downstream preferred-user skill precedence, plugin auth projection, dynamic
   tools, and no-MCP-start app metadata behavior remain separate live carry.
   The relocation does not create a new downstream divergence.
+- Upstream commit `6278742c41` keeps every skill-catalog entry visible under
+  moderate metadata pressure by distributing the remaining description budget
+  fairly, while retaining a bounded omission marker when even minimum entries
+  cannot fit. Downstream adopts that renderer unchanged; the focused skill lane
+  now runs its token, character, multibyte, omission, and fairness regressions
+  so later syncs do not restore first-entry-wins truncation accidentally.
 
 ### Remote Compaction History Efficiency
 
@@ -1805,10 +1811,18 @@ docs-only refresh commit that records this snapshot.
   down the previous snapshot. Downstream catalogue pagination, OAuth backend,
   safety policy, and environment-scoped projection continue through this
   upstream-owned runtime rather than a second manager mirror.
+- The 2026-07-22 sync adopts upstream commit `84d2b203ed`'s split authority:
+  prepared tool calls remain bound to the exact client and catalogue revision
+  advertised for their model step, while session-scoped `McpResourceClient`
+  clones resolve each resource operation and cache key from the latest
+  published `McpRuntime` snapshot. Do not restore per-binding resource clients;
+  `session_resource_client_follows_published_mcp_runtime` is the focused hosted
+  regression for refresh behavior.
 - Centralized ownership does not by itself unload quiescent threads retained by
   `ThreadManager`. Capacity-triggered V2 residency eviction now calls
   `shutdown_and_wait()` before generation-fenced, thread-instance-checked
-  removal so cloned MCP resource clients do not survive that eviction path.
+  removal so runtime-backed resource access does not retain the evicted
+  connection set.
   Timed idle eviction remains follow-up work and must retain the capacity path's
   existing active-turn and pending-mailbox guards; idle timestamps,
   configuration, and operator observability remain outside this bounded slice.
