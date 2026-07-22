@@ -576,7 +576,8 @@ for a removed crate path.
 - `codex-memories-write`, `codex-mcp-server`, and the two release binary roots
   keep the workspace-standard `#![recursion_limit = "256"]` so upstream's
   startup-prewarm async instrumentation remains buildable in the locked
-  GitHub-hosted release lane.
+  GitHub-hosted release lane. GitHub validation-lab release sentinel
+  `29893833019` is the carried regression receipt.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package
