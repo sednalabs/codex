@@ -571,9 +571,13 @@ for a removed crate path.
   upstream evolves filesystem-entry metadata.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
-  SHA-256 in the carry ledger. Do not hand-merge generated package entries;
-  `sedna.release-linux-smoke` and the app-server targeted lanes must then prove
-  the resulting lock under `--locked`.
+  SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package
+  entries; preserve any documented upstream coherence pins, then let
+  `sedna.release-linux-smoke` and the app-server targeted lanes prove the final
+  lock under `--locked`.
+- The `rama-*` `0.3.0-alpha.4` transport family is a lock-level coherence set:
+  the stable transitive siblings are not compatible with the pinned alpha
+  `rama-core` API. The same hosted locked lanes must catch any resolver drift.
 - Config validation follows upstream's authoritative layer-stack
   materialization. The removed template-interpolation helper and its tests are
   intentionally absent and should not be reintroduced to satisfy stale carry.
