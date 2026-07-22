@@ -1089,8 +1089,8 @@ docs-only refresh commit that records this snapshot.
   history. Reapply only the downstream `thread_source` fallback,
   `core_dynamic_tools` conversion, and persisted approval/permission merge;
   this makes the three carry points explicit rather than preserving a parallel
-  fork implementation. Hosted app-server fork and protocol lanes are the
-  regression receipt for this combined shape.
+  fork implementation. Hosted app-server fork and protocol validation run
+  `29909770697` passed the combined shape on signed merge head `c673caf16f`.
 - Primary files:
   - `codex-rs/protocol/`
   - `codex-rs/rollout/`
