@@ -277,7 +277,7 @@ tui-front-queue-submit-targeted:
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
     cargo test -p codex-tui footer_collapse_snapshots -- --exact --test-threads=1
 
-# Focused TUI selected-turn copy feedback, viewport redraw, and clipping slice.
+# Focused TUI transcript, viewport, narrow-layout, and terminal rendering slice.
 tui-transcript-viewport-targeted:
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown --lib -- --exact --test-threads=1
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_supports_proposed_plan --lib -- --exact --test-threads=1
@@ -287,7 +287,13 @@ tui-transcript-viewport-targeted:
     cargo test -p codex-tui history_cell::messages::tests::finalized_markdown_cache_misses_when_width_or_render_style_changes --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::messages::tests::raw_markdown_bypasses_the_rich_render_cache --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::messages::tests::visualization_directives_are_not_cached --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::tests::raw_mode_toggle_transcript_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::tests::session_header_clamps_to_narrow_width --lib -- --exact --test-threads=1
     cargo test -p codex-tui history_cell::plans::tests::finalized_plan_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
+    cargo test -p codex-tui custom_terminal::tests::terminal_draw_coalesces_wrapped_hyperlink_output --lib -- --exact --test-threads=1
+    cargo test -p codex-tui bottom_pane::chat_composer::tests::default_unified_mention_popup_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui bottom_pane::chat_composer::tests::unified_mention_popup_falls_back_from_bound_plugin_on_right_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_turn_completion_repairs_dropped_message_deltas --lib -- --exact --test-threads=1
     cargo test -p codex-tui inline_visualization::tests::transcript_overlay_remeasures_visualization_when_artifact_becomes_available --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_replaces_previous_message --lib -- --exact --test-threads=1
