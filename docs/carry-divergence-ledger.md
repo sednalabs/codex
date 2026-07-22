@@ -18,7 +18,7 @@ docs-only refresh commit that records this snapshot.
 - `upstream/main`: `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
 - downstream branch vs `upstream/main`: `2002` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1703` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1704` unique, `0` patch-equivalent
 
 ## Audit Rules
 
