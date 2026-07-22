@@ -620,7 +620,10 @@ docs-only refresh commit that records this snapshot.
   can re-enter the sandbox helper from extracted test binaries; the Linux bwrap
   launch path also adds the helper directory and `:minimal` system runtime roots
   to the outer bootstrap filesystem view before re-entering the inner seccomp
-  stage. The
+  stage. After upstream `87f71e35b8` added optional missing-path behavior, the
+  synthetic `:minimal` bootstrap root is constructed with the upstream default
+  (`None`), not `skip`, so a missing mandatory runtime substrate remains a
+  fail-closed sandbox setup error. The
   workspace JWT dependency uses `jsonwebtoken` with the
   `aws_lc_rs` provider so hosted Cargo/Bazel `--locked` runs avoid pulling the
   RustCrypto RSA graph. Downstream dependency-policy validation preserves

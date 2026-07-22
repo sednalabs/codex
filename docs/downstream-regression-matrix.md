@@ -562,6 +562,10 @@ for a removed crate path.
 
 ## Validation notes
 
+- `bwrap_bootstrap_policy_adds_helper_and_minimal_runtime_roots` also asserts
+  that the synthetic `:minimal` bootstrap root keeps
+  `missing_path_behavior: None`. This preserves fail-closed setup behavior when
+  upstream evolves filesystem-entry metadata.
 - Config validation follows upstream's authoritative layer-stack
   materialization. The removed template-interpolation helper and its tests are
   intentionally absent and should not be reintroduced to satisfy stale carry.

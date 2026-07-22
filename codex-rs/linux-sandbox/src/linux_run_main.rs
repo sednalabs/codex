@@ -303,12 +303,12 @@ fn file_system_policy_with_bwrap_bootstrap_roots(
     if !file_system_sandbox_policy.include_platform_defaults() {
         file_system_sandbox_policy
             .entries
-            .push(FileSystemSandboxEntry {
-                path: FileSystemPath::Special {
+            .push(FileSystemSandboxEntry::new(
+                FileSystemPath::Special {
                     value: FileSystemSpecialPath::Minimal,
                 },
-                access: FileSystemAccessMode::Read,
-            });
+                FileSystemAccessMode::Read,
+            ));
     }
     file_system_sandbox_policy
 }
