@@ -428,6 +428,8 @@ app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_read::paginated_thread_name_preserves_metadata_across_read_list_and_resume -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_search_occurrences_reads_paginated_projection -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::paginated_history_lists_use_projected_turns_and_items -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_preserves_goal_first_and_fork_settings -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
 
@@ -448,6 +450,7 @@ cli-surface-targeted:
     cargo test --locked -p codex-cli --bin codex main::tests:: -- --test-threads=1
     cargo test --locked -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
     cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-cli --test debug_clear_memories -- --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
 
@@ -558,6 +561,8 @@ state-migration-repair-targeted:
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
+    cargo test -p codex-thread-store live_thread_tests::concurrent_appends_keep_sqlite_metadata_in_canonical_history_order --lib -- --exact --test-threads=1
+    cargo test -p codex-thread-store live_thread_tests::persist_waits_for_append_observation_before_flushing_pending_metadata --lib -- --exact --test-threads=1
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 
@@ -569,6 +574,8 @@ core-runtime-surface-smoke:
     cargo test -p codex-core-skills preferred_user_skill_names_from_stack_collects_user_and_session_layers --lib -- --exact --test-threads=1
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
     cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::runtimes::shell::tests::approval_key_uses_path_uri_and_includes_environment_id --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::runtimes::disable_powershell_profile_tests::inserts_no_profile_for_proxy_selected_elevated_windows_sandbox --lib -- --exact --test-threads=1
 
 # Focused skill-loader hermeticity and skill-catalog budget slice.
 skill-loader-fixture-hermeticity-targeted:
