@@ -106,6 +106,11 @@ MUST fail with `target_ambiguous`, rather than choosing a device or session.
 build-install request, and required for a request that claims to act on a
 particular installed build. The returned build identity is the installed
 manifest actually observed by the provider, not an unverified caller hint.
+An active-build reuse is permitted only when the persisted manifest, artifact
+digest, manifest digest, and resolved provider/device target all equal the
+newly downloaded and resolved values. A persisted record that lacks any of
+those fields, including one written by an older provider version, is not an
+exact reuse match and MUST NOT be reported as the requested build.
 
 ### Request
 
