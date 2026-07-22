@@ -586,6 +586,11 @@ for a removed crate path.
   follow the generator exactly. Frontier Max harvest `29896241048` found this
   transition and targeted hosted repair `29903579393` passed both affected
   lanes on signed head `bebe996608`.
+- App-server fork conflicts must keep upstream's shared `thread_history` and
+  full-source approvals-reviewer scan, then layer only the downstream
+  `thread_source` fallback, dynamic-tool conversion, and persisted
+  approval/permission merge. The app-server fork and protocol lanes are the
+  required hosted proof for that combined boundary.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package
