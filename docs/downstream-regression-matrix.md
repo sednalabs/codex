@@ -219,6 +219,16 @@ exact-head hosted proof:
   `mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls` and
   `thread_resume_preserves_goal_first_and_fork_settings`, in addition to the
   complete app/read group.
+- Upstream `c5779ed6bb` owns live-parent history-mode and MultiAgentV2
+  usage-hint selection during forks. The existing
+  `codex.core-subagent-model-pinning-targeted` lane pins
+  `spawn_agent_can_fork_parent_thread_history_with_sanitized_items` alongside
+  downstream child model, provider, and reasoning precedence.
+- Upstream `66bd101fff` owns lazy post-sampling token estimates. The existing
+  `core-runtime-surface-smoke` lane pins
+  `post_sampling_token_estimate_is_disabled_by_always_on_sinks`, while broader
+  core validation continues to cover downstream response-model identity and
+  plugin guidance around the same turn loop.
 - `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
   before its existing initialize, WebSocket, and process integration tests.
   That covers bounded reverse-RPC correlation and cleanup, fail-closed network

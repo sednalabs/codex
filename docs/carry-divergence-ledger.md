@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `0c0249b14a7afa54dffd7d260cde8b331e8d92bb`
+- downstream integration code tree: `f0df4fc3df0a7846bcb172643e89a0d59a6f5988`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
-- `upstream/main`: `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
-- downstream branch vs `upstream/main`: `2010` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
+- `upstream/main`: `66bd101fff6f0e7e05a594ec7bdb78b92f6b66d3`
+- downstream branch vs `upstream/main`: `2014` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1710` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1713` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -712,6 +712,26 @@ docs-only refresh commit that records this snapshot.
   `auth_changed_for_refresh` notification predicate. That predicate is the
   correct broader observer decision here; it must not be replaced by coarse
   auth-mode equality during future syncs.
+
+### Lazy Post-Sampling Token Estimate
+
+- Upstream commit `66bd101fff` moves the expensive post-sampling token estimate
+  to its own trace target and calculates it only when an explicitly configured
+  subscriber enables that event. The always-on feedback and state-log sinks
+  disable the target while retaining the ordinary post-sampling diagnostic.
+- The only textual conflict was the declaration insertion point in
+  `codex-rs/core/src/session/turn.rs`. Resolution keeps both downstream's cached
+  endpoint-recommended-plugin candidates and upstream's trace-target constant.
+  The runtime hunk otherwise adopts upstream's lazy estimate while preserving
+  downstream provider-confirmed response-model identity and plugin guidance.
+- Signed two-parent merge `0bf7a1075b` preserves exact upstream
+  `66bd101fff` as its second parent. Signed validation commits `ded17bfd46` and
+  `f0df4fc3df` add the live-parent fork and post-sampling trace tests to the
+  existing sub-agent and core-runtime lanes rather than creating new lanes.
+- Hosted mirror run `29940208004` advanced `origin/upstream-main` to exact
+  `66bd101fff` in its successful sync job. The audit returned expected
+  pre-promotion exit `4` with `mirror=exact, tree_equal=False`; the clean visible
+  local `upstream-main` worktree was then fast-forwarded to the same exact SHA.
 
 ## Current Live Divergences
 
@@ -1535,7 +1555,11 @@ docs-only refresh commit that records this snapshot.
   delivery or user steering, or timeout.
 - Full-history forks preserve conversation and agent identity while accepting
   configured or explicit child model/reasoning selection; only `agent_type`
-  remains invalid for that fork shape.
+  remains invalid for that fork shape. Upstream `c5779ed6bb` now requires the
+  parent to be live and takes active history mode plus MultiAgentV2 usage hints
+  from that parent; the existing model-pinning lane pins
+  `spawn_agent_can_fork_parent_thread_history_with_sanitized_items` alongside
+  downstream model/provider/reasoning precedence.
 - Cold V2 descendant reloads preserve the child's indexed agent path, model,
   provider, and reasoning effort rather than inheriting the resumed root's
   selection. Rollout previews may supply history and display context, but
