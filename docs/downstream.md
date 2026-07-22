@@ -275,6 +275,29 @@ generator run `29955881580` supplied the exact schema fixture update, and
 exact-head validation run `29956395279` passed both affected app-server lanes at
 signed repair `ce7c9f9815`.
 
+## Upstream attribution, review identity, and request efficiency
+
+Upstream commit `88eb3a2b8a` installs the git-attribution extension in the
+app-server, MCP server, and CLI prompt-debug entry points. Authenticated
+workspace policy, resolved from the process-level ChatGPT base URL, controls the
+developer-context contribution. Downstream keeps its app-server hook seam beside
+the upstream installation rather than wrapping or forking it. The earlier
+two-line git-attribution fixture carry is now upstream-equivalent and historical.
+
+Upstream `7fd7a2f9a2` enables the complete code-mode integration suite in Linux
+and macOS Bazel CI while keeping two narrow Windows exclusions. This strengthens
+hosted proof of downstream native-browser image forwarding and dynamic-tool
+compatibility; it adds no runtime capability. Upstream `bbfc3f0152` canonicalizes
+Guardian review cwd reuse through `PathUri` without changing model, provider,
+reasoning, permission, or reviewer selection.
+
+Upstream `12c115d558` shares raw Responses tool JSON and compares incremental
+WebSocket prefixes in place. The merged tree retains downstream response-model
+identity, receiver retention, retry, dynamic-tool, native computer-use, and image
+semantics. Signed merge `f7165094c8` adopted all four commits without textual
+conflicts, and signed validation commit `0ecb2c0f02` extends the existing hosted
+recipes over the new entry-point and serialization seams.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
@@ -443,15 +466,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `ce7c9f98153ed40ef468cd7c35b12d063e1c5c90`
+  `0ecb2c0f026f04c720f6368b4e4d8911345f02a6`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `4ebd976312b9088b3c845724e08d79c9f77505f4`
+  `12c115d558b9fec378b4445636a327b05e7de8cc`
 - `upstream/main`:
-  `4ebd976312b9088b3c845724e08d79c9f77505f4`
+  `12c115d558b9fec378b4445636a327b05e7de8cc`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2024` downstream ahead
-- downstream-only non-merge commits: `1720` unique, `0` patch-equivalent
+  `0` upstream ahead, `2027` downstream ahead
+- downstream-only non-merge commits: `1722` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

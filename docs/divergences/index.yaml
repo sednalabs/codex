@@ -596,7 +596,7 @@
         "codex-rs/core/src/guardian/review_session.rs",
         "codex-rs/core/src/context_manager/history.rs"
       ],
-      "behavior": "Review and history token summaries stay aligned with live runtime state instead of stale defaults.",
+      "behavior": "Review and history token summaries stay aligned with live runtime state instead of stale defaults. Upstream owns Guardian cwd reuse canonicalization through PathUri; downstream accounting and split-sandbox-policy behavior remain orthogonal reuse-key inputs.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -604,10 +604,12 @@
       },
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
-        "review history accounting snapshot"
+        "review history accounting snapshot",
+        "guardian_review_session_config_change_invalidates_cached_session",
+        "guardian_session_prewarms_and_is_reused_for_first_review"
       ],
       "owner": "downstream",
-      "notes": "Keeps review-mode accounting deterministic.",
+      "notes": "Keeps review-mode accounting deterministic. Upstream bbfc3f0152 canonicalizes Guardian cwd identity through PathUri; future conflict resolution must not restore AbsolutePathBuf in that reuse key.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-accounting-adapter",
       "hotspot_files": [
@@ -1210,7 +1212,7 @@
     {
       "id": "git-attribution-extension-api-test-alignment",
       "title": "Git-attribution extension-API test alignment",
-      "status": "live",
+      "status": "upstream-equivalent",
       "category": "build-validation",
       "surface_type": "test-only",
       "surface": [
@@ -1220,26 +1222,25 @@
       "files": [
         "codex-rs/ext/git-attribution/src/git_attribution_tests.rs"
       ],
-      "behavior": "The upstream git-attribution test helper constructs WorldStateContributionInput with the current session, thread, and turn stores only. It does not restore the removed step-scoped store or change production contributor behavior.",
-      "upstream_equivalent": false,
+      "behavior": "Historical receipt: the git-attribution test helper uses the current session, thread, and turn stores only. Upstream adopted the no-step-store fixture shape and later replaced the obsolete contributor-composition test with entry-point integration coverage.",
+      "upstream_equivalent": true,
       "introduced_in": {
         "carry_commit": "03886698f22ed10e8de3cc99c6411ce685db54a3",
-        "upstream_commit": "fd51e505401b7b2da958edc269e4d7280be86bd5"
+        "upstream_commit": "2c49493b5b6bfcd3efbd83ae6031492296908c63"
       },
       "guardrail_lane": "core-runtime-surface-smoke",
       "tests": [
-        "installed_contributor_composes_policy_changes",
         "policy_resolution_recovers_after_unauthorized",
         "policy_resolution_retries_after_auth_refresh"
       ],
-      "owner": "downstream",
-      "notes": "Upstream fd51e50540 removed step-scoped contributor data before upstream ab816f3ca0 added a test helper that still initialized the deleted field. Hosted run 29934195127 exposed the compile failure. Keep only the two-line test-fixture deletion and remove it as soon as upstream adopts the no-step-store fixture shape. Hosted run 29936369078 later proved that the complete git-attribution seam also catches shared auth-observer regressions: signed 36da0efb9c restores account-aware notification gating, but is not part of this test-only fixture carry.",
-      "upstreamability_tier": "upstream-pr",
-      "boundary_type": "test-fixture-compatibility",
+      "owner": "upstream",
+      "notes": "Upstream fd51e50540 removed step-scoped contributor data before upstream ab816f3ca0 added a stale test helper. Downstream 03886698f2 removed that two-line fixture field after hosted run 29934195127 exposed the compile failure. Upstream 2c49493b5b adopted the same no-step-store shape, making the carry equivalent; upstream 88eb3a2b8a then removed the obsolete contributor-composition helper and test while adding app-server, MCP, and CLI entry-point coverage. Do not restore the deleted helper or fixture field. Signed downstream 36da0efb9c remains an independent auth-observer repair.",
+      "upstreamability_tier": "already-upstream",
+      "boundary_type": "historical-test-fixture-compatibility",
       "hotspot_files": [
         "codex-rs/ext/git-attribution/src/git_attribution_tests.rs"
       ],
-      "extraction_target": "upstream no-step-store git-attribution test fixture"
+      "extraction_target": "none; retain as historical carry evidence"
     },
     {
       "id": "ci-workflow-automation",
@@ -1273,7 +1274,7 @@
         "tools/argument-comment-lint/list-bazel-targets.sh",
         "justfile"
       ],
-      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration. Host-local shell-safety and approval-event fixtures explicitly skip Docker remote replay while retaining normal hosted test coverage. Shared TUI test support gives stack-heavy individually dispatched app and app-server-session regressions the same explicit stack budget as broader hosted carry validation. Existing hosted recipes run complete upstream-owned exec-server and git-attribution unit seams so new upstream tests remain covered without maintaining a brittle enumerated test list.",
+      "behavior": "Downstream runs bespoke validation lanes, Sedna sync/heavy workflows, and tooling scripts so the CI surface can keep pace with the fork. Reusable workflow string inputs are copied into job-level environment variables so shell scripts never interpolate GitHub expression values directly into shell source. Large resolved validation plans remain in a runner-temp JSON file for field parsing, while the live workflow feeds plan fingerprinting through explicit stdin rather than a caller-selected path or a complete argv/environment payload. Environment input remains supported only for legacy direct callers and must not replace the workflow stdin boundary without a documented migration. Host-local shell-safety and approval-event fixtures explicitly skip Docker remote replay while retaining normal hosted test coverage. Shared TUI test support gives stack-heavy individually dispatched app and app-server-session regressions the same explicit stack budget as broader hosted carry validation. Existing hosted recipes run complete upstream-owned exec-server and git-attribution unit seams plus the app-server, MCP, and CLI attribution entry points, Guardian PathUri reuse identity, and raw Responses tool JSON.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1291,6 +1292,13 @@
         "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
         "codex-exec-server complete unit suite",
         "codex-git-attribution complete unit suite",
+        "git_attribution_follows_authenticated_workspace_policy",
+        "cold_resume_replaces_legacy_attribution_without_duplication",
+        "test_codex_tool_passes_base_instructions",
+        "debug_prompt_input_follows_authenticated_attribution_setting",
+        "guardian_review_session_config_change_invalidates_cached_session",
+        "guardian_session_prewarms_and_is_reused_for_first_review",
+        "raw_tool_json_matches_value_encoding",
         "mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls",
         "thread_resume_preserves_goal_first_and_fork_settings",
         "catalog_report_counts_partial_description_truncation",
