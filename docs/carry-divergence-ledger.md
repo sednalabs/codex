@@ -283,6 +283,12 @@ docs-only refresh commit that records this snapshot.
   thread startup supplies the optional MCP resource client and context
   contribution no longer passes the removed step store. Treat those two local
   repairs as upstream-equivalent validation history, not live carry.
+- Hosted mirror run `29921370577` advanced `origin/upstream-main` to exact
+  upstream `65ae4c26e0` in successful sync job `88927457328`; audit job
+  `88927594996` returned the expected pre-promotion exit `4`. Hosted exact-head
+  validation run `29921594558` then passed at integration source
+  `2ba1b403be`, including skill-catalog job `88928288442`, extension/core
+  runtime job `88928288450`, and app-server protocol job `88928288507`.
 
 ### Remote Compaction History Efficiency
 
