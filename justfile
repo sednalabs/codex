@@ -552,6 +552,7 @@ core-ledger-smoke:
 # one bounded runtime shard.
 core-runtime-surface-smoke:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- session::tests::build_initial_context_includes_turn_context_fragments_from_extensions session::tests::record_context_updates_includes_turn_context_fragments_on_steady_state_turns --exact
     cargo test -p codex-core-skills preferred_user_skill_names_from_stack_collects_user_and_session_layers --lib -- --exact --test-threads=1
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
     cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1

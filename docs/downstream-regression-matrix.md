@@ -502,21 +502,24 @@ cut-over `codex-tui` app tests. Keep the preset green with the parser test and
 the exact `codex-tui` render/app checks rather than carrying compile coverage
 for a removed crate path.
 
-### Step-Scoped Extension Contributors
+### Explicit Extension Contributor Capabilities
 
-- Upstream `StepContext::extension_data` is the single per-sampling-step
-  capability store for context, world-state, turn-input, and tool contributors.
-- Initial-context rebuilds and local, remote, and token-budget compaction must
-  preserve the captured store; a new store during compaction would break
-  request-stable extension capability.
+- Context, world-state, turn-input, and tool contributors use session, thread,
+  and turn stores whose lifetimes match their data; the removed empty
+  `StepContext::extension_data` forwarding store must not be restored.
+- MCP resource access enters through `ThreadStartInput` as an explicit
+  live-runtime client and is retained in skills-owned session state.
 - Persisted compacted items must be constructed only after missing live-history
   response IDs are assigned, so rollout replacement history remains identical
   to the history installed in the session.
 - Extension API registry tests plus core session, compaction, memories, skills,
   goal, web-search, and image-generation tests are the hosted guardrail set.
+- `core-runtime-surface-smoke` explicitly proves full initial context and
+  steady-state updates still share the downstream turn-context contributor
+  assembly helper after upstream API changes.
 - Downstream dynamic-tool, image-detail, realtime world-state, and native
-  computer-use carry must compose through this upstream boundary rather than a
-  parallel step-local registry.
+  computer-use carry remains on session/turn/tool-handler seams and must not be
+  coupled to a parallel generic capability registry.
 
 ### Complete MCP Tool Catalogue Collection And Refresh
 

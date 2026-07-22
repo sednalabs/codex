@@ -521,22 +521,26 @@ docs-only refresh commit that records this snapshot.
   registry entries and only the already-covered integration-branch PID-test
   path missing from the older audited `origin/main`.
 
-### Step-Scoped Extension Contributor Data
+### Explicit Extension Contributor Capability Ownership
 
-- Upstream commit `c44c4de7b4` gives each `StepContext` its own
-  `ExtensionData` store and passes it to context, world-state, turn-input, and
-  tool contributors. Initial-context reconstruction and local, remote, and
-  token-budget compaction retain the captured step store rather than creating
-  a parallel capability snapshot.
-- Downstream adopts this as the canonical per-sampling-step extension boundary.
-  Dynamic-tool, image-generation, memories, skills, goal, web-search, and
-  native-computer-use alignment must consume or extend this store rather than
-  adding another step-local registry in hot session code.
-- The two session conflicts preserve upstream's step store while retaining one
-  downstream helper for shared turn-context contribution assembly. Both full
-  initial context and steady-state updates pass the exact active store; the
-  test-only contributor keeps the local `ExtensionFuture` alias and accepts the
-  new parameter.
+- Upstream commit `c44c4de7b4` introduced a per-sampling-step `ExtensionData`
+  argument, but upstream commit `fd51e50540` removes it after the store remained
+  an empty forwarding container. Context, world-state, turn-input, and tool
+  contributors now receive only the session, thread, and turn stores whose
+  lifetimes match the data they own.
+- MCP resource access is no longer hidden in a generic store. The host passes an
+  optional live-runtime `McpResourceClient` through `ThreadStartInput`, and the
+  skills extension retains it in skills-owned session state for catalog and
+  tool operations.
+- The two 2026-07-22 session conflicts keep the downstream helper for shared
+  turn-context contribution assembly on upstream's no-step-store API. Full
+  initial context and steady-state updates still invoke the same helper, and
+  the test-only contributor keeps the local `ExtensionFuture` alias without a
+  dead capability parameter.
+- Dynamic Tools, image generation and image detail, memories, goals, web
+  search, realtime world state, and native computer use remain owned by their
+  existing session, thread, turn, or tool-handler seams. Do not introduce a new
+  step-local registry for them without a concrete request-stability need.
 - Signed merge `3fe6502c41` preserves `c44c4de7b4` as its second parent.
   Hosted mirror run `29828505403` advanced `origin/upstream-main` to that exact
   SHA in sync job `88627328251`. Audit job `88627431159` returned the expected
@@ -554,8 +558,8 @@ docs-only refresh commit that records this snapshot.
   history rather than cloned independently by each caller.
 - Signed merge `7e09b99f60` adopts the upstream implementation without a
   carry-specific patch. Downstream capacity retry, realtime world-state,
-  hooks, dynamic media, compaction metadata, and step-scoped extension data
-  remain composed around the centralized upstream boundary.
+  hooks, dynamic media, compaction metadata, and explicit session/thread/turn
+  extension state remain composed around the centralized upstream boundary.
 - Hosted mirror run `29832500831` advanced `origin/upstream-main` to exact
   `f69f88f811` in successful sync job `88640491987`. Audit job `88640608492`
   returned the expected pre-promotion exit `4`; artifact `8495902896` reports

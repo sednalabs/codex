@@ -26,10 +26,10 @@ session-detection limits, and provider attribution through `a30aee8d90`, do not
 alter the native-tool conclusions below. The later alpha-hotfix conversion,
 release-distribution mirror and metadata, proxy-aware plugin transport,
 optional installer source, codespell configuration, Wine PTY test changes,
-the behavior-preserving MCP connection-manager module split, step-scoped
-extension contributor data, and centralized compacted-history construction
-through `f69f88f811` are likewise packaging, transport, validation, or internal
-extension-infrastructure work. In
+the behavior-preserving MCP connection-manager module split, explicit
+extension session/turn capability ownership, and centralized compacted-history
+construction through `fd51e50540` are likewise packaging, transport,
+validation, or internal extension-infrastructure work. In
 particular, this tranche adds no Codex-owned browser, Android, or desktop
 computer-use capability upstream and does not change downstream sub-agent
 model or reasoning-effort selection.
