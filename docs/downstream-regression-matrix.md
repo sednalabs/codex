@@ -258,10 +258,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     It also pins extension-catalog ordering, prompt scope, description policy,
     and moderate and extreme metadata-pressure behavior on the same hosted
     Rust slice.
-  - Workflow planner coverage enforces `RUST_MIN_STACK` semantically on every
-    Cargo command in the stack-sensitive targeted recipes. It deliberately does
-    not hard-code command counts, so adding an already-guarded regression does
-    not create unrelated CI maintenance.
+  - Workflow planner coverage enforces `RUST_MIN_STACK` on every unified-exec
+    Cargo command without hard-coding that recipe's command count. The mixed
+    stack-sensitivity recipes retain their narrower guarded-command counts.
     The workflow summary parser
     understands nextest
     retry-status lines so structured harvest artifacts show persistent retry
