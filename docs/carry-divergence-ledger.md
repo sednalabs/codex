@@ -759,6 +759,9 @@ docs-only refresh commit that records this snapshot.
 - Signed validation repair `c132d50f17` supplies the downstream fixture field,
   updates the renamed skill test selector, and adds both long-line TUI tests to
   `tui-transcript-viewport-targeted`. No upstream production hunk was changed.
+- Exact-head hosted run `29944328610` passed the TUI transcript/viewport,
+  skill-loader fixture, core-runtime surface, workflow planner, and downstream
+  documentation lanes at signed source `ef4389f342`.
 
 ## Current Live Divergences
 
