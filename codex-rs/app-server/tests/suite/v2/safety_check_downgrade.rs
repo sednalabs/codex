@@ -455,12 +455,8 @@ async fn run_turn_and_read_completion(
             ..Default::default()
         })
         .await?;
-    let thread_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_req)).await??;
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
@@ -473,12 +469,8 @@ async fn run_turn_and_read_completion(
             ..Default::default()
         })
         .await?;
-    let turn_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
-    )
-    .await??;
-    let TurnStartResponse { turn } = to_response::<TurnStartResponse>(turn_resp)?;
+    let TurnStartResponse { turn } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_req)).await??;
 
     let notification = timeout(
         DEFAULT_READ_TIMEOUT,

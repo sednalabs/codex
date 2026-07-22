@@ -983,20 +983,14 @@ async fn external_agent_memory_import_rejects_stale_symlink_before_workspace_mut
             })),
         )
         .await?;
-    let response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let response: ExternalAgentConfigImportResponse = to_response(response)?;
+    let response: ExternalAgentConfigImportResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
     let import_id = assert_import_response(response);
-    let notification = timeout(
+    let completed: ExternalAgentConfigImportCompletedNotification = timeout(
         DEFAULT_TIMEOUT,
-        mcp.read_stream_until_notification_message("externalAgentConfig/import/completed"),
+        mcp.read_notification("externalAgentConfig/import/completed"),
     )
     .await??;
-    let completed: ExternalAgentConfigImportCompletedNotification =
-        serde_json::from_value(notification.params.expect("completed params"))?;
 
     assert_eq!(completed.import_id, import_id);
     assert_eq!(completed.item_type_results.len(), 1);
