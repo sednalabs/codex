@@ -240,6 +240,42 @@ exact-head hosted proof:
   runs both the highlight fallback unit test and the rendered command snapshot.
   Exact-head hosted run `29944328610` passed both lanes plus their workflow,
   core-runtime, and downstream-doc integration guards.
+- Upstream `a59a419afa` owns shell approval working-directory `PathUri`
+  identity. `core-runtime-surface-smoke` executes
+  `approval_key_uses_path_uri_and_includes_environment_id` and the retained
+  managed-network PowerShell profile guard.
+- Upstream `946ed315a4` owns SQLite paths, connection options, and open/migrate
+  telemetry through `SqliteConfig`. `codex.state-migration-repair-targeted`
+  proves the generalized collision and `thread_source` repair chain;
+  `core-ledger-smoke` now executes both clone-shared thread-store ordering
+  regressions as well as the usage database lifecycle; and the app-server V2
+  and CLI lanes exercise paginated history and database clearing through the
+  same configuration owner. Exact-head hosted run `29951153938` passed all six
+  selected lanes at `de2ba7d16b`.
+- Upstream `06782eded7` owns the canonical built-in sandbox network placeholder
+  spelling. `core-runtime-surface-smoke` exercises permission-instruction
+  assembly without turning that presentation change into a downstream policy
+  fork.
+- Upstream `08ae0fc0ce` owns the single `StartThreadOptions` startup API.
+  `core-compile-smoke`, `codex.core-multi-agent-orchestration-targeted`, and
+  `codex.core-subagent-model-pinning-targeted` cover call-site migration,
+  residency, fork history, child selection, and paginated cold-resume identity.
+  `codex.code-mode-declaration-targeted` additionally executes
+  `code_mode_can_call_hidden_dynamic_tools` and
+  `code_mode_excludes_configured_nested_tool_namespaces`, proving the retained
+  flat dynamic-tool metadata crosses the upstream options boundary.
+- Upstream `4ebd976312` owns configurable V3 realtime BEM channel prefixes.
+  `core-runtime-surface-smoke` executes the BEM parser and streamed-prefix
+  regressions plus
+  `conversation_flushes_assistant_deltas_every_200ms_for_v3_handoff`;
+  `codex.app-server-v2-contract-targeted` executes
+  `websocket_v3_routes_handoffs_by_session_mode`. `core-carry-core-smoke`
+  retains the downstream custom realtime world-state/initial-history guard.
+  Exact-head targeted run `29954085793` exposed only a stale generated
+  `ClientRequest.json` fixture in the two app-server lanes. Hosted generator run
+  `29955881580` produced the exact two-file repair recorded in signed commit
+  `ce7c9f9815`; no schema was hand-edited or generated on this host. Exact-head
+  rerun `29956395279` then passed both affected lanes.
 - `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
   before its existing initialize, WebSocket, and process integration tests.
   That covers bounded reverse-RPC correlation and cleanup, fail-closed network

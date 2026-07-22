@@ -53,6 +53,7 @@
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/src/sqlite.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql"
       ],
       "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in an extension-owned storage namespace.",
@@ -64,15 +65,17 @@
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
+        "init_removes_legacy_logs_and_usage_db_files",
         "usage_logger_* focused table-contract tests"
       ],
       "owner": "downstream",
-      "notes": "Keeps the canonical local usage ledger with the downstream fork.",
+      "notes": "Keeps the canonical local usage ledger with the downstream fork while extending upstream SqliteConfig as the single connection and path owner. Do not restore the removed parallel runtime database spec or free path-helper API.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [
         "codex-rs/core/src/session/session.rs",
-        "codex-rs/state/src/runtime.rs"
+        "codex-rs/state/src/runtime.rs",
+        "codex-rs/state/src/sqlite.rs"
       ],
       "extraction_target": "extension-owned usage ledger storage namespace"
     },
@@ -325,7 +328,7 @@
         "registered_downstream_provider_declares_runtime_capabilities"
       ],
       "owner": "downstream",
-      "notes": "Keeps the spawned agent contract explicit and reviewable while avoiding a downstream duplicate of upstream's child selection pipeline. The Schemars 1.2 adapter keeps flattened named roles schema-valid, V2 description and namespace-sensitive upstream fixture tests follow the effective configured namespace, and pre-cancelled delegates abort before session spawn. Full-history forks accept configured or explicit model/reasoning selection while rejecting agent_type changes. The Luna compatibility overlay belongs only at the shared spawn advertisement and validation predicate; remove it when upstream catalog metadata marks Luna V2-compatible. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. The capacity-eviction slice is a manual port of the useful mechanism from draft upstream PR #30154 onto the current refactored tree, extended so interrupted identities remain observable and reloadable and so issue #32353's queue-only mailbox can cross eviction without pinning a runtime. Preserve this direct lifecycle fix until upstream owns an equivalent generation-safe FIFO transfer and close contract; cross-reload subscriptions and timed idle eviction remain separate follow-up work. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn.",
+      "notes": "Keeps the spawned agent contract explicit and reviewable while avoiding a downstream duplicate of upstream's child selection pipeline. The Schemars 1.2 adapter keeps flattened named roles schema-valid, V2 description and namespace-sensitive upstream fixture tests follow the effective configured namespace, and pre-cancelled delegates abort before session spawn. Full-history forks accept configured or explicit model/reasoning selection while rejecting agent_type changes. The Luna compatibility overlay belongs only at the shared spawn advertisement and validation predicate; remove it when upstream catalog metadata marks Luna V2-compatible. The 2026-07-15 sync deliberately adopted upstream removal of last_task_message and last_task_message_preview from inventory output; active-descendant counts and inspect-tree structure remain without exposing instruction content. The capacity-eviction slice is a manual port of the useful mechanism from draft upstream PR #30154 onto the current refactored tree, extended so interrupted identities remain observable and reloadable and so issue #32353's queue-only mailbox can cross eviction without pinning a runtime. Preserve this direct lifecycle fix until upstream owns an equivalent generation-safe FIFO transfer and close contract; cross-reload subscriptions and timed idle eviction remain separate follow-up work. Prompt guidance accepts upstream AGENTS.md/skill authorization and model-override warnings while preserving the downstream guardrail that generic depth or research requests are not authorization to spawn. Upstream 08ae0fc0ce owns the single StartThreadOptions startup entry; it does not narrow downstream model, provider, reasoning-effort, fork-history, residency, or cold-reload behavior, and the removed helper APIs must not be restored.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-runtime-capability",
       "hotspot_files": [
@@ -416,7 +419,7 @@
         "remote_manual_compact_restates_realtime_start_shapes"
       ],
       "owner": "downstream",
-      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, legacy replay/fork boundaries, and realtime world-state reconstruction. The 2026-07-15 sync adopted upstream sticky explicit-environment cwd behavior and workspace roots rather than retaining the superseded fallback-cwd rewrite implementation shape. Upstream V3 initialItems are additive backend seed history, not a replacement for downstream custom realtime-start instructions.",
+      "notes": "Keeps current session environment state coherent across default turns, turn updates, mailbox delivery, legacy replay/fork boundaries, and realtime world-state reconstruction. The 2026-07-15 sync adopted upstream sticky explicit-environment cwd behavior and workspace roots rather than retaining the superseded fallback-cwd rewrite implementation shape. Upstream V3 initialItems are additive backend seed history, not a replacement for downstream custom realtime-start instructions. Upstream 4ebd976312 owns configurable V3 BEM text-prefix routing; that protocol seam is orthogonal to the downstream custom realtime world-state instruction and adds no separate runtime provider.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "session-runtime-state",
       "hotspot_files": [
@@ -1550,11 +1553,13 @@
         "dynamic_tool_spec_deserializes_capability_metadata",
         "environment_scoped_dynamic_tools_do_not_restore_without_revalidation",
         "thread_start_injects_dynamic_tools_into_model_requests",
+        "code_mode_can_call_hidden_dynamic_tools",
+        "code_mode_excludes_configured_nested_tool_namespaces",
         "dynamic_tool_audio_exceeding_the_output_budget_is_omitted",
         "remote_compact_does_not_charge_inline_audio_payload_as_text"
       ],
       "owner": "downstream",
-      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics. Upstream audio truncation and remote-compaction fixtures must continue to use this flat record until that migration lands losslessly. Upstream commit f69f88f811 owns persisted CompactedItem construction after live-history response IDs are assigned; downstream media carry composes around that boundary rather than rebuilding replacement history in compaction callers.",
+      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics. Upstream audio truncation and remote-compaction fixtures must continue to use this flat record until that migration lands losslessly. Upstream commit f69f88f811 owns persisted CompactedItem construction after live-history response IDs are assigned; downstream media carry composes around that boundary rather than rebuilding replacement history in compaction callers. Upstream 08ae0fc0ce owns the single StartThreadOptions startup entry; keep the flat record only as field compatibility through dynamic_tools and do not restore the removed start_thread_with_tools or start_thread_with_options helpers.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-schema-persistence-compatibility",
       "hotspot_files": [
@@ -2491,13 +2496,13 @@
         "carry_commit": "632aa189aa0764f2face1e611617a14f00bd495d",
         "upstream_commit": null
       },
-      "guardrail_lane": "GitHub blocking-ci and rust-ci-full codex-thread-store tests",
+      "guardrail_lane": "core-ledger-smoke; GitHub blocking-ci and rust-ci-full codex-thread-store tests",
       "tests": [
         "concurrent_appends_keep_sqlite_metadata_in_canonical_history_order",
         "persist_waits_for_append_observation_before_flushing_pending_metadata"
       ],
       "owner": "downstream",
-      "notes": "The race became visible while integrating upstream thread-settings persistence. Preserve the complete append-observe-project-acknowledge boundary rather than narrowing the permit to individual store calls; independently reopened handles remain a store-level policy boundary. The ordering regression canonicalizes both JSONL and SQLite cwd values before whole-object comparison so Windows verbatim path prefixes do not obscure a real metadata-order mismatch; the assertion remains otherwise holistic.",
+      "notes": "The race became visible while integrating upstream thread-settings persistence. Preserve the complete append-observe-project-acknowledge boundary rather than narrowing the permit to individual store calls; independently reopened handles remain a store-level policy boundary. The ordering regression canonicalizes both JSONL and SQLite cwd values before whole-object comparison so Windows verbatim path prefixes do not obscure a real metadata-order mismatch; the assertion remains otherwise holistic. Both regressions run in core-ledger-smoke against the upstream-owned SqliteConfig topology.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "direct-upstream-fix",
       "hotspot_files": [

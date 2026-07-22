@@ -216,6 +216,65 @@ the renamed policy-aware regression in the existing skill lane. Upstream commit
 TUI transcript/viewport lane and supplies the downstream-only `terminal_wait`
 fixture field without changing upstream runtime behavior.
 
+## Upstream shell-approval path URI keys
+
+Upstream commit `a59a419afa` represents the shell approval key's working
+directory as a `PathUri` instead of a raw absolute-path wrapper. Downstream
+adopts that identity shape unchanged, including the environment ID component,
+while retaining the independent managed-network rule that suppresses a
+PowerShell profile for the proxy-selected elevated Windows sandbox.
+
+## Upstream centralized SQLite configuration
+
+Upstream commit `946ed315a4` makes `SqliteConfig` the single owner of managed
+database paths, connection options, open/migrate telemetry, and typed
+initialization errors. Downstream no longer carries a parallel runtime database
+spec or free path-helper API. It extends the upstream owner narrowly with the
+sixth `usage_1.sqlite` database and a distinct pre-migration repair phase, then
+runs extension migrations after the state database opens.
+
+The existing usage-ledger, generalized migration-collision repair,
+`thread_source` repair, extension-storage routing, legacy-file cleanup, and
+failure-path pool cleanup remain intact around that upstream seam. Exact-head
+GitHub-hosted run `29951153938` passed the state-migration, usage-ledger,
+thread-store ordering, shell runtime, sub-agent model-selection, app-server V2,
+and CLI database-management guards at signed merge `de2ba7d16b`.
+
+## Upstream sandbox network placeholder syntax
+
+Upstream commit `06782eded7` canonicalizes the built-in sandbox permission
+templates from `{{network_access}}` to `{{ network_access }}`. Downstream adopts
+the three template changes unchanged. The shared renderer already accepts both
+spellings, and the change affects model-visible text construction only; it does
+not change sandbox enforcement, approval policy, or network authorization.
+
+## Upstream consolidated thread startup
+
+Upstream commit `08ae0fc0ce` makes `ThreadManager::start_thread` with
+`StartThreadOptions` the single thread-start owner. Downstream uses that API
+instead of restoring the removed `start_thread_with_tools` or
+`start_thread_with_options` helpers. Its flat dynamic-tool compatibility fields
+continue to enter through `StartThreadOptions::dynamic_tools`, while explicit
+empty environment selections remain distinct from omitted selections.
+
+This API consolidation does not narrow downstream child model, provider, or
+reasoning-effort selection. Full and partial fork history, live-parent context,
+residency and cold reload, persisted child identity, and exact model/reasoning
+assertions remain on their existing agent-control seams and guardrail lanes.
+
+## Upstream configurable realtime BEM prefixes
+
+Upstream commit `4ebd976312` lets V3 Frameless Bidi clients replace the default
+`[ANALYSIS]`, `[COMMENTARY]`, and `[FINAL]` text prefixes per BEM channel.
+Downstream adopts the upstream protocol, parser, buffering, and app-server
+routing unchanged. This is text routing over the existing realtime transport,
+not a new audio, native browser, Android, desktop, image, or dynamic-tool
+capability. Downstream custom realtime world-state and initial-history behavior
+remain orthogonal and continue through their existing session seams. Hosted
+generator run `29955881580` supplied the exact schema fixture update, and
+exact-head validation run `29956395279` passed both affected app-server lanes at
+signed repair `ce7c9f9815`.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
@@ -384,15 +443,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `c132d50f17ef07018817dfdaca569a170208af88`
+  `ce7c9f98153ed40ef468cd7c35b12d063e1c5c90`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `f343d1237d8d360e8224997a846acde0b04a17cd`
+  `4ebd976312b9088b3c845724e08d79c9f77505f4`
 - `upstream/main`:
-  `f343d1237d8d360e8224997a846acde0b04a17cd`
+  `4ebd976312b9088b3c845724e08d79c9f77505f4`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2019` downstream ahead
-- downstream-only non-merge commits: `1717` unique, `0` patch-equivalent
+  `0` upstream ahead, `2024` downstream ahead
+- downstream-only non-merge commits: `1720` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
