@@ -1136,6 +1136,31 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/app-server/tests/suite/conversation_summary.rs`
   - `codex-rs/app-server/tests/suite/v2/thread_read.rs`
 
+### Direct App-Server Serialization And Missing-Response Retry
+
+- Upstream commits `f69dc49b15` and `e370d23691` remove redundant JSON value
+  round trips from app-server request decoding, typed-request diagnostics,
+  tracing, and outgoing transport serialization. Every client request now has
+  an explicit wire name, and diagnostics allocate it only when constructing an
+  error. Adopt those paths unchanged rather than restoring the removed
+  serialization-based lookup helper.
+- The sole merge conflict was the remote-client import block. Resolution drops
+  obsolete `request_method_name` as upstream requires and retains only
+  downstream `server_notification_requires_delivery`, which classifies the
+  bounded remote-event queue. The upstream typed request path and downstream
+  delivery backpressure therefore compose without a second method-name adapter.
+- Upstream commit `64dc1c7a01` treats the typed
+  `previous_response_not_found` WebSocket code as retryable so the turn loop can
+  send the full request. It preserves a server message when supplied and uses
+  the upstream fallback only when that message is absent. Provider-confirmed
+  model identity remains emitted alongside this upstream retry mapping.
+- Native `ComputerUseCall`, dynamic-tool protocol methods, generated-schema
+  compatibility, and TypeScript response export remain additive to upstream's
+  explicit request wire names. `codex.app-server-protocol-test`,
+  `codex.app-server-v2-contract-targeted`, and `core-runtime-surface-smoke` are
+  the focused hosted proof; the app-server V2 slice also runs upstream's direct
+  transport wire-shape regression.
+
 ### Thread-store History And Metadata Ordering
 
 - A clone-shared asynchronous operation permit serializes each `LiveThread`

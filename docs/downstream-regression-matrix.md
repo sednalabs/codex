@@ -608,6 +608,14 @@ for a removed crate path.
   approval/permission merge. The app-server fork and protocol lanes are the
   required hosted proof for that combined boundary; run `29909770697` passed
   them on signed merge head `c673caf16f`.
+- App-server serialization follows upstream's explicit request wire names,
+  direct JSON-RPC conversion, direct outgoing-message encoding, and
+  allocation-free typed method lookup. The remote client keeps only its bounded
+  event-delivery classifier around that path, while WebSocket
+  `previous_response_not_found` errors remain typed retryable errors and
+  provider-confirmed model identity remains visible. The app-server protocol,
+  V2 contract, and core runtime lanes are the focused proof; the V2 lane runs
+  `serialize_outgoing_message_preserves_wire_shape` explicitly.
 - Unified-exec lifecycle conflicts keep upstream's interaction lock, output
   close guard, trailing-output grace, and network-denial join, while the
   process-owned bounded transcript and bounded source-task join remain the

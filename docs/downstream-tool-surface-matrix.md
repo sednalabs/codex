@@ -11,10 +11,10 @@ Last reviewed: `2026-07-22`.
 
 Review baseline:
 
-- `upstream/main`: `65ae4c26e088913176a50d6daeb742d00942caee`
+- `upstream/main`: `e370d23691fbdaa12a2bf017d7e6bc101cca9b5f`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `65ae4c26e088913176a50d6daeb742d00942caee`
-- downstream integration code tree: `4672949c57966f7ee51a66ad7664b28de09b0a61`
+  `e370d23691fbdaa12a2bf017d7e6bc101cca9b5f`
+- downstream integration code tree: `8cb6912f8218834c9fc70c898dd01dba7cb6b84a`
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
@@ -31,7 +31,9 @@ extension session/turn capability ownership, centralized compacted-history
 construction through `fd51e50540`, live-runtime MCP resource access,
 skill-catalog pressure and ordering changes, and the disabled-by-default
 `mcp_2026_07_28` registration through `65ae4c26e0` are likewise packaging,
-transport, validation, or internal extension-infrastructure work. In
+transport, validation, or internal extension-infrastructure work. The direct
+app-server JSON and typed-request serialization changes plus typed WebSocket
+missing-response retry through `e370d23691` also add no native tool handler. In
 particular, this tranche adds no Codex-owned browser, Android, or desktop
 computer-use capability upstream and does not change downstream sub-agent
 model or reasoning-effort selection.
