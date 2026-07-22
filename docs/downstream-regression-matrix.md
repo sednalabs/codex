@@ -232,6 +232,12 @@ exact-head hosted proof:
   `post_sampling_token_estimate_is_disabled_by_always_on_sinks`, while broader
   core validation continues to cover downstream response-model identity and
   plugin guidance around the same turn loop.
+- Upstream `f343d1237d` owns the core-compatible skill omission-notice policy.
+  `codex.skill-loader-fixture-hermeticity-targeted` follows
+  `omission_notice_follows_render_policy_and_is_charged_to_catalog_budget` and
+  retains the no-fragment report guard. Upstream `5381edb133` owns the 4 KiB
+  per-line syntax-highlight limit; `codex.tui-transcript-viewport-targeted`
+  runs both the highlight fallback unit test and the rendered command snapshot.
 - `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
   before its existing initialize, WebSocket, and process integration tests.
   That covers bounded reverse-RPC correlation and cleanup, fail-closed network
