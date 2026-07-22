@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-22`
-- downstream integration code tree: `03886698f22ed10e8de3cc99c6411ce685db54a3`
+- downstream integration code tree: `3056f35a291871da8adcd9e801712b31687e64b1`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`): `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
 - `upstream/main`: `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
-- downstream branch vs `upstream/main`: `2000` downstream ahead, `0` upstream ahead
+- downstream branch vs `upstream/main`: `2002` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1702` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1703` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -635,6 +635,11 @@ docs-only refresh commit that records this snapshot.
   unified-exec jobs, then exposed one stale upstream git-attribution test-helper
   field in core-runtime job `88971494184`. Signed test-only repair `03886698f2`
   removes that obsolete field without changing production extension behavior.
+- Signed CI follow-up `3056f35a29` adds the upstream completion-summary,
+  whitespace, narrow-header, OSC 8 hyperlink, and visible mention-popup tests to
+  the existing `codex.tui-transcript-viewport-targeted` lane. This keeps future
+  additions on one maintained TUI rendering seam rather than creating another
+  lane.
 - Hosted mirror run `29935755138` advanced `origin/upstream-main` to exact
   `ff8d521ba1` in successful sync job `88976767550`. Audit job `88976904847`
   returned the expected pre-promotion exit `4`.
