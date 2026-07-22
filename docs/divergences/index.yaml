@@ -1192,10 +1192,12 @@
       "guardrail_lane": "codex.skill-loader-fixture-hermeticity-targeted",
       "tests": [
         "non_git_repo_skills_search_does_not_walk_parents",
-        "skill_roots_include_admin_with_lowest_priority"
+        "skill_roots_include_admin_with_lowest_priority",
+        "catalog_report_counts_partial_description_truncation",
+        "catalog_preserves_report_when_no_fragment_fits_budget"
       ],
       "owner": "downstream",
-      "notes": "Keep the fixture boundary narrow: preserve explicit project-layer inputs without changing production discovery semantics. Remove this carry when upstream fixtures provide equivalent isolation.",
+      "notes": "Keep the fixture boundary narrow: preserve explicit project-layer inputs without changing production discovery semantics. Remove this carry when upstream fixtures provide equivalent isolation. Upstream fe6aa9d16c adds SkillRenderReport accounting; signed validation commit 0c0249b14a extends the existing lane over partial-description truncation and the no-fragment report without adding runtime carry.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "test-fixture-hermeticity",
       "hotspot_files": [
@@ -1229,7 +1231,7 @@
         "policy_resolution_retries_after_auth_refresh"
       ],
       "owner": "downstream",
-      "notes": "Upstream fd51e50540 removed step-scoped contributor data before upstream ab816f3ca0 added a test helper that still initialized the deleted field. Hosted run 29934195127 exposed the compile failure. Keep only the two-line test-fixture deletion and remove it as soon as upstream adopts the no-step-store fixture shape.",
+      "notes": "Upstream fd51e50540 removed step-scoped contributor data before upstream ab816f3ca0 added a test helper that still initialized the deleted field. Hosted run 29934195127 exposed the compile failure. Keep only the two-line test-fixture deletion and remove it as soon as upstream adopts the no-step-store fixture shape. Hosted run 29936369078 later proved that the complete git-attribution seam also catches shared auth-observer regressions: signed 36da0efb9c restores account-aware notification gating, but is not part of this test-only fixture carry.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "test-fixture-compatibility",
       "hotspot_files": [
@@ -1287,6 +1289,10 @@
         "test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source",
         "codex-exec-server complete unit suite",
         "codex-git-attribution complete unit suite",
+        "mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls",
+        "thread_resume_preserves_goal_first_and_fork_settings",
+        "catalog_report_counts_partial_description_truncation",
+        "catalog_preserves_report_when_no_fragment_fits_budget",
         "live_app_server_turn_completion_repairs_dropped_message_deltas",
         "raw_mode_toggle_transcript_snapshot",
         "session_header_clamps_to_narrow_width",
@@ -1347,6 +1353,8 @@
         "thread_list_*",
         "thread_read_returns_summary_without_turns",
         "thread_resume_returns_rollout_history",
+        "mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls",
+        "thread_resume_preserves_goal_first_and_fork_settings",
         "remote_control_waits_for_account_id_before_enrolling",
         "jsonrpc_request_conversion_preserves_serde_enum_decoding",
         "serialize_outgoing_message_preserves_wire_shape",
@@ -1354,7 +1362,7 @@
         "test_generated_v2_all_has_no_redundant_pass_before_model_config"
       ],
       "owner": "downstream",
-      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Upstream owns paginated legacy full-view compatibility and stored ThreadItem projection; downstream must preserve thread_source and history_mode through those views rather than rebuilding bounded paginated context through legacy event history. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval. Upstream direct JSON-RPC conversion, explicit request wire names, outgoing-message serialization, typed method lookup, and previous-response-not-found retry remain authoritative; downstream composes only bounded remote-event delivery, native computer-use requests, generated-schema compatibility, and provider-confirmed model identity around those paths. Upstream 80f3c3141e owns final-agent-message completion summaries and dropped-delta repair; downstream preserves provider-confirmed final model metadata and status refresh around that summary rather than carrying a second completion path. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
+      "notes": "The old remote-control omission story was stale. The current app-server divergence is narrower: upstream-faithful protocol/runtime parity plus intentional downstream carry, with B.2 extracting policy/lifecycle seams into codex-rs/app-server/src/extensions.rs. Upstream owns paginated legacy full-view compatibility and stored ThreadItem projection; downstream must preserve thread_source and history_mode through those views rather than rebuilding bounded paginated context through legacy event history. Remote-control auth recovery remains account-scoped: account-id-only auth reloads must wake enrollment waits before the retry interval, and observer notification must use the account/token-aware auth_changed_for_refresh predicate rather than coarse managed-auth equality. Upstream direct JSON-RPC conversion, explicit request wire names, outgoing-message serialization, typed method lookup, and previous-response-not-found retry remain authoritative; downstream composes only bounded remote-event delivery, native computer-use requests, generated-schema compatibility, and provider-confirmed model identity around those paths. Upstream 80f3c3141e owns final-agent-message completion summaries and dropped-delta repair; downstream preserves provider-confirmed final model metadata and status refresh around that summary rather than carrying a second completion path. Upstream 10cc57c95c owns the typed integration-test helpers; downstream tests compose auth resynchronization, the slow-inventory budget, and full persisted resume settings onto those helpers. Schema-generation adapters may preserve legacy wire deserialization while keeping generated app-server schemas on the current public shape. Follow-up route selection for app-server paths now bundles the protocol, thread-surface, blocking-waits, and remote-control account-wake guards instead of a stale single-lane placeholder.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
@@ -2621,11 +2629,12 @@
         "list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot",
         "complete_tool_walk_rejects_cursor_cycles",
         "tool_catalog_cache_bypasses_remote_sourced_environment_variables",
+        "mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls",
         "mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools",
         "regular_mcp_definition_cache_preserves_live_session_state"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. The 2026-07-22 sync adopts upstream commit 84d2b203ed's live-runtime McpResourceClient and does not carry the removed per-binding resource-client identity layer. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. The 2026-07-22 sync adopts upstream commit 84d2b203ed's live-runtime McpResourceClient and does not carry the removed per-binding resource-client identity layer. The 2026-07-23 sync composes the downstream slow-inventory budget test onto upstream 10cc57c95c's typed app-server helpers and pins it in the existing app-server V2 lane. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [

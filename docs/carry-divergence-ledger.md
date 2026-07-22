@@ -11,14 +11,14 @@ docs-only refresh commit that records this snapshot.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-22`
-- downstream integration code tree: `3056f35a291871da8adcd9e801712b31687e64b1`
+- Audited on: `2026-07-23`
+- downstream integration code tree: `0c0249b14a7afa54dffd7d260cde8b331e8d92bb`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
-- `upstream/main`: `ff8d521ba1097c07cec8b1aaa6e0242db9628a7b`
-- downstream branch vs `upstream/main`: `2002` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
+- `upstream/main`: `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
+- downstream branch vs `upstream/main`: `2010` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1704` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1710` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -644,6 +644,75 @@ docs-only refresh commit that records this snapshot.
   `ff8d521ba1` in successful sync job `88976767550`. Audit job `88976904847`
   returned the expected pre-promotion exit `4`.
 
+### Live Parent Fork Context And Bazel Dependency Upgrade
+
+- Upstream commit `c5779ed6bb` requires a live parent before forking and reads
+  the parent's active history mode and MultiAgentV2 usage hints from that live
+  thread. Downstream adopts that authority without weakening its independent
+  child `model`, `model_provider`, or reasoning-setting selection and restore
+  contracts.
+- Upstream commit `cc559bb971` upgrades `rules_rs` and LLVM, adds native
+  Windows GNU-LLVM argument-lint execution, moves `aws-lc-sys` to the Bazel
+  Central Registry integration, and retires the superseded crate and Windows
+  toolchain patches. Resolution took upstream `MODULE.bazel` and deleted the
+  obsolete patch files instead of preserving downstream patch debt.
+- `MODULE.bazel.lock` was never unioned by hand. GitHub-hosted run
+  `29938097805` regenerated it from scratch at temporary signed workflow head
+  `895b811bb9` against exact integration source `55bdfca770`. Artifact
+  `8537022018` has GitHub archive digest
+  `f090624a0dc8a410ab61b29344b6912c9047c793e0a4433672340f72d7fb1548`;
+  its embedded patch has SHA-256
+  `389edb84304a863bd94f47a46c56cfcb7df3e33c609470a2dbd51a5e5ba18231`
+  and patch ID `94bcf677420d96bbc493766e5fa60f4f40c2825a`. The only generated
+  file was `MODULE.bazel.lock`; its final SHA-256 is
+  `f64831f7dac730abeeae28c84b4801890b3db224010051e0269b5f390df0fa0d`.
+  Signed commit `dd42b37482` records exactly that output. Future Bazel module
+  conflicts must repeat this hosted from-scratch regeneration path rather than
+  carrying a merge placeholder.
+- Signed two-parent merge `55bdfca770` preserves exact upstream
+  `cc559bb971` as its second parent and keeps the live-parent history change in
+  upstream shape.
+
+### Reserved Environment IDs, Skill Reports, And App-Server Test Helpers
+
+- Upstream commit `44436fd075` rejects the reserved dynamic-environment id
+  `local` in the shared validator, preventing a remote registration from
+  replacing the environment owned by `EnvironmentManager`. The existing
+  complete `codex.exec-server-targeted` unit seam covers this upstream policy.
+- Upstream commit `fe6aa9d16c` returns a `SkillRenderReport` even when metadata
+  pressure prevents a catalog fragment, including included, omitted, and
+  truncated-description counts. Downstream adopts the renderer unchanged and
+  extends the existing skill lane with the partial-truncation and no-fragment
+  report regressions rather than creating another lane.
+- Upstream commit `10cc57c95c` centralizes typed app-server initialization,
+  request, response, notification, thread-start, and mock-response helpers.
+  Three downstream-expanded tests were composed onto those helpers: app/read
+  still covers auth resynchronization without MCP startup, MCP status retains
+  its slow-inventory budget, and thread resume retains the full persisted
+  goal/fork/model/provider/reasoning/reviewer/permission/cwd contract.
+- Signed two-parent merge `d8e3554223` preserves exact upstream
+  `10cc57c95c` as its second parent. Signed follow-up `0c0249b14a` adds the
+  slow-inventory, resume-settings, and skill-report guards to the existing
+  app-server and skill lanes; no new workflow or production adapter was added.
+- Hosted mirror run `29938416267` advanced `origin/upstream-main` to exact
+  `10cc57c95c` in successful sync job `88985838499`. Audit job `88985969985`
+  returned expected pre-promotion exit `4` because `origin/main` still held
+  the older downstream tree; the mirror itself remained exact.
+
+### Exact-Head Compatibility Findings Before The Final Checkpoint
+
+- Targeted hosted run `29936369078` at source `4bbbb09d3f` exposed two narrow
+  integration defects: a downstream TUI completion-event fixture omitted new
+  provider-confirmed completion fields, and auth observers were gated by
+  coarse `CodexAuth` equality that collapses managed ChatGPT accounts to auth
+  mode. The latter allowed account-only changes to miss notification.
+- Signed test-only commit `ebf7122a92` initializes `final_model` and
+  `model_snapshot` to `None` in the downstream fixture. Signed production
+  repair `36da0efb9c` restores the account/token-aware
+  `auth_changed_for_refresh` notification predicate. That predicate is the
+  correct broader observer decision here; it must not be replaced by coarse
+  auth-mode equality during future syncs.
+
 ## Current Live Divergences
 
 ### Fork Workflow And Validation Policy
@@ -677,6 +746,8 @@ docs-only refresh commit that records this snapshot.
   `codex.skill-loader-fixture-hermeticity-targeted` lane pins the two
   skill-loader fixture assertions that suppress or ignore ambient parent
   project layers, so hosted-runner repository markers cannot alter the result.
+  It also pins upstream skill-report accounting when descriptions are partially
+  truncated or no rendered fragment fits the catalog budget.
   The rust-ci-full summary parser records final nextest
   retry statuses so `TRY 1 FAIL` followed by `TRY 2 PASS` does not block, while
   persistent `TRY 2 FAIL` / `TRY 2 TIMEOUT` lines still appear in structured
@@ -837,6 +908,11 @@ docs-only refresh commit that records this snapshot.
   test seam, so compile compatibility and all three upstream behavior tests are
   proved together. Remove this two-line carry as soon as upstream drops the
   stale field or otherwise supplies equivalent no-step-store fixture coverage.
+- Hosted run `29936369078` proved that the complete seam also catches auth
+  observer regressions: its unauthorized-recovery coverage exposed the coarse
+  equality gate repaired by signed commit `36da0efb9c`. That production repair
+  belongs to the shared auth-observer contract, not to this test-only fixture
+  carry.
 - Primary file:
   - `codex-rs/ext/git-attribution/src/git_attribution_tests.rs`
 
@@ -1711,12 +1787,16 @@ docs-only refresh commit that records this snapshot.
 
 - Remote-control enrollment waits must wake when cached ChatGPT auth changes
   the account id, not only when refresh-token material changes.
-- `AuthManager::auth_change_receiver()` is therefore account-scoped for
-  request recovery, while `auth_changed_for_refresh` remains the narrower
-  token-refresh decision.
+- `AuthManager::auth_change_receiver()` is therefore gated by the account- and
+  token-aware `auth_changed_for_refresh` predicate. Do not gate observers with
+  `CodexAuth::PartialEq`: managed ChatGPT auth equality collapses to auth mode
+  and misses account-only changes.
 - This prevents remote control from sleeping until the retry interval after an
   account-id-only reload, and keeps `UnauthorizedRecovery` aligned with the
   fresh auth state before reconnect/enroll attempts.
+- Signed commit `36da0efb9c` restores that upstream-shaped predicate after
+  targeted hosted run `29936369078` exposed the regression through the complete
+  git-attribution authorization-recovery seam.
 - Primary files:
   - `codex-rs/app-server-transport/src/transport/remote_control/websocket.rs`
   - `codex-rs/login/src/auth/manager.rs`
