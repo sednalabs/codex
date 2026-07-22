@@ -1693,8 +1693,17 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
     let (content, success) = expect_text_output(output);
     let receipt: serde_json::Value =
         serde_json::from_str(&content).expect("send_message receipt should be json");
-    assert_eq!(receipt["task_name"], "/root/test_process");
-    assert_eq!(receipt["handoff_state"], "queued");
+    assert_eq!(
+        receipt,
+        json!({
+            "task_name": "/root/test_process",
+            "handoff_state": "queued",
+            "effective_model": child_snapshot.model,
+            "effective_model_provider_id": child_snapshot.model_provider_id,
+            "effective_reasoning_effort": child_snapshot.reasoning_effort,
+            "effective_service_tier": child_snapshot.service_tier,
+        })
+    );
     assert_eq!(success, Some(true));
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {

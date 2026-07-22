@@ -372,7 +372,7 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
 }
 
 #[test]
-fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schema() {
+fn send_message_tool_requires_target_items_interrupt_and_receipt_schema() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
         output_schema,
@@ -433,7 +433,7 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
         parameters.required.as_ref(),
         Some(&vec!["target".to_string(), "items".to_string()])
     );
-    assert_eq!(output_schema, None);
+    assert!(output_schema.is_some());
 }
 
 #[test]
