@@ -362,18 +362,18 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-21`):
+Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `7e09b99f60ef92cc1fa3db766340c80b690279af`
+  `0c0249b14a7afa54dffd7d260cde8b331e8d92bb`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `f69f88f8116f541daddada3a056de5772a891f15`
+  `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
 - `upstream/main`:
-  `f69f88f8116f541daddada3a056de5772a891f15`
+  `10cc57c95c2c8f1d01c8deaa75efb29b099d9c28`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1956` downstream ahead
-- downstream-only non-merge commits: `1669` unique, `0` patch-equivalent
+  `0` upstream ahead, `2010` downstream ahead
+- downstream-only non-merge commits: `1710` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 

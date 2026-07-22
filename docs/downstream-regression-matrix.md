@@ -180,7 +180,11 @@ exact-head hosted proof:
   preservation, description selection, and the rule that descriptions are
   shed before names and locators under extreme metadata pressure. Its fixture
   construction uses the current no-step-store extension API and optional MCP
-  resource client.
+  resource client. It also pins
+  `catalog_report_counts_partial_description_truncation` and
+  `catalog_preserves_report_when_no_fragment_fits_budget`, so upstream
+  `SkillRenderReport` accounting remains available even when rendering emits
+  no fragment.
 - `remote_compact_trims_function_call_history_to_fit_context_window`,
   `remote_compact_rewrites_multiple_trailing_function_call_outputs`,
   `remote_compact_trim_estimate_uses_session_base_instructions`,
@@ -203,6 +207,18 @@ exact-head hosted proof:
   `codex-git-attribution` unit seam, including world-state replacement,
   unauthorized recovery, auth-generation cache invalidation, and fail-disabled
   retry behavior. This is extension-boundary proof, not a new downstream carry.
+- Account-change notification needs both layers of proof:
+  `remote_control_waits_for_account_id_before_enrolling` covers the app-server
+  consumer, while the complete git-attribution authorization-recovery seam
+  catches regressions in the shared `AuthManager` observer. The observer must
+  use the account/token-aware `auth_changed_for_refresh` predicate rather than
+  coarse managed-auth equality.
+- Upstream `10cc57c95c` owns the typed app-server integration-test helpers.
+  `codex.app-server-v2-contract-targeted` composes downstream behavior onto that
+  shape with
+  `mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls` and
+  `thread_resume_preserves_goal_first_and_fork_settings`, in addition to the
+  complete app/read group.
 - `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
   before its existing initialize, WebSocket, and process integration tests.
   That covers bounded reverse-RPC correlation and cleanup, fail-closed network
@@ -274,8 +290,8 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     skill-loader fixture assertions that suppress or ignore ambient parent
     project layers, so hosted-runner repository state cannot change the result.
     It also pins extension-catalog ordering, prompt scope, description policy,
-    and moderate and extreme metadata-pressure behavior on the same hosted
-    Rust slice.
+    moderate and extreme metadata-pressure behavior, partial-description report
+    accounting, and the no-fragment report on the same hosted Rust slice.
   - Workflow planner coverage enforces `RUST_MIN_STACK` on every unified-exec
     Cargo command without hard-coding that recipe's command count. The mixed
     stack-sensitivity recipes retain their narrower guarded-command counts.
@@ -585,6 +601,7 @@ for a removed crate path.
   intentionally rejects before publishing a snapshot.
 - Upstream cache-safety checks
   `tool_catalog_cache_bypasses_remote_sourced_environment_variables`,
+  `mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls`,
   `mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools`,
   and `regular_mcp_definition_cache_preserves_live_session_state` must remain
   green alongside the downstream complete-catalogue checks.
