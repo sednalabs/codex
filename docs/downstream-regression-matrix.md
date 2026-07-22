@@ -209,7 +209,8 @@ exact-head hosted proof:
   decisions, process cancellation, and keeping callbacks alive while inherited
   streams keep the proxy alive without freezing the recipe to today's test
   count.
-- Exact-head TUI and app-server proof preserves upstream's
+- Exact-head `codex.tui-transcript-viewport-targeted` and app-server proof
+  preserves upstream's
   `live_app_server_turn_completion_repairs_dropped_message_deltas`,
   `session_header_clamps_to_narrow_width`,
   `terminal_draw_coalesces_wrapped_hyperlink_output`, agent-message
