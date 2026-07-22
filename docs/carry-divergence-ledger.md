@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `c132d50f17ef07018817dfdaca569a170208af88`
+- downstream integration code tree: `ce7c9f98153ed40ef468cd7c35b12d063e1c5c90`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `f343d1237d8d360e8224997a846acde0b04a17cd`
-- `upstream/main`: `f343d1237d8d360e8224997a846acde0b04a17cd`
-- downstream branch vs `upstream/main`: `2019` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `4ebd976312b9088b3c845724e08d79c9f77505f4`
+- `upstream/main`: `4ebd976312b9088b3c845724e08d79c9f77505f4`
+- downstream branch vs `upstream/main`: `2024` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1717` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1720` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -763,6 +763,51 @@ docs-only refresh commit that records this snapshot.
   skill-loader fixture, core-runtime surface, workflow planner, and downstream
   documentation lanes at signed source `ef4389f342`.
 
+### Sandbox Templates, Thread Startup, And Realtime BEM Prefixes
+
+- Hosted mirror run `29952957863` advanced `origin/upstream-main` to exact
+  `4ebd976312`; sync job `89034892597` passed and audit job `89035341843`
+  returned the expected pre-promotion exit `4`. The clean visible local
+  `upstream-main` worktree was fast-forwarded to the same exact SHA.
+- Upstream `06782eded7` canonicalizes the built-in sandbox permission-template
+  placeholder as `{{ network_access }}`. Downstream adopts the three template
+  changes unchanged; the shared renderer already accepts both spellings, and
+  no enforcement, approval, or network-authorization behavior changes.
+- Upstream `08ae0fc0ce` consolidates thread startup on
+  `ThreadManager::start_thread(StartThreadOptions)`. The merge does not restore
+  the removed helper APIs. Downstream flat dynamic-tool compatibility records
+  enter through `StartThreadOptions::dynamic_tools`; explicit empty environment
+  selections remain distinct from omitted selections; child model, provider,
+  reasoning effort, fork history, residency, cold reload, and persisted identity
+  remain on their existing agent-control seams.
+- Upstream `4ebd976312` adds configurable text prefixes for V3 Frameless Bidi
+  BEM handoff channels. Downstream adopts its protocol, parser, buffering, and
+  app-server routing. This adds no native browser, Android, desktop,
+  dynamic-tool, image, or audio provider; downstream custom realtime world
+  state remains orthogonal.
+- Signed two-parent merge `e054a14ce3` has first parent `de2ba7d16b` and exact
+  upstream second parent `4ebd976312`. The only textual conflicts were
+  `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` and
+  `codex-rs/core/tests/suite/code_mode.rs`; both were resolved upstream-first
+  without a blanket side-selection strategy.
+- Existing validation recipes were strengthened rather than creating parallel
+  workflow lanes. They now select paginated child-setting reload, hidden and
+  nested-namespace dynamic-tool behavior, six BEM parser/streaming regressions,
+  the core streamed V3 handoff test, and the app-server V3 routing test.
+- Exact-head targeted run `29954085793` passed the other six selected lanes and
+  found one shared blocker in the two app-server lanes: the vendored
+  `ClientRequest.json` did not contain the newly generated BEM-prefix field.
+  Disposable GitHub-hosted generator run `29955881580` produced artifact
+  `8544097360`, whose archive digest is
+  `96de8ad9f6a8a6292ba100e114a25fb59d13ab2d8943e12acf89b411d2c57358`.
+  Its two-file patch has SHA-256
+  `b2c8df873b2268925f26dc0a04aa09f942b9e54b611d5d232ee555cd83969637`
+  and changes only `ClientRequest.json` plus the generator's canonical trailing
+  newline in `ConfigRequirementsReadResponse.json`. Signed commit `ce7c9f9815`
+  records that exact output; neither schema was hand-edited or generated
+  locally. Exact-head validation run `29956395279` passed both previously
+  failing app-server lanes at that repair.
+
 ## Current Live Divergences
 
 ### Fork Workflow And Validation Policy
@@ -1192,14 +1237,23 @@ docs-only refresh commit that records this snapshot.
   reproduce the downstream per-turn ledger, provider/token metadata, and
   billing-turn reporting semantics before the canonical source of truth can
   move out of this repository.
-- The 2026-07-18 sync adopts upstream's `SqliteConfig` as the single connection
+- The 2026-07-23 sync through upstream `946ed315a4` adopts `SqliteConfig` as the single connection
   factory for state, logs, goals, memories, and the downstream usage database.
   Downstream extension migrations, generalized state-migration repair, usage
   telemetry, storage mapping, and failure-path pool cleanup remain additive
   behavior around that upstream-owned connection seam.
+- Do not restore the removed runtime-owned database specs, public filename
+  constants, or free path helpers in a future conflict. Add downstream databases
+  and pre-migration phases to `SqliteConfig`, and keep runtime initialization as
+  orchestration around that shared owner.
+- Exact-head GitHub-hosted run `29951153938` passed `core-ledger-smoke`,
+  `codex.state-migration-repair-targeted`, and the adjacent thread-store,
+  app-server, CLI, shell, and sub-agent compatibility lanes at signed merge
+  `de2ba7d16b`.
 - Primary files:
   - `codex-rs/core/src/session/session.rs`
   - `codex-rs/state/src/runtime.rs`
+  - `codex-rs/state/src/sqlite.rs`
   - `codex-rs/state/src/runtime/usage.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `docs/downstream.md`
