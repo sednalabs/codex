@@ -9,7 +9,6 @@ use sqlx::migrate::Migrator;
 
 use super::STATE_MIGRATOR;
 use super::repair_state_migration_version_collisions;
-use crate::state_db_path;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
@@ -150,7 +149,7 @@ async fn configured_identity_provenance_migration_defaults_existing_and_old_bina
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
     migrator_through(PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION)
@@ -215,8 +214,9 @@ async fn agent_job_tables_are_dropped_when_upgrading() {
         let _ = std::fs::remove_dir_all(sqlite_home);
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let state_path = sqlite.state_db_path();
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
     origin_main_migrator()
@@ -324,7 +324,7 @@ INSERT INTO agent_job_items (
         .await
         .expect("state runtime should repair and migrate the origin main database");
     let pool = sqlite
-        .open_read_only_pool(&state_db_path(&sqlite_home))
+        .open_read_only_pool(&sqlite.state_db_path())
         .await
         .expect("migrated state database should reopen read-only");
 
@@ -412,7 +412,7 @@ async fn repairs_external_agent_config_import_migration_that_was_applied_as_vers
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
     origin_main_migrator()
@@ -463,8 +463,9 @@ async fn recency_migration_backfills_and_seeds_old_binary_inserts() {
         let _ = std::fs::remove_dir_all(sqlite_home);
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let state_path = sqlite.state_db_path();
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
     migrator_through(PRE_RECENCY_MIGRATION_VERSION)
@@ -576,8 +577,9 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         let _ = std::fs::remove_dir_all(sqlite_home);
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let state_path = sqlite.state_db_path();
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&state_path)
         .await
         .expect("sqlite database should open");
     migrator_through(/*version*/ 37)
@@ -653,7 +655,7 @@ async fn repairs_visible_sort_indexes_migration_that_was_applied_as_version_40()
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
     migrator_through(/*version*/ 39)
@@ -729,7 +731,7 @@ async fn repairs_remote_control_enabled_migration_that_was_applied_as_version_41
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
     migrator_through(/*version*/ 40)
@@ -804,7 +806,7 @@ async fn repair_state_migration_version_collisions_succeeds_while_writer_slot_is
         let _ = std::fs::remove_dir_all(sqlite_home);
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
-    let state_path = state_db_path(&sqlite_home);
+    let state_path = sqlite.state_db_path();
     let pool = sqlite
         .open_read_write_pool(&state_path)
         .await

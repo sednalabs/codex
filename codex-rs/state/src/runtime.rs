@@ -1,17 +1,11 @@
-use crate::GOALS_DB_FILENAME;
-use crate::LOGS_DB_FILENAME;
 use crate::LogEntry;
 use crate::LogQuery;
 use crate::LogRow;
-use crate::MEMORIES_DB_FILENAME;
-use crate::STATE_DB_FILENAME;
 use crate::SortKey;
 use crate::SqliteConfig;
-use crate::THREAD_HISTORY_DB_FILENAME;
 use crate::ThreadMetadata;
 use crate::ThreadMetadataBuilder;
 use crate::ThreadsPage;
-use crate::USAGE_DB_FILENAME;
 use crate::apply_rollout_item;
 use crate::migrations::runtime_goals_migrator;
 use crate::migrations::runtime_logs_migrator;
@@ -39,7 +33,6 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
-use sqlx::migrate::Migrator;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
@@ -56,7 +49,7 @@ mod external_agent_config_imports;
 mod goals;
 mod logs;
 mod memories;
-mod migration_repair;
+pub(crate) mod migration_repair;
 mod phase2_attestation;
 mod recovery;
 mod remote_control;
@@ -76,6 +69,7 @@ pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use memories::MemoryStore;
 pub use recovery::RuntimeDbBackup;
+pub(super) use recovery::RuntimeDbInitError;
 pub use recovery::backup_runtime_db_for_fresh_start;
 pub use recovery::is_sqlite_corruption_error;
 pub use recovery::runtime_db_path_for_corruption_error;
@@ -92,96 +86,9 @@ pub use threads::ThreadFilterOptions;
 // metadata, rather than the exact sum of all persisted SQLite column bytes.
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
-
-const STATE_DB_CURRENT_FILENAME: &str = "state_5.sqlite";
-const LOGS_DB_CURRENT_FILENAME: &str = "logs_2.sqlite";
-const USAGE_DB_CURRENT_FILENAME: &str = "usage_1.sqlite";
-
-#[derive(Clone, Copy)]
-struct RuntimeDbSpec {
-    label: &'static str,
-    filename: &'static str,
-    kind: DbKind,
-    open_phase: &'static str,
-    repair_phase: Option<&'static str>,
-    migrate_phase: &'static str,
-}
-
-impl RuntimeDbSpec {
-    fn path(self, codex_home: &Path) -> PathBuf {
-        codex_home.join(self.filename)
-    }
-}
-
-const STATE_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "state DB",
-    filename: STATE_DB_CURRENT_FILENAME,
-    kind: DbKind::State,
-    open_phase: "open_state",
-    repair_phase: Some("repair_state_migrations"),
-    migrate_phase: "migrate_state",
-};
-
-const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "log DB",
-    filename: LOGS_DB_CURRENT_FILENAME,
-    kind: DbKind::Logs,
-    open_phase: "open_logs",
-    repair_phase: None,
-    migrate_phase: "migrate_logs",
-};
-
-const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "goals DB",
-    filename: GOALS_DB_FILENAME,
-    kind: DbKind::Goals,
-    open_phase: "open_goals",
-    repair_phase: None,
-    migrate_phase: "migrate_goals",
-};
-
-const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "usage DB",
-    filename: USAGE_DB_CURRENT_FILENAME,
-    kind: DbKind::Usage,
-    open_phase: "open_usage",
-    repair_phase: None,
-    migrate_phase: "migrate_usage",
-};
-
-const MEMORIES_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "memories DB",
-    filename: MEMORIES_DB_FILENAME,
-    kind: DbKind::Memories,
-    open_phase: "open_memories",
-    repair_phase: None,
-    migrate_phase: "migrate_memories",
-};
-
-const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
-    label: "thread history DB",
-    filename: THREAD_HISTORY_DB_FILENAME,
-    kind: DbKind::ThreadHistory,
-    open_phase: "open_thread_history",
-    repair_phase: None,
-    migrate_phase: "migrate_thread_history",
-};
-
-const RUNTIME_DBS: [RuntimeDbSpec; 6] = [
-    STATE_DB,
-    LOGS_DB,
-    GOALS_DB,
-    MEMORIES_DB,
-    USAGE_DB,
-    THREAD_HISTORY_DB,
-];
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RuntimeDbPath {
-    pub label: &'static str,
-    pub path: PathBuf,
-}
-
+const STATE_DB_BASENAME: &str = "state";
+const LOGS_DB_BASENAME: &str = "logs";
+const USAGE_DB_BASENAME: &str = "usage";
 #[derive(Clone)]
 pub struct StateRuntime {
     codex_home: PathBuf,
@@ -226,41 +133,40 @@ impl StateRuntime {
     ) -> anyhow::Result<Arc<Self>> {
         let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(codex_home.clone())?);
         tokio::fs::create_dir_all(&codex_home).await?;
-        let current_state_name = state_db_filename();
-        let current_logs_name = logs_db_filename();
+        let state_path = sqlite.state_db_path();
+        let logs_path = sqlite.logs_db_path();
+        let goals_path = sqlite.goals_db_path();
+        let memories_path = sqlite.memories_db_path();
+        let usage_path = sqlite.usage_db_path();
         remove_legacy_db_files(
             &codex_home,
-            current_state_name.as_str(),
-            STATE_DB_FILENAME,
+            database_filename(&state_path)?,
+            STATE_DB_BASENAME,
             "state",
         )
         .await;
         remove_legacy_db_files(
             &codex_home,
-            current_logs_name.as_str(),
-            LOGS_DB_FILENAME,
+            database_filename(&logs_path)?,
+            LOGS_DB_BASENAME,
             "logs",
         )
         .await;
-        let usage_name = usage_db_filename();
-        remove_legacy_db_files(&codex_home, usage_name.as_str(), USAGE_DB_FILENAME, "usage").await;
+        remove_legacy_db_files(
+            &codex_home,
+            database_filename(&usage_path)?,
+            USAGE_DB_BASENAME,
+            "usage",
+        )
+        .await;
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let usage_migrator = runtime_usage_migrator();
         let goals_migrator = runtime_goals_migrator();
         let memories_migrator = runtime_memories_migrator();
-        let state_path = STATE_DB.path(codex_home.as_path());
-        let logs_path = LOGS_DB.path(codex_home.as_path());
-        let goals_path = GOALS_DB.path(codex_home.as_path());
-        let usage_path = USAGE_DB.path(codex_home.as_path());
-        let memories_path = MEMORIES_DB.path(codex_home.as_path());
-        let pool = match open_state_sqlite(
-            &sqlite,
-            &state_path,
-            &state_migrator,
-            telemetry_override,
-        )
-        .await
+        let pool = match sqlite
+            .open_state_db(&state_migrator, telemetry_override)
+            .await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -282,22 +188,20 @@ impl StateRuntime {
             close_sqlite_pools(&[pool.as_ref()]).await;
             return Err(err);
         }
-        let logs_pool =
-            match open_logs_sqlite(&sqlite, &logs_path, &logs_migrator, telemetry_override).await {
-                Ok(db) => Arc::new(db),
-                Err(err) => {
-                    warn!("failed to open logs db at {}: {err}", logs_path.display());
-                    close_sqlite_pools(&[pool.as_ref()]).await;
-                    return Err(err);
-                }
-            };
-        let goals_pool = match open_goals_sqlite(
-            &sqlite,
-            &goals_path,
-            &goals_migrator,
-            telemetry_override,
-        )
-        .await
+        let logs_pool = match sqlite
+            .open_logs_db(&logs_migrator, telemetry_override)
+            .await
+        {
+            Ok(db) => Arc::new(db),
+            Err(err) => {
+                warn!("failed to open logs db at {}: {err}", logs_path.display());
+                close_sqlite_pools(&[pool.as_ref()]).await;
+                return Err(err);
+            }
+        };
+        let goals_pool = match sqlite
+            .open_goals_db(&goals_migrator, telemetry_override)
+            .await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -306,13 +210,9 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        let memories_pool = match open_memories_sqlite(
-            &sqlite,
-            &memories_path,
-            &memories_migrator,
-            telemetry_override,
-        )
-        .await
+        let memories_pool = match sqlite
+            .open_memories_db(&memories_migrator, telemetry_override)
+            .await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -324,13 +224,9 @@ impl StateRuntime {
                 return Err(err);
             }
         };
-        let usage_pool = match open_usage_sqlite(
-            &sqlite,
-            &usage_path,
-            &usage_migrator,
-            telemetry_override,
-        )
-        .await
+        let usage_pool = match sqlite
+            .open_usage_db(&usage_migrator, telemetry_override)
+            .await
         {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -465,19 +361,15 @@ impl StateRuntime {
 
     pub async fn clear_memory_data_in_sqlite_home(sqlite_home: &Path) -> anyhow::Result<bool> {
         let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(sqlite_home)?);
-        let memories_path = MEMORIES_DB.path(sqlite_home);
+        let memories_path = sqlite.memories_db_path();
         if !tokio::fs::try_exists(&memories_path).await? {
             return Ok(false);
         }
 
         let memories_migrator = runtime_memories_migrator();
-        let pool = open_memories_sqlite(
-            &sqlite,
-            &memories_path,
-            &memories_migrator,
-            /*telemetry_override*/ None,
-        )
-        .await?;
+        let pool = sqlite
+            .open_memories_db(&memories_migrator, /*telemetry_override*/ None)
+            .await?;
         memories::clear_memory_data_in_pool(&pool).await?;
         pool.close().await;
         Ok(true)
@@ -490,120 +382,13 @@ async fn close_sqlite_pools(pools: &[&SqlitePool]) {
     }
 }
 
-async fn open_state_sqlite(
-    sqlite: &SqliteConfig,
-    path: &Path,
-    migrator: &Migrator,
-    telemetry_override: Option<&dyn DbTelemetry>,
-) -> anyhow::Result<SqlitePool> {
-    // New state DBs should use incremental auto-vacuum, but retrofitting an
-    // existing DB requires a full VACUUM. Do not attempt that during process
-    // startup: it is maintenance work that can contend with foreground writers.
-    open_sqlite(sqlite, path, migrator, STATE_DB, telemetry_override).await
-}
-
-async fn open_logs_sqlite(
-    sqlite: &SqliteConfig,
-    path: &Path,
-    migrator: &Migrator,
-    telemetry_override: Option<&dyn DbTelemetry>,
-) -> anyhow::Result<SqlitePool> {
-    open_sqlite(sqlite, path, migrator, LOGS_DB, telemetry_override).await
-}
-
-async fn open_goals_sqlite(
-    sqlite: &SqliteConfig,
-    path: &Path,
-    migrator: &Migrator,
-    telemetry_override: Option<&dyn DbTelemetry>,
-) -> anyhow::Result<SqlitePool> {
-    open_sqlite(sqlite, path, migrator, GOALS_DB, telemetry_override).await
-}
-
-async fn open_usage_sqlite(
-    sqlite: &SqliteConfig,
-    path: &Path,
-    migrator: &Migrator,
-    telemetry_override: Option<&dyn DbTelemetry>,
-) -> anyhow::Result<SqlitePool> {
-    open_sqlite(sqlite, path, migrator, USAGE_DB, telemetry_override).await
-}
-
-async fn open_memories_sqlite(
-    sqlite: &SqliteConfig,
-    path: &Path,
-    migrator: &Migrator,
-    telemetry_override: Option<&dyn DbTelemetry>,
-) -> anyhow::Result<SqlitePool> {
-    open_sqlite(sqlite, path, migrator, MEMORIES_DB, telemetry_override).await
-}
-
 /// Open and migrate the rebuildable paginated thread-history database.
 pub async fn open_thread_history_db(sqlite_home: &Path) -> anyhow::Result<SqlitePool> {
     let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(sqlite_home)?);
     let migrator = runtime_thread_history_migrator();
-    open_sqlite(
-        &sqlite,
-        thread_history_db_path(sqlite_home).as_path(),
-        &migrator,
-        THREAD_HISTORY_DB,
-        /*telemetry_override*/ None,
-    )
-    .await
-}
-
-async fn open_sqlite(
-    sqlite: &SqliteConfig,
-    path: &Path,
-    migrator: &Migrator,
-    spec: RuntimeDbSpec,
-    telemetry_override: Option<&dyn DbTelemetry>,
-) -> anyhow::Result<SqlitePool> {
-    let started = Instant::now();
-    let pool_result = sqlite
-        .open_read_write_pool(path)
+    sqlite
+        .open_thread_history_db(&migrator, /*telemetry_override*/ None)
         .await
-        .map_err(anyhow::Error::from);
-    crate::telemetry::record_init_result(
-        telemetry_override,
-        spec.kind,
-        spec.open_phase,
-        started.elapsed(),
-        &pool_result,
-    );
-    let pool = pool_result
-        .map_err(|source| recovery::RuntimeDbInitError::new(spec.label, "open", path, source))?;
-    if let Some(repair_phase) = spec.repair_phase {
-        let started = Instant::now();
-        let repair_result = migration_repair::repair_state_migrations(&pool, migrator).await;
-        crate::telemetry::record_init_result(
-            telemetry_override,
-            spec.kind,
-            repair_phase,
-            started.elapsed(),
-            &repair_result,
-        );
-        if let Err(source) = repair_result {
-            pool.close().await;
-            return Err(
-                recovery::RuntimeDbInitError::new(spec.label, "repair", path, source).into(),
-            );
-        }
-    }
-    let started = Instant::now();
-    let migrate_result = migrator.run(&pool).await.map_err(anyhow::Error::from);
-    crate::telemetry::record_init_result(
-        telemetry_override,
-        spec.kind,
-        spec.migrate_phase,
-        started.elapsed(),
-        &migrate_result,
-    );
-    if let Err(source) = migrate_result {
-        pool.close().await;
-        return Err(recovery::RuntimeDbInitError::new(spec.label, "migrate", path, source).into());
-    }
-    Ok(pool)
 }
 
 pub(super) async fn ensure_backfill_state_row_in_pool(
@@ -634,56 +419,6 @@ ON CONFLICT(id) DO NOTHING
     Ok(())
 }
 
-pub fn state_db_filename() -> String {
-    STATE_DB.filename.to_string()
-}
-
-pub fn state_db_path(codex_home: &Path) -> PathBuf {
-    STATE_DB.path(codex_home)
-}
-
-pub fn logs_db_filename() -> String {
-    LOGS_DB.filename.to_string()
-}
-
-pub fn logs_db_path(codex_home: &Path) -> PathBuf {
-    LOGS_DB.path(codex_home)
-}
-
-pub fn goals_db_filename() -> String {
-    GOALS_DB.filename.to_string()
-}
-
-pub fn goals_db_path(codex_home: &Path) -> PathBuf {
-    GOALS_DB.path(codex_home)
-}
-
-pub fn memories_db_filename() -> String {
-    MEMORIES_DB.filename.to_string()
-}
-
-pub fn memories_db_path(codex_home: &Path) -> PathBuf {
-    MEMORIES_DB.path(codex_home)
-}
-
-pub fn thread_history_db_filename() -> String {
-    THREAD_HISTORY_DB.filename.to_string()
-}
-
-pub fn thread_history_db_path(codex_home: &Path) -> PathBuf {
-    THREAD_HISTORY_DB.path(codex_home)
-}
-
-pub fn runtime_db_paths(codex_home: &Path) -> Vec<RuntimeDbPath> {
-    RUNTIME_DBS
-        .iter()
-        .map(|spec| RuntimeDbPath {
-            label: spec.label,
-            path: spec.path(codex_home),
-        })
-        .collect()
-}
-
 /// Run SQLite's built-in integrity check against an existing database file.
 pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> {
     let sqlite =
@@ -696,12 +431,10 @@ pub async fn sqlite_integrity_check(path: &Path) -> anyhow::Result<Vec<String>> 
     Ok(rows)
 }
 
-pub fn usage_db_filename() -> String {
-    USAGE_DB.filename.to_string()
-}
-
-pub fn usage_db_path(codex_home: &Path) -> PathBuf {
-    USAGE_DB.path(codex_home)
+fn database_filename(path: &Path) -> anyhow::Result<&str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("database path has no UTF-8 filename: {}", path.display()))
 }
 
 async fn remove_legacy_db_files(
@@ -790,19 +523,11 @@ fn should_remove_db_file(file_name: &str, current_name: &str, base_name: &str) -
 #[cfg(test)]
 mod tests {
     use super::StateRuntime;
-    use super::logs_db_filename;
-    use super::open_state_sqlite;
     use super::runtime_state_migrator;
     use super::sqlite_integrity_check;
-    use super::state_db_path;
     use super::test_support::unique_temp_dir;
-    use super::usage_db_filename;
     use crate::DB_INIT_METRIC;
     use crate::DbTelemetry;
-    use crate::LOGS_DB_FILENAME;
-    use crate::LOGS_DB_VERSION;
-    use crate::USAGE_DB_FILENAME;
-    use crate::USAGE_DB_VERSION;
     use crate::migrations::STATE_MIGRATOR;
     use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
@@ -881,8 +606,9 @@ mod tests {
         tokio::fs::create_dir_all(&codex_home)
             .await
             .expect("create codex home");
-        let path = state_db_path(codex_home.as_path());
-        let pool = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs())
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let path = sqlite.state_db_path();
+        let pool = sqlite
             .open_read_write_pool(&path)
             .await
             .expect("open sqlite db");
@@ -906,8 +632,9 @@ mod tests {
         tokio::fs::create_dir_all(&codex_home)
             .await
             .expect("create codex home");
-        let state_path = state_db_path(codex_home.as_path());
-        let pool = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs())
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
+        let pool = sqlite
             .open_read_write_pool(&state_path)
             .await
             .expect("open state db");
@@ -937,14 +664,10 @@ mod tests {
         strict_pool.close().await;
 
         let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = open_state_sqlite(
-            &crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
-            state_path.as_path(),
-            &tolerant_migrator,
-            /*telemetry_override*/ None,
-        )
-        .await
-        .expect("runtime migrator should tolerate newer applied migrations");
+        let tolerant_pool = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs())
+            .open_state_db(&tolerant_migrator, /*telemetry_override*/ None)
+            .await
+            .expect("runtime migrator should tolerate newer applied migrations");
         tolerant_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
@@ -956,8 +679,8 @@ mod tests {
         tokio::fs::create_dir_all(&codex_home)
             .await
             .expect("create codex home");
-        let state_path = state_db_path(codex_home.as_path());
         let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let state_path = sqlite.state_db_path();
         let pool = sqlite
             .open_read_write_pool(&state_path)
             .await
@@ -995,14 +718,10 @@ mod tests {
         strict_pool.close().await;
 
         let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = open_state_sqlite(
-            &sqlite,
-            state_path.as_path(),
-            &tolerant_migrator,
-            /*telemetry_override*/ None,
-        )
-        .await
-        .expect("runtime migrator should repair the missing migration record");
+        let tolerant_pool = sqlite
+            .open_state_db(&tolerant_migrator, /*telemetry_override*/ None)
+            .await
+            .expect("runtime migrator should repair the missing migration record");
 
         let applied: (String, bool, Vec<u8>) = sqlx::query_as(
             "SELECT description, success, checksum FROM _sqlx_migrations WHERE version = 33",
@@ -1050,21 +769,26 @@ mod tests {
             .await
             .expect("create codex_home");
 
-        let current_logs_name = logs_db_filename();
-        let current_usage_name = usage_db_filename();
-        let previous_logs_version = LOGS_DB_VERSION.saturating_sub(1);
-        let previous_usage_version = USAGE_DB_VERSION.saturating_sub(1);
-        let unversioned_logs_name = format!("{LOGS_DB_FILENAME}.sqlite");
-        let unversioned_usage_name = format!("{USAGE_DB_FILENAME}.sqlite");
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let current_logs_name = sqlite
+            .logs_db_path()
+            .file_name()
+            .expect("logs database filename")
+            .to_owned();
+        let current_usage_name = sqlite
+            .usage_db_path()
+            .file_name()
+            .expect("usage database filename")
+            .to_owned();
+        let unversioned_logs_name = "logs.sqlite";
+        let unversioned_usage_name = "usage.sqlite";
 
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let legacy_logs_path = codex_home.join(format!("{unversioned_logs_name}{suffix}"));
             tokio::fs::write(legacy_logs_path, b"legacy")
                 .await
                 .expect("write legacy logs file");
-            let old_logs_path = codex_home.join(format!(
-                "{LOGS_DB_FILENAME}_{previous_logs_version}.sqlite{suffix}"
-            ));
+            let old_logs_path = codex_home.join(format!("logs_1.sqlite{suffix}"));
             tokio::fs::write(old_logs_path, b"old_logs")
                 .await
                 .expect("write old logs file");
@@ -1072,9 +796,7 @@ mod tests {
             tokio::fs::write(legacy_usage_path, b"legacy")
                 .await
                 .expect("write legacy usage file");
-            let old_usage_path = codex_home.join(format!(
-                "{USAGE_DB_FILENAME}_{previous_usage_version}.sqlite{suffix}"
-            ));
+            let old_usage_path = codex_home.join(format!("usage_0.sqlite{suffix}"));
             tokio::fs::write(old_usage_path, b"old_usage")
                 .await
                 .expect("write old usage file");
@@ -1101,9 +823,7 @@ mod tests {
                     .expect("check legacy logs path"),
                 false
             );
-            let old_logs_path = codex_home.join(format!(
-                "{LOGS_DB_FILENAME}_{previous_logs_version}.sqlite{suffix}"
-            ));
+            let old_logs_path = codex_home.join(format!("logs_1.sqlite{suffix}"));
             assert_eq!(
                 tokio::fs::try_exists(&old_logs_path)
                     .await
@@ -1118,9 +838,7 @@ mod tests {
                     .expect("check legacy usage path"),
                 false
             );
-            let old_usage_path = codex_home.join(format!(
-                "{USAGE_DB_FILENAME}_{previous_usage_version}.sqlite{suffix}"
-            ));
+            let old_usage_path = codex_home.join(format!("usage_0.sqlite{suffix}"));
             assert_eq!(
                 tokio::fs::try_exists(&old_usage_path)
                     .await

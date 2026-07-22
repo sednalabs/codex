@@ -23,6 +23,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
+use codex_utils_absolute_path::test_support::PathExt;
 use tempfile::TempDir;
 use tokio::sync::Notify;
 
@@ -179,11 +180,11 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
     let home = TempDir::new().expect("temp dir");
     let config = LocalThreadStoreConfig {
         codex_home: home.path().to_path_buf(),
-        sqlite_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         default_model_provider_id: "test-provider".to_string(),
     };
     let runtime = codex_state::StateRuntime::init(
-        config.sqlite_home.clone(),
+        config.sqlite.home().to_path_buf(),
         config.default_model_provider_id.clone(),
     )
     .await
@@ -330,11 +331,11 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
     let home = TempDir::new().expect("temp dir");
     let config = LocalThreadStoreConfig {
         codex_home: home.path().to_path_buf(),
-        sqlite_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
         default_model_provider_id: "test-provider".to_string(),
     };
     let runtime = codex_state::StateRuntime::init(
-        config.sqlite_home.clone(),
+        config.sqlite.home().to_path_buf(),
         config.default_model_provider_id.clone(),
     )
     .await

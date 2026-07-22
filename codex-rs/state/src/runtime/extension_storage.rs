@@ -153,8 +153,8 @@ fn current_epoch_seconds() -> i64 {
 mod tests {
     use super::*;
     use crate::runtime::StateRuntime;
-    use crate::runtime::state_db_path;
     use crate::runtime::test_support::unique_temp_dir;
+    use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
     use sqlx::sqlite::SqliteConnectOptions;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -164,12 +164,14 @@ mod tests {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
         drop(runtime);
+        let state_db_path =
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()).state_db_path();
 
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
                 SqliteConnectOptions::new()
-                    .filename(state_db_path(codex_home.as_path()))
+                    .filename(state_db_path)
                     .create_if_missing(false),
             )
             .await?;

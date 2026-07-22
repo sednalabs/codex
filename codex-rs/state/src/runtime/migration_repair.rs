@@ -17,7 +17,7 @@ const COLUMN_MIGRATION_REPAIRS: &[ColumnMigrationRepair] = &[ColumnMigrationRepa
     column_name: "thread_source",
 }];
 
-pub(super) async fn repair_state_migrations(
+pub(crate) async fn repair_state_migrations(
     pool: &SqlitePool,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
