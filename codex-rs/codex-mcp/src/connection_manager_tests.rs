@@ -108,7 +108,7 @@ fn store_current_tools(cache_context: &ConnectorRuntimeContext<ToolInfo>, tools:
     );
 }
 
-async fn capture_binding(manager: &Arc<McpConnectionManager>) -> McpBinding {
+async fn capture_binding(manager: &Arc<McpConnectionSet>) -> McpBinding {
     manager
         .capture_binding_with_metadata(
             Arc::new(crate::mcp::tests::test_mcp_config(std::env::temp_dir())),
@@ -237,7 +237,7 @@ async fn create_test_manager_with_ready_apps_client(
     tool_name: &str,
     list_started: Option<Arc<Notify>>,
     release_list: Option<Arc<Notify>>,
-) -> anyhow::Result<Arc<McpConnectionManager>> {
+) -> anyhow::Result<Arc<McpConnectionSet>> {
     let tool = create_test_tool(CODEX_APPS_MCP_SERVER_NAME, tool_name);
     let client = Arc::new(
         RmcpClient::new_in_process_client(Arc::new(RefreshTestTransportFactory {
@@ -278,7 +278,7 @@ async fn create_test_manager_with_ready_apps_client(
     };
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -319,7 +319,7 @@ async fn create_test_manager_with_ready_apps_client(
 fn create_test_manager_with_failed_apps_startup(
     cached_tools: Vec<ToolInfo>,
     reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
-) -> McpConnectionManager {
+) -> McpConnectionSet {
     let client: ManagedClientFuture = futures::future::ready(Err(StartupOutcomeError::Failed {
         error: "startup failed".to_string(),
         is_authentication_required: false,
@@ -335,7 +335,7 @@ fn create_test_manager_with_failed_apps_startup(
     store_current_tools(&cache_context, cached_tools);
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -877,7 +877,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending() {
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -938,7 +938,7 @@ async fn capture_binding_uses_the_ready_clients_own_tools() {
     ready_client.codex_apps_tools_cache_context = Some(cache_context.clone());
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1193,7 +1193,7 @@ async fn list_available_server_infos_uses_cache_while_client_is_pending() {
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1233,7 +1233,7 @@ async fn list_all_tools_accepts_canonical_namespaced_tool_names() {
         create_ready_async_managed_client(vec![create_test_tool("rmcp", "echo")]).await;
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ false,
@@ -1291,7 +1291,7 @@ async fn capture_binding_waits_for_fresh_startup_even_with_cached_tools() {
     .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1351,7 +1351,7 @@ async fn list_all_tools_applies_legacy_mcp_prefix_by_default() {
         create_ready_async_managed_client(vec![create_test_tool("rmcp", "echo")]).await;
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1383,7 +1383,7 @@ async fn list_all_tools_blocks_while_client_is_pending_without_cached_tools() {
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1440,7 +1440,7 @@ async fn shutdown_cancels_pending_tool_listing() {
     .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1488,7 +1488,7 @@ async fn shutdown_continues_after_caller_is_aborted() {
     .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1542,7 +1542,7 @@ async fn list_all_tools_does_not_block_when_shared_codex_apps_cache_is_empty() {
         .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1595,7 +1595,7 @@ async fn list_all_tools_uses_shared_codex_apps_cache_when_client_startup_fails()
     .shared();
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -1946,7 +1946,7 @@ async fn list_all_tools_adds_server_metadata_to_tools() {
         create_ready_async_managed_client(vec![create_test_tool(server_name, "search")]).await;
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -2005,7 +2005,7 @@ fn server_metadata_preserves_tool_approval_policy() {
 fn host_owned_codex_apps_requires_server_metadata() {
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let manager = McpConnectionManager::new_uninitialized(
+    let manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -2018,7 +2018,7 @@ fn host_owned_codex_apps_requires_server_metadata() {
 fn host_owned_codex_apps_matches_reserved_name_with_server_metadata() {
     let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
     let permission_profile = Constrained::allow_any(PermissionProfile::default());
-    let mut manager = McpConnectionManager::new_uninitialized(
+    let mut manager = McpConnectionSet::new_uninitialized(
         &approval_policy,
         &permission_profile,
         /*prefix_mcp_tool_names*/ true,
@@ -2106,7 +2106,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
     ]);
 
     let cancel_token = CancellationToken::new();
-    let manager = McpConnectionManager::new(
+    let manager = McpConnectionSet::new(
         &mcp_servers,
         OAuthCredentialsStoreMode::default(),
         AuthKeyringBackendKind::default(),

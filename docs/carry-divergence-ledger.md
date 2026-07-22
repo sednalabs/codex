@@ -1544,6 +1544,18 @@ docs-only refresh commit that records this snapshot.
 - Drop this direct upstream fix when upstream provides equivalent source-owned
   bounded final aggregation, bounded source-close ordering, and regression
   coverage.
+- Upstream `9fc715c086` is adopted as the lifecycle-ordering authority: its
+  per-process interaction lock serializes `write_stdin` interaction events
+  before command completion, its close guard and trailing-output grace order
+  streaming shutdown, and its exit watcher waits for deferred network-denial
+  classification. Downstream keeps the source-owned bounded transcript and
+  bounded source-task join as the final-output authority.
+- `WriteStdinInteractionEvent` is the only interaction-publication seam. It
+  carries downstream `terminal_wait` metadata and an explicit
+  `emit_when_process_exited` flag for blocking waits; do not restore a second
+  handler-side `TerminalInteraction` emitter during future syncs. Internal
+  blocking-wait polls pass no interaction event and retain the shorter
+  `empty_input_min_yield_time_ms` window.
 - Primary files:
   - `codex-rs/core/src/unified_exec/process.rs`
   - `codex-rs/core/src/unified_exec/async_watcher.rs`

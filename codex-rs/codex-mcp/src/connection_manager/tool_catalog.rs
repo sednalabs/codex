@@ -10,7 +10,7 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 
-use super::McpConnectionManager;
+use super::McpConnectionSet;
 use crate::binding::McpBinding;
 use crate::binding::PreparedMcpCall;
 use crate::binding_clients::McpBindingClients;
@@ -24,7 +24,7 @@ use crate::runtime::emit_duration;
 use crate::tools::ToolInfo;
 use crate::tools::normalize_tools_for_model_with_prefix;
 
-impl McpConnectionManager {
+impl McpConnectionSet {
     /// Returns all tools with model-visible names normalized.
     #[instrument(level = "trace", skip_all, fields(mcp_server_count = self.clients.len()))]
     pub async fn list_all_tools(&self) -> Vec<ToolInfo> {
