@@ -1562,7 +1562,11 @@ mod tests {
             .expect("proxy should remain available to a child holding inherited output streams");
         #[cfg(target_os = "windows")]
         {
-            assert!(proxy.network_proxy_restricting_sid(None).is_some());
+            assert!(
+                proxy
+                    .network_proxy_restricting_sid(/*environment_id*/ None)
+                    .is_some()
+            );
             drop(stream);
         }
         #[cfg(not(target_os = "windows"))]
@@ -1613,7 +1617,10 @@ mod tests {
         assert!(closed_response.closed);
         assert!(network_policy_shutdown.is_cancelled());
         #[cfg(target_os = "windows")]
-        assert_eq!(proxy.network_proxy_restricting_sid(None), None);
+        assert_eq!(
+            proxy.network_proxy_restricting_sid(/*environment_id*/ None),
+            None
+        );
         #[cfg(not(target_os = "windows"))]
         assert!(tokio::net::TcpStream::connect(proxy_addr).await.is_err());
         backend.shutdown().await;
