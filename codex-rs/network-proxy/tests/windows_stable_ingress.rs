@@ -85,7 +85,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
     let initial_addrs = (first.http_addr(), first.socks_addr());
     let first_handle = first.run().await?;
     let first_sid = first
-        .network_proxy_restricting_sid(None)
+        .network_proxy_restricting_sid(/*environment_id*/ None)
         .expect("running proxy should have a route SID");
     first.prepare_for_optional_environment(HashMap::new(), Some(FIRST_ENVIRONMENT_ID))?;
     let first_environment_sid = first
@@ -107,7 +107,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
     assert_eq!((first.http_addr(), first.socks_addr()), stable_addrs);
     let second_handle = second.run().await?;
     let second_sid = second
-        .network_proxy_restricting_sid(None)
+        .network_proxy_restricting_sid(/*environment_id*/ None)
         .expect("running proxy should have a route SID");
     assert_ne!(second_sid, first_sid);
 
@@ -183,7 +183,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         &first_sid,
         stable_addrs,
         origin_port,
-        None,
+        /*policy*/ None,
         /*expect_socks*/ false,
     )
     .await?;
@@ -191,7 +191,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         &first_environment_sid,
         stable_addrs,
         origin_port,
-        None,
+        /*policy*/ None,
         /*expect_socks*/ false,
     )
     .await?;
@@ -213,13 +213,13 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         third_requested,
         "localhost",
         /*enable_socks5*/ false,
-        None,
+        /*policy_decider*/ None,
     )
     .await?;
     assert_eq!((third.http_addr(), third.socks_addr()), stable_addrs);
     let third_handle = third.run().await?;
     let third_sid = third
-        .network_proxy_restricting_sid(None)
+        .network_proxy_restricting_sid(/*environment_id*/ None)
         .expect("running proxy should have a route SID");
     assert_ne!(third_sid, first_sid);
     assert_ne!(third_sid, second_sid);
@@ -233,12 +233,12 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
     )
     .await?;
     drop(third_handle);
-    assert_eq!(third.network_proxy_restricting_sid(None), None);
+    assert_eq!(third.network_proxy_restricting_sid(/*environment_id*/ None), None);
     run_restricted_child(
         &third_sid,
         stable_addrs,
         origin_port,
-        None,
+        /*policy*/ None,
         /*expect_socks*/ false,
     )
     .await?;

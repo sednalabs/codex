@@ -51,6 +51,10 @@ Focused targeted lanes for iterative work on the current carry seams:
     `changing_configured_mode_hint_to_empty_appends_explicit_reset`, which
     proves the same replacement survives a resumed thread without retaining the
     removed custom policy as the active mode.
+  - Includes upstream
+    `queue_only_agent_mail_wakes_sleeping_root_and_persists_message`, which
+    proves queue-only child mail wakes a root thread only while it has a durable
+    sleep and that the message is persisted in thread history.
 - `codex.blocking-waits-core-targeted`
 - `codex.blocking-waits-unified-exec-targeted`
 - `codex.blocking-waits-app-server-targeted`
@@ -698,8 +702,12 @@ for a removed crate path.
   `tool_catalog_cache_bypasses_remote_sourced_environment_variables`,
   `mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls`,
   `mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools`,
-  and `regular_mcp_definition_cache_preserves_live_session_state` must remain
-  green alongside the downstream complete-catalogue checks.
+  `regular_mcp_definition_cache_preserves_live_session_state`,
+  `list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending`, and
+  `list_all_tools_does_not_block_when_shared_codex_apps_cache_is_empty` must
+  remain green alongside the downstream complete-catalogue checks. A published
+  cache snapshot, including an intentionally empty one, must be listed before a
+  pending startup refresh is awaited.
 
 ### Typed Cyber-Policy Retry Boundary
 

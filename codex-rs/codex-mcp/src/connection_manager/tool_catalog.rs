@@ -33,13 +33,18 @@ impl McpConnectionSet {
         let mut unavailable_server_count = 0;
         for (server_name, managed_client) in &self.clients {
             managed_client.reconnect_failed_startup().await;
-            if managed_client.refresh_tools_if_changed().await {
-                *self.tool_catalog_revision.write().await += 1;
-            }
             let has_cached_tools = managed_client.has_cached_tools();
             let startup_complete = managed_client
                 .startup_complete
                 .load(std::sync::atomic::Ordering::Acquire);
+            // A published cache, including an intentionally empty catalogue, is the only
+            // nonblocking inventory while startup is pending. Refreshing first would await the
+            // startup future and make that cache unreachable.
+            if (startup_complete || !has_cached_tools)
+                && managed_client.refresh_tools_if_changed().await
+            {
+                *self.tool_catalog_revision.write().await += 1;
+            }
             let Some(server_tools) = managed_client
                 .listed_tools()
                 .instrument(trace_span!(

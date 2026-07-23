@@ -69,6 +69,35 @@ docs-only refresh commit that records this snapshot.
 
 ## Latest Upstream-Owned Integration
 
+### Remote Plugins, Image Eligibility, App Metadata, And Sleeping Agent Mail
+
+- Upstream `83ff1c2f80` caches remote plugin catalogs by global, user, and
+  workspace scope with account-specific keys and a three-hour TTL. `plugin/list`
+  serves a usable cache while stale catalog refreshes run in the background;
+  `forceRefetch: true` bypasses the cache and only replaces it after a successful
+  fetch. Sharing mutations invalidate the affected user and workspace scopes.
+  This cache is plugin-discovery metadata, not an MCP connection or tool-runtime
+  lifecycle replacement.
+- Upstream `0a0a9b6c8f` excludes the standalone `image_generation` tool when
+  cached authentication identifies a Free-plan account. Existing feature,
+  provider-capability, model-modality, and authorization checks remain
+  authoritative for other plans; image input/output plumbing and native image
+  forwarding are otherwise unchanged.
+- Upstream `b72079a2cf` loads plugin app metadata through authenticated batches
+  of at most 100 IDs, preserving declared app identity and category when metadata
+  is unavailable. `AppToolSummary` now carries enabled, disabled-reason, and
+  read-only metadata with compatibility defaults. These are app-summary fields,
+  not a parallel dynamic-tool registry.
+- Upstream `44d76c6a6d` wakes an idle thread with a durable sleep when queue-only
+  agent mail arrives, while ordinary idle threads still require `trigger_turn`.
+  `queue_only_agent_mail_wakes_sleeping_root_and_persists_message` proves both
+  wakeup and persisted history, and
+  `codex.core-multi-agent-orchestration-targeted` carries it as a hosted
+  guardrail.
+- Signed merge `802d463f27` retains `44d76c6a6d` as its exact upstream second
+  parent. The integration branch adds no alternate plugin cache, image tool,
+  app-summary, or mailbox wakeup implementation.
+
 ### Multi-Agent World State, Custom Web Search, And Guardian Limits
 
 - Upstream `0da13c6c99` persists the effective multi-agent mode in world-state
@@ -2274,6 +2303,11 @@ docs-only refresh commit that records this snapshot.
   feature enablement. It does not yet change the runtime resource or prepared
   call contracts above; adopt the registration unchanged so later protocol
   implementation can remain upstream-owned.
+- `list_all_tools()` treats a fresh shared cache snapshot, including an
+  intentionally empty catalog, as the nonblocking inventory while startup is
+  pending. It refreshes only after startup is ready or no cache exists, so a
+  pending client cannot make the published catalog unreachable before tool
+  exposure or inference initialization.
 - Centralized ownership does not by itself unload quiescent threads retained by
   `ThreadManager`. Capacity-triggered V2 residency eviction now calls
   `shutdown_and_wait()` before generation-fenced, thread-instance-checked

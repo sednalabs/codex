@@ -8,8 +8,8 @@ fn parses_owner_table_and_matches_reversed_client_tuple() -> io::Result<()> {
     let proxy_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3128);
     let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 49152);
     let rows = [
-        tcp_row(proxy_addr, client_addr, 100),
-        tcp_row(client_addr, proxy_addr, 200),
+        tcp_row(proxy_addr, client_addr, /*process_id*/ 100),
+        tcp_row(client_addr, proxy_addr, /*process_id*/ 200),
     ];
     let (buffer, byte_len) = owner_table_buffer(&rows);
 
@@ -27,8 +27,8 @@ fn rejects_multiple_matching_owner_rows() {
     let proxy_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 3128);
     let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 49152);
     let rows = [
-        tcp_row(client_addr, proxy_addr, 200),
-        tcp_row(client_addr, proxy_addr, 201),
+        tcp_row(client_addr, proxy_addr, /*process_id*/ 200),
+        tcp_row(client_addr, proxy_addr, /*process_id*/ 201),
     ];
 
     let error = unique_client_process_id(&rows, proxy_addr, client_addr)
