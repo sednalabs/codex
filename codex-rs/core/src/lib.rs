@@ -4,6 +4,8 @@
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// The combined downstream turn path exceeds rustc's default query-depth limit.
+#![recursion_limit = "256"]
 
 mod apply_patch;
 mod apps;

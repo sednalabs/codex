@@ -316,6 +316,19 @@ app-metadata shape remains a release-boundary artifact rather than a source
 protocol carry. Hosted targeted lanes cover pin/unpin pagination and
 interrupted MCP startup input preservation.
 
+## Core compiler query-depth guardrail
+
+Upstream's interrupted-MCP recovery now threads cancellation through a larger
+portion of `run_turn`. Combined with the retained downstream multi-agent,
+dynamic-tool, and native-computer-use state, the resulting async type exceeded
+rustc's default query-depth limit in hosted targeted run `29968292080` before
+any selected test ran. `codex-core` therefore sets
+`#![recursion_limit = "256"]`, the limit recommended by rustc for this crate.
+It affects compiler query evaluation only, not runtime recursion or request
+behavior. `core-runtime-surface-smoke` remains the focused hosted proof; remove
+the attribute when upstream adopts an equivalent bound or the composed type no
+longer needs it.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
