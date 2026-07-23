@@ -373,6 +373,7 @@ custom-prompts-targeted:
 # hardening.
 mcp-tool-exposure-targeted:
     cargo test -p codex-core mcp_tool_exposure::tests:: --lib -- --test-threads=1
+    cargo test -p codex-mcp list_all_tools_ --lib -- --test-threads=1
 
 mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1

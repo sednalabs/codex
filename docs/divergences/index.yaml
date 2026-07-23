@@ -2644,7 +2644,7 @@
       "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. While startup is pending, any fresh shared snapshot, including an intentionally empty catalogue, is listed before refresh so it remains nonblocking. Upstream's focused connection_manager/tool_catalog.rs module retains the downstream generation-aware snapshot, fetch-ticket, and atomic publication adapter instead of duplicating those methods in the parent manager. Prepared tool calls stay bound to the exact client and catalogue revision advertised for their model step, while upstream-owned session resource clients follow the latest published runtime snapshot. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
-      "guardrail_lane": "core-test-progressive",
+      "guardrail_lane": "codex.mcp-tool-exposure-targeted; core-test-progressive",
       "tests": [
         "streamable_http_discovers_and_calls_later_page_tool",
         "list_changed_failure_is_attempted_once_and_next_change_replaces_snapshot",
