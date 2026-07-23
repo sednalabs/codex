@@ -295,6 +295,11 @@ exact-head hosted proof:
   `29955881580` produced the exact two-file repair recorded in signed commit
   `ce7c9f9815`; no schema was hand-edited or generated on this host. Exact-head
   rerun `29956395279` then passed both affected lanes.
+- Frontier Max run `30013991321` later found the same generator boundary after
+  upstream `808d3c2702`: hosted generator run `30015826457`, based on repaired
+  head `b144fc2f5c`, produced the complete 14-file JSON fixture update recorded
+  in signed commit `dabdc88354`. The app-server protocol lane remains the proof
+  seam; never replace generator output with a partial manual fixture edit.
 - Upstream `88eb3a2b8a` owns authenticated git-attribution installation in
   app-server, MCP server, and CLI prompt-debug entry points.
   `codex.app-server-v2-contract-targeted`,

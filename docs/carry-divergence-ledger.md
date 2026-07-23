@@ -2403,6 +2403,17 @@ docs-only refresh commit that records this snapshot.
   follow-up documentation commit records validation coverage only and does not
   change runtime behavior.
 - Signed merge `b0fdc2cb2b` preserves `808d3c2702` as its second parent.
+- Frontier Max run `30013991321` on `dc7d40ca3e` found two independent
+  upstream-integration repairs: the session-initialization hook caller still
+  passed the legacy shell after the environment-aware hook builder was restored,
+  and the generated JSON schema fixture tree was stale. Signed commit
+  `b144fc2f5c` restores the exact selected-local-environment caller.
+- GitHub-hosted generator run `30015826457` was based on `b144fc2f5c` and
+  produced a 14-file, schema-only patch with SHA-256
+  `5b0edbb069f2a4fde9e09b58a90a9f4d1d91242d87a97b09f28d1ab3f3faba6f`.
+  It updates four `reloadUserConfig` description wraps and ten generated final
+  newline normalizations; signed commit `dabdc88354` applies the complete
+  verified output. Do not hand-edit or partially select this fixture set.
 
 ### Typed Cyber-Policy Retry Boundary
 
