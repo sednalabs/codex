@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `0ecb2c0f026f04c720f6368b4e4d8911345f02a6`
+- downstream integration code tree: `680fd3386dc943a30f8fd3b34b45f42ec11a844c`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `12c115d558b9fec378b4445636a327b05e7de8cc`
-- `upstream/main`: `12c115d558b9fec378b4445636a327b05e7de8cc`
-- downstream branch vs `upstream/main`: `2027` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
+- `upstream/main`: `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
+- downstream branch vs `upstream/main`: `2029` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1722` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1723` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -841,6 +841,33 @@ docs-only refresh commit that records this snapshot.
   attribution entry points, Guardian reuse identity, raw Responses tool JSON,
   and the newly unskipped code-mode carry seams. No parallel workflow or
   production adapter was added.
+
+### Analytics Flush, Interrupted MCP Startup, Thread Pinning, And App Metadata
+
+- Hosted mirror run `29967541744` advanced `origin/upstream-main` to exact
+  `79500d3cc1`; its sync job `89082210987` passed. The downstream audit job
+  returned the expected pre-promotion divergence result.
+- Upstream `88f1cd9664` flushes analytics after the in-process app-server
+  runtime drain, `bd5b55e403` records compaction time in turn profiles, and
+  `d7e8f4c3dc` retains submitted user input when MCP startup is interrupted.
+  The latter retains one consistent tool-router snapshot, so existing dynamic
+  tools and native computer-use providers keep their advertised/executable
+  alignment.
+- Upstream `400ee190c3` persists app-server `is_pinned` metadata, filters it
+  during listing, and preserves it through reconciliation, archive, and
+  unarchive paths. Merge resolution keeps that upstream field beside the
+  independent downstream `model`, `reasoning_effort`, `thread_source`, and
+  `history_mode` metadata in protocol schemas, tests, and replay paths.
+- Upstream `79500d3cc` removes `first_party_type` from the current Rust/JSON/
+  TypeScript app metadata contract. The checked-in Python SDK remains generated
+  from its intentionally pinned released `openai-codex-cli-bin==0.144.4`
+  runtime; it is not a source-head schema artifact and must only change with a
+  reviewed Python runtime-pin release.
+- Signed two-parent merge `680fd3386d` has first parent `444e3b92fe` and exact
+  upstream second parent `79500d3cc1`. It resolves every generated-schema
+  overlap by retaining both independent fields, never by selecting one parent
+  wholesale. Existing targeted lanes now include the upstream interrupted-MCP
+  history regression and pinned filtered-pagination regression.
 
 ## Current Live Divergences
 

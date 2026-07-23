@@ -298,6 +298,24 @@ semantics. Signed merge `f7165094c8` adopted all four commits without textual
 conflicts, and signed validation commit `0ecb2c0f02` extends the existing hosted
 recipes over the new entry-point and serialization seams.
 
+## Upstream analytics, interruption recovery, and thread pinning
+
+Upstream commits `88f1cd9664`, `bd5b55e403`, and `d7e8f4c3dc` flush queued
+analytics during in-process app-server shutdown, account compaction time in
+turn profiles, and retain submitted input if MCP startup is interrupted. The
+interruption path retains a single tool-router snapshot, so downstream dynamic
+tools, image results, and native computer-use providers retain their existing
+advertised/executable contract.
+
+Upstream `400ee190c3` adds persisted `is_pinned` thread metadata and
+`79500d3cc` removes the current app-metadata `first_party_type` field. Signed
+merge `680fd3386d` keeps upstream pinning together with downstream `model`,
+reasoning effort, `thread_source`, and `history_mode` fields. The Python SDK is
+separately generated from its released `0.144.4` runtime pin, so its historical
+app-metadata shape remains a release-boundary artifact rather than a source
+protocol carry. Hosted targeted lanes cover pin/unpin pagination and
+interrupted MCP startup input preservation.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
@@ -466,15 +484,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `0ecb2c0f026f04c720f6368b4e4d8911345f02a6`
+  `680fd3386dc943a30f8fd3b34b45f42ec11a844c`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `12c115d558b9fec378b4445636a327b05e7de8cc`
+  `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
 - `upstream/main`:
-  `12c115d558b9fec378b4445636a327b05e7de8cc`
+  `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2027` downstream ahead
-- downstream-only non-merge commits: `1722` unique, `0` patch-equivalent
+  `0` upstream ahead, `2029` downstream ahead
+- downstream-only non-merge commits: `1723` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
