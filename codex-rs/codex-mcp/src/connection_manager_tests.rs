@@ -1626,7 +1626,7 @@ async fn cancelling_startup_does_not_disable_a_ready_client() {
         .client()
         .await
         .expect("startup cancellation should not disable a ready client");
-    let tools = managed.listed_tools().await;
+    let tools = managed.listed_tools();
     assert_eq!(
         model_tool_names(&tools),
         HashSet::from([ToolName::namespaced("ready", "search")])
@@ -2503,6 +2503,10 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
         default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
+        enable_elicitation: false,
+        read_only: false,
+        strict_tool_classification: false,
+        require_approval_for_mutating: false,
         scopes: None,
         oauth: None,
         oauth_resource: None,
