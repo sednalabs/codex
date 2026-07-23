@@ -2308,7 +2308,8 @@ docs-only refresh commit that records this snapshot.
   advertised for their model step, while session-scoped `McpResourceClient`
   clones resolve each resource operation and cache key from the latest
   published `McpRuntime` snapshot. Do not restore per-binding resource clients;
-  `session_resource_client_follows_published_mcp_runtime` is the focused hosted
+  `out_of_band_resource_read_reconciles_the_published_mcp_runtime` is the
+  focused hosted
   regression for refresh behavior.
 - Upstream commit `65ae4c26e0` registers disabled-by-default experimental
   feature `mcp_2026_07_28` in core, the generated config schema, and app-server
@@ -2331,6 +2332,17 @@ docs-only refresh commit that records this snapshot.
   configuration, and operator observability remain outside this bounded slice.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
+- The 2026-07-23 sync adopts upstream `e497325a6a` as the sole owner of
+  thread MCP runtime state. Configuration updates mark that one runtime dirty;
+  refresh rebuilds and atomically publishes a replacement while immutable
+  per-step bindings keep their captured connection set. Keep downstream
+  pagination, OAuth-store selection, and cache ordering inside that runtime;
+  do not restore a session-level config/connection mirror.
+- Upstream `6e0455fdc4` sends `codex-mcp-client/<version>` on default
+  Streamable HTTP and OAuth requests. An explicitly configured `user-agent`
+  header remains authoritative. The focused regressions are
+  `streamable_http_requests_preserve_configured_user_agent` and
+  `refreshes_expired_persisted_token_before_initialize`.
 - Preserve this carry until upstream issue #26094 is resolved by behavior that
   covers the complete bounded snapshot and refresh contract, not only a basic
   happy-path page walk.
@@ -2348,6 +2360,32 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/core/src/session/mcp.rs`
   - `codex-rs/core/src/state/service.rs`
+
+### 2026-07-23 Upstream Integration Boundaries
+
+- Upstream `4462b9deef` adds default-on
+  `features.multi_agent_v2.wait_agent_enabled`, independently of the sleep
+  tool. The optional downstream schema field remains nullable, and this gate
+  only controls exposure of `wait_agent`; it does not alter downstream's
+  upstream-native explicit model and reasoning selection contract. Preserve
+  `multi_agent_v2_can_disable_wait_agent` and
+  `multi_agent_v2_wait_agent_tool_follows_configuration` in the hosted
+  sub-agent surface lane.
+- Upstream `39a2438d16` makes verified `releases.openai.com` metadata and
+  assets the default only for the unconfigured `openai/codex` plus `rust-v`
+  origin, with validated GitHub Release fallback. The downstream repository and
+  tag-prefix boundary remains deliberate: custom origins bypass the OpenAI-only
+  endpoint and retain GitHub routing, while the broad SemVer validator keeps
+  Sedna prerelease and build-metadata releases installable.
+- Upstream `48ebbf5334` selects the API curated plugin marketplace from the
+  resolved Bedrock provider rather than only from configured defaults. Retain
+  the upstream provider-direction regression
+  `list_marketplaces_uses_resolved_provider_instead_of_configured_default` and
+  the existing API-curated cache and skills tests; do not reintroduce a second
+  marketplace-selection rule in downstream configuration code.
+- Signed merge `120d4314a2` preserves `48ebbf5334` as its second parent. The
+  follow-up documentation commit records validation coverage only and does not
+  change runtime behavior.
 
 ### Typed Cyber-Policy Retry Boundary
 

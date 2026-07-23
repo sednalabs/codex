@@ -146,9 +146,10 @@ external-agent-migration-containment-targeted:
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields multi_agent_v2_can_disable_wait_agent
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- config::schema::tests::config_schema_matches_fixture config::schema::tests::config_schema_allows_named_agent_roles codex_delegate_tests::run_codex_thread_interactive_respects_pre_cancelled_spawn --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::configured_agent_roles_control_spawn_agent_type
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::multi_agent_v2_wait_agent_tool_follows_configuration
 
 # Focused inspect_agent_tree stale-descendant fallback regression.
 core-subagent-inspect-tree-fallback-targeted:
@@ -386,6 +387,8 @@ mcp-safety-targeted:
     cargo test -p codex-rmcp-client persist_if_needed_ --lib -- --test-threads=1
     cargo test -p codex-rmcp-client rmcp_client::tests::oauth_authorization_required_refreshes_oauth --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client rmcp_client::tests::streamable_http_auth_required_refreshes_oauth --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-rmcp-client --test streamable_http_user_agent streamable_http_requests_preserve_configured_user_agent -- --exact --test-threads=1
+    cargo test --locked -p codex-rmcp-client --test streamable_http_oauth_startup refreshes_expired_persisted_token_before_initialize -- --exact --test-threads=1
     cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
 
 # Focused downstream MCP OAuth device-login slice for browserless hosts.
