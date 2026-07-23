@@ -2622,6 +2622,7 @@
         "codex-rs/rmcp-client/src/rmcp_client.rs",
         "codex-rs/connectors/src/connector_runtime/mod.rs",
         "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
         "codex-rs/codex-mcp/src/rmcp_client.rs",
         "codex-rs/codex-mcp/src/rmcp_client_tests.rs",
         "codex-rs/codex-mcp/src/tool_catalog_cache.rs",
@@ -2640,7 +2641,7 @@
           "streamable_http_discovers_and_calls_later_page_tool"
         ]
       },
-      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. Upstream's focused connection_manager/tool_catalog.rs module retains the downstream generation-aware snapshot, fetch-ticket, and atomic publication adapter instead of duplicating those methods in the parent manager. Prepared tool calls stay bound to the exact client and catalogue revision advertised for their model step, while upstream-owned session resource clients follow the latest published runtime snapshot. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
+      "behavior": "Codex publishes only bounded, complete MCP tool snapshots, follows every non-null opaque cursor including the empty string, and replaces the snapshot after a tool-list change notification while retaining the last complete snapshot on refresh failure. Raw complete catalogues publish through upstream's connector-runtime or regular tool-catalogue cache before per-client filtering. While startup is pending, any fresh shared snapshot, including an intentionally empty catalogue, is listed before refresh so it remains nonblocking. Upstream's focused connection_manager/tool_catalog.rs module retains the downstream generation-aware snapshot, fetch-ticket, and atomic publication adapter instead of duplicating those methods in the parent manager. Prepared tool calls stay bound to the exact client and catalogue revision advertised for their model step, while upstream-owned session resource clients follow the latest published runtime snapshot. Servers can disable the regular shared cache, remotely sourced environment variables bypass it, and cached definitions never replace live connection metadata or call output.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "core-test-progressive",
@@ -2651,10 +2652,12 @@
         "tool_catalog_cache_bypasses_remote_sourced_environment_variables",
         "mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls",
         "mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools",
+        "list_all_tools_uses_shared_codex_apps_cache_while_client_is_pending",
+        "list_all_tools_does_not_block_when_shared_codex_apps_cache_is_empty",
         "regular_mcp_definition_cache_preserves_live_session_state"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. The 2026-07-22 sync adopts upstream commit 84d2b203ed's live-runtime McpResourceClient and does not carry the removed per-binding resource-client identity layer. The 2026-07-23 sync composes the downstream slow-inventory budget test onto upstream 10cc57c95c's typed app-server helpers and pins it in the existing app-server V2 lane. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. The 2026-07-22 sync adopts upstream commit 84d2b203ed's live-runtime McpResourceClient and does not carry the removed per-binding resource-client identity layer. The 2026-07-23 sync composes the downstream slow-inventory budget test onto upstream 10cc57c95c's typed app-server helpers and pins it in the existing app-server V2 lane. A hosted cache-ordering regression showed that refresh must not await a pending client before listing a published shared cache, including an empty snapshot; the two focused connection-manager tests and regular MCP inference regression are the retained proof. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [

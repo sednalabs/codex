@@ -1517,7 +1517,7 @@ mod tests {
         {
             assert_eq!(proxy.http_addr, http_addr);
             assert_eq!(proxy.socks_addr, socks_addr);
-            assert_eq!(proxy.network_proxy_restricting_sid(None), None);
+            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
             let handle = proxy.run().await.expect("start stable ingress route");
             let second_state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig {
                 enabled: true,
@@ -1537,8 +1537,8 @@ mod tests {
             assert_eq!(second.http_addr, proxy.http_addr);
             assert_eq!(second.socks_addr, proxy.socks_addr);
             assert_ne!(
-                second.network_proxy_restricting_sid(None),
-                proxy.network_proxy_restricting_sid(None)
+                second.network_proxy_restricting_sid(/*environment_id*/ None),
+                proxy.network_proxy_restricting_sid(/*environment_id*/ None)
             );
             let differently_configured =
                 Arc::new(network_proxy_state_for_policy(NetworkProxyConfig {
@@ -1585,7 +1585,7 @@ mod tests {
                 .await
                 .expect("stop second stable ingress route");
             handle.shutdown().await.expect("stop stable ingress route");
-            assert_eq!(proxy.network_proxy_restricting_sid(None), None);
+            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1772,16 +1772,18 @@ mod tests {
             assert_eq!(proxy.http_addr, http_addr);
             assert!(proxy.reserved_listeners.is_none());
             assert!(proxy.windows_runtime.is_some());
-            assert_eq!(proxy.network_proxy_restricting_sid(None), None);
+            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
             let handle = proxy.run().await.expect("start HTTP-only stable route");
-            assert!(proxy.network_proxy_restricting_sid(None).is_some());
+            assert!(proxy
+                .network_proxy_restricting_sid(/*environment_id*/ None)
+                .is_some());
             let prepared_before_upgrade = proxy
                 .prepare_for_optional_environment(
                     HashMap::from([(
                         WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY.to_string(),
                         "1,2".to_string(),
                     )]),
-                    None,
+                    /*environment_id*/ None,
                 )
                 .expect("prepare stable Windows proxy");
             assert_eq!(
@@ -1836,7 +1838,7 @@ mod tests {
             let mut expected_ports = vec![proxy.http_addr.port(), actual_socks_addr.port()];
             expected_ports.sort_unstable();
             let prepared_after_upgrade = proxy
-                .prepare_for_optional_environment(HashMap::new(), None)
+                .prepare_for_optional_environment(HashMap::new(), /*environment_id*/ None)
                 .expect("re-prepare HTTP-only route after SOCKS5 upgrade");
             let environment_after_upgrade = proxy
                 .prepare_for_optional_environment(HashMap::new(), Some(environment_id))
@@ -1859,7 +1861,7 @@ mod tests {
                 );
             }
             let socks_prepared = socks_proxy
-                .prepare_for_optional_environment(HashMap::new(), None)
+                .prepare_for_optional_environment(HashMap::new(), /*environment_id*/ None)
                 .expect("prepare SOCKS-enabled route");
             assert_eq!(
                 socks_prepared.sandbox_context.loopback_ports,
@@ -1889,7 +1891,7 @@ mod tests {
                 .shutdown()
                 .await
                 .expect("stop HTTP-only stable route");
-            assert_eq!(proxy.network_proxy_restricting_sid(None), None);
+            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
         }
         #[cfg(not(target_os = "windows"))]
         assert!(
