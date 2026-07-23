@@ -2851,6 +2851,7 @@ fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
         .spawn(|| -> anyhow::Result<()> {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
+                .thread_stack_size(TEST_STACK_SIZE_BYTES)
                 .enable_all()
                 .build()?;
             runtime.block_on(streamable_http_with_oauth_round_trip_impl())
