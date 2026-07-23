@@ -2371,6 +2371,10 @@ docs-only refresh commit that records this snapshot.
   `multi_agent_v2_can_disable_wait_agent` and
   `multi_agent_v2_wait_agent_tool_follows_configuration` in the hosted
   sub-agent surface lane.
+- The upstream exact namespace assertion is extended only with downstream
+  `inspect_agent_tree` when `wait_agent` is disabled. It must continue to prove
+  that `wait_agent` and `clock.sleep` are absent; do not satisfy the test by
+  dropping the independent inspection surface.
 - Upstream `39a2438d16` makes verified `releases.openai.com` metadata and
   assets the default only for the unconfigured `openai/codex` plus `rust-v`
   origin, with validated GitHub Release fallback. The downstream repository and
