@@ -2375,6 +2375,11 @@ docs-only refresh commit that records this snapshot.
   `inspect_agent_tree` when `wait_agent` is disabled. It must continue to prove
   that `wait_agent` and `clock.sleep` are absent; do not satisfy the test by
   dropping the independent inspection surface.
+- The upstream `wait_agent` configuration test must read the resolved V2 tool
+  namespace from its test configuration. Downstream deliberately uses `agents`;
+  upstream's literal `collaboration` is a reserved namespace here. This is a
+  test-only compatibility adaptation and must retain all four wait/sleep gate
+  permutations rather than changing the runtime namespace.
 - Upstream `39a2438d16` makes verified `releases.openai.com` metadata and
   assets the default only for the unconfigured `openai/codex` plus `rust-v`
   origin, with validated GitHub Release fallback. The downstream repository and
