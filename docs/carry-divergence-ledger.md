@@ -2387,9 +2387,22 @@ docs-only refresh commit that records this snapshot.
   `list_marketplaces_uses_resolved_provider_instead_of_configured_default` and
   the existing API-curated cache and skills tests; do not reintroduce a second
   marketplace-selection rule in downstream configuration code.
+- Upstream `808d3c2702` treats config batches containing only future-session
+  defaults (`model`, model reasoning effort, plan-mode reasoning effort,
+  service tier, or personality) as static updates: they must not reload skills
+  or plugins for an active session. Explicit user-layer reloads still invalidate
+  both caches. Preserve
+  `skills_list_uses_cached_result_after_session_default_writes_until_force_reload`
+  in the app-server V2 contract lane.
+- The `808d3c2702` merge also restores the upstream local-environment hook
+  shell selection that an earlier merge resolution had inadvertently replaced
+  with the legacy session shell. This is upstream parity, not downstream carry:
+  hooks derive their shell from the selected local turn environment when one is
+  available and otherwise retain the upstream empty-shell behavior.
 - Signed merge `120d4314a2` preserves `48ebbf5334` as its second parent. The
   follow-up documentation commit records validation coverage only and does not
   change runtime behavior.
+- Signed merge `b0fdc2cb2b` preserves `808d3c2702` as its second parent.
 
 ### Typed Cyber-Policy Retry Boundary
 
