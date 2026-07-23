@@ -32,7 +32,6 @@ use test_case::test_case;
 use tokio::time::sleep;
 
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
-const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
 
 fn spawn_agent_description(body: &Value) -> Option<String> {
@@ -360,9 +359,15 @@ wait_agent_enabled = {wait_agent_enabled}
 
     let request = response.single_request();
     let body = request.body_json();
-    assert!(namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, SPAWN_AGENT_TOOL_NAME).is_some());
+    let namespace = test
+        .config
+        .multi_agent_v2
+        .tool_namespace
+        .as_deref()
+        .expect("multi-agent V2 test config should define a tool namespace");
+    assert!(namespace_child_tool(&body, namespace, SPAWN_AGENT_TOOL_NAME).is_some());
     assert_eq!(
-        namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, "wait_agent").is_some(),
+        namespace_child_tool(&body, namespace, "wait_agent").is_some(),
         wait_agent_enabled
     );
     assert_eq!(
