@@ -1767,17 +1767,11 @@ async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
         .shutdown_and_wait()
         .await
         .expect("child thread should shut down");
-    let manager_state = session
-        .services
-        .agent_control
-        .upgrade()
-        .expect("thread manager should be live");
-    assert_eq!(
-        manager_state
-            .remove_thread_if_same(&child_thread_id, &child_thread, || {})
-            .await,
-        crate::thread_manager::RemoveThreadIfSameResult::Removed
-    );
+    let removed_thread = manager
+        .remove_thread(&child_thread_id)
+        .await
+        .expect("child thread should be loaded before removal");
+    assert!(Arc::ptr_eq(&removed_thread, &child_thread));
 
     let output = SendMessageHandlerV2
         .handle(invocation(
