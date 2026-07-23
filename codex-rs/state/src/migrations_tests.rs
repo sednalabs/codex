@@ -21,6 +21,8 @@ const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
 const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 42;
 const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
 const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
+const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
+const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
 const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
 
 fn migrator_through(version: i64) -> Migrator {
@@ -84,6 +86,46 @@ fn origin_main_migrator() -> Migrator {
             })
             .cloned(),
     );
+    Migrator::with_migrations(migrations)
+}
+
+fn upstream_external_agent_import_provider_migrator() -> Migrator {
+    let external_imports_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+        })
+        .expect("external agent config imports migration should exist");
+    let provider_id_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
+        })
+        .expect("external agent config imports provider-id migration should exist");
+    let mut migrations = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| {
+            migration.version < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    migrations.push(Migration::new(
+        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
+        external_imports_migration.description.clone(),
+        external_imports_migration.migration_type,
+        external_imports_migration.sql.clone(),
+        external_imports_migration.no_tx,
+    ));
+    migrations.push(Migration::new(
+        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
+        provider_id_migration.description.clone(),
+        provider_id_migration.migration_type,
+        provider_id_migration.sql.clone(),
+        provider_id_migration.no_tx,
+    ));
     Migrator::with_migrations(migrations)
 }
 
@@ -548,6 +590,116 @@ async fn repairs_external_agent_config_import_migration_that_was_applied_as_vers
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect::<Vec<_>>();
     assert_eq!(applied, expected);
+
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn external_agent_config_import_provider_migration_follows_table_creation_on_fresh_database()
+{
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("sqlite database should open");
+
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("fresh state migrations should apply in dependency order");
+
+    let provider_id_column = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('external_agent_config_imports') WHERE name = 'provider_id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("external agent import table should include provider_id after migration");
+    assert_eq!(provider_id_column, "provider_id");
+
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44()
+{
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .expect("sqlite database should open");
+
+    upstream_external_agent_import_provider_migrator()
+        .run(&pool)
+        .await
+        .expect("legacy upstream import migrations should apply");
+    sqlx::query(
+        r#"
+INSERT INTO external_agent_config_imports (
+    import_id,
+    provider_id,
+    completed_at_ms,
+    successes,
+    failures
+) VALUES (?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind("import-legacy-provider")
+    .bind("claude")
+    .bind(1_700_000_000_123_i64)
+    .bind(r#"[{"item_type":"config"}]"#)
+    .bind("[]")
+    .execute(&pool)
+    .await
+    .expect("legacy provider record should insert");
+
+    repair_state_migration_version_collisions(&pool, &STATE_MIGRATOR)
+        .await
+        .expect("legacy provider migration history should be repaired");
+    STATE_MIGRATOR
+        .run(&pool)
+        .await
+        .expect("current migrations should apply after provider migration repair");
+
+    let provider_id = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT provider_id FROM external_agent_config_imports WHERE import_id = ?",
+    )
+    .bind("import-legacy-provider")
+    .fetch_one(&pool)
+    .await
+    .expect("legacy provider record should load");
+    assert_eq!(provider_id.as_deref(), Some("claude"));
+
+    let applied_provider_checksum = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
+    )
+    .bind(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION)
+    .fetch_one(&pool)
+    .await
+    .expect("provider migration should be recorded at the downstream version");
+    let current_provider_checksum = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
+        })
+        .expect("current provider migration should exist")
+        .checksum
+        .to_vec();
+    assert_eq!(applied_provider_checksum, current_provider_checksum);
 
     pool.close().await;
 }

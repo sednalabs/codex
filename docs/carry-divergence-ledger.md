@@ -243,11 +243,20 @@ docs-only refresh commit that records this snapshot.
   already-shipped downstream `0042_external_agent_config_imports.sql` to
   `0047_external_agent_config_imports.sql`, then checksum-repair exact legacy
   records from `42` to `47` before SQLx applies upstream `42`.
+- Upstream's provider-column migration for that table arrives at `0044`, which
+  is already occupied by deployed downstream visible-sort indexes. Carry the
+  SQL unchanged as `0049_external_agent_config_imports_provider_id.sql` so it
+  follows table creation at `0047`. Checksum-repair only an exact upstream
+  provider-column record from `44` to `49` before SQLx applies the downstream
+  visible-sort migration at `44`; never restore the upstream filename.
 - The production-path regression reconstructs exact `origin/main` through
   version `45`, simultaneously repairs remote-control-enabled `41 -> 46` and
   external-agent imports `42 -> 47` through `StateRuntime::init`, removes only
   the two job tables, and preserves thread rows, spawn edges, and the complete
-  external-import record.
+  external-import record. Separate regressions prove a fresh database creates
+  the import table before applying `0049`, and an upstream database that had
+  provider history at `44` preserves both its provider value and checksum when
+  repaired to `49`.
 - The table drop intentionally discards unfinished CSV-job coordinator data.
   After both repairs and upstream migrations run, a pre-sync binary cannot
   reopen the database because it knows the former `41` and `42` checksums;
@@ -1669,6 +1678,14 @@ docs-only refresh commit that records this snapshot.
   upstream migrations. The `0042` upgrade deliberately removes only the
   retired CSV coordinator's `agent_jobs` and `agent_job_items` tables; ordinary
   threads, spawn edges, and external-agent import records remain intact.
+- Upstream's provider-column addition for `external_agent_config_imports`
+  collides with deployed downstream visible-sort indexes at `0044`. Preserve
+  the upstream SQL content as `0049_external_agent_config_imports_provider_id.sql`
+  so it follows the moved table creation at `0047`, and checksum-repair an
+  exact upstream provider-column history record from `0044` to `0049` before
+  the downstream visible-sort migration can use `0044`. Future syncs must not
+  restore the upstream `0044` filename or renumber the deployed visible-sort
+  migration.
 - Upstream's `0043_threads_is_pinned.sql` arrives after downstream has already
   shipped `0043_threads_recency_at.sql`. Keep that deployed recency migration
   and its checksum at `0043`; import the upstream pinning SQL unchanged as
@@ -1703,6 +1720,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql`
   - `codex-rs/state/migrations/0047_external_agent_config_imports.sql`
   - `codex-rs/state/migrations/0048_threads_is_pinned.sql`
+  - `codex-rs/state/migrations/0049_external_agent_config_imports_provider_id.sql`
   - `docs/memories.md`
 
 ### Release Metadata, Installer Routing, And Rebuild Triggers
