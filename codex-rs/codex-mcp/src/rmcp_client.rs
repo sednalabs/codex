@@ -231,13 +231,11 @@ impl ManagedClient {
             &self.codex_apps_tools_cache_context,
             fetch_tickets.connector_runtime,
         ) {
-            (Some(cache_context), Some(fetch_ticket)) => {
-                cache_context.publish_if_newest_accepted(
-                    fetch_ticket,
-                    &self.server_info,
-                    client_tools.clone(),
-                )
-            }
+            (Some(cache_context), Some(fetch_ticket)) => cache_context.publish_if_newest_accepted(
+                fetch_ticket,
+                &self.server_info,
+                client_tools.clone(),
+            ),
             (None, None) => client_tools.clone(),
             _ => unreachable!("Codex Apps fetch ticket requires cache context"),
         };
