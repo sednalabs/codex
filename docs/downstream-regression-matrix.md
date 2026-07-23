@@ -41,6 +41,9 @@ Focused targeted lanes for iterative work on the current carry seams:
 - `codex.core-subagent-notification-contract-targeted`
 - `codex.core-subagent-notification-visibility-targeted`
 - `codex.core-multi-agent-orchestration-targeted`
+  - Includes `custom_mode_removal_replaces_retained_instructions`, which proves
+    that removing a custom policy replaces its retained developer fragment with
+    the explicit-request-only default.
 - `codex.blocking-waits-core-targeted`
 - `codex.blocking-waits-unified-exec-targeted`
 - `codex.blocking-waits-app-server-targeted`

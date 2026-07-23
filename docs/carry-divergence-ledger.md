@@ -12,13 +12,13 @@ docs-only refresh commit that records this snapshot.
 ## Audit Baseline
 
 - Audited on: `2026-07-23`
-- downstream integration code tree: `680fd3386dc943a30f8fd3b34b45f42ec11a844c`
+- downstream integration code tree: `b9ff1c086a80c3b5d18cb410c0cc292b7f7cc7de`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
-- `upstream/main`: `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
-- downstream branch vs `upstream/main`: `2029` downstream ahead, `0` upstream ahead
+- mirror branch `upstream-main` (`origin/upstream-main`): `9d823343026e600dab694e41865ed60613da31b6`
+- `upstream/main`: `9d823343026e600dab694e41865ed60613da31b6`
+- downstream branch vs `upstream/main`: `2033` downstream ahead, `0` upstream ahead
 - Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1723` unique, `0` patch-equivalent
+- Downstream-only non-merge commits at audit time: `1726` unique, `0` patch-equivalent
 
 ## Audit Rules
 
@@ -50,7 +50,40 @@ docs-only refresh commit that records this snapshot.
   Drop this small carry when upstream adopts an equivalent limit or reduces the
   composed async type beneath the default limit.
 
+### Multi-Agent Mode Reset Guardrail
+
+- Upstream commit `0da13c6c99` adds multi-agent-mode state to the model-visible
+  world-state baseline. A retained developer fragment is append-only, so
+  emitting no fragment after a custom policy is removed leaves the old policy
+  visible to the model.
+- Normalize an empty custom mode to inactive and replace a prior custom or
+  proactive fragment with the existing explicit-request-only fragment. This
+  preserves the correct default without repeating a reset on later turns.
+- `custom_mode_removal_replaces_retained_instructions` proves the retained
+  history transition, and `codex.core-multi-agent-orchestration-targeted` runs
+  it on GitHub-hosted validation. Remove this carry when upstream makes the
+  same state-clearing transition explicit.
+
 ## Latest Upstream-Owned Integration
+
+### Multi-Agent World State, Custom Web Search, And Guardian Limits
+
+- Upstream `0da13c6c99` persists the effective multi-agent mode in world-state
+  snapshots. The reset guardrail above is the only downstream addition around
+  that new state: it replaces removed retained custom guidance with the existing
+  explicit default rather than carrying an alternate mode model.
+- Upstream `0f9fb40fa9` lets a custom provider opt into standalone web search.
+  The provider capability gate leaves downstream dynamic-tool and MCP collision
+  behavior unchanged.
+- Upstream `9d82334302` lets Guardian review sessions use the selected review
+  model's limits when it differs from the parent turn model. It does not change
+  downstream child model/reasoning selection or Guardian reuse identity.
+- Signed merge `e1187d4e3b` preserves `9d82334302` as its exact upstream second
+  parent. Hosted mirror run `29969367710` fast-forwarded
+  `origin/upstream-main` to that same SHA through successful sync job
+  `89087782929`. Its separate baseline audit is intentionally not a promotion
+  receipt: before promotion it evaluates `origin/main`, so its failure does not
+  invalidate the exact mirror result.
 
 ### Hook Additional-Context Spill Limits
 

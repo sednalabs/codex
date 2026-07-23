@@ -329,6 +329,17 @@ behavior. `core-runtime-surface-smoke` remains the focused hosted proof; remove
 the attribute when upstream adopts an equivalent bound or the composed type no
 longer needs it.
 
+## Upstream multi-agent state, custom web search, and Guardian limits
+
+Upstream `0da13c6c99` persists effective multi-agent mode in world-state
+snapshots, `0f9fb40fa9` allows custom providers to opt into standalone web
+search, and `9d82334302` gives a selected Guardian review model its own limits
+when it differs from the parent turn model. Signed merge `e1187d4e3b` preserves
+that upstream ancestry. The downstream reset guardrail only ensures that
+removing a retained custom mode emits the existing explicit default once; it
+does not replace upstream mode, custom-provider, dynamic-tool, MCP, or Guardian
+selection behavior.
+
 ## Upstream remote compaction optimization
 
 Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
@@ -497,15 +508,15 @@ branch.
 Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `680fd3386dc943a30f8fd3b34b45f42ec11a844c`
+  `b9ff1c086a80c3b5d18cb410c0cc292b7f7cc7de`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
+  `9d823343026e600dab694e41865ed60613da31b6`
 - `upstream/main`:
-  `79500d3cc1c7e64e079f501bfd92231bb3d052e9`
+  `9d823343026e600dab694e41865ed60613da31b6`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2029` downstream ahead
-- downstream-only non-merge commits: `1723` unique, `0` patch-equivalent
+  `0` upstream ahead, `2033` downstream ahead
+- downstream-only non-merge commits: `1726` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -732,6 +743,9 @@ User-visible behavior:
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
 - The built-in `terminal-babysitter` role intentionally locks
   `gpt-5.4-mini` with low reasoning for bounded monitored waits.
+- Removing a custom multi-agent policy, including setting it to the empty
+  external-mode value, emits the explicit-request-only developer fragment once
+  so retained model history cannot continue to apply stale custom guidance.
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. Those completion fields are tool-output-only; canonical transcript items retain identities and status snapshots without duplicating timeout, mailbox, or pending outcome state. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
