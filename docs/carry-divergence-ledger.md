@@ -2448,6 +2448,14 @@ docs-only refresh commit that records this snapshot.
   refresh lock; a newer successful notification clears the older Apps override
   before advancing the shared revision. Preserve the raw-snapshot, revision,
   cache-race, and view-reconciliation regressions in the hosted MCP lane.
+- GitHub-hosted schema-generation run `30038302868` ran the pinned generator
+  against signed integration head `de98effd7d` through temporary signed branch
+  commit `6a3ec97d31`. Its verified artifact SHA-256 is
+  `580c63758e81be116f6d37ac35082517671ba15c51735690a5bff72bd94318b7`
+  and replaces the complete generated six-file JSON subset for the combined
+  Schemars 1.2 and external-agent import-history sources. The temporary branch
+  contains only the generator workflow and is removed after this receipt is
+  applied; do not recreate these fixtures by hand.
 
 ### Typed Cyber-Policy Retry Boundary
 

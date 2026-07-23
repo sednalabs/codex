@@ -1,6 +1,5 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "definitions": {
+  "$defs": {
     "ExternalAgentConfigImportItemTypeFailure": {
       "properties": {
         "cwd": {
@@ -19,7 +18,7 @@
           "type": "string"
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         },
         "message": {
           "type": "string"
@@ -38,8 +37,8 @@
         }
       },
       "required": [
-        "failureStage",
         "itemType",
+        "failureStage",
         "message"
       ],
       "type": "object"
@@ -53,7 +52,7 @@
           ]
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         },
         "source": {
           "type": [
@@ -77,24 +76,24 @@
       "properties": {
         "failures": {
           "items": {
-            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeFailure"
+            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure"
           },
           "type": "array"
         },
         "itemType": {
-          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
         },
         "successes": {
           "items": {
-            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeSuccess"
+            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess"
           },
           "type": "array"
         }
       },
       "required": [
-        "failures",
         "itemType",
-        "successes"
+        "successes",
+        "failures"
       ],
       "type": "object"
     },
@@ -114,11 +113,12 @@
       "type": "string"
     }
   },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "itemTypeResults": {
       "description": "Completed results grouped by imported item type.",
       "items": {
-        "$ref": "#/definitions/ExternalAgentConfigImportTypeResult"
+        "$ref": "#/$defs/ExternalAgentConfigImportTypeResult"
       },
       "type": "array"
     },
@@ -128,8 +128,8 @@
     }
   },
   "required": [
-    "itemTypeResults",
-    "providerId"
+    "providerId",
+    "itemTypeResults"
   ],
   "title": "ExternalAgentConfigImportHistoryRecordParams",
   "type": "object"
