@@ -160,9 +160,10 @@
         "codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql",
         "codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql",
         "codex-rs/state/migrations/0047_external_agent_config_imports.sql",
-        "codex-rs/state/migrations/0048_threads_is_pinned.sql"
+        "codex-rs/state/migrations/0048_threads_is_pinned.sql",
+        "codex-rs/state/migrations/0049_external_agent_config_imports_provider_id.sql"
       ],
-      "behavior": "Downstream records phase-2 output-tree baselines through a memories phase-2 extension storage namespace before consolidation can complete. Existing compatibility tables remain available, while future phase-2 storage migrations use a namespace ledger instead of consuming upstream state migration numbers.",
+      "behavior": "Downstream records phase-2 output-tree baselines through a memories phase-2 extension storage namespace before consolidation can complete. Existing compatibility tables remain available, while future phase-2 storage migrations use a namespace ledger instead of consuming upstream state migration numbers. Deployed external-agent import creation remains at downstream slot 47, and the provider-column addition uses slot 49 after checksum-gated repair of an exact legacy upstream slot-44 record, so it cannot overtake either table creation or downstream visible-sort indexes at slot 44.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -176,6 +177,8 @@
         "repairs_remote_control_enabled_migration_that_was_applied_as_version_41",
         "agent_job_tables_are_dropped_when_upgrading",
         "repairs_external_agent_config_import_migration_that_was_applied_as_version_42",
+        "external_agent_config_import_provider_migration_follows_table_creation_on_fresh_database",
+        "repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44",
         "phase2_attestation::*",
         "memories_startup_phase2_*",
         "runtime::phase2_attestation::*"
