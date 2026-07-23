@@ -389,7 +389,7 @@ mcp-safety-targeted:
     cargo test -p codex-rmcp-client rmcp_client::tests::streamable_http_auth_required_refreshes_oauth --lib -- --exact --test-threads=1
     cargo test --locked -p codex-rmcp-client --test streamable_http_user_agent streamable_http_requests_preserve_configured_user_agent -- --exact --test-threads=1
     cargo test --locked -p codex-rmcp-client --test streamable_http_oauth_startup refreshes_expired_persisted_token_before_initialize -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
 
 # Focused downstream MCP OAuth device-login slice for browserless hosts.
 mcp-device-login-targeted:
