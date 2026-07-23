@@ -2217,6 +2217,13 @@
             "string",
             "null"
           ]
+        },
+        "wait_agent_enabled": {
+          "description": "Expose the multi-agent v2 `wait_agent` tool.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"

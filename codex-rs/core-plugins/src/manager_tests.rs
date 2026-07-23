@@ -1,10 +1,12 @@
 use super::*;
 use crate::LoadedPlugin;
+use crate::OPENAI_API_CURATED_MARKETPLACE_NAME;
 use crate::OPENAI_CURATED_MARKETPLACE_NAME;
 use crate::PluginLoadOutcome;
 use crate::ToolSuggestDiscoverablePlugin;
 use crate::ToolSuggestPluginDiscoveryInput;
 use crate::installed_marketplaces::marketplace_install_root;
+use crate::loader::load_plugin_skills;
 use crate::loader::load_plugins_from_layer_stack;
 use crate::loader::refresh_non_curated_plugin_cache;
 use crate::loader::refresh_non_curated_plugin_cache_force_reinstall;
@@ -22,6 +24,7 @@ use crate::test_support::test_http_client_factory;
 use crate::test_support::write_curated_plugin;
 use crate::test_support::write_curated_plugin_sha_with as write_curated_plugin_sha;
 use crate::test_support::write_file;
+use crate::test_support::write_openai_api_curated_marketplace;
 use crate::test_support::write_openai_curated_marketplace;
 use codex_config::AppToolApproval;
 use codex_config::CONFIG_TOML_FILE;
@@ -38,6 +41,8 @@ use codex_config::RequirementsLayerEntry;
 use codex_config::compose_requirements;
 use codex_config::types::McpServerTransportConfig;
 use codex_core_skills::PluginSkillSnapshots;
+use codex_core_skills::SkillsLoadInput;
+use codex_core_skills::SkillsService;
 use codex_login::CodexAuth;
 use codex_plugin::AppDeclaration;
 use codex_plugin::PluginId;
@@ -103,6 +108,7 @@ fn plugins_config_input_with_requirements(
 ) -> PluginsConfigInput {
     PluginsConfigInput::new(
         config_layer_stack_with_requirements(codex_home, user_config, requirements),
+        String::new(),
         /*plugins_enabled*/ true,
         /*remote_plugin_enabled*/ false,
         String::new(),
@@ -2600,6 +2606,7 @@ async fn plugin_cache_ignores_unrelated_session_overrides() {
     let config = |session_config| {
         PluginsConfigInput::new(
             stack(session_config),
+            String::new(),
             /*plugins_enabled*/ true,
             /*remote_plugin_enabled*/ false,
             "https://chatgpt.com".to_string(),
@@ -2618,6 +2625,55 @@ async fn plugin_cache_ignores_unrelated_session_overrides() {
 
     assert_eq!(second, first);
     assert_eq!(second.plugins()[0].mcp_servers.len(), 1);
+}
+
+#[tokio::test]
+async fn skills_service_reuses_skills_parsed_during_plugin_load() {
+    let codex_home = TempDir::new().unwrap();
+    let codex_home_abs = codex_home.path().to_path_buf().abs();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/sample/local");
+    write_plugin(
+        codex_home.path().join("plugins/cache/test").as_path(),
+        "sample/local",
+        "sample",
+    );
+    let skill_path = plugin_root.join("skills/SKILL.md");
+    write_file(&skill_path, "---\nname: search\ndescription: first\n---\n");
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
+    );
+
+    let config = load_config(codex_home.path(), codex_home.path()).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    let plugin_outcome = manager.plugins_for_config(&config).await;
+    let plugin_skill_snapshots = manager.plugin_skill_snapshots_for_config(&config);
+    write_file(&skill_path, "---\nname: search\ndescription: second\n---\n");
+
+    let skills_input = SkillsLoadInput::new(
+        codex_home_abs.clone(),
+        plugin_outcome.effective_plugin_skill_roots(),
+        config.config_layer_stack.clone(),
+        /*bundled_skills_enabled*/ false,
+    )
+    .with_plugin_skill_snapshots(plugin_skill_snapshots);
+    let skills_service = SkillsService::new(codex_home_abs, /*bundled_skills_enabled*/ false);
+    let cached = skills_service
+        .snapshot_for_config(&skills_input, /*fs*/ None)
+        .await;
+
+    assert_eq!(
+        cached
+            .outcome()
+            .skills
+            .iter()
+            .map(|skill| skill.description.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first"]
+    );
 }
 
 #[test]
@@ -4226,6 +4282,177 @@ plugins = true
 }
 
 #[tokio::test]
+async fn list_marketplaces_uses_api_curated_manifest_when_selected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let curated_root = curated_plugins_repo_path(tmp.path());
+
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+"#,
+    );
+    write_file(
+        &curated_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "openai-curated",
+  "plugins": [
+    {
+      "name": "siwc-plugin",
+      "source": {
+        "source": "local",
+        "path": "./plugins/siwc-plugin"
+      }
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &curated_root.join(".agents/plugins/api_marketplace.json"),
+        r#"{
+  "name": "openai-api-curated",
+  "interface": {
+    "displayName": "OpenAI Curated"
+  },
+  "plugins": [
+    {
+      "name": "api-plugin",
+      "source": {
+        "source": "local",
+        "path": "./plugins/api-plugin"
+      }
+    }
+  ]
+}"#,
+    );
+
+    let config = load_config(tmp.path(), tmp.path()).await;
+    let manager = PluginsManager::new(tmp.path().to_path_buf());
+    manager.set_auth_mode(Some(AuthMode::ApiKey));
+    let marketplaces = manager
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
+        .unwrap()
+        .marketplaces;
+    let curated_marketplace = marketplaces
+        .into_iter()
+        .find(|marketplace| marketplace.name == OPENAI_API_CURATED_MARKETPLACE_NAME)
+        .expect("API curated marketplace should be listed");
+
+    assert_eq!(
+        curated_marketplace,
+        ConfiguredMarketplace {
+            name: "openai-api-curated".to_string(),
+            path: AbsolutePathBuf::try_from(
+                curated_root.join(".agents/plugins/api_marketplace.json")
+            )
+            .unwrap(),
+            interface: Some(MarketplaceInterface {
+                display_name: Some("OpenAI Curated".to_string()),
+            }),
+            plugins: vec![ConfiguredMarketplacePlugin {
+                id: "api-plugin@openai-api-curated".to_string(),
+                name: "api-plugin".to_string(),
+                local_version: None,
+                installed_version: None,
+                source: MarketplacePluginSource::Local {
+                    path: AbsolutePathBuf::try_from(curated_root.join("plugins/api-plugin"))
+                        .unwrap(),
+                },
+                policy: MarketplacePluginPolicy {
+                    installation: MarketplacePluginInstallPolicy::Available,
+                    authentication: MarketplacePluginAuthPolicy::OnInstall,
+                    products: None,
+                },
+                interface: None,
+                keywords: Vec::new(),
+                manifest_fallback: None,
+                installed: false,
+                enabled: false,
+            }],
+        }
+    );
+}
+
+#[tokio::test]
+async fn list_marketplaces_uses_resolved_provider_instead_of_configured_default() {
+    for (configured_provider, resolved_provider, expected_marketplace) in [
+        (
+            "openai",
+            AMAZON_BEDROCK_PROVIDER_ID,
+            OPENAI_API_CURATED_MARKETPLACE_NAME,
+        ),
+        (
+            AMAZON_BEDROCK_PROVIDER_ID,
+            "openai",
+            OPENAI_CURATED_MARKETPLACE_NAME,
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let curated_root = curated_plugins_repo_path(tmp.path());
+
+        write_file(
+            &tmp.path().join(CONFIG_TOML_FILE),
+            &format!(
+                r#"model_provider = "{configured_provider}"
+
+[features]
+plugins = true
+"#
+            ),
+        );
+        write_openai_curated_marketplace(&curated_root, &["chatgpt-plugin"]);
+        write_openai_api_curated_marketplace(&curated_root, &["api-plugin"]);
+
+        let mut config = load_config(tmp.path(), tmp.path()).await;
+        config.model_provider_id = resolved_provider.to_string();
+        let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
+            .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
+            .unwrap()
+            .marketplaces;
+
+        assert!(
+            marketplaces
+                .iter()
+                .any(|marketplace| marketplace.name == expected_marketplace),
+            "expected `{expected_marketplace}` for resolved provider `{resolved_provider}`"
+        );
+    }
+}
+
+#[tokio::test]
+async fn list_marketplaces_skips_missing_api_curated_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let curated_root = curated_plugins_repo_path(tmp.path());
+
+    write_file(
+        &tmp.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+"#,
+    );
+    write_file(
+        &curated_root.join(".agents/plugins/marketplace.json"),
+        "{not valid json",
+    );
+
+    let config = load_config(tmp.path(), tmp.path()).await;
+    let manager = PluginsManager::new(tmp.path().to_path_buf());
+    manager.set_auth_mode(Some(AuthMode::BedrockApiKey));
+    let outcome = manager
+        .list_marketplaces_for_config(&config, &[], /*include_openai_curated*/ true)
+        .unwrap();
+
+    assert_eq!(outcome.errors, Vec::new());
+    assert_eq!(
+        outcome
+            .marketplaces
+            .iter()
+            .any(|marketplace| marketplace.name == OPENAI_API_CURATED_MARKETPLACE_NAME),
+        false
+    );
+}
+
+#[tokio::test]
 async fn list_marketplaces_includes_installed_marketplace_roots() {
     let tmp = tempfile::tempdir().unwrap();
     let marketplace_root = marketplace_install_root(tmp.path()).join("debug");
@@ -5260,6 +5487,56 @@ fn refresh_curated_plugin_cache_returns_false_when_configured_plugins_are_curren
     assert!(
         !refresh_curated_plugin_cache(tmp.path(), TEST_CURATED_PLUGIN_SHA, &[plugin_id])
             .expect("cache refresh should be a no-op when configured plugins are current")
+    );
+}
+
+#[test]
+fn refresh_curated_plugin_cache_reinstalls_missing_api_curated_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let curated_root = curated_plugins_repo_path(tmp.path());
+    write_openai_curated_marketplace(&curated_root, &[]);
+    write_openai_api_curated_marketplace(&curated_root, &["api-only"]);
+    write_curated_plugin_sha(tmp.path(), TEST_CURATED_PLUGIN_SHA);
+    let plugin_id = PluginId::new(
+        "api-only".to_string(),
+        OPENAI_API_CURATED_MARKETPLACE_NAME.to_string(),
+    )
+    .unwrap();
+
+    assert!(
+        refresh_curated_plugin_cache(tmp.path(), TEST_CURATED_PLUGIN_SHA, &[plugin_id])
+            .expect("cache refresh should recreate missing configured API curated plugin")
+    );
+
+    assert!(
+        tmp.path()
+            .join(format!(
+                "plugins/cache/openai-api-curated/api-only/{TEST_CURATED_PLUGIN_CACHE_VERSION}"
+            ))
+            .is_dir()
+    );
+}
+
+#[test]
+fn refresh_curated_plugin_cache_leaves_api_curated_plugin_when_api_manifest_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let curated_root = curated_plugins_repo_path(tmp.path());
+    write_openai_curated_marketplace(&curated_root, &[]);
+    write_cached_plugin(tmp.path(), OPENAI_API_CURATED_MARKETPLACE_NAME, "api-only");
+    let plugin_id = PluginId::new(
+        "api-only".to_string(),
+        OPENAI_API_CURATED_MARKETPLACE_NAME.to_string(),
+    )
+    .unwrap();
+
+    assert!(
+        !refresh_curated_plugin_cache(tmp.path(), TEST_CURATED_PLUGIN_SHA, &[plugin_id])
+            .expect("cache refresh should skip missing API curated manifest")
+    );
+    assert!(
+        tmp.path()
+            .join("plugins/cache/openai-api-curated/api-only/local")
+            .is_dir()
     );
 }
 
