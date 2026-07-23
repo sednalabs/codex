@@ -94,7 +94,14 @@ docs-only refresh commit that records this snapshot.
   wakeup and persisted history, and
   `codex.core-multi-agent-orchestration-targeted` carries it as a hosted
   guardrail.
-- Signed merge `802d463f27` retains `44d76c6a6d` as its exact upstream second
+- Upstream `4e0cee8030` makes local `plugin/list` requests with
+  `forceRefetch: true` wait for configured plugin-cache reconciliation before
+  building marketplace summaries. Reconciliation deduplication now includes
+  the marketplace source, so same-path source changes can reinstall a plugin,
+  and an effective-plugin change notification follows a cache update.
+  `plugin_list_force_refetch_waits_for_same_path_local_plugin_upgrade` is
+  included in `codex.app-server-v2-contract-targeted` as the hosted guardrail.
+- Signed merge `839957c7a8` retains `4e0cee8030` as its exact upstream second
   parent. The integration branch adds no alternate plugin cache, image tool,
   app-summary, or mailbox wakeup implementation.
 
