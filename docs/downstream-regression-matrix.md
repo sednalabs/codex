@@ -711,6 +711,16 @@ for a removed crate path.
 - Binding and connection-manager fixtures construct the same atomic complete
   snapshot, refresh lock, and server identity as the live `ManagedClient`; the
   removed mutable `tools` fixture field must not reappear.
+- Upstream connection reuse preserves the current view's filter, timeout,
+  metadata, and provenance without pinning those values in the reusable client.
+  When any connection is reused, the successor set must share the prior
+  manager catalogue-revision `Arc`; an all-new replacement set must not. The
+  reuse and replacement revision assertions guard this boundary.
+- A live connection retains only its exact raw catalogue. Shared connector and
+  regular-cache winners remain discovery-only, and a successful `list_changed`
+  clears an older Apps hard-refresh override before a new binding is captured.
+  `hard_refresh_keeps_binding_override_local_when_shared_cache_loses_race`
+  also checks the live raw snapshot directly.
 - Installed-app fixtures may expose multiple uniquely named MCP tools for one
   connector identity so app-runtime deduplication remains covered; they must not
   use duplicate MCP wire tool names, which the complete-catalogue boundary
