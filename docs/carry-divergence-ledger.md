@@ -1250,6 +1250,11 @@ docs-only refresh commit that records this snapshot.
   exact status `0xc0000142`; that status proves the wrapper was reached but
   does not replace the read and denied-write assertions on MSVC and other
   release-shaped targets.
+- The Windows network-proxy stable-ingress test uses the same bounded
+  classification for its first restricted-token self-reexec only. It emits the
+  exact status and skips the remaining proxy assertions solely on gnullvm; any
+  other child exit remains a failure, and MSVC must execute the complete route,
+  policy, and cleanup matrix.
 - Primary files:
   - `codex-rs/protocol/src/permissions.rs`
   - `codex-rs/sandboxing/src/policy_transforms.rs`
