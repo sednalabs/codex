@@ -707,8 +707,8 @@ impl AsyncManagedClient {
             self.ready_client_snapshot()?
         };
         let managed_client = Arc::new(client.await.ok()?);
-        let tools = catalog_override
-            .unwrap_or_else(|| managed_client.tool_catalogue.load().tools.clone());
+        let tools =
+            catalog_override.unwrap_or_else(|| managed_client.tool_catalogue.load().tools.clone());
         let tools = filter_tools(tools, &managed_client.tool_filter);
         Some((Arc::clone(&managed_client), self.prepare_tools(tools)))
     }

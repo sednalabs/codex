@@ -1665,6 +1665,7 @@ async fn thread_fork_side_source_persists_and_hides_from_default_list() -> Resul
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,

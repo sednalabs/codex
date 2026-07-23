@@ -122,6 +122,7 @@ async fn thread_metadata_update_pins_and_unpins_with_filtered_recency_pagination
         sort_direction: None,
         model_providers: None,
         source_kinds: None,
+        thread_sources: None,
         archived: None,
         is_pinned: Some(true),
         cwd: None,

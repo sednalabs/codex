@@ -156,9 +156,11 @@
         "codex-rs/state/migrations/0038_phase2_attested_baselines.sql",
         "codex-rs/state/migrations/0031_device_key_bindings.sql",
         "codex-rs/state/migrations/0032_thread_goals.sql",
+        "codex-rs/state/migrations/0043_threads_recency_at.sql",
         "codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql",
         "codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql",
-        "codex-rs/state/migrations/0047_external_agent_config_imports.sql"
+        "codex-rs/state/migrations/0047_external_agent_config_imports.sql",
+        "codex-rs/state/migrations/0048_threads_is_pinned.sql"
       ],
       "behavior": "Downstream records phase-2 output-tree baselines through a memories phase-2 extension storage namespace before consolidation can complete. Existing compatibility tables remain available, while future phase-2 storage migrations use a namespace ledger instead of consuming upstream state migration numbers.",
       "upstream_equivalent": false,
@@ -170,6 +172,7 @@
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
         "state_migration_versions_are_unique",
+        "pinned_threads_migration_defaults_existing_and_legacy_rows_to_unpinned",
         "repairs_remote_control_enabled_migration_that_was_applied_as_version_41",
         "agent_job_tables_are_dropped_when_upgrading",
         "repairs_external_agent_config_import_migration_that_was_applied_as_version_42",
@@ -178,7 +181,7 @@
         "runtime::phase2_attestation::*"
       ],
       "owner": "downstream",
-      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage. For already-shipped downstream core state migrations, preserve upstream migration numbers where possible and move downstream additive carry to the next free version with checksum-gated runtime repair for databases that recorded the old downstream version. The 2026-07-20 sync preserves upstream 0041_threads_name.sql and 0042_drop_agent_jobs.sql, moves the previously renumbered remote-control-enabled migration from downstream slot 0041 to 0046, and moves the already-shipped external-agent import ledger from downstream slot 0042 to 0047. The runtime recognizes the exact old checksums and can repair both records in one startup before SQLx applies the upstream migrations. Upstream 0042 deliberately removes only retired CSV coordinator job tables; ordinary threads, spawn edges, and external-agent import records remain intact. After the repaired database applies upstream 0041 and 0042, pre-sync binaries cannot reopen it because they know the former checksums, so binary-only rollback requires a pre-upgrade database copy.",
+      "notes": "Keeps the attestation gate coupled to codex-memories-write and the downstream state runtime. Existing compatibility tables are still created idempotently, but extension migration versions are tracked separately from core _sqlx_migrations so upstream migration numbering can advance without colliding with future downstream extension storage. For already-shipped downstream core state migrations, preserve upstream migration numbers where possible and move downstream additive carry to the next free version with checksum-gated runtime repair for databases that recorded the old downstream version. The 2026-07-20 sync preserves upstream 0041_threads_name.sql and 0042_drop_agent_jobs.sql, moves the previously renumbered remote-control-enabled migration from downstream slot 0041 to 0046, and moves the already-shipped external-agent import ledger from downstream slot 0042 to 0047. The runtime recognizes the exact old checksums and can repair both records in one startup before SQLx applies the upstream migrations. Upstream 0042 deliberately removes only retired CSV coordinator job tables; ordinary threads, spawn edges, and external-agent import records remain intact. The subsequent upstream pinning migration remains byte-for-byte unchanged but is allocated as 0048_threads_is_pinned.sql because deployed downstream 0043_threads_recency_at.sql owns version 43 and creates the index dependency. After the repaired database applies upstream 0041 and 0042, pre-sync binaries cannot reopen it because they know the former checksums, so binary-only rollback requires a pre-upgrade database copy.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [

@@ -744,9 +744,7 @@ impl UnifiedExecProcessManager {
             let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
             if request.input.is_empty() {
                 time_ms.clamp(
-                    request
-                        .empty_input_min_yield_time_ms
-                        .max(MIN_YIELD_TIME_MS),
+                    request.empty_input_min_yield_time_ms.max(MIN_YIELD_TIME_MS),
                     self.max_write_stdin_yield_time_ms,
                 )
             } else {
