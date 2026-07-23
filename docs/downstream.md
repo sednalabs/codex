@@ -141,11 +141,15 @@ The fork preserves upstream migration `0042_drop_agent_jobs.sql` exactly and
 moves the already-shipped downstream
 `0042_external_agent_config_imports.sql` to version `0047`. Startup repairs
 the exact legacy `0041` and `0042` checksums to downstream versions `0046` and
-`0047` before applying upstream migrations. A migrated database cannot be
-reopened by the pre-sync binary because that binary knows the former migration
-checksums, so rollback requires a pre-upgrade database copy. The upgrade also
-intentionally removes any unfinished CSV-job rows; ordinary thread rows,
-spawn edges, and external-import history remain intact.
+`0047` before applying upstream migrations. The later provider-column migration
+uses downstream version `0049` because deployed version `0044` belongs to
+visible-sort indexes; startup repairs only the exact upstream provider-column
+checksum from `44` to `49`, leaving the legitimate visible-index record at
+`44` intact. A migrated database cannot be reopened by the pre-sync binary
+because that binary knows the former migration checksums, so rollback requires
+a pre-upgrade database copy. The upgrade also intentionally removes any
+unfinished CSV-job rows; ordinary thread rows, spawn edges, and external-import
+history remain intact.
 
 ## Upstream completed-hook warning headers
 

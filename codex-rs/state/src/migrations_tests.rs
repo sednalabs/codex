@@ -119,6 +119,16 @@ fn upstream_external_agent_import_provider_migrator() -> Migrator {
         external_imports_migration.sql.clone(),
         external_imports_migration.no_tx,
     ));
+    migrations.extend(
+        STATE_MIGRATOR
+            .migrations
+            .iter()
+            .filter(|migration| {
+                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+                    && migration.version < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
+            })
+            .cloned(),
+    );
     migrations.push(Migration::new(
         LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
         provider_id_migration.description.clone(),
@@ -682,6 +692,36 @@ INSERT INTO external_agent_config_imports (
     .await
     .expect("legacy provider record should load");
     assert_eq!(provider_id.as_deref(), Some("claude"));
+
+    let visible_indexes = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_threads_visible_created_at_ms', 'idx_threads_visible_updated_at_ms') ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("visible thread indexes should load");
+    assert_eq!(
+        visible_indexes,
+        vec![
+            "idx_threads_visible_created_at_ms".to_string(),
+            "idx_threads_visible_updated_at_ms".to_string(),
+        ]
+    );
+
+    let applied_visible_checksum = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
+    )
+    .bind(CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
+    .fetch_one(&pool)
+    .await
+    .expect("visible sort migration should be recorded at the downstream version");
+    let current_visible_checksum = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
+        .expect("current visible sort migration should exist")
+        .checksum
+        .to_vec();
+    assert_eq!(applied_visible_checksum, current_visible_checksum);
 
     let applied_provider_checksum = sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
