@@ -14,7 +14,7 @@ Review baseline:
 - `upstream/main`: `9d823343026e600dab694e41865ed60613da31b6`
 - mirror branch `upstream-main` (`origin/upstream-main`):
   `9d823343026e600dab694e41865ed60613da31b6`
-- downstream integration code tree: `bc53246f4040d52abc5b511b94d18666331a8545`
+- downstream integration code tree: `8751e96182ff33392d381494a2dbebfb11cfac8f`
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
