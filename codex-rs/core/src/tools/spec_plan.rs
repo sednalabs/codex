@@ -1,7 +1,6 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::session::McpRuntimeSnapshot;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::default_exec_yield_time_override_ms;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
@@ -145,7 +144,7 @@ impl PlannedTools {
 struct CoreToolPlanContext<'a> {
     turn_context: &'a TurnContext,
     environments: &'a TurnEnvironmentSnapshot,
-    mcp: &'a McpRuntimeSnapshot,
+    mcp: &'a codex_mcp::McpBinding,
     tool_runtimes: &'a [PlannedRuntime],
     tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
     extension_tool_executors: &'a [Arc<dyn ToolExecutor<ExtensionToolCall>>],
@@ -159,7 +158,7 @@ struct CoreToolPlanContext<'a> {
 pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     environments: &TurnEnvironmentSnapshot,
-    mcp: &McpRuntimeSnapshot,
+    mcp: &codex_mcp::McpBinding,
     params: ToolRouterParams<'_>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
 ) -> ToolRouter {
@@ -177,7 +176,7 @@ pub(crate) fn build_tool_router(
 fn build_tool_specs_and_registry(
     turn_context: &TurnContext,
     environments: &TurnEnvironmentSnapshot,
-    mcp: &McpRuntimeSnapshot,
+    mcp: &codex_mcp::McpBinding,
     params: ToolRouterParams<'_>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
 ) -> (Vec<ToolSpec>, ToolRegistry) {
@@ -703,7 +702,7 @@ fn unified_exec_should_include_shell_parameter(
 
 #[instrument(level = "trace", skip_all)]
 fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
-    if context.mcp.manager().has_servers() {
+    if context.mcp.has_servers() {
         planned_tools.add(ListMcpResourcesHandler);
         planned_tools.add(ListMcpResourceTemplatesHandler);
         planned_tools.add(ReadMcpResourceHandler);
@@ -837,13 +836,15 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 multi_agent_v2_handler(FollowupTaskHandlerV2, tool_namespace),
                 exposure,
             ));
-            planned_tools.add_arc(override_tool_exposure(
-                multi_agent_v2_handler(
-                    WaitAgentHandlerV2::new(context.wait_agent_timeouts),
-                    tool_namespace,
-                ),
-                exposure,
-            ));
+            if turn_context.config.multi_agent_v2.wait_agent_enabled {
+                planned_tools.add_arc(override_tool_exposure(
+                    multi_agent_v2_handler(
+                        WaitAgentHandlerV2::new(context.wait_agent_timeouts),
+                        tool_namespace,
+                    ),
+                    exposure,
+                ));
+            }
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(InterruptAgentHandler, tool_namespace),
                 exposure,

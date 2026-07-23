@@ -1196,6 +1196,7 @@ pub struct MultiAgentV2Config {
     pub tool_namespace: Option<String>,
     pub hide_spawn_agent_metadata: bool,
     pub expose_spawn_agent_model_overrides: bool,
+    pub wait_agent_enabled: bool,
     pub non_code_mode_only: bool,
 }
 
@@ -1219,6 +1220,7 @@ impl MultiAgentV2Config {
             tool_namespace: Some(DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE.to_string()),
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
+            wait_agent_enabled: true,
             non_code_mode_only: true,
         }
     }
@@ -1552,6 +1554,7 @@ impl Config {
     pub fn plugins_config_input(&self) -> PluginsConfigInput {
         PluginsConfigInput::new(
             self.config_layer_stack.clone(),
+            self.model_provider_id.clone(),
             self.features.enabled(Feature::Plugins),
             self.features.enabled(Feature::RemotePlugin),
             self.chatgpt_base_url.clone(),
@@ -1649,6 +1652,10 @@ impl Config {
                 .features
                 .enabled(Feature::SkillMcpDependencyInstall),
             approval_policy: self.permissions.approval_policy.clone(),
+            permission_profile: self.permissions.permission_profile().clone(),
+            config_layer_stack: self.config_layer_stack.clone(),
+            approvals_reviewer: self.approvals_reviewer,
+            environment_cwds: HashMap::new(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             use_legacy_landlock: self.features.use_legacy_landlock(),
             apps_enabled: self.features.enabled(Feature::Apps),
@@ -2600,6 +2607,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let expose_spawn_agent_model_overrides = base
         .and_then(|config| config.expose_spawn_agent_model_overrides)
         .unwrap_or(default.expose_spawn_agent_model_overrides);
+    let wait_agent_enabled = base
+        .and_then(|config| config.wait_agent_enabled)
+        .unwrap_or(default.wait_agent_enabled);
     let mut default_root_agent_usage_hint_text = default.root_agent_usage_hint_text;
     let mut default_subagent_usage_hint_text = default.subagent_usage_hint_text;
     if expose_spawn_agent_model_overrides {
@@ -2644,6 +2654,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         tool_namespace,
         hide_spawn_agent_metadata,
         expose_spawn_agent_model_overrides,
+        wait_agent_enabled,
         non_code_mode_only,
     }
 }
