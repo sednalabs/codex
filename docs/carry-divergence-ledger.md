@@ -33,6 +33,23 @@ docs-only refresh commit that records this snapshot.
 - Treat the exact-subject upstream match list as a lower bound for "already
   upstreamed" history, not a complete semantic-duplicate detector.
 
+## Current Downstream Guardrails
+
+### Core Compiler Query-Depth Guardrail
+
+- Upstream commit `d7e8f4c3dc` makes the interrupted-MCP startup path preserve
+  user input by threading cancellation through more of `run_turn`.
+- The downstream turn path combines that upstream async shape with retained
+  multi-agent, dynamic-tool, and native-computer-use state. GitHub-hosted
+  targeted run `29968292080` then reached rustc's default query-depth limit
+  while computing the `run_turn` layout before any selected test ran.
+- `codex-core` sets `#![recursion_limit = "256"]`, exactly as rustc recommends
+  for this crate. The attribute changes compile-time query evaluation only; it
+  does not change runtime recursion, control flow, or request semantics.
+- Keep `core-runtime-surface-smoke` as the focused hosted compilation proof.
+  Drop this small carry when upstream adopts an equivalent limit or reduces the
+  composed async type beneath the default limit.
+
 ## Latest Upstream-Owned Integration
 
 ### Hook Additional-Context Spill Limits

@@ -30,6 +30,9 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 - `core-runtime-surface-smoke` isolates the fragile codex-core runtime seams in
   their own shard, so remote smoke runs can fail the exact runtime bucket
   without serializing the whole smoke pass behind one `just` recipe.
+- It also compiles the full downstream `run_turn` composition. This is the
+  regression seam for the crate-level query-depth guardrail required after the
+  upstream interrupted-MCP recovery path increased that async type's depth.
 
 Focused targeted lanes for iterative work on the current carry seams:
 
