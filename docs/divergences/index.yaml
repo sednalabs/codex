@@ -827,11 +827,13 @@
         "macOS realtime WebRTC voice transport"
       ],
       "files": [
+        "MODULE.bazel",
         "codex-rs/Cargo.lock",
         "codex-rs/realtime-webrtc/BUILD.bazel",
         "codex-rs/realtime-webrtc/Cargo.toml",
         "codex-rs/realtime-webrtc/src/lib.rs",
         "codex-rs/realtime-webrtc/src/native.rs",
+        "patches/webrtc-sys_hermetic_darwin_sysroot.patch",
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/src/app/agent_navigation.rs",
         "codex-rs/tui/src/app/loaded_threads.rs",
@@ -899,15 +901,17 @@
         "side_parent_status_prioritizes_input_over_approval"
       ],
       "owner": "downstream",
-      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, selected-turn CopyStatus feedback, and the carried non-Linux realtime voice platform split aligned. After upstream replaced rollback with source-preserving forks, selected-turn copy deliberately follows finalized AgentMarkdownCell and ProposedPlanCell source within the selected prompt boundary; do not restore the removed ordinal cache, rollback truncation, or rollback-only error state. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The finalized-plan cache test asserts semantic priming and sentinel reuse without pinning upstream's ratatui-version-specific row count; drop that adaptation when dependency versions converge or upstream adopts equivalent semantic coverage. The voice split includes the isolated codex-realtime-webrtc crate, target-specific TUI cpal dependency, and Cargo/Bazel lock graph required by hosted macOS/Windows builds.",
+      "notes": "Keeps queued interaction, usage totals, thread policy, user-visible active-turn status labels, selected-turn CopyStatus feedback, and the carried non-Linux realtime voice platform split aligned. After upstream replaced rollback with source-preserving forks, selected-turn copy deliberately follows finalized AgentMarkdownCell and ProposedPlanCell source within the selected prompt boundary; do not restore the removed ordinal cache, rollback truncation, or rollback-only error state. Bottom-pane transient views tick and complete before draw so request-user-input overlays and other timed active views can redraw, auto-resolve, and pop through the active-view seam. Stacked selection popups can be replaced or dismissed by view id even when another view sits above them, /resume stays available during MCP startup while active-turn blocking remains in force, and /status history preserves cached status text while refresh is pending. The finalized-plan cache test asserts semantic priming and sentinel reuse without pinning upstream's ratatui-version-specific row count; drop that adaptation when dependency versions converge or upstream adopts equivalent semantic coverage. The voice split includes the isolated codex-realtime-webrtc crate, target-specific TUI cpal dependency, Cargo/Bazel lock graph, and a hermetic `webrtc-sys` patch whose `-p1` headers must retain the locked workspace-relative `webrtc-sys/build.rs` path required by hosted macOS builds.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tui-contributor-slot",
       "hotspot_files": [
+        "MODULE.bazel",
         "codex-rs/Cargo.lock",
         "codex-rs/realtime-webrtc/BUILD.bazel",
         "codex-rs/realtime-webrtc/Cargo.toml",
         "codex-rs/realtime-webrtc/src/lib.rs",
         "codex-rs/realtime-webrtc/src/native.rs",
+        "patches/webrtc-sys_hermetic_darwin_sysroot.patch",
         "codex-rs/tui/src/app.rs",
         "codex-rs/tui/src/app/agent_navigation.rs",
         "codex-rs/tui/src/app/thread_events.rs",

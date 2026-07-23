@@ -60,9 +60,12 @@ docs-only refresh commit that records this snapshot.
   proactive fragment with the existing explicit-request-only fragment. This
   preserves the correct default without repeating a reset on later turns.
 - `custom_mode_removal_replaces_retained_instructions` proves the retained
-  history transition, and `codex.core-multi-agent-orchestration-targeted` runs
-  it on GitHub-hosted validation. Remove this carry when upstream makes the
-  same state-clearing transition explicit.
+  history transition. The resumed-thread integration regression
+  `changing_configured_mode_hint_to_empty_appends_explicit_reset` proves the
+  emitted reset replaces the active mode while the prior custom fragment remains
+  only as historical context. `codex.core-multi-agent-orchestration-targeted`
+  runs both on GitHub-hosted validation. Remove this carry when upstream makes
+  the same state-clearing transition explicit.
 
 ## Latest Upstream-Owned Integration
 
@@ -2457,6 +2460,12 @@ docs-only refresh commit that records this snapshot.
   target-scoped `cpal` entry in `codex-rs/tui/Cargo.toml`, and their Cargo and
   Bazel dependency graphs. The WebRTC crate is an intentional macOS transport
   boundary, not an orphan left behind by upstream's removal.
+- The hermetic macOS `webrtc-sys` patch is also part of that transport boundary.
+  Its `-p1` headers must name `webrtc-sys/build.rs`, the workspace-relative path
+  at the locked `rust-sdks` revision, rather than a repository-root `build.rs`.
+  When the lockfile source changes, rebase the patch against that exact source
+  and prove it in GitHub-hosted macOS Bazel loading before changing the pinned
+  dependency pair or removing the patch.
 - Thread replay routing may omit only notifications that are already handled or
   ignored during replay. It must update active-turn and side-parent state first,
   retain replay-visible native computer-use completion items, and keep

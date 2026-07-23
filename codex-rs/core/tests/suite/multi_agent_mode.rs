@@ -205,7 +205,7 @@ async fn empty_configured_mode_hint_emits_no_mode_message() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn changing_configured_mode_hint_to_empty_emits_no_update() -> Result<()> {
+async fn changing_configured_mode_hint_to_empty_appends_explicit_reset() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -252,8 +252,9 @@ async fn changing_configured_mode_hint_to_empty_emits_no_update() -> Result<()> 
             count_containing(&first_texts, MULTI_AGENT_MODE_OPEN_TAG),
             count_containing(&resumed_texts, MULTI_AGENT_MODE_OPEN_TAG),
             count_containing(&resumed_texts, CUSTOM_MODE_HINT_TEXT),
+            count_containing(&resumed_texts, NO_SPAWN_TEXT),
         ),
-        (1, 1, 1)
+        (1, 2, 1, 1)
     );
 
     Ok(())
