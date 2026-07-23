@@ -506,10 +506,7 @@ fn run_restricted_child_blocking(
     unsafe {
         GetExitCodeProcess(process.as_raw_handle() as isize, &mut exit_code);
     }
-    if cfg!(target_env = "gnu")
-        && wait == WAIT_OBJECT_0
-        && exit_code == STATUS_DLL_INIT_FAILED
-    {
+    if cfg!(target_env = "gnu") && wait == WAIT_OBJECT_0 && exit_code == STATUS_DLL_INIT_FAILED {
         return Ok(RestrictedChildOutcome::UnsupportedGnuLoader);
     }
     anyhow::ensure!(
