@@ -1625,6 +1625,14 @@ docs-only refresh commit that records this snapshot.
   upstream migrations. The `0042` upgrade deliberately removes only the
   retired CSV coordinator's `agent_jobs` and `agent_job_items` tables; ordinary
   threads, spawn edges, and external-agent import records remain intact.
+- Upstream's `0043_threads_is_pinned.sql` arrives after downstream has already
+  shipped `0043_threads_recency_at.sql`. Keep that deployed recency migration
+  and its checksum at `0043`; import the upstream pinning SQL unchanged as
+  `0048_threads_is_pinned.sql`, after the downstream `0047` allocation. The
+  pin index depends on `recency_at_ms`, so this allocation keeps fresh and
+  deployed databases on the same ordering without rewriting either migration.
+  Future syncs must not restore the upstream `0043` filename or renumber the
+  deployed recency migration.
   Once that repair and upstream `0041` have run, a pre-sync binary cannot reopen
   the same database because it knows the old `0041` and `0042` checksums;
   rollback therefore requires a pre-upgrade database copy rather than only
@@ -1646,9 +1654,11 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/migrations/0038_phase2_attested_baselines.sql`
   - `codex-rs/state/migrations/0031_device_key_bindings.sql`
   - `codex-rs/state/migrations/0032_thread_goals.sql`
+  - `codex-rs/state/migrations/0043_threads_recency_at.sql`
   - `codex-rs/state/migrations/0044_threads_visible_sort_indexes.sql`
   - `codex-rs/state/migrations/0046_remote_control_enrollments_enabled.sql`
   - `codex-rs/state/migrations/0047_external_agent_config_imports.sql`
+  - `codex-rs/state/migrations/0048_threads_is_pinned.sql`
   - `docs/memories.md`
 
 ### Release Metadata, Installer Routing, And Rebuild Triggers

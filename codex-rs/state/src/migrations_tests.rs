@@ -20,6 +20,7 @@ const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 46;
 const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
 const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 42;
 const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
+const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
 const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
 
 fn migrator_through(version: i64) -> Migrator {
@@ -215,10 +216,10 @@ async fn pinned_threads_migration_defaults_existing_and_legacy_rows_to_unpinned(
     });
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
     let pool = sqlite
-        .open_read_write_pool(&state_db_path(&sqlite_home))
+        .open_read_write_pool(&sqlite.state_db_path())
         .await
         .expect("sqlite database should open");
-    migrator_through(/*version*/ 42)
+    migrator_through(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION)
         .run(&pool)
         .await
         .expect("pre-pin migrations should apply");
@@ -273,6 +274,30 @@ INSERT INTO threads (
         .await
         .expect("pin states should load");
     assert_eq!(pinned_values, vec![false, false]);
+
+    let applied_versions = sqlx::query_scalar::<_, i64>(
+        "SELECT version FROM _sqlx_migrations WHERE version IN (?, ?) ORDER BY version",
+    )
+    .bind(CURRENT_RECENCY_MIGRATION_VERSION)
+    .bind(CURRENT_PINNED_THREADS_MIGRATION_VERSION)
+    .fetch_all(&pool)
+    .await
+    .expect("recency and pin migrations should be recorded");
+    assert_eq!(
+        applied_versions,
+        vec![
+            CURRENT_RECENCY_MIGRATION_VERSION,
+            CURRENT_PINNED_THREADS_MIGRATION_VERSION,
+        ]
+    );
+
+    let pinned_index_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_threads_pinned_recency_at_ms'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("pinned recency index should load");
+    assert_eq!(pinned_index_count, 1);
 
     pool.close().await;
 }
