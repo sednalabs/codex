@@ -29,12 +29,9 @@ use crate::openai_docs_source_attribution::maybe_with_openai_docs_source_attribu
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
-use crate::server::McpServerLaunch;
 use crate::tool_catalog_cache::McpToolCatalogCacheContext;
 use crate::tool_catalog_cache::McpToolCatalogFetchTicket;
-use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
-use crate::tools::filter_tools;
 use anyhow::Result;
 use anyhow::anyhow;
 use arc_swap::ArcSwap;
@@ -115,7 +112,6 @@ pub(crate) struct ManagedClient {
     pub(crate) tool_refresh_lock: Arc<Semaphore>,
     pub(crate) server_name: String,
     pub(crate) is_codex_apps_mcp_server: bool,
-    pub(crate) tool_filter: ToolFilter,
     pub(crate) tool_timeout: Option<Duration>,
     pub(crate) server_instructions: Option<String>,
     pub(crate) server_supports_sandbox_state_meta_capability: bool,
@@ -141,41 +137,20 @@ pub(crate) struct ToolCatalogueFetchTickets {
 }
 
 impl ManagedClient {
-    pub(crate) fn listed_tools(&self) -> BoxFuture<'_, Vec<ToolInfo>> {
-        async move {
-            self.refresh_tools_if_changed().await;
-            let total_start = Instant::now();
-            if let Some(tools) = self
-                .codex_apps_tools_cache_context
-                .as_ref()
-                .and_then(ConnectorRuntimeContext::current_tools)
-            {
-                emit_duration(
-                    MCP_TOOLS_LIST_DURATION_METRIC,
-                    total_start.elapsed(),
-                    &[("cache", "hit")],
-                );
-                return filter_tools(tools, &self.tool_filter);
-            }
-
-            if self.codex_apps_tools_cache_context.is_some() {
-                emit_duration(
-                    MCP_TOOLS_LIST_DURATION_METRIC,
-                    total_start.elapsed(),
-                    &[("cache", "miss")],
-                );
-            }
-
-            filter_tools(self.tool_catalogue.load().tools.clone(), &self.tool_filter)
-        }
-        .boxed()
+    /// Returns the complete, raw inventory for this exact live connection.
+    ///
+    /// Shared caches are intentionally not consulted here. They can represent
+    /// another connection and are only a discovery fallback while startup is
+    /// pending or an Apps connection is recovering.
+    pub(crate) fn listed_tools(&self) -> Vec<ToolInfo> {
+        self.tool_catalogue.load().tools.clone()
     }
 
     /// Replaces the complete tool snapshot after an MCP list_changed notification.
     ///
     /// The caller uses the return value to invalidate any prepared calls that
     /// were bound to the previous catalog revision.
-    pub(crate) async fn refresh_tools_if_changed(&self) -> bool {
+    pub(crate) async fn refresh_tools_if_changed(&self, tool_timeout: Option<Duration>) -> bool {
         let notified_generation = self.client.tool_list_generation();
         if self.tool_catalogue.load().observed_generation == notified_generation {
             return false;
@@ -200,7 +175,7 @@ impl ManagedClient {
             self.is_codex_apps_mcp_server,
             /*codex_apps_refresh_trigger*/ "list_changed",
             &self.client,
-            self.tool_timeout,
+            tool_timeout,
             self.server_instructions.as_deref(),
         )
         .await
@@ -250,25 +225,25 @@ impl ManagedClient {
     ) -> Vec<ToolInfo> {
         let ListedToolCatalogue {
             generation,
-            mut tools,
+            tools: client_tools,
         } = catalogue;
-        match (
+        let shared_tools = match (
             &self.codex_apps_tools_cache_context,
             fetch_tickets.connector_runtime,
         ) {
             (Some(cache_context), Some(fetch_ticket)) => {
-                tools = cache_context.publish_if_newest_accepted(
+                cache_context.publish_if_newest_accepted(
                     fetch_ticket,
                     &self.server_info,
-                    tools,
-                );
+                    client_tools.clone(),
+                )
             }
-            (None, None) => {}
+            (None, None) => client_tools.clone(),
             _ => unreachable!("Codex Apps fetch ticket requires cache context"),
-        }
+        };
         match (&self.tool_catalog_cache_context, fetch_tickets.tool_catalog) {
             (Some(cache_context), Some(fetch_ticket)) => {
-                cache_context.publish_if_newest(fetch_ticket, &tools);
+                cache_context.publish_if_newest(fetch_ticket, &client_tools);
             }
             (None, None) => {}
             _ => unreachable!("MCP tool catalogue fetch ticket requires cache context"),
@@ -280,11 +255,11 @@ impl ManagedClient {
             } else {
                 Arc::new(ToolCatalogueSnapshot {
                     observed_generation: generation,
-                    tools: tools.clone(),
+                    tools: client_tools.clone(),
                 })
             }
         });
-        filter_tools(self.tool_catalogue.load().tools.clone(), &self.tool_filter)
+        shared_tools
     }
 }
 
@@ -454,13 +429,9 @@ impl ManagedClientStartup {
             startup_complete,
         } = self.clone();
         let is_codex_apps_mcp_server = server_name == CODEX_APPS_MCP_SERVER_NAME;
-        let tool_filter = server
-            .configured_config()
-            .map(ToolFilter::from_config)
-            .unwrap_or_default();
         let startup_timeout = server
-            .configured_config()
-            .and_then(|config| config.startup_timeout_sec)
+            .config()
+            .startup_timeout_sec
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
         let cancel_token_for_fut = cancel_token;
         let tool_catalog_fetch_ticket = tool_catalog_cache_context
@@ -500,11 +471,6 @@ impl ManagedClientStartup {
                     StartServerTaskParams {
                         is_codex_apps_mcp_server,
                         startup_timeout: Some(startup_timeout),
-                        tool_timeout: server
-                            .configured_config()
-                            .and_then(|config| config.tool_timeout_sec)
-                            .unwrap_or(DEFAULT_TOOL_TIMEOUT),
-                        tool_filter,
                         tx_event,
                         elicitation_requests,
                         codex_apps_tools_cache_context,
@@ -548,10 +514,8 @@ pub(crate) struct AsyncManagedClient {
     pub(crate) cached_server_info: Option<McpServerInfo>,
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
     pub(crate) tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
-    pub(crate) tool_filter: ToolFilter,
     pub(crate) startup_complete: Arc<AtomicBool>,
     pub(crate) startup_reconnect: Option<Arc<CodexAppsStartupReconnect>>,
-    pub(crate) tool_plugin_provenance: Arc<ToolPluginProvenance>,
     pub(crate) cancel_token: CancellationToken,
 }
 
@@ -571,7 +535,6 @@ impl AsyncManagedClient {
         elicitation_requests: ElicitationRequestManager,
         codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
         tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
-        tool_plugin_provenance: Arc<ToolPluginProvenance>,
         runtime_context: McpRuntimeContext,
         resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
         runtime_auth_provider: Option<SharedAuthProvider>,
@@ -581,10 +544,6 @@ impl AsyncManagedClient {
         let is_codex_apps_mcp_server = server_name == CODEX_APPS_MCP_SERVER_NAME;
         let reconnect_server_name = server_name.clone();
         let reconnect_tx_event = tx_event.clone();
-        let tool_filter = server
-            .configured_config()
-            .map(ToolFilter::from_config)
-            .unwrap_or_default();
         let cached_server_info = if is_codex_apps_mcp_server {
             codex_apps_tools_cache_context
                 .as_ref()
@@ -628,10 +587,8 @@ impl AsyncManagedClient {
             cached_server_info,
             codex_apps_tools_cache_context,
             tool_catalog_cache_context,
-            tool_filter,
             startup_complete,
             startup_reconnect,
-            tool_plugin_provenance,
             cancel_token,
         }
     }
@@ -648,58 +605,12 @@ impl AsyncManagedClient {
     }
 
     /// Refreshes a ready client's catalog and reports whether it changed.
-    pub(crate) async fn refresh_tools_if_changed(&self) -> bool {
+    pub(crate) async fn refresh_tools_if_changed(&self, tool_timeout: Option<Duration>) -> bool {
         match self.client().await {
-            Ok(client) => client.refresh_tools_if_changed().await,
+            Ok(client) => client.refresh_tools_if_changed(tool_timeout).await,
             Err(_) => false,
         }
     }
-
-    /// Captures the ready client revision that is current now.
-    ///
-    /// A recovered Codex Apps connection replaces the failed startup future for
-    /// future steps, but cannot reroute a call that was already prepared.
-    fn ready_client_snapshot(&self) -> Option<ManagedClientFuture> {
-        if let Some(client) = self
-            .startup_reconnect
-            .as_ref()
-            .and_then(|reconnect| reconnect.current_client())
-        {
-            return Some(futures::future::ready(Ok(client)).boxed().shared());
-        }
-        match self.client.peek() {
-            Some(Ok(_)) => Some(self.client.clone()),
-            Some(Err(_)) | None => None,
-        }
-    }
-
-    /// Captures one ready client and derives its model-visible tools.
-    ///
-    /// A fresh client waits for initial startup even when metadata is cached.
-    /// After a failed startup, cached tools remain available to metadata-only
-    /// callers while recovery runs, but a model step still requires one exact
-    /// ready client.
-    pub(crate) async fn capture_ready_client_and_tools(
-        &self,
-        catalog_override: Option<Vec<ToolInfo>>,
-    ) -> Option<(Arc<ManagedClient>, Vec<ToolInfo>)> {
-        if !self.startup_complete.load(Ordering::Acquire) {
-            let _ = self.client().await;
-        }
-        self.reconnect_failed_startup().await;
-        let client = if self.has_cached_tools() {
-            self.ready_client_snapshot()?
-        } else {
-            self.client().await.ok()?;
-            self.ready_client_snapshot()?
-        };
-        let managed_client = Arc::new(client.await.ok()?);
-        let tools =
-            catalog_override.unwrap_or_else(|| managed_client.tool_catalogue.load().tools.clone());
-        let tools = filter_tools(tools, &managed_client.tool_filter);
-        Some((Arc::clone(&managed_client), self.prepare_tools(tools)))
-    }
-
     pub(crate) async fn reconnect_failed_startup(&self) {
         let Some(startup_reconnect) = self.startup_reconnect.as_ref() else {
             return;
@@ -742,31 +653,21 @@ impl AsyncManagedClient {
                     .as_ref()
                     .and_then(McpToolCatalogCacheContext::current_tools)
             })
-            .map(|tools| filter_tools(tools, &self.tool_filter))
-    }
-
-    pub(crate) fn prepare_tools(&self, tools: Vec<ToolInfo>) -> Vec<ToolInfo> {
-        if self.is_codex_apps_mcp_server {
-            prepare_codex_apps_tools_for_model(tools, &self.tool_plugin_provenance)
-        } else {
-            prepare_regular_mcp_tools_for_model(tools, &self.tool_plugin_provenance)
-        }
     }
 
     pub(crate) async fn listed_tools(&self) -> Option<Vec<ToolInfo>> {
         // Plugin provenance is resolved per-session rather than stored in shared cache payloads.
-        let tools = if !self.startup_complete.load(Ordering::Acquire)
+        if !self.startup_complete.load(Ordering::Acquire)
             && let Some(startup_tools) = self.cached_tools()
         {
             Some(startup_tools)
         } else {
             match self.client().await {
-                Ok(client) => Some(client.listed_tools().await),
+                Ok(client) => Some(client.listed_tools()),
                 Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
                 Err(_) => None,
             }
-        }?;
-        Some(self.prepare_tools(tools))
+        }
     }
 }
 
@@ -850,7 +751,7 @@ pub(crate) async fn list_tools_for_client_uncached(
 /// Presents declared Codex Apps file parameters to the model as local-path inputs and adds plugin
 /// names to each tool. Plugin membership is resolved by connector ID, falling back to the MCP
 /// server when absent.
-fn prepare_codex_apps_tools_for_model(
+pub(crate) fn prepare_codex_apps_tools_for_model(
     mut tools: Vec<ToolInfo>,
     tool_plugin_provenance: &ToolPluginProvenance,
 ) -> Vec<ToolInfo> {
@@ -904,7 +805,7 @@ fn add_plugin_provenance_to_tool(tool: &mut ToolInfo, plugin_names: &[String]) {
 }
 
 /// Adds server-scoped plugin names to regular MCP tools without changing their input schemas.
-fn prepare_regular_mcp_tools_for_model(
+pub(crate) fn prepare_regular_mcp_tools_for_model(
     mut tools: Vec<ToolInfo>,
     tool_plugin_provenance: &ToolPluginProvenance,
 ) -> Vec<ToolInfo> {
@@ -1056,8 +957,6 @@ async fn start_server_task(
     let StartServerTaskParams {
         is_codex_apps_mcp_server,
         startup_timeout,
-        tool_timeout,
-        tool_filter,
         tx_event,
         elicitation_requests,
         codex_apps_tools_cache_context,
@@ -1112,24 +1011,28 @@ async fn start_server_task(
     .map_err(StartupOutcomeError::from)?;
     let server_info = mcp_server_info_from_implementation(initialize_result.server_info);
     let generation = catalogue.generation;
-    let mut tools = catalogue.tools;
-    tools = match (
+    let client_tools = catalogue.tools;
+    match (
         codex_apps_tools_cache_context.as_ref(),
         connector_fetch_ticket,
     ) {
         (Some(cache_context), Some(fetch_ticket)) => {
-            cache_context.publish_if_newest_accepted(fetch_ticket, &server_info, tools)
+            cache_context.publish_if_newest_accepted(
+                fetch_ticket,
+                &server_info,
+                client_tools.clone(),
+            );
         }
-        (None, None) => tools,
+        (None, None) => {}
         _ => unreachable!("Codex Apps fetch ticket requires cache context"),
-    };
+    }
     let has_shared_tool_catalog = is_codex_apps_mcp_server || tool_catalog_cache_context.is_some();
     match (
         tool_catalog_cache_context.as_ref(),
         tool_catalog_fetch_ticket,
     ) {
         (Some(cache_context), Some(fetch_ticket)) => {
-            cache_context.publish_if_newest(fetch_ticket, &tools);
+            cache_context.publish_if_newest(fetch_ticket, &client_tools);
         }
         (None, None) => {}
         _ => unreachable!("MCP tool catalogue fetch ticket requires cache context"),
@@ -1146,13 +1049,12 @@ async fn start_server_task(
         server_info,
         tool_catalogue: Arc::new(ArcSwap::from_pointee(ToolCatalogueSnapshot {
             observed_generation: generation,
-            tools,
+            tools: client_tools,
         })),
         tool_refresh_lock: Arc::new(Semaphore::new(1)),
         server_name,
         is_codex_apps_mcp_server,
-        tool_timeout: Some(tool_timeout),
-        tool_filter,
+        tool_timeout: None,
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability,
         codex_apps_tools_cache_context,
@@ -1204,8 +1106,6 @@ mod catalogue_tests;
 struct StartServerTaskParams {
     is_codex_apps_mcp_server: bool,
     startup_timeout: Option<Duration>, // TODO: cancel_token should handle this.
-    tool_timeout: Duration,
-    tool_filter: ToolFilter,
     tx_event: Option<Sender<Event>>,
     elicitation_requests: ElicitationRequestManager,
     codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
@@ -1225,9 +1125,7 @@ async fn make_rmcp_client(
     resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
     runtime_auth_provider: Option<SharedAuthProvider>,
 ) -> Result<RmcpClient, StartupOutcomeError> {
-    let config = match server.launch() {
-        McpServerLaunch::Configured(config) => config.as_ref().clone(),
-    };
+    let config = server.config().clone();
     let resolved_environment =
         resolved_environment.map_err(|err| StartupOutcomeError::from(anyhow!(err)))?;
     let is_local_environment = config.is_local_environment();

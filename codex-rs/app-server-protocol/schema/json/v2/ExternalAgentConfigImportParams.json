@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CommandMigration": {
       "properties": {
         "name": {
@@ -26,7 +27,7 @@
         "details": {
           "anyOf": [
             {
-              "$ref": "#/$defs/MigrationDetails"
+              "$ref": "#/definitions/MigrationDetails"
             },
             {
               "type": "null"
@@ -34,12 +35,12 @@
           ]
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         }
       },
       "required": [
-        "itemType",
-        "description"
+        "description",
+        "itemType"
       ],
       "type": "object"
     },
@@ -85,21 +86,21 @@
         "commands": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/CommandMigration"
+            "$ref": "#/definitions/CommandMigration"
           },
           "type": "array"
         },
         "hooks": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/HookMigration"
+            "$ref": "#/definitions/HookMigration"
           },
           "type": "array"
         },
         "mcpServers": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/McpServerMigration"
+            "$ref": "#/definitions/McpServerMigration"
           },
           "type": "array"
         },
@@ -112,28 +113,28 @@
         "plugins": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/PluginsMigration"
+            "$ref": "#/definitions/PluginsMigration"
           },
           "type": "array"
         },
         "sessions": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/SessionMigration"
+            "$ref": "#/definitions/SessionMigration"
           },
           "type": "array"
         },
         "skills": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/SkillMigration"
+            "$ref": "#/definitions/SkillMigration"
           },
           "type": "array"
         },
         "subagents": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/SubagentMigration"
+            "$ref": "#/definitions/SubagentMigration"
           },
           "type": "array"
         }
@@ -174,8 +175,8 @@
         }
       },
       "required": [
-        "path",
-        "cwd"
+        "cwd",
+        "path"
       ],
       "type": "object"
     },
@@ -202,23 +203,22 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "migrationItems": {
       "items": {
-        "$ref": "#/$defs/ExternalAgentConfigMigrationItem"
+        "$ref": "#/definitions/ExternalAgentConfigMigrationItem"
       },
       "type": "array"
     },
     "migrationSource": {
-      "description": "Migration-source selector used to produce the migration items. Pass the same value to\ndetection and import; missing or unrecognized values use the default source.",
+      "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
       "type": [
         "string",
         "null"
       ]
     },
     "providerId": {
-      "description": "Opaque provider identifier supplied by the caller for analytics attribution. This does not\nselect the migration source.",
+      "description": "Opaque provider identifier supplied by the caller for analytics attribution and import history display. This does not select the migration source.",
       "type": [
         "string",
         "null"

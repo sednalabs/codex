@@ -2432,6 +2432,22 @@ docs-only refresh commit that records this snapshot.
   It updates four `reloadUserConfig` description wraps and ten generated final
   newline normalizations; signed commit `dabdc88354` applies the complete
   verified output. Do not hand-edit or partially select this fixture set.
+- Upstream `e19e65317a` and `34b935e3e5` reuse a ready MCP connection across
+  runtime reconciliation and replace a closed one. Preserve that upstream
+  connection/view split: `McpServerConnection` owns the reusable transport and
+  raw complete catalogue, while `McpServerView` owns the current filter,
+  timeout, metadata, and provenance projection. A successor connection set
+  clones the predecessor's manager catalogue-revision `Arc` only when it
+  actually reuses a connection; a fully replaced set receives a fresh revision.
+  This retains upstream view-only refresh behavior while a later
+  `list_changed` rejects prepared calls from either runtime generation.
+- The connection-local snapshot must remain the exact unfiltered tools fetched
+  from that live client. Connector-runtime and regular catalogue cache winners
+  remain discovery fallbacks during pending or failed startup and must never
+  replace binding authority. Hard refresh and `list_changed` share the client
+  refresh lock; a newer successful notification clears the older Apps override
+  before advancing the shared revision. Preserve the raw-snapshot, revision,
+  cache-race, and view-reconciliation regressions in the hosted MCP lane.
 
 ### Typed Cyber-Policy Retry Boundary
 

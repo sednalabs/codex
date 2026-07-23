@@ -31,6 +31,7 @@ pub use oauth::delete_oauth_tokens;
 pub use oauth::delete_oauth_tokens_locked;
 pub use oauth::save_oauth_tokens;
 pub use oauth::save_oauth_tokens_locked;
+pub use oauth::stored_oauth_credentials;
 pub use perform_oauth_device_login::DeviceAuthorizationPrompt;
 pub use perform_oauth_device_login::perform_oauth_device_login;
 pub use perform_oauth_login::OAuthProviderError;

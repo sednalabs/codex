@@ -27,7 +27,6 @@ use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::ToolCatalogueSnapshot;
 use crate::server::McpServerMetadata;
 use crate::server::McpServerOrigin;
-use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
 
 const SERVER_NAME: &str = "docs";
@@ -95,7 +94,6 @@ async fn test_step(
         tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
         server_name: label.to_string(),
         is_codex_apps_mcp_server: false,
-        tool_filter: ToolFilter::default(),
         tool_timeout: None,
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: supports_sandbox_state_meta,

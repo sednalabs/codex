@@ -175,7 +175,6 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
         tool_refresh_lock: Arc::new(Semaphore::new(1)),
         server_name: "changing".to_string(),
         is_codex_apps_mcp_server: false,
-        tool_filter: ToolFilter::default(),
         tool_timeout: Some(Duration::from_secs(5)),
         server_instructions: initialize_result.instructions,
         server_supports_sandbox_state_meta_capability: false,
@@ -183,7 +182,7 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
         tool_catalog_cache_context: None,
     };
     assert_eq!(
-        tool_names(managed.listed_tools().await),
+        tool_names(managed.listed_tools()),
         ["old_first", "old_later"]
     );
     assert_eq!(list_calls.load(Ordering::Acquire), 2);
@@ -197,14 +196,14 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
     .await
     .expect("receive tools/list_changed");
 
-    assert_eq!(
-        tool_names(managed.listed_tools().await),
-        ["old_first", "old_later"]
-    );
+    assert!(!managed
+        .refresh_tools_if_changed(managed.tool_timeout)
+        .await);
+    assert_eq!(tool_names(managed.listed_tools()), ["old_first", "old_later"]);
     let calls_after_failed_refresh = list_calls.load(Ordering::Acquire);
     assert_eq!(calls_after_failed_refresh, 3);
     assert_eq!(
-        tool_names(managed.listed_tools().await),
+        tool_names(managed.listed_tools()),
         ["old_first", "old_later"]
     );
     assert_eq!(
@@ -220,10 +219,10 @@ async fn list_changed_failure_is_attempted_once_and_next_change_replaces_snapsho
     })
     .await
     .expect("receive next tools/list_changed");
-    assert_eq!(
-        tool_names(managed.listed_tools().await),
-        ["new_first", "new_later"]
-    );
+    assert!(managed
+        .refresh_tools_if_changed(managed.tool_timeout)
+        .await);
+    assert_eq!(tool_names(managed.listed_tools()), ["new_first", "new_later"]);
     assert_eq!(list_calls.load(Ordering::Acquire), 5);
     client.shutdown().await;
 }
