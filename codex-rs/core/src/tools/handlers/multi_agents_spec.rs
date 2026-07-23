@@ -624,8 +624,14 @@ fn send_message_output_schema() -> Value {
                 "enum": ["queued"],
                 "description": "The runtime accepted the message for queue-only delivery; it does not represent a model acknowledgement or completion."
             },
-            "effective_model": { "type": "string" },
-            "effective_model_provider_id": { "type": "string" },
+            "effective_model": {
+                "type": ["string", "null"],
+                "description": "Effective model when the target runtime is already loaded. Null for a cold or evicted target so queue-only delivery does not activate it."
+            },
+            "effective_model_provider_id": {
+                "type": ["string", "null"],
+                "description": "Effective model provider when the target runtime is already loaded. Null for a cold or evicted target so queue-only delivery does not activate it."
+            },
             "effective_reasoning_effort": { "type": ["string", "null"] },
             "effective_service_tier": { "type": ["string", "null"] }
         },

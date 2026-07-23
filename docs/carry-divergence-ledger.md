@@ -633,7 +633,7 @@ docs-only refresh commit that records this snapshot.
   cold identity that persisted-history reload cannot restore.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.6-luna` with low reasoning for bounded monitored-wait seams.
 - Live `inspect_agent_tree` rows expose the effective model and reasoning effort from each loaded thread's configuration snapshot. Stale rows leave both fields null because persisted agent metadata does not prove a runtime configuration; these values are configuration evidence, not provider-usage proof.
-- Queue-only `send_message` returns a structured receipt containing the canonical target plus its effective model, provider, reasoning effort, and service tier. `handoff_state: queued` means the runtime accepted the handoff; it is deliberately not an agent acknowledgement or completion signal.
+- Queue-only `send_message` returns a structured receipt containing the canonical target plus effective model, provider, reasoning effort, and service tier when its runtime is already loaded. Those configuration fields are null for a cold or evicted target so the receipt preserves non-activating delivery. `handoff_state: queued` means the runtime accepted the handoff; it is deliberately not an agent acknowledgement or completion signal.
 - Upstream harvest decision, refreshed 2026-07-22:
 
   | Candidate                                                        | Decision      | Reason                                                                                             |

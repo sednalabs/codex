@@ -68,8 +68,8 @@ struct FollowupTaskResult {
 struct SendMessageReceipt {
     task_name: String,
     handoff_state: &'static str,
-    effective_model: String,
-    effective_model_provider_id: String,
+    effective_model: Option<String>,
+    effective_model_provider_id: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_service_tier: Option<String>,
 }
@@ -202,16 +202,32 @@ async fn handle_message_submission_inner(
         }
     }
     .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-    let receiver_config = delivery
-        .config_snapshot()
-        .await
-        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+    let receiver_config = match mode {
+        MessageDeliveryMode::QueueOnly => {
+            session
+                .services
+                .agent_control
+                .get_agent_config_snapshot(receiver_thread_id)
+                .await
+        }
+        MessageDeliveryMode::TriggerTurn => Some(
+            delivery
+                .config_snapshot()
+                .await
+                .map_err(|err| collab_agent_error(receiver_thread_id, err))?,
+        ),
+    };
     if let Some(expected_model) = expected_model
-        && receiver_config.model != expected_model
+        && receiver_config
+            .as_ref()
+            .is_some_and(|config| config.model != expected_model)
     {
+        let receiver_model = receiver_config
+            .as_ref()
+            .map(|config| config.model.as_str())
+            .unwrap_or_default();
         return Err(FunctionCallError::RespondToModel(format!(
-            "follow-up task was not sent: target {receiver_agent_path} uses model `{}`, not expected model `{expected_model}`",
-            receiver_config.model,
+            "follow-up task was not sent: target {receiver_agent_path} uses model `{receiver_model}`, not expected model `{expected_model}`",
         )));
     }
     let author = turn
@@ -243,27 +259,42 @@ async fn handle_message_submission_inner(
     .await;
 
     let output = match mode {
-        MessageDeliveryMode::QueueOnly => tool_output_json_text(
-            &SendMessageReceipt {
+        MessageDeliveryMode::QueueOnly => {
+            let receipt = SendMessageReceipt {
                 task_name: receiver_agent_path.to_string(),
                 handoff_state: "queued",
-                effective_model: receiver_config.model,
-                effective_model_provider_id: receiver_config.model_provider_id,
-                effective_reasoning_effort: receiver_config.reasoning_effort,
-                effective_service_tier: receiver_config.service_tier,
-            },
-            "send_message",
-        ),
-        MessageDeliveryMode::TriggerTurn => tool_output_json_text(
-            &FollowupTaskResult {
-                task_name: receiver_agent_path.to_string(),
-                effective_model: receiver_config.model,
-                effective_model_provider_id: receiver_config.model_provider_id,
-                effective_reasoning_effort: receiver_config.reasoning_effort,
-                effective_service_tier: receiver_config.service_tier,
-            },
-            "followup_task",
-        ),
+                effective_model: receiver_config
+                    .as_ref()
+                    .map(|config| config.model.clone()),
+                effective_model_provider_id: receiver_config
+                    .as_ref()
+                    .map(|config| config.model_provider_id.clone()),
+                effective_reasoning_effort: receiver_config
+                    .as_ref()
+                    .and_then(|config| config.reasoning_effort),
+                effective_service_tier: receiver_config
+                    .as_ref()
+                    .and_then(|config| config.service_tier.clone()),
+            };
+            tool_output_json_text(&receipt, "send_message")
+        }
+        MessageDeliveryMode::TriggerTurn => {
+            let receiver_config = receiver_config.ok_or_else(|| {
+                FunctionCallError::RespondToModel(format!(
+                    "agent with id {receiver_thread_id} has no runtime config snapshot"
+                ))
+            })?;
+            tool_output_json_text(
+                &FollowupTaskResult {
+                    task_name: receiver_agent_path.to_string(),
+                    effective_model: receiver_config.model,
+                    effective_model_provider_id: receiver_config.model_provider_id,
+                    effective_reasoning_effort: receiver_config.reasoning_effort,
+                    effective_service_tier: receiver_config.service_tier,
+                },
+                "followup_task",
+            )
+        }
     };
     Ok(FunctionToolOutput::from_text(output, Some(true)))
 }
