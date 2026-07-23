@@ -19,12 +19,17 @@ pub(crate) struct MultiAgentModeState {
 impl MultiAgentModeState {
     pub(crate) fn new(mode: Option<MultiAgentMode>) -> Self {
         Self {
-            mode: mode.map(|mode| match mode {
-                MultiAgentMode::Custom(hint_text) => MultiAgentMode::Custom(truncate_text(
+            mode: mode.and_then(|mode| match mode {
+                // An empty custom hint means the external mode is inactive. Persist that
+                // normalized shape so a prior custom fragment is cleared only once.
+                MultiAgentMode::Custom(hint_text) if hint_text.is_empty() => None,
+                MultiAgentMode::Custom(hint_text) => Some(MultiAgentMode::Custom(truncate_text(
                     &hint_text,
                     TruncationPolicy::Tokens(MULTI_AGENT_MODE_MAX_TOKENS),
-                )),
-                mode @ (MultiAgentMode::ExplicitRequestOnly | MultiAgentMode::Proactive) => mode,
+                ))),
+                mode @ (MultiAgentMode::ExplicitRequestOnly | MultiAgentMode::Proactive) => {
+                    Some(mode)
+                }
             }),
         }
     }
@@ -61,8 +66,13 @@ impl WorldStateSection for MultiAgentModeState {
                 return None;
             }
             (Some(mode), _) => mode.clone(),
+            // Retained world-state fragments are append-only in model history. Replacing a
+            // custom or proactive policy with the default explicit policy clears its effect.
             (None, PreviousSectionState::Known(previous))
-                if previous.mode == Some(MultiAgentMode::Proactive) =>
+                if matches!(
+                    &previous.mode,
+                    Some(MultiAgentMode::Custom(_)) | Some(MultiAgentMode::Proactive)
+                ) =>
             {
                 MultiAgentMode::ExplicitRequestOnly
             }

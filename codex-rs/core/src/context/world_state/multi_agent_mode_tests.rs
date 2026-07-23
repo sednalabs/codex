@@ -79,3 +79,31 @@ fn custom_mode_is_bounded_before_snapshot_and_rendering() {
         .render();
     assert!(approx_token_count(&rendered) < 1_000);
 }
+
+#[test]
+fn custom_mode_removal_replaces_retained_instructions() {
+    let custom_mode = state(Some(MultiAgentMode::Custom(
+        "use a custom policy".to_string(),
+    )));
+    let retained: ResponseItem = ContextualUserFragment::into(
+        MultiAgentModeInstructions::from_mode(MultiAgentMode::Custom(
+            "use a custom policy".to_string(),
+        ))
+        .expect("custom mode should render"),
+    );
+    let mut previous_world_state = WorldState::default();
+    previous_world_state.add_section(custom_mode);
+    let previous = previous_world_state.snapshot();
+
+    let mut current_world_state = WorldState::default();
+    current_world_state.add_section(state(/*mode*/ None));
+    let diff = current_world_state.render_history_diff(Some(&previous), &[retained]);
+
+    assert_eq!(diff.len(), 1);
+    assert_eq!(
+        diff[0].render(),
+        MultiAgentModeInstructions::from_mode(MultiAgentMode::ExplicitRequestOnly)
+            .expect("explicit mode should render")
+            .render()
+    );
+}
