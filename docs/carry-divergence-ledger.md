@@ -2384,8 +2384,10 @@ docs-only refresh commit that records this snapshot.
   `suite::rmcp_client::streamable_http_with_oauth_round_trip` and overflowed
   its Tokio worker thread. The upstream test already allocates an 8 MiB outer
   thread, so the nested one-worker runtime must receive that same explicit
-  stack budget. This is test-harness stability only; preserve the exact OAuth
-  round-trip coverage and validate it in `codex.mcp-safety-targeted`.
+  stack budget and `codex.mcp-safety-targeted` must propagate the repository
+  standard `RUST_MIN_STACK` value to its process family. This is test-harness
+  stability only; preserve the exact OAuth round-trip coverage and validate it
+  in `codex.mcp-safety-targeted`.
 - Upstream `39a2438d16` makes verified `releases.openai.com` metadata and
   assets the default only for the unconfigured `openai/codex` plus `rust-v`
   origin, with validated GitHub Release fallback. The downstream repository and
