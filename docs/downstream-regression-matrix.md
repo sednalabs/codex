@@ -477,7 +477,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     inferred from inline commands.
   - Rust-integration lane batches reclaim `codex-rs/target` before the first
     lane as well as between later lanes when hosted workspace disk falls below
-    the safety floor.
+    the safety floor. Single Rust-integration lanes proactively discard unused
+    hosted SDK/toolchain bundles and require 12 GiB of post-cleanup headroom,
+    so app-server dependency expansion fails early rather than exhausting the
+    runner mid-compile.
   - The link-heavy native computer-use tool-registry lane is weighted as a
     singleton Rust batch so frontier harvests keep enough hosted disk headroom.
   - Rust lane batches retry once on narrow Cargo registry transport failures
