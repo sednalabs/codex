@@ -1723,6 +1723,93 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
 }
 
 #[tokio::test]
+async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "boot worker",
+                "task_name": "cold_worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "cold_worker")
+        .await
+        .expect("relative path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist before eviction");
+    child_thread
+        .shutdown_and_wait()
+        .await
+        .expect("child thread should shut down");
+    let manager_state = session
+        .services
+        .agent_control
+        .upgrade()
+        .expect("thread manager should be live");
+    assert_eq!(
+        manager_state
+            .remove_thread_if_same(&child_thread_id, &child_thread, || {})
+            .await,
+        crate::thread_manager::RemoveThreadIfSameResult::Removed
+    );
+
+    let output = SendMessageHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "send_message",
+            function_payload(json!({
+                "target": "cold_worker",
+                "items": [{"type": "text", "text": "queued while cold"}]
+            })),
+        ))
+        .await
+        .expect("queue-only send_message should accept a cold target");
+    let (content, success) = expect_text_output(output);
+    let receipt: serde_json::Value =
+        serde_json::from_str(&content).expect("send_message receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "task_name": "/root/cold_worker",
+            "handoff_state": "queued",
+            "effective_model": null,
+            "effective_model_provider_id": null,
+            "effective_reasoning_effort": null,
+            "effective_service_tier": null,
+        })
+    );
+    assert_eq!(success, Some(true));
+    assert!(manager.get_thread(child_thread_id).await.is_err());
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_rejects_legacy_fork_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();

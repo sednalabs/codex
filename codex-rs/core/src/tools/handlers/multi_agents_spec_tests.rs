@@ -730,4 +730,12 @@ fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
         output_schema["properties"]["handoff_state"]["enum"],
         json!(["queued"])
     );
+    assert_eq!(
+        output_schema["properties"]["effective_model"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(
+        output_schema["properties"]["effective_model_provider_id"]["type"],
+        json!(["string", "null"])
+    );
 }
