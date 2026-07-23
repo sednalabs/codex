@@ -50,6 +50,13 @@ const SECOND_ENVIRONMENT_ID: &str = "second-environment";
 const DECIDER_DENIED_HOST: &str = "not-allowed.invalid";
 const CHILD_TIMEOUT_MS: u32 = 30_000;
 const WAIT_OBJECT_0: u32 = 0;
+const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestrictedChildOutcome {
+    Completed,
+    UnsupportedGnuLoader,
+}
 
 #[derive(Clone)]
 struct StaticReloader(ConfigState);
@@ -116,14 +123,24 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         .network_proxy_restricting_sid(Some(SECOND_ENVIRONMENT_ID))
         .expect("second environment should have a route SID");
 
-    run_restricted_child(
+    if run_restricted_child(
         &first_environment_sid,
         stable_addrs,
         origin_port,
         Some(("localhost", DECIDER_DENIED_HOST)),
         /*expect_socks*/ false,
     )
-    .await?;
+    .await?
+        == RestrictedChildOutcome::UnsupportedGnuLoader
+    {
+        eprintln!(
+            "skipping restricted proxy assertions: Bazel gnullvm child re-entry returned 0xc0000142"
+        );
+        first_handle.shutdown().await?;
+        second_handle.shutdown().await?;
+        origin_task.abort();
+        return Ok(());
+    }
     assert_recorded_requests(
         &first_requests,
         FIRST_ENVIRONMENT_ID,
@@ -138,7 +155,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
             .is_empty()
     );
 
-    run_restricted_child(
+    require_restricted_child(
         &second_environment_sid,
         stable_addrs,
         origin_port,
@@ -161,7 +178,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         &[NetworkProtocol::Http, NetworkProtocol::Socks5Tcp],
     );
 
-    run_restricted_child(
+    require_restricted_child(
         &first_sid,
         stable_addrs,
         origin_port,
@@ -169,7 +186,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         /*expect_socks*/ false,
     )
     .await?;
-    run_restricted_child(
+    require_restricted_child(
         &second_sid,
         stable_addrs,
         origin_port,
@@ -179,7 +196,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
     .await?;
 
     first_handle.shutdown().await?;
-    run_restricted_child(
+    require_restricted_child(
         &first_sid,
         stable_addrs,
         origin_port,
@@ -187,7 +204,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         /*expect_socks*/ false,
     )
     .await?;
-    run_restricted_child(
+    require_restricted_child(
         &first_environment_sid,
         stable_addrs,
         origin_port,
@@ -195,7 +212,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         /*expect_socks*/ false,
     )
     .await?;
-    run_restricted_child(
+    require_restricted_child(
         &second_sid,
         stable_addrs,
         origin_port,
@@ -224,7 +241,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
     assert_ne!(third_sid, first_sid);
     assert_ne!(third_sid, second_sid);
 
-    run_restricted_child(
+    require_restricted_child(
         &third_sid,
         stable_addrs,
         origin_port,
@@ -237,7 +254,7 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
         third.network_proxy_restricting_sid(/*environment_id*/ None),
         None
     );
-    run_restricted_child(
+    require_restricted_child(
         &third_sid,
         stable_addrs,
         origin_port,
@@ -384,14 +401,28 @@ async fn run_restricted_child(
     origin_port: u16,
     policy: Option<(&str, &str)>,
     expect_socks: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RestrictedChildOutcome> {
     let route_sid = route_sid.to_string();
     let policy = policy.map(|(allowed, denied)| (allowed.to_string(), denied.to_string()));
     tokio::task::spawn_blocking(move || {
         run_restricted_child_blocking(&route_sid, proxy_addrs, origin_port, policy, expect_socks)
     })
-    .await??;
-    Ok(())
+    .await?
+}
+
+async fn require_restricted_child(
+    route_sid: &str,
+    proxy_addrs: (SocketAddr, SocketAddr),
+    origin_port: u16,
+    policy: Option<(&str, &str)>,
+    expect_socks: bool,
+) -> anyhow::Result<()> {
+    match run_restricted_child(route_sid, proxy_addrs, origin_port, policy, expect_socks).await? {
+        RestrictedChildOutcome::Completed => Ok(()),
+        RestrictedChildOutcome::UnsupportedGnuLoader => anyhow::bail!(
+            "restricted proxy child returned the known gnullvm loader status after the initial host-capability check"
+        ),
+    }
 }
 
 fn run_restricted_child_blocking(
@@ -400,7 +431,7 @@ fn run_restricted_child_blocking(
     origin_port: u16,
     policy: Option<(String, String)>,
     expect_socks: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RestrictedChildOutcome> {
     let route_sid = LocalSid::from_string(route_sid)?;
     let capability_sid = LocalSid::from_string("S-1-5-21-10-20-30-40")?;
     let base_token = unsafe {
@@ -475,11 +506,17 @@ fn run_restricted_child_blocking(
     unsafe {
         GetExitCodeProcess(process.as_raw_handle() as isize, &mut exit_code);
     }
+    if cfg!(target_env = "gnu")
+        && wait == WAIT_OBJECT_0
+        && exit_code == STATUS_DLL_INIT_FAILED
+    {
+        return Ok(RestrictedChildOutcome::UnsupportedGnuLoader);
+    }
     anyhow::ensure!(
         wait == WAIT_OBJECT_0 && exit_code == 0,
         "restricted proxy child failed (wait={wait}, exit={exit_code})"
     );
-    Ok(())
+    Ok(RestrictedChildOutcome::Completed)
 }
 
 fn required_env(key: &str) -> anyhow::Result<String> {

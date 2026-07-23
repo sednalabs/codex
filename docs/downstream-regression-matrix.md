@@ -638,6 +638,11 @@ Windows hosted harness note:
 - `file_system_local_fs_helper_allows_windows_workspace_root_write` takes that
   exact compatibility path only for the known gnullvm loader status; Windows
   MSVC must execute the positive write assertion before promotion.
+- `restricted_tokens_select_stable_routes_and_cleanup` takes the same
+  gnullvm-only compatibility path only when its first restricted-token
+  self-reexec returns exact status `0xc0000142`; every later or different child
+  failure remains fatal, and Windows MSVC must execute the full proxy route,
+  policy, and cleanup assertions.
 - `workspace_roots_allow_file_and_command_writes` identifies that loader status
   from its exact error output even when the custom-tool envelope has no boolean
   success field, then still proves the independent command write.
