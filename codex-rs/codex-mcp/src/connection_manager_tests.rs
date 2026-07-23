@@ -2784,12 +2784,8 @@ async fn reconciliation_replaces_catalogue_revision_with_connection() {
     };
     *url = "http://127.0.0.1:2".to_string();
 
-    let replacement = reconcile_reusable_server(
-        previous.as_ref(),
-        replacement_config,
-        runtime_context,
-    )
-    .await;
+    let replacement =
+        reconcile_reusable_server(previous.as_ref(), replacement_config, runtime_context).await;
 
     assert!(!previous.shares_test_connection_with(&replacement, "docs"));
     assert!(!Arc::ptr_eq(
