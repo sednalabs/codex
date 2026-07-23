@@ -291,6 +291,14 @@ exact-head hosted proof:
   `PathUri`. `core-runtime-surface-smoke` executes both the reuse-key invalidation
   assertion and the end-to-end prewarm/reuse case alongside downstream split
   sandbox-policy coverage.
+- Upstream `d7e8f4c3dc` retains user input when MCP startup is interrupted.
+  `core-runtime-surface-smoke` executes its three startup-phase regression
+  cases, preserving dynamic-tool/router and native-computer-use lifecycle
+  coverage without a new provider-specific lane.
+- Upstream `400ee190c3` adds persisted thread pinning. `codex.app-server-v2-
+  contract-targeted` executes the pin/unpin filtered-pagination regression;
+  schema, model, reasoning, `thread_source`, and `history_mode` fields remain
+  a combined app-server contract check.
 - `codex.exec-server-targeted` runs the complete upstream exec-server unit seam
   before its existing initialize, WebSocket, and process integration tests.
   That covers bounded reverse-RPC correlation and cleanup, fail-closed network
