@@ -570,6 +570,10 @@ state-migration-repair-targeted:
     cargo test -p codex-state migrations::tests::repairs_recency_migration_that_was_applied_as_version_38 --lib -- --exact --test-threads=1
     cargo test -p codex-state migrations::tests::repairs_visible_sort_indexes_migration_that_was_applied_as_version_40 --lib -- --exact --test-threads=1
     cargo test -p codex-state migrations::tests::repairs_remote_control_enabled_migration_that_was_applied_as_version_41 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_external_agent_config_import_migration_that_was_applied_as_version_42 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::external_agent_config_import_provider_migration_follows_table_creation_on_fresh_database --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44 --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::external_agent_config_imports::tests::records_completion_by_import_id --lib -- --exact --test-threads=1
     cargo test -p codex-state migrations::tests::repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held --lib -- --exact --test-threads=1
     cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 

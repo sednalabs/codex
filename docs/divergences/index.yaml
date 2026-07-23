@@ -179,6 +179,7 @@
         "repairs_external_agent_config_import_migration_that_was_applied_as_version_42",
         "external_agent_config_import_provider_migration_follows_table_creation_on_fresh_database",
         "repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44",
+        "runtime::external_agent_config_imports::tests::records_completion_by_import_id",
         "phase2_attestation::*",
         "memories_startup_phase2_*",
         "runtime::phase2_attestation::*"
