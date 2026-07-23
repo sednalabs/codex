@@ -430,6 +430,7 @@ app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::app_read:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::plugin_list::plugin_list_force_refetch_waits_for_same_path_local_plugin_upgrade -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::skills_list::skills_list_uses_cached_result_after_session_default_writes_until_force_reload -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_metadata_update::thread_metadata_update_pins_and_unpins_with_filtered_recency_pagination -- --exact --test-threads=1
