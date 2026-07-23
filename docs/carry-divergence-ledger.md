@@ -2871,6 +2871,10 @@ docs-only refresh commit that records this snapshot.
   - examples include `Fix main core regressions after upstream sync`,
     `Fix main promotion follow-ups`, and
     `Fix hybrid merge API drift in core/tui tests`
+  - hosted strict-lint compatibility repairs that preserve an upstream API's
+    behavior, such as using `SseStream::from_bytes_stream` after the dependency
+    deprecated its typo-named predecessor; retain only until upstream adopts
+    the same API rename and do not classify the rename as MCP policy carry
 - Generated and derivative churn:
   - schema outputs under `codex-rs/app-server-protocol/schema/`
   - generated SDK outputs under `sdk/python/`
