@@ -2388,6 +2388,11 @@ docs-only refresh commit that records this snapshot.
   standard `RUST_MIN_STACK` value to its process family. This is test-harness
   stability only; preserve the exact OAuth round-trip coverage and validate it
   in `codex.mcp-safety-targeted`.
+- Hosted run `30026968799` exhausted its GitHub-hosted runner disk while
+  compiling the app-server V2 contract lane; this is not a source failure.
+  The reusable Rust-integration lane must proactively discard its unused hosted
+  SDK/toolchain bundles and reject a runner below the 12 GiB Rust safety floor,
+  matching the established Rust-batch policy before Cargo expands `target/`.
 - Upstream `39a2438d16` makes verified `releases.openai.com` metadata and
   assets the default only for the unconfigured `openai/codex` plus `rust-v`
   origin, with validated GitHub Release fallback. The downstream repository and
