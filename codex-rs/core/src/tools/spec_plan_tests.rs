@@ -1354,6 +1354,7 @@ async fn multi_agent_v2_can_disable_wait_agent() {
         plan.namespace_function_names(MULTI_AGENT_V2_NAMESPACE),
         &[
             "followup_task".to_string(),
+            "inspect_agent_tree".to_string(),
             "interrupt_agent".to_string(),
             "list_agents".to_string(),
             "send_message".to_string(),
