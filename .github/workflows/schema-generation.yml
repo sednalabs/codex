@@ -1,0 +1,65 @@
+name: App-server schema patch generation
+
+on:
+  push:
+    branches:
+      - validation/schema-generation-*
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
+        with:
+          tool: just
+      - name: Regenerate app-server protocol schemas
+        run: just write-app-server-schema
+      - name: Verify and package generated output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          if (( ${#changed[@]} == 0 )); then
+            echo "Schema generation produced no patch" >&2
+            exit 1
+          fi
+
+          for path in "${changed[@]}"; do
+            case "${path}" in
+              codex-rs/app-server-protocol/schema/*)
+                ;;
+              *)
+                echo "Unexpected generator output: ${path}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          git diff --check
+          printf '%s\n' "${changed[@]}" > generated-files.txt
+          git diff --binary -- "${changed[@]}" > app-server-schema.patch
+          sha256sum app-server-schema.patch > app-server-schema.patch.sha256
+          {
+            echo "source_commit=$(git rev-parse HEAD^)"
+            echo "workflow_commit=$(git rev-parse HEAD)"
+            echo "workflow_run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > generation-receipt.txt
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: app-server-schema-patch
+          path: |
+            app-server-schema.patch
+            app-server-schema.patch.sha256
+            generated-files.txt
+            generation-receipt.txt
+          if-no-files-found: error
+          retention-days: 1
