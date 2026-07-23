@@ -263,15 +263,13 @@ async fn handle_message_submission_inner(
             let receipt = SendMessageReceipt {
                 task_name: receiver_agent_path.to_string(),
                 handoff_state: "queued",
-                effective_model: receiver_config
-                    .as_ref()
-                    .map(|config| config.model.clone()),
+                effective_model: receiver_config.as_ref().map(|config| config.model.clone()),
                 effective_model_provider_id: receiver_config
                     .as_ref()
                     .map(|config| config.model_provider_id.clone()),
                 effective_reasoning_effort: receiver_config
                     .as_ref()
-                    .and_then(|config| config.reasoning_effort),
+                    .and_then(|config| config.reasoning_effort.clone()),
                 effective_service_tier: receiver_config
                     .as_ref()
                     .and_then(|config| config.service_tier.clone()),
