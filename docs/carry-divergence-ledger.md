@@ -2380,6 +2380,12 @@ docs-only refresh commit that records this snapshot.
   upstream's literal `collaboration` is a reserved namespace here. This is a
   test-only compatibility adaptation and must retain all four wait/sleep gate
   permutations rather than changing the runtime namespace.
+- Hosted run `30017713903` reached
+  `suite::rmcp_client::streamable_http_with_oauth_round_trip` and overflowed
+  its Tokio worker thread. The upstream test already allocates an 8 MiB outer
+  thread, so the nested one-worker runtime must receive that same explicit
+  stack budget. This is test-harness stability only; preserve the exact OAuth
+  round-trip coverage and validate it in `codex.mcp-safety-targeted`.
 - Upstream `39a2438d16` makes verified `releases.openai.com` metadata and
   assets the default only for the unconfigured `openai/codex` plus `rust-v`
   origin, with validated GitHub Release fallback. The downstream repository and
