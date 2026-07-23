@@ -669,7 +669,8 @@ for a removed crate path.
 
 ### Complete MCP Tool Catalogue Collection And Refresh
 
-- Guardrails: `core-test-progressive` and GitHub `blocking-ci`.
+- Guardrails: `core-test-progressive`, `mcp-tool-exposure-targeted`, and GitHub
+  `blocking-ci`.
 - Primary end-to-end check:
   `streamable_http_discovers_and_calls_later_page_tool`.
 - Refresh checks:

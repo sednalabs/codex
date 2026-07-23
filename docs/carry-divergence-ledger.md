@@ -2307,7 +2307,8 @@ docs-only refresh commit that records this snapshot.
   intentionally empty catalog, as the nonblocking inventory while startup is
   pending. It refreshes only after startup is ready or no cache exists, so a
   pending client cannot make the published catalog unreachable before tool
-  exposure or inference initialization.
+  exposure or inference initialization. `mcp-tool-exposure-targeted` runs the
+  two shared-cache ordering regressions directly on GitHub-hosted validation.
 - Centralized ownership does not by itself unload quiescent threads retained by
   `ThreadManager`. Capacity-triggered V2 residency eviction now calls
   `shutdown_and_wait()` before generation-fenced, thread-instance-checked
