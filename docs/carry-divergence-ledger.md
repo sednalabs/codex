@@ -78,6 +78,10 @@ docs-only refresh commit that records this snapshot.
 - Upstream `9d82334302` lets Guardian review sessions use the selected review
   model's limits when it differs from the parent turn model. It does not change
   downstream child model/reasoning selection or Guardian reuse identity.
+- Existing hosted recipes now pin upstream's custom-provider standalone
+  web-search capability matrix, the custom-provider app-server round trip, and
+  Guardian's same-model versus distinct-model limit behavior. This is
+  validation-only integration coverage, not a downstream protocol change.
 - Signed merge `e1187d4e3b` preserves `9d82334302` as its exact upstream second
   parent. Hosted mirror run `29969367710` fast-forwarded
   `origin/upstream-main` to that same SHA through successful sync job

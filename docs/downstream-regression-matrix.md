@@ -30,6 +30,10 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 - `core-runtime-surface-smoke` isolates the fragile codex-core runtime seams in
   their own shard, so remote smoke runs can fail the exact runtime bucket
   without serializing the whole smoke pass behind one `just` recipe.
+- It also pins the upstream custom-provider standalone web-search capability
+  matrix and Guardian's same-model versus distinct-model context-limit cases,
+  so the current integration keeps both capability and review-session policy
+  boundaries covered without adding fork-specific behavior.
 - It also compiles the full downstream `run_turn` composition. This is the
   regression seam for the crate-level query-depth guardrail required after the
   upstream interrupted-MCP recovery path increased that async type's depth.
@@ -223,11 +227,12 @@ exact-head hosted proof:
   `codex.app-server-v2-contract-targeted` composes downstream behavior onto that
   shape with
   `mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls` and
-  `thread_resume_preserves_goal_first_and_fork_settings`, in addition to the
-  complete app/read group. Exact-head hosted run `29942410506` also proves the
-  remaining downstream-expanded dynamic-tool, fork, review, safety, and
-  external-agent tests use the typed helper shape rather than restoring the
-  removed parsing helpers.
+  `thread_resume_preserves_goal_first_and_fork_settings`, the upstream
+  custom-provider standalone web-search round trip, and the complete app/read
+  group. Exact-head hosted run `29942410506` also proves the remaining
+  downstream-expanded dynamic-tool, fork, review, safety, and external-agent
+  tests use the typed helper shape rather than restoring the removed parsing
+  helpers.
 - Upstream `c5779ed6bb` owns live-parent history-mode and MultiAgentV2
   usage-hint selection during forks. The existing
   `codex.core-subagent-model-pinning-targeted` lane pins
