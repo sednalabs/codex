@@ -1309,6 +1309,7 @@ async fn thread_list(endpoint: &Endpoint, config_overrides: &[String], limit: u3
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             parent_thread_id: None,
             ancestor_thread_id: None,
             cwd: None,

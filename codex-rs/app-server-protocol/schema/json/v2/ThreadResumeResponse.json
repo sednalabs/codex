@@ -1233,6 +1233,11 @@
           "description": "Identifier for this thread. Codex-generated thread IDs are UUIDv7.",
           "type": "string"
         },
+        "isPinned": {
+          "default": false,
+          "description": "Whether the thread has been pinned by the user.",
+          "type": "boolean"
+        },
         "model": {
           "description": "Latest observed model for this thread, if known.",
           "type": [
