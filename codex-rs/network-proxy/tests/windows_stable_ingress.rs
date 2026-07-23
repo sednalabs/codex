@@ -233,7 +233,10 @@ async fn restricted_tokens_select_stable_routes_and_cleanup() -> anyhow::Result<
     )
     .await?;
     drop(third_handle);
-    assert_eq!(third.network_proxy_restricting_sid(/*environment_id*/ None), None);
+    assert_eq!(
+        third.network_proxy_restricting_sid(/*environment_id*/ None),
+        None
+    );
     run_restricted_child(
         &third_sid,
         stable_addrs,

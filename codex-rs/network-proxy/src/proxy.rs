@@ -1517,7 +1517,10 @@ mod tests {
         {
             assert_eq!(proxy.http_addr, http_addr);
             assert_eq!(proxy.socks_addr, socks_addr);
-            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
+            assert_eq!(
+                proxy.network_proxy_restricting_sid(/*environment_id*/ None),
+                None
+            );
             let handle = proxy.run().await.expect("start stable ingress route");
             let second_state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig {
                 enabled: true,
@@ -1585,7 +1588,10 @@ mod tests {
                 .await
                 .expect("stop second stable ingress route");
             handle.shutdown().await.expect("stop stable ingress route");
-            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
+            assert_eq!(
+                proxy.network_proxy_restricting_sid(/*environment_id*/ None),
+                None
+            );
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -1772,11 +1778,16 @@ mod tests {
             assert_eq!(proxy.http_addr, http_addr);
             assert!(proxy.reserved_listeners.is_none());
             assert!(proxy.windows_runtime.is_some());
-            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
+            assert_eq!(
+                proxy.network_proxy_restricting_sid(/*environment_id*/ None),
+                None
+            );
             let handle = proxy.run().await.expect("start HTTP-only stable route");
-            assert!(proxy
-                .network_proxy_restricting_sid(/*environment_id*/ None)
-                .is_some());
+            assert!(
+                proxy
+                    .network_proxy_restricting_sid(/*environment_id*/ None)
+                    .is_some()
+            );
             let prepared_before_upgrade = proxy
                 .prepare_for_optional_environment(
                     HashMap::from([(
@@ -1891,7 +1902,10 @@ mod tests {
                 .shutdown()
                 .await
                 .expect("stop HTTP-only stable route");
-            assert_eq!(proxy.network_proxy_restricting_sid(/*environment_id*/ None), None);
+            assert_eq!(
+                proxy.network_proxy_restricting_sid(/*environment_id*/ None),
+                None
+            );
         }
         #[cfg(not(target_os = "windows"))]
         assert!(
