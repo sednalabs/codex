@@ -2499,6 +2499,14 @@ docs-only refresh commit that records this snapshot.
   identifier ranking and namespace coalescing, including deferred dynamic
   tools and native image-search results; they must not restore duplicate source
   listings or bypass upstream world-state advertisement.
+- GitHub-hosted schema generation run `30059844196` consumed exact integration
+  source `9e67309024` and produced a complete artifact with SHA-256
+  `4cf69ec6fc7260a644f8a57ff108a27e3f4d5244f2f6abbf13615ac416596b31`.
+  Signed commit `f3e6877afb` applies all three outputs together: one workspace
+  lockfile edge and the JSON and TypeScript `ConfigRequirements` fixtures. The
+  JSON fixture uses the current `$defs` Browser Use reference and the TypeScript
+  map signatures match the generator. Do not hand-edit or partially select
+  this artifact.
 
 ### Typed Cyber-Policy Retry Boundary
 
