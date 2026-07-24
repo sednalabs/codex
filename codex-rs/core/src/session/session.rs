@@ -57,6 +57,7 @@ pub(crate) struct Session {
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
+    pub(super) fork_persistence: ForkPersistence,
     pub(super) next_internal_sub_id: AtomicU64,
 }
 
@@ -534,6 +535,7 @@ impl Session {
         tx_event: Sender<Event>,
         agent_status: watch::Sender<AgentStatus>,
         mut initial_history: InitialHistory,
+        fork_persistence: ForkPersistence,
         session_source: SessionSource,
         skills_service: Arc<SkillsService>,
         plugins_manager: Arc<PluginsManager>,
@@ -664,6 +666,10 @@ impl Session {
                             selected_capability_roots: selected_capability_roots.clone(),
                             multi_agent_version: initial_multi_agent_version,
                             history_mode: session_configuration.history_mode,
+                            history_base: match &fork_persistence {
+                                ForkPersistence::Copied => None,
+                                ForkPersistence::Referenced { history_base, .. } => *history_base,
+                            },
                             subagent_history_start_ordinal: None,
                             initial_window_id: initial_auto_compact_window_ids
                                 .window_id
@@ -679,6 +685,7 @@ impl Session {
                             },
                         };
                         if is_paginated_subagent
+                            && matches!(&fork_persistence, ForkPersistence::Copied)
                             && let InitialHistory::Forked(items) = &initial_history
                         {
                             LiveThread::create_with_inherited_model_context(
@@ -1214,6 +1221,7 @@ impl Session {
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 git_enrichment_policy,
+                fork_persistence,
                 next_internal_sub_id: AtomicU64::new(0),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
@@ -1304,6 +1312,10 @@ impl Session {
 
             // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
             Box::pin(sess.record_initial_history(initial_history)).await;
+            if matches!(&sess.fork_persistence, ForkPersistence::Referenced { .. }) {
+                // Keep the source reserved until the child's history reference is durable.
+                sess.try_ensure_rollout_materialized().await?;
+            }
             {
                 let mut state = sess.state.lock().await;
                 state.queue_pending_session_start_source(session_start_source);

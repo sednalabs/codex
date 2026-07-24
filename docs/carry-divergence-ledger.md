@@ -2148,6 +2148,16 @@ docs-only refresh commit that records this snapshot.
   discovered through `tool_search`; the same bare deferred shape remains
   invalid for ordinary dynamic tools. A capability-bearing native tool forces
   a loaded-thread resume reload because its provider contract may have changed.
+- Upstream's reference-backed paginated `thread/fork` path is retained. The
+  app-server forwards request-scoped dynamic tools through both the copied and
+  prepared fork shapes, while `ThreadManager` keeps upstream's prepared-fork
+  reservation release and persistence boundary. Do not route a prepared fork
+  through the copied-history helper or substitute an empty tool list: that
+  would create a valid child whose next model request silently loses its
+  requested native provider surface.
+- `paginated_thread_fork_injects_native_android_tools_into_model_requests`
+  is the focused regression guard for that combined seam. It proves a
+  reference-backed child advertises `android_step` on its first model request.
 - This sync intentionally retains the flat `DynamicToolSpec` compatibility
   shape (`namespace` plus function metadata) because app-server requests,
   persisted SQLite rows, provider registries, and resume filtering still share

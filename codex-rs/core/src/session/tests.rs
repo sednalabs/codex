@@ -1782,6 +1782,89 @@ disabled_tools = [
     );
 }
 
+#[tokio::test]
+async fn refresh_mcp_config_replaces_managed_server_and_plugin_requirements() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let server = serde_json::from_value::<McpServerConfig>(json!({
+        "url": "https://example.com/mcp",
+        "enabled": true
+    }))
+    .expect("valid test MCP server");
+    let requirement = serde_json::from_value::<codex_config::McpServerRequirement>(json!({
+        "identity": { "url": "https://example.com/mcp" }
+    }))
+    .expect("valid managed MCP requirement");
+    let plugin_requirements = std::collections::BTreeMap::from([(
+        "example-plugin".to_string(),
+        codex_config::PluginRequirementsToml {
+            mcp_servers: Some(std::collections::BTreeMap::from([(
+                "beta".to_string(),
+                requirement,
+            )])),
+        },
+    )]);
+
+    let mut next_config = session.get_config().await.as_ref().clone();
+    next_config.mcp_servers = codex_config::Constrained::normalized(
+        HashMap::from([("beta".to_string(), server.clone())]),
+        |mut servers: HashMap<String, McpServerConfig>| {
+            servers.retain(|name, _| name == "beta");
+            servers
+        },
+    )
+    .expect("valid refreshed MCP constraints");
+    let mut requirements = next_config.config_layer_stack.requirements().clone();
+    requirements.plugins = Some(Sourced::new(
+        plugin_requirements.clone(),
+        RequirementSource::LegacyManagedConfigTomlFromMdm,
+    ));
+    let mut requirements_toml = next_config.config_layer_stack.requirements_toml().clone();
+    requirements_toml.plugins = Some(plugin_requirements.clone());
+    let layers = next_config
+        .config_layer_stack
+        .get_layers(
+            ConfigLayerStackOrdering::LowestPrecedenceFirst,
+            /*include_disabled*/ true,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+    next_config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
+        .expect("managed MCP and plugin requirements");
+
+    session.refresh_mcp_config(next_config).await;
+
+    let config = session.get_config().await;
+    let mut managed_servers = config.mcp_servers.clone();
+    managed_servers
+        .set(HashMap::from([
+            ("alpha".to_string(), server.clone()),
+            ("beta".to_string(), server.clone()),
+        ]))
+        .expect("apply refreshed managed MCP constraints");
+    assert_eq!(
+        managed_servers.get(),
+        &HashMap::from([("beta".to_string(), server.clone())])
+    );
+    assert_eq!(
+        config
+            .config_layer_stack
+            .requirements()
+            .plugins
+            .as_ref()
+            .map(|requirements| &requirements.value),
+        Some(&plugin_requirements)
+    );
+
+    let mut plugin_servers = HashMap::from([
+        ("alpha".to_string(), server.clone()),
+        ("beta".to_string(), server),
+    ]);
+    config.apply_plugin_mcp_server_requirements("example-plugin", &mut plugin_servers);
+    assert!(!plugin_servers["alpha"].enabled);
+    assert!(plugin_servers["beta"].enabled);
+}
+
 #[test]
 fn collect_explicit_app_ids_from_skill_items_includes_linked_mentions() {
     let connectors = vec![make_connector("calendar", "Calendar")];
@@ -4293,7 +4376,7 @@ async fn wait_for_thread_rollback_failed(rx: &async_channel::Receiver<Event>) ->
     }
 }
 
-async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+async fn open_thread_persistence(session: &mut Session) -> PathBuf {
     let config = session.get_config().await;
     let live_thread = LiveThread::create(
         Arc::clone(&session.services.thread_store),
@@ -4312,6 +4395,7 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -4327,16 +4411,21 @@ async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
     .await
     .expect("create thread persistence");
     session.services.live_thread = Some(live_thread);
-    session.ensure_rollout_materialized().await;
-    session
-        .flush_rollout()
-        .await
-        .expect("attached rollout should flush");
     session
         .current_rollout_path()
         .await
         .expect("load rollout path")
         .expect("thread should have rollout path")
+}
+
+async fn attach_thread_persistence(session: &mut Session) -> PathBuf {
+    let rollout_path = open_thread_persistence(session).await;
+    session.ensure_rollout_materialized().await;
+    session
+        .flush_rollout()
+        .await
+        .expect("attached rollout should flush");
+    rollout_path
 }
 
 fn text_block(s: &str) -> serde_json::Value {
@@ -5345,6 +5434,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         tx_event,
         agent_status_tx,
         InitialHistory::New,
+        ForkPersistence::Copied,
         SessionSource::Exec,
         skills_service,
         plugins_manager,
@@ -5637,6 +5727,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
+        fork_persistence: ForkPersistence::Copied,
         next_internal_sub_id: AtomicU64::new(0),
     };
 
@@ -5739,6 +5830,7 @@ async fn make_session_with_config_and_rx(
         tx_event,
         agent_status_tx,
         InitialHistory::New,
+        ForkPersistence::Copied,
         SessionSource::Exec,
         skills_service,
         plugins_manager,
@@ -5847,6 +5939,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         tx_event,
         agent_status_tx,
         initial_history,
+        ForkPersistence::Copied,
         session_source,
         skills_service,
         plugins_manager,
@@ -7173,6 +7266,7 @@ async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -7251,6 +7345,7 @@ async fn submission_loop_channel_close_runs_full_thread_teardown() {
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -7865,6 +7960,7 @@ where
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
+        fork_persistence: ForkPersistence::Copied,
         next_internal_sub_id: AtomicU64::new(0),
     });
 
@@ -9665,6 +9761,7 @@ async fn attach_in_memory_thread_store(
             multi_agent_version: None,
             history_mode: Default::default(),
             subagent_history_start_ordinal: None,
+            history_base: None,
             initial_window_id: Uuid::now_v7().to_string(),
             metadata: ThreadPersistenceMetadata {
                 cwd: Some(config.cwd.to_path_buf()),
@@ -9682,6 +9779,41 @@ async fn attach_in_memory_thread_store(
     session.services.thread_store = thread_store;
     session.services.live_thread = Some(live_thread);
     store
+}
+
+#[tokio::test]
+async fn hook_transcript_path_does_not_persist_non_local_thread_store() {
+    let (mut session, _) = make_session_and_context().await;
+    let store = attach_in_memory_thread_store(&mut session).await;
+
+    assert_eq!(session.hook_transcript_path().await, None);
+    assert_eq!(
+        store.calls().await,
+        codex_thread_store::InMemoryThreadStoreCalls {
+            create_thread: 1,
+            ..Default::default()
+        }
+    );
+}
+
+#[tokio::test]
+async fn hook_transcript_path_materializes_lazy_local_thread() {
+    let (mut session, _) = make_session_and_context().await;
+    let rollout_path = open_thread_persistence(&mut session).await;
+    assert!(!rollout_path.exists());
+
+    assert_eq!(
+        session.hook_transcript_path().await,
+        Some(rollout_path.clone())
+    );
+    let (items, thread_id, parse_errors) = RolloutRecorder::load_rollout_items(&rollout_path)
+        .await
+        .expect("read materialized rollout");
+    assert_eq!((thread_id, parse_errors), (Some(session.thread_id), 0));
+    assert!(matches!(
+        items.as_slice(),
+        [RolloutItem::SessionMeta(meta)] if meta.meta.id == session.thread_id
+    ));
 }
 
 async fn wait_for_flush_count(

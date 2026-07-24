@@ -1520,6 +1520,7 @@
         "validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool",
         "capability_bearing_native_dynamic_tool_requires_thread_reload",
         "thread_fork_injects_native_android_tools_into_model_requests",
+        "paginated_thread_fork_injects_native_android_tools_into_model_requests",
         "canonical_android_dynamic_tool_preserves_supported_android_tool_names",
         "action_kind_accepts_current_and_compatibility_fields",
         "action_failure_summary_lists_completed_actions_without_payload_echo",
@@ -1572,7 +1573,7 @@
         "computer_use_started_and_completed_translate_to_thread_events"
       ],
       "owner": "downstream",
-      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Upstream audio output, preparation, duration-aware accounting, truncation, compaction, and history replay are adopted for ordinary dynamic tools and code mode, while downstream optional image detail remains authoritative across app-server events, stored history, schemas, and JSONL previews; do not add audio to the separate native computer-use response enum without a provider-contract change. Upstream commit c44c4de7b4 owns the per-sampling-step ExtensionData store passed to context, world-state, turn-input, and tool contributors; native-computer-use and dynamic-media extensions must build on that store instead of introducing a parallel step-local capability registry. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams. The current flat DynamicToolSpec compatibility shape remains authoritative for app-server input, persisted rows, resume filtering, provider registries, and the adapted upstream audio fixtures until the tracked tagged function/namespace migration can preserve those boundaries losslessly. When audio changes dependency resolution, regenerate Cargo and Bazel locks from the merged graph rather than unioning parent entries; the upstream Symphonia lock may reference a bitflags version absent from the downstream graph.",
+      "notes": "Runtime provider capability is supplied by Android, browser, or desktop tooling outside hot Codex core. Android screenshots, browser viewport captures, and desktop appshots should reach the model as native image content; provider artifact paths are diagnostic and replay breadcrumbs. Upstream audio output, preparation, duration-aware accounting, truncation, compaction, and history replay are adopted for ordinary dynamic tools and code mode, while downstream optional image detail remains authoritative across app-server events, stored history, schemas, and JSONL previews; do not add audio to the separate native computer-use response enum without a provider-contract change. Upstream commit c44c4de7b4 owns the per-sampling-step ExtensionData store passed to context, world-state, turn-input, and tool contributors; native-computer-use and dynamic-media extensions must build on that store instead of introducing a parallel step-local capability registry. Android providers should keep adb/UIAutomator-style readiness checks, UI-tree targeting, log/performance evidence, run-artifact receipts, and artifact-to-image conversion through MCP image content or android.read_artifact provider-side or in companion skills while Codex keeps the native image and transcript contract. Solar Gravity Lab is a proving and consumer app, not the generic owner of this Codex protocol/tool contract. Reuse android-emulator-mcp or a successor provider when it exposes the current Android MCP contract, with harness-specific compatibility handled provider-side. Keep macOS Screen Recording/Accessibility and Windows browser-shell implementation behind cleanroom provider seams. The current flat DynamicToolSpec compatibility shape remains authoritative for app-server input, persisted rows, resume filtering, provider registries, copied forks, prepared paginated forks, and the adapted upstream audio fixtures until the tracked tagged function/namespace migration can preserve those boundaries losslessly. Prepared paginated forks must retain upstream reference-backed persistence and reservation release while receiving the request-scoped provider surface. When audio changes dependency resolution, regenerate Cargo and Bazel locks from the merged graph rather than unioning parent entries; the upstream Symphonia lock may reference a bitflags version absent from the downstream graph.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "computer-use-provider-registry",
       "hotspot_files": [
@@ -1599,6 +1600,7 @@
         "codex-rs/protocol/src/dynamic_tools.rs",
         "codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/core/src/thread_manager.rs",
         "codex-rs/core/src/session/",
         "codex-rs/state/src/runtime/threads.rs",
         "codex-rs/state/migrations/0004_thread_dynamic_tools.sql",
@@ -1607,7 +1609,7 @@
         "codex-rs/state/migrations/0028_thread_dynamic_tools_capability_json.sql",
         "codex-rs/state/migrations/0029_thread_dynamic_tools_namespace.sql"
       ],
-      "behavior": "Downstream retains one flat function record with optional namespace, persistOnResume, and capability metadata across app-server input, session state, SQLite rows, resume filtering, and provider registries. Upstream's tagged function/namespace representation remains accepted only through lossless legacy ingestion until every persisted and runtime boundary can migrate together.",
+      "behavior": "Downstream retains one flat function record with optional namespace, persistOnResume, and capability metadata across app-server input, session state, SQLite rows, resume filtering, provider registries, and both copied and reference-backed paginated thread forks. Upstream's tagged function/namespace representation remains accepted only through lossless legacy ingestion until every persisted and runtime boundary can migrate together.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -1621,13 +1623,15 @@
         "dynamic_tool_spec_deserializes_capability_metadata",
         "environment_scoped_dynamic_tools_do_not_restore_without_revalidation",
         "thread_start_injects_dynamic_tools_into_model_requests",
+        "thread_fork_injects_native_android_tools_into_model_requests",
+        "paginated_thread_fork_injects_native_android_tools_into_model_requests",
         "code_mode_can_call_hidden_dynamic_tools",
         "code_mode_excludes_configured_nested_tool_namespaces",
         "dynamic_tool_audio_exceeding_the_output_budget_is_omitted",
         "remote_compact_does_not_charge_inline_audio_payload_as_text"
       ],
       "owner": "downstream",
-      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, or capability semantics. Upstream audio truncation and remote-compaction fixtures must continue to use this flat record until that migration lands losslessly. Upstream commit f69f88f811 owns persisted CompactedItem construction after live-history response IDs are assigned; downstream media carry composes around that boundary rather than rebuilding replacement history in compaction callers. Upstream 08ae0fc0ce owns the single StartThreadOptions startup entry; keep the flat record only as field compatibility through dynamic_tools and do not restore the removed start_thread_with_tools or start_thread_with_options helpers.",
+      "notes": "The tagged namespace migration is tracked alignment work, not an incidental conflict-resolution choice. It must preserve legacy app-server payloads and migrate existing SQLite rows without losing namespace, defer-loading, resume, capability, or fork semantics. Upstream audio truncation and remote-compaction fixtures must continue to use this flat record until that migration lands losslessly. Upstream commit f69f88f811 owns persisted CompactedItem construction after live-history response IDs are assigned; downstream media carry composes around that boundary rather than rebuilding replacement history in compaction callers. Upstream 08ae0fc0ce owns the single StartThreadOptions startup entry; keep the flat record only as field compatibility through dynamic_tools and do not restore the removed start_thread_with_tools or start_thread_with_options helpers. Upstream paginated prepared forks retain reference-backed persistence and reservation release; the narrow downstream adapter forwards request-scoped dynamic tools into that same helper rather than replacing it with copied history or an empty tool list.",
       "upstreamability_tier": "neutral-seam",
       "boundary_type": "tool-schema-persistence-compatibility",
       "hotspot_files": [
