@@ -1388,6 +1388,41 @@ async fn stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in()
         ))
         .await?;
 
+    let mut call_events = Vec::new();
+    while call_events.len() < 4 {
+        let event = wait_for_event(&fixture.codex, |ev| {
+            matches!(
+                ev,
+                EventMsg::McpToolCallBegin(_) | EventMsg::McpToolCallEnd(_)
+            )
+        })
+        .await;
+        match event {
+            EventMsg::McpToolCallBegin(begin) => {
+                call_events.push(McpCallEvent::Begin(begin.call_id));
+            }
+            EventMsg::McpToolCallEnd(end) => {
+                call_events.push(McpCallEvent::End(end.call_id));
+            }
+            _ => unreachable!("event guard guarantees MCP call events"),
+        }
+    }
+
+    let event_index = |needle: McpCallEvent| {
+        call_events
+            .iter()
+            .position(|event| event == &needle)
+            .expect("expected MCP call event")
+    };
+    let first_begin = event_index(McpCallEvent::Begin(first_call_id.to_string()));
+    let first_end = event_index(McpCallEvent::End(first_call_id.to_string()));
+    let second_begin = event_index(McpCallEvent::Begin(second_call_id.to_string()));
+    let second_end = event_index(McpCallEvent::End(second_call_id.to_string()));
+    assert!(
+        first_begin < second_end && second_begin < first_end,
+        "read-only MCP tool calls should overlap; saw events: {call_events:?}"
+    );
+
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     let request = final_mock.single_request();
@@ -1480,6 +1515,41 @@ async fn stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently() -> anyhow::Res
             "call the rmcp sync tool twice",
         ))
         .await?;
+
+    let mut call_events = Vec::new();
+    while call_events.len() < 4 {
+        let event = wait_for_event(&fixture.codex, |ev| {
+            matches!(
+                ev,
+                EventMsg::McpToolCallBegin(_) | EventMsg::McpToolCallEnd(_)
+            )
+        })
+        .await;
+        match event {
+            EventMsg::McpToolCallBegin(begin) => {
+                call_events.push(McpCallEvent::Begin(begin.call_id));
+            }
+            EventMsg::McpToolCallEnd(end) => {
+                call_events.push(McpCallEvent::End(end.call_id));
+            }
+            _ => unreachable!("event guard guarantees MCP call events"),
+        }
+    }
+
+    let event_index = |needle: McpCallEvent| {
+        call_events
+            .iter()
+            .position(|event| event == &needle)
+            .expect("expected MCP call event")
+    };
+    let first_begin = event_index(McpCallEvent::Begin(first_call_id.to_string()));
+    let first_end = event_index(McpCallEvent::End(first_call_id.to_string()));
+    let second_begin = event_index(McpCallEvent::Begin(second_call_id.to_string()));
+    let second_end = event_index(McpCallEvent::End(second_call_id.to_string()));
+    assert!(
+        first_begin < second_end && second_begin < first_end,
+        "parallel-enabled MCP tool calls should overlap; saw events: {call_events:?}"
+    );
 
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 

@@ -375,6 +375,9 @@ custom-prompts-targeted:
 mcp-tool-exposure-targeted:
     cargo test -p codex-core mcp_tool_exposure::tests:: --lib -- --test-threads=1
     cargo test -p codex-mcp list_all_tools_ --lib -- --test-threads=1
+    cargo test -p codex-mcp capture_binding_uses_the_ready_clients_own_tools --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently --exact
 
 mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1

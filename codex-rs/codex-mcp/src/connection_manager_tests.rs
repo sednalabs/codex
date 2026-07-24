@@ -1249,7 +1249,7 @@ async fn capture_binding_uses_the_ready_clients_own_tools() {
             .iter()
             .map(|tool| tool.callable_name.as_str())
             .collect::<Vec<_>>(),
-        vec!["shared_cached_tool"]
+        vec!["client_local_tool"]
     );
     let step = capture_binding(&manager).await;
     assert_eq!(
