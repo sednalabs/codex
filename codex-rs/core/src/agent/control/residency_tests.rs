@@ -273,10 +273,10 @@ async fn ephemeral_v2_agent_is_not_evicted_without_reloadable_history() {
         }
         Err(err) => err,
     };
-    let CodexErr::AgentLimitReached { max_threads } = err else {
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
         panic!("expected AgentLimitReached, got {err:?}");
     };
-    assert_eq!(max_threads, 1);
+    assert_eq!(*max_threads, 1);
     let still_loaded = manager
         .get_thread(first.thread_id)
         .await

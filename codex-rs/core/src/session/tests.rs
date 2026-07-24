@@ -6990,7 +6990,10 @@ async fn unknown_turn_environment_returns_error() {
         let state = session.state.lock().await;
         state.session_configuration.clone()
     };
-    assert!(matches!(err, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        err.details(),
+        codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+    ));
     assert!(err.to_string().contains("missing"));
     assert_eq!(current_configuration.cwd(), original_configuration.cwd());
     assert_eq!(
@@ -7028,7 +7031,10 @@ async fn duplicate_turn_environment_returns_error_without_mutating_session() {
         let state = session.state.lock().await;
         state.session_configuration.clone()
     };
-    assert!(matches!(err, CodexErr::InvalidRequest(_)));
+    assert!(matches!(
+        err.details(),
+        codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+    ));
     assert!(err.to_string().contains("duplicate"));
     assert_eq!(current_configuration.cwd(), original_configuration.cwd());
     assert_eq!(

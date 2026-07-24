@@ -1627,9 +1627,11 @@ async fn thread_fork_side_source_persists_and_hides_from_default_list() -> Resul
         Some(conversation_id.as_str())
     );
 
-    let state_runtime =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_runtime = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     let usage_thread_row = state_runtime
         .get_usage_thread_record(&side_thread_id)
         .await?

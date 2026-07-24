@@ -450,6 +450,7 @@ async fn failed_exec_end_uses_fallback_when_source_transcript_is_empty() {
         #[allow(deprecated)]
         turn.cwd.clone().into(),
         Some("123".to_string()),
+        /*plugin_attribution*/ None,
         Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default())),
         "PRE_DENIAL_MARKER".to_string(),
         "Network access denied".to_string(),
