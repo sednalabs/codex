@@ -2591,6 +2591,19 @@ docs-only refresh commit that records this snapshot.
   resume assertion uses the canonical namespace description for the flat
   downstream `DynamicToolSpec`. These are upstream-owned defaults, not a
   downstream tool-description or persistence-policy fork.
+- Exact-head hosted run `30076449242` then exposed the remaining retained
+  validation drift: the flat deferred-tool namespace assertion needed the same
+  canonical default, the Windows filesystem regression needed its direct
+  `codex-utils-cargo-bin` test dependency, and the generated config schema and
+  keymap counts were stale. GitHub-hosted generator run `30079131774` consumed
+  candidate `b6563273d977016adc5e1cf156cedd2ade29785b` through temporary
+  workflow head `b2ef8a15a4268759e05cb51811bf5380ee657f15` and produced the
+  six-file patch SHA-256
+  `6dfd7e18e50acce19f2eb986f8fe5a5a8c10db58d273982414283bb47f6762c4`.
+  It changes only `codex-rs/Cargo.lock`, `codex-rs/core/config.schema.json`,
+  and the four `keymap_setup` snapshots; `MODULE.bazel.lock` was regenerated
+  and unchanged.
+  Preserve generated output rather than hand-editing the schema or snapshots.
 
 ### Typed Cyber-Policy Retry Boundary
 

@@ -570,7 +570,7 @@
               "type": "boolean"
             },
             "current_time_reminder": {
-              "$ref": "#/definitions/FeatureToml6"
+              "$ref": "#/definitions/FeatureToml7"
             },
             "default_mode_request_user_input": {
               "type": "boolean"
@@ -678,7 +678,7 @@
               "$ref": "#/definitions/FeatureToml2"
             },
             "non_prefixed_mcp_tool_names": {
-              "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
+              "$ref": "#/definitions/FeatureToml4"
             },
             "personality": {
               "type": "boolean"
@@ -732,7 +732,7 @@
               "type": "boolean"
             },
             "rollout_budget": {
-              "$ref": "#/definitions/FeatureToml5"
+              "$ref": "#/definitions/FeatureToml6"
             },
             "runtime_metrics": {
               "type": "boolean"
@@ -780,7 +780,7 @@
               "type": "boolean"
             },
             "token_budget": {
-              "$ref": "#/definitions/FeatureToml4"
+              "$ref": "#/definitions/FeatureToml5"
             },
             "tool_call_mcp_elicitation": {
               "type": "boolean"
@@ -1226,7 +1226,7 @@
           "type": "boolean"
         },
         {
-          "$ref": "#/definitions/TokenBudgetConfigToml"
+          "$ref": "#/definitions/NonPrefixedMcpToolNamesConfigToml"
         }
       ]
     },
@@ -1236,11 +1236,21 @@
           "type": "boolean"
         },
         {
-          "$ref": "#/definitions/RolloutBudgetConfigToml"
+          "$ref": "#/definitions/TokenBudgetConfigToml"
         }
       ]
     },
     "FeatureToml6": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/RolloutBudgetConfigToml"
+        }
+      ]
+    },
+    "FeatureToml7": {
       "anyOf": [
         {
           "type": "boolean"
@@ -2607,14 +2617,20 @@
       "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "server_names": {
           "description": "MCP servers whose tools should omit the legacy `mcp__` namespace prefix.",
           "items": {
             "type": "string"
           },
-          "type": "array"
+          "type": [
+            "array",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -3995,7 +4011,14 @@
           ]
         },
         "update_plan": {
-          "$ref": "#/definitions/UpdatePlanToolConfig"
+          "oneOf": [
+            {
+              "$ref": "#/definitions/UpdatePlanToolConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "web_search": {
           "default": null,
@@ -4838,12 +4861,15 @@
           ]
         },
         "toggle_side_conversation": {
-          "allOf": [
+          "description": "Switch between a side conversation and its parent without closing either.",
+          "oneOf": [
             {
               "$ref": "#/definitions/KeybindingsSpec"
+            },
+            {
+              "type": "null"
             }
-          ],
-          "description": "Switch between a side conversation and its parent without closing either."
+          ]
         },
         "toggle_vim_mode": {
           "description": "Toggle Vim mode for the composer input.",
@@ -6421,7 +6447,7 @@
           "type": "boolean"
         },
         "current_time_reminder": {
-          "$ref": "#/definitions/FeatureToml6"
+          "$ref": "#/definitions/FeatureToml7"
         },
         "default_mode_request_user_input": {
           "type": "boolean"
@@ -6529,7 +6555,7 @@
           "$ref": "#/definitions/FeatureToml2"
         },
         "non_prefixed_mcp_tool_names": {
-          "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
+          "$ref": "#/definitions/FeatureToml4"
         },
         "personality": {
           "type": "boolean"
@@ -6583,7 +6609,7 @@
           "type": "boolean"
         },
         "rollout_budget": {
-          "$ref": "#/definitions/FeatureToml5"
+          "$ref": "#/definitions/FeatureToml6"
         },
         "runtime_metrics": {
           "type": "boolean"
@@ -6631,7 +6657,7 @@
           "type": "boolean"
         },
         "token_budget": {
-          "$ref": "#/definitions/FeatureToml4"
+          "$ref": "#/definitions/FeatureToml5"
         },
         "tool_call_mcp_elicitation": {
           "type": "boolean"
