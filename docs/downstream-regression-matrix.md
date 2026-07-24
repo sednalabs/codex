@@ -635,6 +635,12 @@ Agent Plugin manifests and host-provided `wait_for_environment` descriptions.
 The upstream plugin, core-skills, tool-router, and remote-environment tests
 remain the regression boundary; no parallel downstream tool surface is kept.
 
+Exact-head hosted run `30072479060` exposed only retained test-fixture drift:
+the tool-router constructor now sets the optional host configuration to `None`,
+and the SQLite resume fixture asserts the canonical default namespace
+description for a flat dynamic tool. Cross-platform Bazel core tests remain the
+authoritative regression boundary for those upstream compatibility adapters.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.

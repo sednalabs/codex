@@ -119,7 +119,6 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     .await;
 
     let namespace = "resume_tools";
-    let namespace_description = "Tools available after resume.";
     let tool_name = "resume_lookup";
     let tool_description = "Look up a value after resume.";
     let input_schema = json!({
@@ -202,7 +201,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
         &json!({
             "type": "namespace",
             "name": namespace,
-            "description": namespace_description,
+            "description": codex_tools::default_namespace_description(namespace),
             "tools": [{
                 "type": "function",
                 "name": tool_name,
