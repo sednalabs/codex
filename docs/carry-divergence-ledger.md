@@ -2768,6 +2768,13 @@ docs-only refresh commit that records this snapshot.
 - After client-id resolution, the flow uses PKCE, the identity-provider
   verification URL/user code, token-endpoint polling, and the existing MCP
   OAuth token cache.
+- Upstream `AuthorizationManager` is the primary discovery authority for both
+  local and runtime-routed HTTP clients. The downstream mapping preserves the
+  device endpoint and grant fields from upstream metadata extensions. A narrow
+  fallback remains only for device-only metadata, which upstream's current
+  metadata type cannot represent because it requires an authorization endpoint;
+  it must not grow back into a parallel normal or protected-resource discovery
+  implementation.
 - This is an intentional downstream carry for headless MCP server login until
   upstream ships an equivalent headless MCP OAuth login contract. During
   upstream syncs, preserve this behavior unless the upstream replacement covers
