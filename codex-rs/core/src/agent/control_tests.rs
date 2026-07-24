@@ -28,6 +28,7 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ContentItem;
@@ -392,8 +393,10 @@ async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
     match manager.get_thread(thread_id).await {
-        Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, thread_id),
-        Err(err) => panic!("expected ThreadNotFound, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(id) => assert_eq!(*id, thread_id),
+            _ => panic!("expected ThreadNotFound, got {err:?}"),
+        },
         Ok(_) => panic!("expected thread not to be loaded"),
     }
 }
@@ -528,7 +531,10 @@ async fn send_input_errors_when_thread_missing() {
         )
         .await
         .expect_err("send_input should fail for missing thread");
-    assert_matches!(err, CodexErr::ThreadNotFound(id) if id == thread_id);
+    assert_matches!(
+        err.details(),
+        CodexErrorDetails::ThreadNotFound(id) if *id == thread_id
+    );
 }
 
 #[tokio::test]
@@ -555,7 +561,10 @@ async fn subscribe_status_errors_for_missing_thread() {
         .subscribe_status(thread_id)
         .await
         .expect_err("subscribe_status should fail for missing thread");
-    assert_matches!(err, CodexErr::ThreadNotFound(id) if id == thread_id);
+    assert_matches!(
+        err.details(),
+        CodexErrorDetails::ThreadNotFound(id) if *id == thread_id
+    );
 }
 
 #[tokio::test]
@@ -749,8 +758,10 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         cold_status
     );
     match harness.manager.get_thread(spawned_agent.thread_id).await {
-        Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, spawned_agent.thread_id),
-        Err(err) => panic!("expected ThreadNotFound, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(id) => assert_eq!(*id, spawned_agent.thread_id),
+            _ => panic!("expected ThreadNotFound, got {err:?}"),
+        },
         Ok(_) => panic!("expected thread to be removed"),
     }
 
@@ -2381,13 +2392,13 @@ async fn spawn_agent_respects_legacy_max_threads_alias() {
         )
         .await
         .expect_err("spawn_agent should respect max threads");
-    let CodexErr::AgentLimitReached {
+    let CodexErrorDetails::AgentLimitReached {
         max_threads: seen_max_threads,
-    } = err
+    } = err.details()
     else {
-        panic!("expected CodexErr::AgentLimitReached");
+        panic!("expected AgentLimitReached");
     };
-    assert_eq!(seen_max_threads, max_threads);
+    assert_eq!(*seen_max_threads, max_threads);
 
     let _ = control
         .shutdown_live_agent(first_agent_id)
@@ -2472,10 +2483,10 @@ async fn spawn_agent_limit_shared_across_clones() {
         )
         .await
         .expect_err("spawn_agent should respect shared guard");
-    let CodexErr::AgentLimitReached { max_threads } = err else {
-        panic!("expected CodexErr::AgentLimitReached");
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
+        panic!("expected AgentLimitReached");
     };
-    assert_eq!(max_threads, 1);
+    assert_eq!(*max_threads, 1);
 
     let _ = control
         .shutdown_live_agent(first_agent_id)
@@ -2525,13 +2536,13 @@ async fn resume_agent_respects_max_threads_limit() {
         .resume_agent_from_rollout(config, resumable_id, SessionSource::Exec)
         .await
         .expect_err("resume should respect max threads");
-    let CodexErr::AgentLimitReached {
+    let CodexErrorDetails::AgentLimitReached {
         max_threads: seen_max_threads,
-    } = err
+    } = err.details()
     else {
-        panic!("expected CodexErr::AgentLimitReached");
+        panic!("expected AgentLimitReached");
     };
-    assert_eq!(seen_max_threads, max_threads);
+    assert_eq!(*seen_max_threads, max_threads);
 
     let _ = control
         .shutdown_live_agent(active_id)

@@ -162,10 +162,10 @@ mod tests {
     #[tokio::test]
     async fn extension_storage_migrations_use_namespace_versions() -> anyhow::Result<()> {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string()).await?;
+        let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await?;
         drop(runtime);
-        let state_db_path =
-            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()).state_db_path();
+        let state_db_path = sqlite.state_db_path();
 
         let pool = SqlitePoolOptions::new()
             .max_connections(1)

@@ -806,6 +806,7 @@ mod tests {
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
     use codex_protocol::protocol::TurnCompleteEvent;
+    use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
     use sqlx::SqlitePool;
     use std::time::Duration;
@@ -922,8 +923,11 @@ mod tests {
 
     async fn init_runtime() -> Result<(Arc<StateRuntime>, TempDir)> {
         let tmp_dir = tempdir()?;
-        let runtime =
-            StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string()).await?;
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(tmp_dir.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
         Ok((runtime, tmp_dir))
     }
 
@@ -1812,9 +1816,11 @@ WHERE thread_id = ?
         let root_thread_id = ThreadId::new();
         let parent_thread_id = ThreadId::new();
         {
-            let runtime =
-                StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string())
-                    .await?;
+            let runtime = StateRuntime::init(
+                crate::SqliteConfig::new_for_testing(tmp_dir.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?;
             let _root_logger = UsageLogger::try_new(
                 runtime.clone(),
                 root_thread_id,
@@ -1841,8 +1847,11 @@ WHERE thread_id = ?
             .await?;
         }
 
-        let reopened_runtime =
-            StateRuntime::init(tmp_dir.path().to_path_buf(), "test-provider".to_string()).await?;
+        let reopened_runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(tmp_dir.path().abs()),
+            "test-provider".to_string(),
+        )
+        .await?;
         let child_thread_id = ThreadId::new();
         let _child_logger = UsageLogger::try_new(
             reopened_runtime.clone(),

@@ -181,11 +181,15 @@ mod tests {
 
     use super::super::test_support::unique_temp_dir;
     use super::StateRuntime;
+    use codex_utils_absolute_path::test_support::PathExt;
 
     #[tokio::test]
     async fn global_phase2_attestation_requirement_is_root_scoped() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
             .await
             .expect("initialize runtime");
 
@@ -230,7 +234,10 @@ mod tests {
     #[tokio::test]
     async fn phase2_attested_baseline_is_root_and_output_scoped() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
             .await
             .expect("initialize runtime");
 
@@ -270,7 +277,10 @@ mod tests {
     #[tokio::test]
     async fn record_phase2_attested_baseline_marks_root_required() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+        let runtime = StateRuntime::init(
+            crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+            "test-provider".to_string(),
+        )
             .await
             .expect("initialize runtime");
 

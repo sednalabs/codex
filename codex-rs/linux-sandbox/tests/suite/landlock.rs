@@ -7,7 +7,7 @@ use codex_core::exec_env::create_env;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
@@ -87,33 +87,35 @@ async fn run_cmd_output(
     .await
     {
         Ok(output) => output,
-        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
-            if is_bwrap_unavailable_output(&output) =>
-        {
-            let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
-                cmd,
-                writable_roots,
-                timeout_ms,
-                /*use_legacy_landlock*/ true,
-                /*network_access*/ false,
-            )
-            .await
-            .expect("sandboxed command should execute with legacy Landlock fallback");
-            output
-        }
-        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => {
-            let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
-                cmd,
-                writable_roots,
-                timeout_ms,
-                /*use_legacy_landlock*/ true,
-                /*network_access*/ false,
-            )
-            .await
-            .expect("sandboxed command should execute with legacy Landlock fallback");
-            output
-        }
-        Err(err) => panic!("sandboxed command should execute: {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. })
+                if is_bwrap_unavailable_output(output) =>
+            {
+                let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
+                    cmd,
+                    writable_roots,
+                    timeout_ms,
+                    /*use_legacy_landlock*/ true,
+                    /*network_access*/ false,
+                )
+                .await
+                .expect("sandboxed command should execute with legacy Landlock fallback");
+                output
+            }
+            CodexErrorDetails::Io(error) if error.kind() == ErrorKind::NotFound => {
+                let output: ExecToolCallOutput = run_cmd_result_with_writable_roots(
+                    cmd,
+                    writable_roots,
+                    timeout_ms,
+                    /*use_legacy_landlock*/ true,
+                    /*network_access*/ false,
+                )
+                .await
+                .expect("sandboxed command should execute with legacy Landlock fallback");
+                output
+            }
+            details => panic!("sandboxed command should execute: {details:?}"),
+        },
     }
 }
 
@@ -264,14 +266,16 @@ async fn should_skip_bwrap_tests() -> bool {
     .await
     {
         Ok(output) => is_bwrap_unavailable_output(&output),
-        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => {
-            is_bwrap_unavailable_output(&output)
-        }
-        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => true,
-        // Probe timeouts are not actionable for the bwrap-specific assertions below;
-        // skip rather than fail the whole suite.
-        Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => true,
-        Err(err) => panic!("bwrap availability probe failed unexpectedly: {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
+                is_bwrap_unavailable_output(output)
+            }
+            CodexErrorDetails::Io(error) if error.kind() == ErrorKind::NotFound => true,
+            // Probe timeouts are not actionable for the bwrap-specific assertions below;
+            // skip rather than fail the whole suite.
+            CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. }) => true,
+            details => panic!("bwrap availability probe failed unexpectedly: {details:?}"),
+        },
     }
 }
 
@@ -286,14 +290,16 @@ async fn should_skip_sandbox_helper_tests() -> bool {
     .await
     {
         Ok(_) => false,
-        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => true,
-        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))
-            if is_legacy_landlock_direct_runtime_output(&output) =>
-        {
-            true
-        }
-        Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => true,
-        Err(err) => panic!("sandbox helper availability probe failed unexpectedly: {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::Io(error) if error.kind() == ErrorKind::NotFound => true,
+            CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. })
+                if is_legacy_landlock_direct_runtime_output(output) =>
+            {
+                true
+            }
+            CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. }) => true,
+            details => panic!("sandbox helper availability probe failed unexpectedly: {details:?}"),
+        },
     }
 }
 
@@ -303,8 +309,12 @@ fn expect_denied(result: Result<ExecToolCallOutput>, context: &str) -> ExecToolC
             assert_ne!(output.exit_code, 0, "{context}: expected nonzero exit code");
             output
         }
-        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => *output,
-        Err(err) => panic!("{context}: {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
+                output.as_ref().clone()
+            }
+            details => panic!("{context}: {details:?}"),
+        },
     }
 }
 
@@ -521,7 +531,7 @@ async fn test_timeout() {
     )
     .await
     {
-        Err(CodexErr::Sandbox(SandboxErr::Timeout { .. })) => {}
+        Err(err) if matches!(err.details(), CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. })) => {}
         other => panic!("expected Sandbox(Timeout), got: {other:?}"),
     }
 }
@@ -565,14 +575,16 @@ async fn assert_network_blocked(cmd: &[&str]) {
 
     let output = match result {
         Ok(output) => output,
-        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => *output,
-        Err(CodexErr::Io(err)) if err.kind() == ErrorKind::NotFound => {
-            eprintln!("skipping sandbox helper test: helper executable is unavailable");
-            return;
-        }
-        _ => {
-            panic!("expected sandbox denied error, got: {result:?}");
-        }
+        Err(err) => match err.details() {
+            CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
+                output.as_ref().clone()
+            }
+            CodexErrorDetails::Io(error) if error.kind() == ErrorKind::NotFound => {
+                eprintln!("skipping sandbox helper test: helper executable is unavailable");
+                return;
+            }
+            details => panic!("expected sandbox denied error, got: {details:?}"),
+        },
     };
 
     dbg!(&output.stderr.text);
@@ -725,8 +737,13 @@ async fn sandbox_reports_codex_symlink_build_failure_without_panicking() {
     )
     .await
     {
-        Err(CodexErr::Sandbox(SandboxErr::Denied { output, .. })) => *output,
-        result => panic!(".codex symlink build failure should deny: {result:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
+                output.as_ref().clone()
+            }
+            details => panic!(".codex symlink build failure should deny: {details:?}"),
+        },
+        Ok(output) => panic!(".codex symlink build failure should deny: {output:?}"),
     };
 
     assert_eq!(output.exit_code, 1);

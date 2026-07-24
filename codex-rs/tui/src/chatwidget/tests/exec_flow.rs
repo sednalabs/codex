@@ -369,6 +369,8 @@ async fn exec_end_without_begin_uses_event_command() {
             command: codex_shell_command::parse_command::shlex_join(&command),
             cwd: cwd.into(),
             process_id: None,
+            plugin_id: None,
+            script_path: None,
             terminal_wait: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,

@@ -17,7 +17,7 @@ expression: "render_picker(params, 78)"
   Global         Clear Terminal             ctrl-l
   Global       - Toggle Vim Mode            unbound
   Global         Toggle Raw Output          alt-r
+  Global         Toggle Side Conversation   ctrl-/
   Chat           Interrupt Turn             esc
-  Chat           Decrease Reasoning Effort  alt-,, shift-down
 
   left/right group · enter edit shortcut · * custom · - unbound · esc close

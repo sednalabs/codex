@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::AgentPath;
+use codex_protocol::error::CodexErrorDetails;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
 
@@ -112,10 +113,10 @@ fn commit_holds_slot_until_release() {
         Ok(_) => panic!("limit should be enforced"),
         Err(err) => err,
     };
-    let CodexErr::AgentLimitReached { max_threads } = err else {
-        panic!("expected CodexErr::AgentLimitReached");
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
+        panic!("expected AgentLimitReached");
     };
-    assert_eq!(max_threads, 1);
+    assert_eq!(*max_threads, 1);
 
     registry.release_spawned_thread(thread_id);
     let reservation = registry
@@ -137,10 +138,10 @@ fn release_ignores_unknown_thread_id() {
         Ok(_) => panic!("limit should still be enforced"),
         Err(err) => err,
     };
-    let CodexErr::AgentLimitReached { max_threads } = err else {
-        panic!("expected CodexErr::AgentLimitReached");
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
+        panic!("expected AgentLimitReached");
     };
-    assert_eq!(max_threads, 1);
+    assert_eq!(*max_threads, 1);
 
     registry.release_spawned_thread(thread_id);
     let reservation = registry
@@ -168,10 +169,10 @@ fn release_is_idempotent_for_registered_threads() {
         Ok(_) => panic!("limit should still be enforced"),
         Err(err) => err,
     };
-    let CodexErr::AgentLimitReached { max_threads } = err else {
-        panic!("expected CodexErr::AgentLimitReached");
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
+        panic!("expected AgentLimitReached");
     };
-    assert_eq!(max_threads, 1);
+    assert_eq!(*max_threads, 1);
 
     registry.release_spawned_thread(second_id);
     let reservation = registry
