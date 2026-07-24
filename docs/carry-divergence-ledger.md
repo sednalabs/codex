@@ -2158,6 +2158,11 @@ docs-only refresh commit that records this snapshot.
 - `paginated_thread_fork_injects_native_android_tools_into_model_requests`
   is the focused regression guard for that combined seam. It proves a
   reference-backed child advertises `android_step` on its first model request.
+- The upstream `history_base` field is explicit at every `CreateThreadParams`
+  construction: ordinary and copied-history fixtures use `None`, while only
+  reference-backed paginated forks persist the inherited base. This keeps
+  test-only constructors aligned with the storage contract instead of
+  reintroducing an implicit legacy default.
 - This sync intentionally retains the flat `DynamicToolSpec` compatibility
   shape (`namespace` plus function metadata) because app-server requests,
   persisted SQLite rows, provider registries, and resume filtering still share
