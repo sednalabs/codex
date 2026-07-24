@@ -2474,6 +2474,22 @@ docs-only refresh commit that records this snapshot.
   Schemars 1.2 and external-agent import-history sources. The temporary branch
   contains only the generator workflow and is removed after this receipt is
   applied; do not recreate these fixtures by hand.
+- Signed merge `9aabe48158` preserves upstream `94ebae725e` as its second
+  parent. It adopts upstream plugin-script attribution, refreshed Apps-tool
+  persistence, configurable SQLite homes, Browser Use requirements,
+  configurable `update_plan`, and proxy-aware exec-server WebSockets. The
+  retained carries are disjoint: state collision repair and migration ordering,
+  interrupted V2-agent reload, App authentication propagation before plugin
+  loading, terminal-wait event fields alongside upstream plugin attribution,
+  and native computer-use, dynamic-tool, and image-item coverage.
+- Ready MCP clients are the exact binding authority. Shared cache snapshots are
+  discovery fallbacks only while startup is pending or a live client is absent;
+  `capture_binding_uses_the_ready_clients_own_tools` must never regress to
+  advertising a stale shared-cache tool for a ready client.
+- `codex.mcp-tool-exposure-targeted` includes the ready-client authority check
+  plus both RMCP overlap tests. The read-only and explicit server-parallel
+  paths must emit both call-begin events before either call-end event; the
+  separate mutable default-false test remains the serial baseline.
 
 ### Typed Cyber-Policy Retry Boundary
 
