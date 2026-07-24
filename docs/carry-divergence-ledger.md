@@ -2490,6 +2490,15 @@ docs-only refresh commit that records this snapshot.
   plus both RMCP overlap tests. The read-only and explicit server-parallel
   paths must emit both call-begin events before either call-end event; the
   separate mutable default-false test remains the serial baseline.
+- Signed merge `ff5c3efd1a` preserves upstream `3947f0d0c3` as its second
+  parent. It adopts upstream deferred-tool world-state source listings,
+  source-listing-aware tool-search caching, and the exec-server HTTP transport
+  decoupling without adding a downstream transport fork.
+- The tool-search union keeps the upstream prebuilt, source-listing-aware
+  `ToolSpec` and cache key. Downstream normalized entries remain only for exact
+  identifier ranking and namespace coalescing, including deferred dynamic
+  tools and native image-search results; they must not restore duplicate source
+  listings or bypass upstream world-state advertisement.
 
 ### Typed Cyber-Policy Retry Boundary
 
