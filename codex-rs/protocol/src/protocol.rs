@@ -71,6 +71,16 @@ use strum_macros::Display;
 use tracing::error;
 use ts_rs::TS;
 
+mod inference_observation;
+pub use inference_observation::INFERENCE_CALL_CORRELATION_ID_MAX_BYTES;
+pub use inference_observation::INFERENCE_CALL_EVENT_MAX_BYTES;
+pub use inference_observation::INFERENCE_CALL_ID_MAX_BYTES;
+pub use inference_observation::INFERENCE_CALL_STRING_MAX_BYTES;
+pub use inference_observation::InferenceCallEvent;
+pub use inference_observation::InferenceCallField;
+pub use inference_observation::InferenceCallStatus;
+pub use inference_observation::InferenceCallTransport;
+
 pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
@@ -1453,6 +1463,9 @@ pub enum EventMsg {
     RawResponseItem(RawResponseItemEvent),
     RawResponseCompleted(RawResponseCompletedEvent),
 
+    /// Payload-free lifecycle observation for one client-side inference attempt.
+    InferenceCall(InferenceCallEvent),
+
     ItemStarted(ItemStartedEvent),
     ItemCompleted(ItemCompletedEvent),
     HookStarted(HookStartedEvent),
@@ -1486,6 +1499,10 @@ pub enum EventMsg {
 
     /// Path-based v2 sub-agent activity.
     SubAgentActivity(SubAgentActivityEvent),
+
+    /// Event type introduced by a newer producer and intentionally ignored by this reader.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS, EnumIter)]
