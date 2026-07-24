@@ -4237,6 +4237,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "codex-utils-string",
+ "futures",
  "pretty_assertions",
  "schemars 1.2.1",
  "serde",
