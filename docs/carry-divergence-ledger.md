@@ -2585,6 +2585,12 @@ docs-only refresh commit that records this snapshot.
   `a28374e0db`: Agent Plugin manifests and host-customized
   `wait_for_environment` descriptions are adopted without a downstream plugin
   or tool-description fork. The merge leaves generated locks unchanged.
+- Exact-head hosted run `30072479060` found two retained-fixture adapters after
+  that upstream API expansion: a tool-router test now explicitly leaves the
+  optional host `wait_for_environment` configuration unset, and the SQLite
+  resume assertion uses the canonical namespace description for the flat
+  downstream `DynamicToolSpec`. These are upstream-owned defaults, not a
+  downstream tool-description or persistence-policy fork.
 
 ### Typed Cyber-Policy Retry Boundary
 
