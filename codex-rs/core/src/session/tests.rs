@@ -1,3 +1,4 @@
+use super::mcp_refresh::McpRefresh;
 use super::turn_context::TurnEnvironment;
 use super::*;
 use crate::agents_md_manager::AgentsMdManager;
@@ -5624,8 +5625,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
-        mcp_refresh_pending: std::sync::atomic::AtomicBool::new(true),
-        mcp_refresh_lock: Semaphore::new(/*permits*/ 1),
+        mcp_refresh: McpRefresh::new(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -5640,6 +5640,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         next_internal_sub_id: AtomicU64::new(0),
     };
 
+    session.mark_mcp_runtime_dirty();
     (session, turn_context)
 }
 
@@ -6765,9 +6766,7 @@ async fn user_turn_updates_approvals_reviewer() {
         codex_config::types::ApprovalsReviewer::AutoReview
     );
     assert!(
-        session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire),
+        session.mcp_refresh.is_pending(),
         "server elicitation authority changes must refresh MCP state"
     );
 }
@@ -7854,8 +7853,7 @@ where
         windows_sandbox_proxy_settings_mode:
             codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
-        mcp_refresh_pending: std::sync::atomic::AtomicBool::new(true),
-        mcp_refresh_lock: Semaphore::new(/*permits*/ 1),
+        mcp_refresh: McpRefresh::new(),
         mcp_elicitation_reviewer_handle: OnceLock::new(),
         mcp_elicitation_lifecycle_handle: OnceLock::new(),
         mcp_prewarm_tx: async_channel::bounded(1).0,
@@ -7870,6 +7868,7 @@ where
         next_internal_sub_id: AtomicU64::new(0),
     });
 
+    session.mark_mcp_runtime_dirty();
     (session, turn_context, rx_event)
 }
 
@@ -8017,26 +8016,20 @@ async fn cancelled_mcp_refresh_remains_pending() {
             let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
             assert!(std::future::Future::poll(refresh.as_mut(), &mut context).is_pending());
             assert!(
-                !session
-                    .mcp_refresh_pending
-                    .load(std::sync::atomic::Ordering::Acquire),
+                !session.mcp_refresh.is_pending(),
                 "the refresh should have claimed its pending invalidation"
             );
         }
     }
 
     assert!(
-        session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire),
+        session.mcp_refresh.is_pending(),
         "a cancelled refresh must leave the runtime dirty"
     );
 
     session.refresh_mcp_if_dirty().await;
     assert!(
-        !session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire),
+        !session.mcp_refresh.is_pending(),
         "the next refresh should publish the pending runtime"
     );
 }
@@ -8069,11 +8062,7 @@ async fn mcp_policy_changes_schedule_runtime_refresh() {
         .await
         .expect("approval policy update should succeed");
 
-    assert!(
-        session
-            .mcp_refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire)
-    );
+    assert!(session.mcp_refresh.is_pending());
 }
 
 #[tokio::test]
@@ -8088,9 +8077,7 @@ async fn mcp_refresh_updates_plugin_auth_mode_before_checking_pending_state() {
     let auth_mode = session.services.auth_manager.get_api_auth_mode();
 
     assert_ne!(session.services.plugins_manager.auth_mode(), auth_mode);
-    session
-        .mcp_refresh_pending
-        .store(false, std::sync::atomic::Ordering::Release);
+    session.mcp_refresh.claim();
 
     session.refresh_mcp_if_dirty().await;
 
@@ -8121,9 +8108,7 @@ async fn mcp_refresh_updates_plugin_auth_mode_before_checking_pending_state() {
         Some("new-api-key".to_string())
     );
     assert_eq!(session.services.plugins_manager.auth_mode(), auth_mode);
-    session
-        .mcp_refresh_pending
-        .store(false, std::sync::atomic::Ordering::Release);
+    session.mcp_refresh.claim();
 
     session.refresh_mcp_if_dirty().await;
 
