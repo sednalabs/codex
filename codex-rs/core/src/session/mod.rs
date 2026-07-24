@@ -216,6 +216,7 @@ mod handlers;
 mod inject;
 pub(crate) mod input_queue;
 mod mcp;
+mod mcp_prewarm;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
 mod review;
@@ -1563,7 +1564,7 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
-        let (previous_config, new_config, permission_profile_changed) = {
+        let (previous_config, new_config, permission_profile_changed, mcp_inputs_changed) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
                 Ok(updated) => updated,
@@ -1599,17 +1600,25 @@ impl Session {
                     .turn_environments
                     .update_selections(updated.environment_selections());
             }
+            state.session_configuration = updated;
             if mcp_inputs_changed {
                 self.mark_mcp_runtime_dirty();
             }
-            state.session_configuration = updated;
-            (previous_config, new_config, permission_profile_changed)
+            (
+                previous_config,
+                new_config,
+                permission_profile_changed,
+                mcp_inputs_changed,
+            )
         };
 
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
+        }
+        if mcp_inputs_changed {
+            self.schedule_mcp_prewarm();
         }
         Ok(())
     }
@@ -1726,6 +1735,7 @@ impl Session {
             (previous_config, new_config, config)
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
+        self.schedule_mcp_prewarm();
         let environments = self.services.turn_environments.snapshot().await;
         let hooks = build_hooks_for_config(
             config.as_ref(),
@@ -1791,6 +1801,8 @@ impl Session {
         }
         state.session_configuration.original_config_do_not_use = Arc::new(config);
         self.mark_mcp_runtime_dirty();
+        drop(state);
+        self.schedule_mcp_prewarm();
     }
 
     fn emit_config_changed_contributors(
