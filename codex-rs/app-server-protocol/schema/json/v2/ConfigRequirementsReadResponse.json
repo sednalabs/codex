@@ -163,7 +163,7 @@
         "browserUse": {
           "anyOf": [
             {
-              "$ref": "#/definitions/BrowserUseRequirements"
+              "$ref": "#/$defs/BrowserUseRequirements"
             },
             {
               "type": "null"
