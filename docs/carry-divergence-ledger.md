@@ -2507,6 +2507,12 @@ docs-only refresh commit that records this snapshot.
   JSON fixture uses the current `$defs` Browser Use reference and the TypeScript
   map signatures match the generator. Do not hand-edit or partially select
   this artifact.
+- Signed merge `9092762358` preserves upstream `f47f28cd0d` as its second
+  parent. It adopts upstream's CLI snapshot runfiles and Windows-only sandbox
+  binary-test constraint, directly retiring the corresponding cross-platform
+  Bazel failures. The argument-label changes from that upstream commit were
+  already present in the integrated tree, so this boundary adds no downstream
+  lint carry or duplicate test edits.
 
 ### Typed Cyber-Policy Retry Boundary
 
