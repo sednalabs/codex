@@ -2366,6 +2366,15 @@ docs-only refresh commit that records this snapshot.
   per-step bindings keep their captured connection set. Keep downstream
   pagination, OAuth-store selection, and cache ordering inside that runtime;
   do not restore a session-level config/connection mirror.
+- The 2026-07-24 integration adopts upstream `ef2d3edb95`'s background
+  prewarm while preserving that step boundary during execution. Tool dispatch
+  prepares a call directly from `StepContext::mcp`; it must not refresh and
+  recapture a binding per call. A prepared RPC holds catalogue read authority
+  through the call, whereas recapture refresh needs the competing write
+  authority and would serialize calls that the model and server permit to run
+  in parallel. The retained end-to-end event-order regressions are
+  `stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in` and
+  `stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently`.
 - Upstream `6e0455fdc4` sends `codex-mcp-client/<version>` on default
   Streamable HTTP and OAuth requests. An explicitly configured `user-agent`
   header remains authoritative. The focused regressions are
@@ -2384,6 +2393,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/codex-mcp/src/rmcp_client_tests.rs`
   - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
   - `codex-rs/app-server/tests/suite/v2/mcp_server_status.rs`
+  - `codex-rs/core/src/mcp_tool_call.rs`
   - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/core/src/session/mcp.rs`

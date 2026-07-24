@@ -566,7 +566,9 @@ authority and scheduling evidence to `codex.mcp-tool-exposure-targeted`:
 `stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently`. The latter two assert
 event ordering, not only successful barrier completion: both begin events must
 precede either end event. The mutable default-false RMCP test remains the
-separate serial baseline.
+separate serial baseline. Dispatch must prepare each call from the binding
+already advertised in `StepContext`; a per-call catalogue refresh would compete
+with the prepared call's read authority and serialize this pair.
 
 The follow-on upstream merge through `3947f0d0c3` makes `tool_search` omit
 duplicated source listings only when deferred-tool world state already
@@ -813,6 +815,11 @@ for a removed crate path.
   `preparation_holds_catalog_authority_until_it_finishes` are required beside
   the pagination checks. A live `list_changed` replacement must advance the
   manager revision without publishing a partial or locally filtered snapshot.
+- Execution prepares from that already captured step binding; it must not
+  refresh and recapture a binding for each tool call. The prepared RPC holds
+  catalogue read authority through completion, so a competing recapture write
+  would serialize calls that are explicitly parallel or read-only. The two
+  stdio RMCP event-order regressions retain this guard.
 - Binding and connection-manager fixtures construct the same atomic complete
   snapshot, refresh lock, and server identity as the live `ManagedClient`; the
   removed mutable `tools` fixture field must not reappear.
