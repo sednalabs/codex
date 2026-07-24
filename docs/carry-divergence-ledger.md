@@ -2519,10 +2519,26 @@ docs-only refresh commit that records this snapshot.
   this artifact.
 - Signed merge `9092762358` preserves upstream `f47f28cd0d` as its second
   parent. It adopts upstream's CLI snapshot runfiles and Windows-only sandbox
-  binary-test constraint, directly retiring the corresponding cross-platform
-  Bazel failures. The argument-label changes from that upstream commit were
-  already present in the integrated tree, so this boundary adds no downstream
-  lint carry or duplicate test edits.
+  binary-test declaration. The upstream commit omitted the corresponding
+  `codex_rust_crate` macro parameter and failed its own hosted Bazel analysis, so
+  downstream temporarily accepts and forwards that platform constraint to the
+  generated unit-test binary and wrapper. Drop the shim when upstream supplies
+  the missing macro support. The argument-label changes from that upstream
+  commit were already present in the integrated tree, so this boundary adds no
+  downstream lint carry or duplicate test edits.
+- Signed merge `9e5b6909de` incorporates the landed runtime-receipt carry from
+  `origin/main` through `4614b8037f`. Its documentation resolution is a union:
+  Luna-low terminal babysitting and live inspect/send receipts remain, together
+  with the newer paginated cold-reload and policy-removal guarantees.
+- Signed merge `74c1d89ee4` preserves upstream `0dfa778dae` as its second
+  parent and adopts the WebSocket transport for the code-mode host without a
+  downstream transport fork.
+- The same hosted blocking run exposed two independent downstream integration
+  repairs. `features_schema` must insert `NonPrefixedMcpToolNames` into the
+  Schemars 1.2 `properties` map, and
+  `codex.mcp-tool-exposure-targeted` must declare `needs_nextest` because its
+  existing `just` recipe invokes `cargo nextest`. Existing config-schema and CI
+  planner tests are the regression guards.
 
 ### Typed Cyber-Policy Retry Boundary
 

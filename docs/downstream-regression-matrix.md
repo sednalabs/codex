@@ -586,10 +586,19 @@ fixture-consistency proof.
 
 The final upstream boundary through `f47f28cd0d` supplies the CLI snapshot
 runfiles required by Bazel and limits the Windows sandbox binary test target to
-Windows. Signed merge `9092762358` adopts that configuration without a
-downstream overlay; the same upstream commit's argument-label fixes were
-already patch-equivalent in the integration tree. Hosted `blocking-ci` remains
-the authoritative cross-platform proof for this build-configuration boundary.
+Windows. Signed merge `9092762358` adopts that declaration, while the temporary
+`codex_rust_crate` compatibility shim supplies the macro parameter omitted by
+the upstream commit and forwards its platform constraint to the generated test
+binary and wrapper. The same upstream commit's argument-label fixes were already
+patch-equivalent in the integration tree. Hosted `blocking-ci` remains the
+authoritative cross-platform proof for this build-configuration boundary.
+
+Signed merge `74c1d89ee4` advances the boundary through upstream `0dfa778dae`
+and adopts the code-mode host WebSocket transport without a downstream
+transport fork. The same checkpoint keeps the Schemars 1.2
+`NonPrefixedMcpToolNames` insertion on the downstream `properties` map and
+declares nextest setup for `codex.mcp-tool-exposure-targeted`; hosted config
+schema, planner, and Bazel jobs guard those integration repairs.
 
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
