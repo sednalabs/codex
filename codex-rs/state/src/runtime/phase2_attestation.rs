@@ -190,8 +190,8 @@ mod tests {
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
             "test-provider".to_string(),
         )
-            .await
-            .expect("initialize runtime");
+        .await
+        .expect("initialize runtime");
 
         assert!(
             !runtime
@@ -238,8 +238,8 @@ mod tests {
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
             "test-provider".to_string(),
         )
-            .await
-            .expect("initialize runtime");
+        .await
+        .expect("initialize runtime");
 
         let baseline = baseline("root-a", "tree-a");
         runtime
@@ -281,8 +281,8 @@ mod tests {
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
             "test-provider".to_string(),
         )
-            .await
-            .expect("initialize runtime");
+        .await
+        .expect("initialize runtime");
 
         assert!(
             !runtime

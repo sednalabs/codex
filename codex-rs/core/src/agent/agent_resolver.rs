@@ -22,15 +22,14 @@ pub(crate) async fn resolve_agent_target(
         .resolve_agent_reference(session.thread_id, &turn.session_source, target)
         .await
         .map_err(|err| match err.details() {
-            CodexErrorDetails::UnsupportedOperation(message) if message.starts_with("live agent path ") =>
+            CodexErrorDetails::UnsupportedOperation(message)
+                if message.starts_with("live agent path ") =>
             {
                 FunctionCallError::RespondToModel(message.clone())
             }
-            CodexErrorDetails::UnsupportedOperation(message) => {
-                FunctionCallError::RespondToModel(format!(
-                    "invalid agent target {target}: {message}"
-                ))
-            }
+            CodexErrorDetails::UnsupportedOperation(message) => FunctionCallError::RespondToModel(
+                format!("invalid agent target {target}: {message}"),
+            ),
             _ => FunctionCallError::RespondToModel(err.to_string()),
         })
 }

@@ -2539,6 +2539,15 @@ docs-only refresh commit that records this snapshot.
   `codex.mcp-tool-exposure-targeted` must declare `needs_nextest` because its
   existing `just` recipe invokes `cargo nextest`. Existing config-schema and CI
   planner tests are the regression guards.
+- GitHub-hosted format-generation run `30062964365` used the repository's
+  pinned nightly rustfmt and Prettier against exact candidate
+  `f0b43d9719466f21f3743b0c8980c15160d531e5`. Temporary workflow commit
+  `0d366cc86f7eb14be9e3bd6e1e7eb42da60fc7f8` produced the complete six-file
+  patch with SHA-256
+  `8f2843a661bcb2a7371c8485a9f820c907a85461bacb0f2b5b13f7212db5115f`.
+  The artifact formats `agent_resolver.rs`, `sqlite_state.rs`, `landlock.rs`,
+  both state runtime test files, and this sync's regression-matrix prose; apply
+  the output as one generated set rather than hand-selecting hunks.
 
 ### Typed Cyber-Policy Retry Boundary
 

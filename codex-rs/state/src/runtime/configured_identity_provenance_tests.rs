@@ -15,8 +15,8 @@ async fn configured_identity_provenance_transitions_monotonically() {
         crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
         "test-provider".to_string(),
     )
-        .await
-        .expect("state db should initialize");
+    .await
+    .expect("state db should initialize");
     let first_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000801").expect("valid thread id");
     let second_thread_id =
@@ -188,8 +188,8 @@ async fn generic_thread_metadata_upsert_preserves_configured_identity_provenance
         crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
         "test-provider".to_string(),
     )
-        .await
-        .expect("state db should initialize");
+    .await
+    .expect("state db should initialize");
     let thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000803").expect("valid thread id");
     let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());

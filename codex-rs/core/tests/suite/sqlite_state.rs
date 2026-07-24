@@ -134,12 +134,14 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
         name: namespace.to_string(),
         description: namespace_description.to_string(),
-        tools: vec![DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
-            name: tool_name.to_string(),
-            description: tool_description.to_string(),
-            input_schema: input_schema.clone(),
-            defer_loading: false,
-        })],
+        tools: vec![DynamicToolNamespaceTool::Function(
+            DynamicToolFunctionSpec {
+                name: tool_name.to_string(),
+                description: tool_description.to_string(),
+                input_schema: input_schema.clone(),
+                defer_loading: false,
+            },
+        )],
     });
     let mut builder = test_codex().with_config(|config| {
         config
