@@ -125,7 +125,8 @@ fn upstream_external_agent_import_provider_migrator() -> Migrator {
             .iter()
             .filter(|migration| {
                 migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
-                    && migration.version < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
+                    && migration.version
+                        < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
             })
             .cloned(),
     );
@@ -637,8 +638,7 @@ async fn external_agent_config_import_provider_migration_follows_table_creation_
 }
 
 #[tokio::test]
-async fn repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44()
-{
+async fn repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)
         .await
@@ -707,13 +707,12 @@ INSERT INTO external_agent_config_imports (
         ]
     );
 
-    let applied_visible_checksum = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
-    )
-    .bind(CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
-    .fetch_one(&pool)
-    .await
-    .expect("visible sort migration should be recorded at the downstream version");
+    let applied_visible_checksum =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+            .bind(CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION)
+            .fetch_one(&pool)
+            .await
+            .expect("visible sort migration should be recorded at the downstream version");
     let current_visible_checksum = STATE_MIGRATOR
         .migrations
         .iter()
@@ -723,13 +722,12 @@ INSERT INTO external_agent_config_imports (
         .to_vec();
     assert_eq!(applied_visible_checksum, current_visible_checksum);
 
-    let applied_provider_checksum = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT checksum FROM _sqlx_migrations WHERE version = ?",
-    )
-    .bind(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION)
-    .fetch_one(&pool)
-    .await
-    .expect("provider migration should be recorded at the downstream version");
+    let applied_provider_checksum =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+            .bind(CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION)
+            .fetch_one(&pool)
+            .await
+            .expect("provider migration should be recorded at the downstream version");
     let current_provider_checksum = STATE_MIGRATOR
         .migrations
         .iter()
