@@ -34,8 +34,8 @@ fn inference_call_event(status: InferenceCallStatus) -> InferenceCallEvent {
             reasoning_output_tokens: 3,
             total_tokens: 18,
         }),
-        truncated_fields: Vec::new(),
-        omitted_fields: Vec::new(),
+        truncated_fields: None,
+        omitted_fields: None,
     }
 }
 
@@ -51,7 +51,7 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
             event.observed_model_snapshot = None;
             event.observed_service_tier = None;
             event.token_usage = None;
-            event.omitted_fields = vec![
+            event.omitted_fields = Some(vec![
                 InferenceCallField::RequestCompletedAtMs,
                 InferenceCallField::ResponseId,
                 InferenceCallField::UpstreamRequestId,
@@ -60,7 +60,7 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
                 InferenceCallField::ObservedModelSnapshot,
                 InferenceCallField::ObservedServiceTier,
                 InferenceCallField::TokenUsage,
-            ];
+            ]);
         }
         InferenceCallStatus::Failed | InferenceCallStatus::Cancelled => {
             event.response_id = None;
@@ -69,14 +69,14 @@ fn expected_durable_event(status: InferenceCallStatus) -> InferenceCallEvent {
             event.observed_model_snapshot = None;
             event.observed_service_tier = None;
             event.token_usage = None;
-            event.omitted_fields = vec![
+            event.omitted_fields = Some(vec![
                 InferenceCallField::ResponseId,
                 InferenceCallField::ObservedProvider,
                 InferenceCallField::ObservedModel,
                 InferenceCallField::ObservedModelSnapshot,
                 InferenceCallField::ObservedServiceTier,
                 InferenceCallField::TokenUsage,
-            ];
+            ]);
         }
         InferenceCallStatus::Completed => {}
     }
@@ -184,25 +184,29 @@ fn inference_call_event_bounds_multibyte_fields_and_aggregate_size() -> Result<(
     );
     assert_eq!(
         bounded.truncated_fields,
-        vec![
+        Some(vec![
             InferenceCallField::ConfiguredProvider,
             InferenceCallField::RequestedModel,
-        ]
+        ])
     );
-    assert!(!bounded.omitted_fields.is_empty());
+    assert!(
+        bounded
+            .omitted_fields
+            .as_ref()
+            .is_some_and(|fields| !fields.is_empty())
+    );
     assert!(
         serde_json::to_vec(&EventMsg::InferenceCall(bounded))?.len()
             <= INFERENCE_CALL_EVENT_MAX_BYTES
     );
 
     let mut oversized_optional = inference_call_event(InferenceCallStatus::Completed);
-    oversized_optional.response_id =
-        Some("🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1));
+    oversized_optional.response_id = Some("🦀".repeat(INFERENCE_CALL_STRING_MAX_BYTES / 4 + 1));
     let bounded = oversized_optional.into_durable().expect("bounded event");
     assert!(bounded.response_id.is_none());
     assert_eq!(
         bounded.omitted_fields,
-        vec![InferenceCallField::ResponseId]
+        Some(vec![InferenceCallField::ResponseId])
     );
     Ok(())
 }
