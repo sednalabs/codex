@@ -344,7 +344,10 @@ async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
     );
     assert_eq!(
         router.deferred_tool_namespaces(),
-        BTreeMap::from([("codex_app".to_string(), "Codex app tools.".to_string())])
+        BTreeMap::from([(
+            "codex_app".to_string(),
+            default_namespace_description("codex_app"),
+        )])
     );
 
     Ok(())
