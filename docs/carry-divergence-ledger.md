@@ -2701,6 +2701,9 @@ docs-only refresh commit that records this snapshot.
   - `strict_tool_classification`
   - `require_approval_for_mutating`
 - These coexist with upstream `oauth_resource` support.
+- When upstream adds a programmatic `McpServerConfig` literal, retain these
+  controls explicitly. Most fixtures should set all four to `false`, preserving
+  their original behavior without activating an additional downstream policy.
 - Primary files:
   - `codex-rs/core/src/config/types.rs`
   - `codex-rs/core/src/config/edit.rs`
