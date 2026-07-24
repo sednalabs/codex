@@ -143,11 +143,9 @@ fn parse_listen_url(listen_url: &str) -> Result<ListenTransport> {
     }
 
     if let Some(socket_addr) = listen_url.strip_prefix("ws://") {
-        let bind_address = socket_addr
-            .parse::<SocketAddr>()
-            .with_context(|| {
-                format!("invalid websocket --listen URL `{listen_url}`; expected `ws://IP:PORT`")
-            });
+        let bind_address = socket_addr.parse::<SocketAddr>().with_context(|| {
+            format!("invalid websocket --listen URL `{listen_url}`; expected `ws://IP:PORT`")
+        });
         let bind_address = bind_address?;
         if !bind_address.ip().is_loopback() {
             anyhow::bail!(
