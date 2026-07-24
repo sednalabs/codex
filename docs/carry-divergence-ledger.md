@@ -2570,6 +2570,11 @@ docs-only refresh commit that records this snapshot.
   plugin attribution argument, testing `SqliteConfig`, and Guardian plugin
   metadata. These fixtures preserve the existing downstream behavior while
   keeping their constructors and assertions aligned with upstream APIs.
+- Signed merge `3c96cb99b5` preserves upstream `f61b51ddd9` and adopts remote
+  code-mode-host support in the app server. The CLI conflict resolves to the
+  upstream `AppServerCodeModeHostArgs`, `code_mode_host_transport`, and explicit
+  disabled remote-control startup state; no fork-only transport override is
+  retained.
 
 ### Typed Cyber-Policy Retry Boundary
 

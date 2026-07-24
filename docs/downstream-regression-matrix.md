@@ -620,6 +620,11 @@ complete MCP safety fields, thread-start options, plugin attribution argument,
 testing SQLite configuration, and Guardian metadata. The same cross-platform
 Bazel jobs remain the regression boundary for these compatibility fixtures.
 
+Signed merge `3c96cb99b5` advances the integration through upstream
+`f61b51ddd9` and adopts remote code-mode-host support without a downstream
+transport fork. The app-server protocol and cross-platform Bazel jobs cover the
+CLI transport wiring and remote-control startup-state compatibility boundary.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.
