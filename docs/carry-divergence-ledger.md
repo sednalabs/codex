@@ -661,6 +661,15 @@ docs-only refresh commit that records this snapshot.
   search, realtime world state, and native computer use remain owned by their
   existing session, thread, turn, or tool-handler seams. Do not introduce a new
   step-local registry for them without a concrete request-stability need.
+- The 2026-07-24 integration adopts upstream `7c71783135` and `fe8500c0a0`.
+  Executor skill tools receive only a narrow per-sampling-step authority view
+  built from the selected capability roots. `skills.list` and `skills.read`
+  paginate bounded executor-owned data, and an explicitly selected executor
+  skill may pass package-scoped `resource_access` metadata to read a referenced
+  resource. The provider validates authority, package, resource, cursor, and
+  package containment before it reads. This is upstream-owned executor-skill
+  behavior, not a new shared capability store for Dynamic Tools, image
+  plumbing, realtime world state, or native computer use.
 - Signed merge `3fe6502c41` preserves `c44c4de7b4` as its second parent.
   Hosted mirror run `29828505403` advanced `origin/upstream-main` to that exact
   SHA in sync job `88627328251`. Audit job `88627431159` returned the expected
@@ -1176,14 +1185,14 @@ docs-only refresh commit that records this snapshot.
 
 ### Hook Command Early-Exit Output Preservation
 
-- Signed downstream commit `932cbceeb8` preserves a successful hook's stdout,
-  stderr, and exit status when the hook closes stdin before consuming the full
-  payload and the parent observes `BrokenPipe`. Every other stdin write error
-  keeps the existing kill-and-report behavior.
-- The direct `hook_can_exit_successfully_without_reading_stdin` regression and
-  the production change are one temporary carry unit. Drop both when upstream
-  adopts equivalent successful-early-exit handling; do not replace them with a
-  Wine-only skip.
+- Signed downstream commit `932cbceeb8` first preserved a successful hook's
+  stdout, stderr, and exit status when the hook closed stdin before consuming
+  the full payload and the parent observed `BrokenPipe`.
+- Upstream `634a998d8a` now owns the same production behavior and a
+  cross-platform fast-exit regression. The retained Windows-specific
+  `hook_can_exit_successfully_without_reading_stdin` test is supplemental
+  validation only; it adds no runtime behavior. This is historical
+  upstream-equivalent evidence, not live carry.
 
 ### Upstream Launcher Validation Repairs
 
@@ -2391,6 +2400,14 @@ docs-only refresh commit that records this snapshot.
   in parallel. The retained end-to-end event-order regressions are
   `stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in` and
   `stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently`.
+- The same integration through upstream `000d2540ad` adopts
+  `3645a4397c`'s startup refresh coordination and `000d2540ad`'s current
+  runtime authority for Guardian elicitation review. Refresh invalidation and
+  publication remain serialized inside the upstream `McpRefresh` owner, while
+  each model-visible call remains prepared from its immutable step binding.
+  Elicitation approval reads the current runtime configuration rather than a
+  stale turn snapshot. Do not reintroduce a session-level mirror or a per-call
+  binding refresh around either path.
 - Upstream `6e0455fdc4` sends `codex-mcp-client/<version>` on default
   Streamable HTTP and OAuth requests. An explicitly configured `user-agent`
   header remains authoritative. The focused regressions are
@@ -2413,6 +2430,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/core/src/session/mcp.rs`
+  - `codex-rs/core/src/session/mcp_refresh.rs`
   - `codex-rs/core/src/state/service.rs`
 
 ### 2026-07-23 Upstream Integration Boundaries
