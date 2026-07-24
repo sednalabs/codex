@@ -564,7 +564,7 @@ fn spawn_tool_spec_marks_terminal_babysitter_locked_model_and_reasoning_effort()
 
     assert!(spec.contains("terminal-babysitter"));
     assert!(spec.contains(
-        "- This role's model is set to `gpt-5.4-mini` and its reasoning effort is set to `low`. These settings cannot be changed."
+        "- This role's model is set to `gpt-5.6-luna` and its reasoning effort is set to `low`. These settings cannot be changed."
     ));
 }
 

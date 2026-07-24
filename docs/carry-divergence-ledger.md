@@ -631,7 +631,17 @@ docs-only refresh commit that records this snapshot.
 - Eviction fails closed for ephemeral V2 sessions without a durable rollout;
   capacity pressure leaves that runtime resident rather than manufacturing a
   cold identity that persisted-history reload cannot restore.
-- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.4-mini` with low reasoning for bounded monitored-wait seams.
+- The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.6-luna` with low reasoning for bounded monitored-wait seams.
+- Live `inspect_agent_tree` rows expose the effective model and reasoning effort from each loaded thread's configuration snapshot. Stale rows leave both fields null because persisted agent metadata does not prove a runtime configuration; these values are configuration evidence, not provider-usage proof.
+- Queue-only `send_message` returns a structured receipt containing the canonical target plus effective model, provider, reasoning effort, and service tier when its runtime is already loaded. Those configuration fields are null for a cold or evicted target so the receipt preserves non-activating delivery. `handoff_state: queued` means the runtime accepted the handoff; it is deliberately not an agent acknowledgement or completion signal.
+- Upstream harvest decision, refreshed 2026-07-22:
+
+  | Candidate                                                        | Decision      | Reason                                                                                             |
+  | ---------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+  | Current `openai/codex` main                                      | Carry locally | No equivalent terminal-babysitter Luna fallback or live inspect/send configuration receipt exists. |
+  | Open and draft upstream PRs matching the runtime surfaces        | Carry locally | No relevant candidate was found.                                                                   |
+  | Historical agent-identity auth/task stack reverted by `be757855` | Ignore        | It concerns backend identity and task lifecycle, not this model/configuration receipt seam.        |
+
 - Primary files:
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`

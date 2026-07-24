@@ -12,6 +12,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
+use crate::tools::handlers::InspectAgentTreeHandler;
 use crate::tools::handlers::multi_agents_common::validate_spawn_agent_reasoning_effort;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
@@ -1380,7 +1381,7 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
                 "task_name": "terminal_babysitter_v2",
                 "agent_type": "terminal-babysitter",
                 "model": "gpt-5.6-terra",
-                "expected_model": "gpt-5.4-mini",
+                "expected_model": "gpt-5.6-luna",
                 "expected_reasoning_effort": "low",
                 "fork_turns": "none"
             })),
@@ -1400,7 +1401,7 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
             nickname: result.nickname.clone(),
             requested_model: Some("gpt-5.6-terra".to_string()),
             requested_reasoning_effort: None,
-            effective_model: Some("gpt-5.4-mini".to_string()),
+            effective_model: Some("gpt-5.6-luna".to_string()),
             requested_model_honored: Some(false),
             effective_reasoning_effort: Some(ReasoningEffort::Low),
         }
@@ -1412,9 +1413,82 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
         .expect("spawned agent thread should exist")
         .config_snapshot()
         .await;
-    assert_eq!(snapshot.model, "gpt-5.4-mini");
+    assert_eq!(snapshot.model, "gpt-5.6-luna");
     assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Low));
     assert!(result.nickname.is_some());
+}
+
+#[tokio::test]
+async fn multi_agent_v2_inspect_agent_tree_receipt_includes_live_effective_identity() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let turn = TurnContext {
+        config: Arc::new(config),
+        ..turn
+    };
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "monitor this wait",
+                "task_name": "terminal_babysitter_inspection",
+                "agent_type": "terminal-babysitter",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("terminal-babysitter spawn should succeed");
+
+    let output = InspectAgentTreeHandler
+        .handle(invocation(
+            session,
+            turn,
+            "inspect_agent_tree",
+            function_payload(json!({"scope": "live"})),
+        ))
+        .await
+        .expect("inspect_agent_tree should succeed");
+    let (content, success) = expect_text_output(output);
+    let receipt: serde_json::Value =
+        serde_json::from_str(&content).expect("inspect_agent_tree receipt should be json");
+    let agent = receipt["agents"]
+        .as_array()
+        .expect("agents should be an array")
+        .iter()
+        .find(|agent| agent["agent_name"] == "/root/terminal_babysitter_inspection")
+        .expect("spawned agent should be present in the live tree receipt");
+    assert_eq!(
+        agent,
+        &json!({
+            "agent_name": "/root/terminal_babysitter_inspection",
+            "depth": 1,
+            "session_state": "live",
+            "agent_status": "pending_init",
+            "nickname": agent["nickname"],
+            "role": "terminal-babysitter",
+            "effective_model": "gpt-5.6-luna",
+            "effective_reasoning_effort": "low",
+            "direct_child_count": 0,
+            "descendant_count": 0
+        })
+    );
+    assert_eq!(success, Some(true));
 }
 
 #[tokio::test]
@@ -1605,7 +1679,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             )
     }));
 
-    SendMessageHandlerV2
+    let output = SendMessageHandlerV2
         .handle(invocation(
             session.clone(),
             turn.clone(),
@@ -1617,6 +1691,21 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         ))
         .await
         .expect("send_message should accept v2 path");
+    let (content, success) = expect_text_output(output);
+    let receipt: serde_json::Value =
+        serde_json::from_str(&content).expect("send_message receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "task_name": "/root/test_process",
+            "handoff_state": "queued",
+            "effective_model": child_snapshot.model,
+            "effective_model_provider_id": child_snapshot.model_provider_id,
+            "effective_reasoning_effort": child_snapshot.reasoning_effort,
+            "effective_service_tier": child_snapshot.service_tier,
+        })
+    );
+    assert_eq!(success, Some(true));
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == child_thread_id
@@ -1631,6 +1720,87 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && !communication.trigger_turn
             )
     }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "boot worker",
+                "task_name": "cold_worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "cold_worker")
+        .await
+        .expect("relative path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist before eviction");
+    child_thread
+        .shutdown_and_wait()
+        .await
+        .expect("child thread should shut down");
+    let removed_thread = manager
+        .remove_thread(&child_thread_id)
+        .await
+        .expect("child thread should be loaded before removal");
+    assert!(Arc::ptr_eq(&removed_thread, &child_thread));
+
+    let output = SendMessageHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "send_message",
+            function_payload(json!({
+                "target": "cold_worker",
+                "items": [{"type": "text", "text": "queued while cold"}]
+            })),
+        ))
+        .await
+        .expect("queue-only send_message should accept a cold target");
+    let (content, success) = expect_text_output(output);
+    let receipt: serde_json::Value =
+        serde_json::from_str(&content).expect("send_message receipt should be json");
+    assert_eq!(
+        receipt,
+        json!({
+            "task_name": "/root/cold_worker",
+            "handoff_state": "queued",
+            "effective_model": null,
+            "effective_model_provider_id": null,
+            "effective_reasoning_effort": null,
+            "effective_service_tier": null,
+        })
+    );
+    assert_eq!(success, Some(true));
+    assert!(manager.get_thread(child_thread_id).await.is_err());
 }
 
 #[tokio::test]
