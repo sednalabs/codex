@@ -64,6 +64,16 @@ struct FollowupTaskResult {
     effective_service_tier: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct SendMessageReceipt {
+    task_name: String,
+    handoff_state: &'static str,
+    effective_model: Option<String>,
+    effective_model_provider_id: Option<String>,
+    effective_reasoning_effort: Option<ReasoningEffort>,
+    effective_service_tier: Option<String>,
+}
+
 pub(super) fn message_content(message: String) -> Result<String, FunctionCallError> {
     if message.trim().is_empty() {
         return Err(FunctionCallError::RespondToModel(
@@ -193,7 +203,13 @@ async fn handle_message_submission_inner(
     }
     .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let receiver_config = match mode {
-        MessageDeliveryMode::QueueOnly => None,
+        MessageDeliveryMode::QueueOnly => {
+            session
+                .services
+                .agent_control
+                .get_agent_config_snapshot(receiver_thread_id)
+                .await
+        }
         MessageDeliveryMode::TriggerTurn => Some(
             delivery
                 .config_snapshot()
@@ -243,7 +259,23 @@ async fn handle_message_submission_inner(
     .await;
 
     let output = match mode {
-        MessageDeliveryMode::QueueOnly => String::new(),
+        MessageDeliveryMode::QueueOnly => {
+            let receipt = SendMessageReceipt {
+                task_name: receiver_agent_path.to_string(),
+                handoff_state: "queued",
+                effective_model: receiver_config.as_ref().map(|config| config.model.clone()),
+                effective_model_provider_id: receiver_config
+                    .as_ref()
+                    .map(|config| config.model_provider_id.clone()),
+                effective_reasoning_effort: receiver_config
+                    .as_ref()
+                    .and_then(|config| config.reasoning_effort.clone()),
+                effective_service_tier: receiver_config
+                    .as_ref()
+                    .and_then(|config| config.service_tier.clone()),
+            };
+            tool_output_json_text(&receipt, "send_message")
+        }
         MessageDeliveryMode::TriggerTurn => {
             let receiver_config = receiver_config.ok_or_else(|| {
                 FunctionCallError::RespondToModel(format!(

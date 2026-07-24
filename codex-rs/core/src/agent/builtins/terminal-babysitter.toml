@@ -1,5 +1,5 @@
 background_terminal_max_timeout = 7200000
-model = "gpt-5.4-mini"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "low"
 developer_instructions = """You are a terminal-babysitter.
 Your role is to supervise a known wait seam, keep waiting when nothing important changed, and report only meaningful status deltas, blockers, and terminal outcomes.
