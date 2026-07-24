@@ -372,7 +372,7 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
 }
 
 #[test]
-fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schema() {
+fn send_message_tool_requires_target_items_interrupt_and_receipt_schema() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
         output_schema,
@@ -433,7 +433,7 @@ fn send_message_tool_requires_target_items_and_interrupt_and_has_no_output_schem
         parameters.required.as_ref(),
         Some(&vec!["target".to_string(), "items".to_string()])
     );
-    assert_eq!(output_schema, None);
+    assert!(output_schema.is_some());
 }
 
 #[test]
@@ -699,8 +699,43 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "agent_status",
             "nickname",
             "role",
+            "effective_model",
+            "effective_reasoning_effort",
             "direct_child_count",
             "descendant_count"
         ])
+    );
+}
+
+#[test]
+fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = create_send_message_tool()
+    else {
+        panic!("send_message should be a function tool");
+    };
+
+    let output_schema = output_schema.expect("send_message output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "task_name",
+            "handoff_state",
+            "effective_model",
+            "effective_model_provider_id",
+            "effective_reasoning_effort",
+            "effective_service_tier"
+        ])
+    );
+    assert_eq!(
+        output_schema["properties"]["handoff_state"]["enum"],
+        json!(["queued"])
+    );
+    assert_eq!(
+        output_schema["properties"]["effective_model"]["type"],
+        json!(["string", "null"])
+    );
+    assert_eq!(
+        output_schema["properties"]["effective_model_provider_id"]["type"],
+        json!(["string", "null"])
     );
 }
