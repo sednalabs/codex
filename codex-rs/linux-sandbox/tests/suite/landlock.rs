@@ -531,7 +531,11 @@ async fn test_timeout() {
     )
     .await
     {
-        Err(err) if matches!(err.details(), CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. })) => {}
+        Err(err)
+            if matches!(
+                err.details(),
+                CodexErrorDetails::Sandbox(SandboxErr::Timeout { .. })
+            ) => {}
         other => panic!("expected Sandbox(Timeout), got: {other:?}"),
     }
 }
