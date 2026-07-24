@@ -4,6 +4,7 @@ use codex_core_skills::HostSkillsSnapshot;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
+use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_extension_api::ConfigContributor;
 use codex_extension_api::ContextContributor;
 use codex_extension_api::ContextualUserFragment;
@@ -35,6 +36,7 @@ use crate::catalog::SkillCatalogEntry;
 use crate::catalog::SkillReadResult;
 use crate::catalog::SkillSourceKind;
 use crate::fragments::AvailableSkillsInstructions;
+use crate::fragments::ExecutorSkillResourceAccess;
 use crate::fragments::SkillInstructions;
 use crate::provider::HostSkillProvider;
 use crate::provider::SkillListQuery;
@@ -157,6 +159,7 @@ where
                     SkillListQuery {
                         turn_id: thread_store.level_id().to_string(),
                         executor_roots: Vec::new(),
+                        resolved_executor_roots: Vec::new(),
                         host_snapshot: None,
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
@@ -207,6 +210,7 @@ where
                     SkillListQuery {
                         turn_id: input.turn_id.to_string(),
                         executor_roots: input.ready_selected_capability_roots.to_vec(),
+                        resolved_executor_roots: Vec::new(),
                         host_snapshot: None,
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
@@ -278,23 +282,34 @@ where
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
     ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
-        let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
-            return Vec::new();
-        };
-        if !self.providers.has_orchestrator_provider()
-            || !thread_state.orchestrator_skills_enabled()
-        {
-            return Vec::new();
-        }
+        self.build_skill_tools(session_store, thread_store, /*executor_query*/ None)
+    }
 
-        skill_tools(
-            self.providers.clone(),
-            session_store
-                .get::<SkillsSessionState>()
-                .and_then(|state| state.mcp_resources.clone()),
-            thread_state,
-            Arc::clone(&self.shadow_selection),
-        )
+    fn tools_for_step(
+        &self,
+        session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        step_store: &ExtensionData,
+    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+        let resolved_executor_roots = step_store
+            .get::<Vec<ResolvedSelectedCapabilityRoot>>()
+            .map(|roots| roots.as_slice().to_vec())
+            .unwrap_or_default();
+        let executor_query = (!resolved_executor_roots.is_empty()).then(|| SkillListQuery {
+            turn_id: step_store.level_id().to_string(),
+            executor_roots: resolved_executor_roots
+                .iter()
+                .map(|root| root.selected_root().clone())
+                .collect(),
+            resolved_executor_roots,
+            host_snapshot: None,
+            include_host_skills: false,
+            include_bundled_skills: false,
+            include_orchestrator_skills: false,
+            mcp_resources: None,
+            executor_capability_discovery: None,
+        });
+        self.build_skill_tools(session_store, thread_store, executor_query)
     }
 }
 
@@ -350,6 +365,7 @@ where
             let query = SkillListQuery {
                 turn_id: input.turn_id.clone(),
                 executor_roots: Vec::new(),
+                resolved_executor_roots: Vec::new(),
                 host_snapshot: host_snapshot.clone(),
                 include_host_skills: !host_catalog_in_world_state,
                 include_bundled_skills: config.bundled_skills_enabled,
@@ -449,6 +465,13 @@ where
                             )
                             .0,
                             contents,
+                            executor_resource_access: (!entry.prompt_visible
+                                && entry.authority.kind == SkillSourceKind::Executor)
+                                .then(|| ExecutorSkillResourceAccess {
+                                    authority_id: entry.authority.id.clone(),
+                                    package: entry.id.0.clone(),
+                                    main_resource: entry.main_prompt.as_str().to_string(),
+                                }),
                         };
                         fragments.push(Box::new(fragment));
                         main_prompts_injected = true;
@@ -501,6 +524,33 @@ where
 }
 
 impl<C> SkillsExtension<C> {
+    fn build_skill_tools(
+        &self,
+        session_store: &ExtensionData,
+        thread_store: &ExtensionData,
+        executor_query: Option<SkillListQuery>,
+    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+        let Some(thread_state) = thread_store.get::<SkillsThreadState>() else {
+            return Vec::new();
+        };
+        let orchestrator_available = self.providers.has_orchestrator_provider()
+            && thread_state.orchestrator_skills_enabled();
+        if !orchestrator_available && executor_query.is_none() {
+            return Vec::new();
+        }
+
+        skill_tools(
+            self.providers.clone(),
+            session_store
+                .get::<SkillsSessionState>()
+                .and_then(|state| state.mcp_resources.clone()),
+            thread_state,
+            orchestrator_available,
+            executor_query,
+            Arc::clone(&self.shadow_selection),
+        )
+    }
+
     #[tracing::instrument(level = "trace", skip_all)]
     async fn list_skills(
         &self,
@@ -541,6 +591,7 @@ impl<C> SkillsExtension<C> {
                     authority: entry.authority.clone(),
                     package: entry.id.clone(),
                     resource: entry.main_prompt.clone(),
+                    resolved_executor_roots: Vec::new(),
                     host_snapshot,
                     mcp_resources,
                 },
