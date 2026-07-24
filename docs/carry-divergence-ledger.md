@@ -2557,6 +2557,13 @@ docs-only refresh commit that records this snapshot.
   `SqliteConfig`; and the app-server history fixture explicitly records no
   terminal wait. These are compatibility repairs, not new runtime behavior.
   The same run proved rustfmt clean before its final generated-lock check.
+- GitHub-hosted lock generation run `30064291087` consumed exact candidate
+  `e37d906f8d7d3455c9cce9c05cc27683e6cd5889`. Temporary workflow commit
+  `c29c768a0cb7281d6a28ba655c19af6e486eafb1` produced a one-file patch with
+  SHA-256 `8d30aef5007cec54c44b3c4066c6eb157e28e5b2d5eaada5c7b3839e368a9f35`.
+  The generated lock change qualifies the code-mode host's upstream WebSocket
+  dependency as `tokio-tungstenite 0.28.0` because the combined downstream
+  graph contains another version; no package version or Bazel lock changed.
 
 ### Typed Cyber-Policy Retry Boundary
 
