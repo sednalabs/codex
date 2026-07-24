@@ -2820,8 +2820,7 @@
       ],
       "files": [
         ".github/workflows/code-coverage.yml",
-        "docs/carry-divergence-ledger.md",
-        "docs/downstream-regression-matrix.md"
+        "docs/carry-divergence-ledger.md"
       ],
       "behavior": "Coverage commands and XML report generation remain required. When this repository is not configured for GitHub Code Quality, the three report uploads still run but report an unavailable endpoint as a warning rather than failing completed coverage-test jobs.",
       "upstream_equivalent": false,
