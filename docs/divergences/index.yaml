@@ -1114,6 +1114,47 @@
       "extraction_target": "upstreamable bounded declaration and callable metadata contract"
     },
     {
+      "id": "code-mode-host-loopback-websocket-binding",
+      "title": "Loopback-only code-mode host WebSocket binding",
+      "status": "live",
+      "category": "security-boundary",
+      "surface": [
+        "code-mode host WebSocket listener",
+        "local execution boundary"
+      ],
+      "files": [
+        "codex-rs/code-mode-host/src/main.rs",
+        "codex-rs/code-mode-host/src/transport.rs",
+        "codex-rs/code-mode-host/src/transport_tests.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "required_markers": {
+        "codex-rs/code-mode-host/src/transport.rs": [
+          "if !bind_address.ip().is_loopback()"
+        ]
+      },
+      "behavior": "The standalone code-mode host retains stdio and loopback WebSocket transports. WebSocket listeners reject wildcard and non-loopback addresses before binding because the wire protocol has no peer authentication layer; an authenticated remote transport must be introduced as an explicit upstream-owned contract rather than by relaxing this local boundary.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "0dfa778dae"
+      },
+      "guardrail_lane": "blocking-ci; CodeQL Advanced",
+      "tests": [
+        "parse_listen_url_accepts_websocket_addresses",
+        "parse_listen_url_rejects_non_loopback_websocket_addresses"
+      ],
+      "owner": "downstream",
+      "notes": "Retain until upstream supplies a reviewed authenticated remote-listener contract with equivalent exposure controls. Origin-header filtering is browser-only and does not authorize a raw WebSocket peer.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "local-network-execution-boundary",
+      "hotspot_files": [
+        "codex-rs/code-mode-host/src/transport.rs"
+      ],
+      "extraction_target": "upstream authenticated code-mode host remote transport"
+    },
+    {
       "id": "preferred-user-skill-name-precedence",
       "title": "Preferred user skill name precedence",
       "status": "live",

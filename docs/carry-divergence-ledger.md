@@ -2595,6 +2595,14 @@ docs-only refresh commit that records this snapshot.
   `a28374e0db`: Agent Plugin manifests and host-customized
   `wait_for_environment` descriptions are adopted without a downstream plugin
   or tool-description fork. The merge leaves generated locks unchanged.
+- The 2026-07-24 integration retains upstream `0dfa778dae`'s code-mode host
+  WebSocket transport but constrains its listener to loopback addresses. The
+  framed protocol has no peer-authentication layer, so `stdio`, `127.0.0.1`,
+  and `::1` remain supported while wildcard and non-loopback addresses fail
+  before binding. Preserve this narrow boundary until upstream provides an
+  authenticated remote-listener contract; do not treat Origin-header filtering
+  as peer authorization. `parse_listen_url_rejects_non_loopback_websocket_addresses`
+  is the direct regression guard.
 - Exact-head hosted run `30072479060` found two retained-fixture adapters after
   that upstream API expansion: a tool-router test now explicitly leaves the
   optional host `wait_for_environment` configuration unset, and the SQLite
