@@ -385,8 +385,8 @@ async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
         .await
         .expect_err("stale inspection should require the state db");
     assert_matches!(
-        err,
-        CodexErr::UnsupportedOperation(message)
+        err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
             if message == INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE
     );
 }
@@ -861,7 +861,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         )
         .await
         .expect_err("stale request cleanup should retain the replacement");
-    assert_matches!(stale_error, CodexErr::InternalAgentDied);
+    assert_matches!(stale_error.details(), CodexErrorDetails::InternalAgentDied);
     let current_thread = harness
         .manager
         .get_thread(spawned_agent.thread_id)
@@ -1426,8 +1426,10 @@ async fn paginated_subagent_fork_cold_resume_preserves_child_settings() {
         .await;
     assert_eq!(removal, RemoveThreadIfSameResult::Removed);
     match harness.manager.get_thread(child_thread_id).await {
-        Err(CodexErr::ThreadNotFound(id)) => assert_eq!(id, child_thread_id),
-        Err(err) => panic!("expected ThreadNotFound, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(id) => assert_eq!(*id, child_thread_id),
+            _ => panic!("expected ThreadNotFound, got {err:?}"),
+        },
         Ok(_) => panic!("expected child thread to be evicted"),
     }
 

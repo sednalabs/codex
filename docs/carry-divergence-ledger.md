@@ -2564,6 +2564,12 @@ docs-only refresh commit that records this snapshot.
   The generated lock change qualifies the code-mode host's upstream WebSocket
   dependency as `tokio-tungstenite 0.28.0` because the combined downstream
   graph contains another version; no package version or Bazel lock changed.
+- Exact-head hosted run `30064450281` then reached the remaining test-fixture
+  adapters. Retained tests now use upstream's `CodexErrorDetails`, flattened
+  dynamic-tool shape, complete MCP safety configuration, `StartThreadOptions`,
+  plugin attribution argument, testing `SqliteConfig`, and Guardian plugin
+  metadata. These fixtures preserve the existing downstream behavior while
+  keeping their constructors and assertions aligned with upstream APIs.
 
 ### Typed Cyber-Policy Retry Boundary
 

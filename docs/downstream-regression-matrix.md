@@ -614,6 +614,12 @@ code-mode-host WebSocket graph by qualifying its `tokio-tungstenite 0.28.0`
 edge. The verified artifact changes only `codex-rs/Cargo.lock`; the ordinary
 `--locked` Cargo jobs and Bazel lock checks remain authoritative.
 
+Exact-head hosted run `30064450281` reached a later retained-fixture adapter
+layer. The carry now uses upstream's typed errors, flattened dynamic tools,
+complete MCP safety fields, thread-start options, plugin attribution argument,
+testing SQLite configuration, and Guardian metadata. The same cross-platform
+Bazel jobs remain the regression boundary for these compatibility fixtures.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.
