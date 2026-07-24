@@ -3,6 +3,7 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::ToolSearchOutput;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::tool_search_spec::ToolSearchSourceListing;
 use crate::tools::handlers::tool_search_spec::create_tool_search_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -17,16 +18,17 @@ use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchEntry;
 use codex_tools::ToolSearchInfo;
-use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tracing::instrument;
 
 pub struct ToolSearchHandler {
     search_infos: Vec<ToolSearchInfo>,
     entries: Vec<ToolSearchEntry>,
-    search_source_infos: Vec<ToolSearchSourceInfo>,
+    source_listing: ToolSearchSourceListing,
+    spec: ToolSpec,
     search_engine: SearchEngine<usize>,
 }
 
@@ -36,20 +38,27 @@ pub(crate) struct ToolSearchHandlerCache {
 }
 
 impl ToolSearchHandlerCache {
-    pub(crate) fn get_or_build(&self, search_infos: Vec<ToolSearchInfo>) -> Arc<ToolSearchHandler> {
+    #[instrument(level = "trace", skip_all, fields(search_info_count = search_infos.len()))]
+    pub(crate) fn get_or_build(
+        &self,
+        search_infos: Vec<ToolSearchInfo>,
+        source_listing: ToolSearchSourceListing,
+    ) -> Arc<ToolSearchHandler> {
         {
             let cached = self.cached();
             if let Some(cached) = cached.as_ref()
                 && cached.search_infos == search_infos
+                && cached.source_listing == source_listing
             {
                 return Arc::clone(cached);
             }
         }
 
-        let handler = Arc::new(ToolSearchHandler::new(search_infos));
+        let handler = Arc::new(ToolSearchHandler::new(search_infos, source_listing));
         let mut cached = self.cached();
         if let Some(cached) = cached.as_ref()
             && cached.search_infos == handler.search_infos
+            && cached.source_listing == handler.source_listing
         {
             return Arc::clone(cached);
         }
@@ -67,7 +76,15 @@ impl ToolSearchHandlerCache {
 }
 
 impl ToolSearchHandler {
-    pub(crate) fn new(search_infos: Vec<ToolSearchInfo>) -> Self {
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(search_info_count = search_infos.len())
+    )]
+    pub(crate) fn new(
+        search_infos: Vec<ToolSearchInfo>,
+        source_listing: ToolSearchSourceListing,
+    ) -> Self {
         let entries = search_infos
             .iter()
             .map(|search_info| search_info.entry.clone())
@@ -76,6 +93,11 @@ impl ToolSearchHandler {
             .iter()
             .filter_map(|search_info| search_info.source_info.clone())
             .collect::<Vec<_>>();
+        let spec = create_tool_search_tool(
+            &search_source_infos,
+            TOOL_SEARCH_DEFAULT_LIMIT,
+            source_listing,
+        );
         let documents: Vec<Document<usize>> = entries
             .iter()
             .map(|entry| entry.search_text.clone())
@@ -88,7 +110,8 @@ impl ToolSearchHandler {
         Self {
             search_infos,
             entries,
-            search_source_infos,
+            source_listing,
+            spec,
             search_engine,
         }
     }
@@ -100,7 +123,7 @@ impl ToolExecutor<ToolInvocation> for ToolSearchHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_tool_search_tool(&self.search_source_infos, TOOL_SEARCH_DEFAULT_LIMIT)
+        self.spec.clone()
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -301,6 +324,33 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn cache_reuses_handler_for_identical_search_infos_and_rebuilds_for_changes() {
+        let cache = ToolSearchHandlerCache::default();
+        let search_infos = vec![
+            McpHandler::new(tool_info("calendar", "create_event", "Create events"))
+                .expect("MCP tool should convert")
+                .search_info()
+                .expect("MCP handler should return search info"),
+        ];
+
+        let first = cache.get_or_build(search_infos.clone(), ToolSearchSourceListing::Include);
+        let second = cache.get_or_build(search_infos.clone(), ToolSearchSourceListing::Include);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let without_sources =
+            cache.get_or_build(search_infos.clone(), ToolSearchSourceListing::Omit);
+        assert!(!Arc::ptr_eq(&first, &without_sources));
+
+        let mut changed_search_infos = search_infos;
+        changed_search_infos[0]
+            .entry
+            .search_text
+            .push_str(" changed");
+        let changed = cache.get_or_build(changed_search_infos, ToolSearchSourceListing::Omit);
+        assert!(!Arc::ptr_eq(&first, &changed));
+    }
+
+    #[test]
     fn mixed_search_results_coalesce_mcp_namespaces() {
         let dynamic_tools = [DynamicToolSpec {
             namespace: Some("codex_app".to_string()),
@@ -337,7 +387,7 @@ mod tests {
                 .search_info()
                 .expect("dynamic handler should return search info")
         }));
-        let handler = ToolSearchHandler::new(search_infos);
+        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
         let results = [
             &handler.entries[0],
             &handler.entries[2],
@@ -416,7 +466,7 @@ mod tests {
                     .expect("MCP handler should return search info")
             })
             .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos);
+        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
 
         for query in [
             "cloudflare d1 execute query",
@@ -462,7 +512,7 @@ mod tests {
                 .expect("MCP handler should return search info")
         })
         .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos);
+        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
 
         let tools = handler
             .search(
@@ -505,7 +555,7 @@ mod tests {
                 .expect("MCP handler should return search info")
         })
         .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos);
+        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
 
         let tools = handler
             .search("mcp__ops__work_item_queue_read", /*limit*/ 1)
@@ -536,7 +586,7 @@ mod tests {
                 .expect("MCP handler should return search info")
         })
         .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos);
+        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
 
         let tools = handler
             .search("work_item_queue_remove", /*limit*/ 1)
@@ -556,7 +606,7 @@ mod tests {
                     .expect("MCP handler should return search info")
             })
             .collect::<Vec<_>>();
-        let handler = ToolSearchHandler::new(search_infos);
+        let handler = ToolSearchHandler::new(search_infos, ToolSearchSourceListing::Include);
 
         assert!(
             handler
