@@ -2163,6 +2163,11 @@ docs-only refresh commit that records this snapshot.
   reference-backed paginated forks persist the inherited base. This keeps
   test-only constructors aligned with the storage contract instead of
   reintroducing an implicit legacy default.
+- The merged workspace still retains an older transitive `zstd` package, so
+  the new thread-store dependency is recorded as `zstd 0.13.3` in
+  `Cargo.lock`. Keep that qualified lock edge while both versions coexist;
+  regenerating the full graph merely to resolve the ambiguity would introduce
+  unrelated dependency upgrades.
 - This sync intentionally retains the flat `DynamicToolSpec` compatibility
   shape (`namespace` plus function metadata) because app-server requests,
   persisted SQLite rows, provider registries, and resume filtering still share
