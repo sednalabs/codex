@@ -1,3 +1,4 @@
+use codex_utils_absolute_path::test_support::PathExt;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io::ErrorKind;
@@ -257,8 +258,11 @@ async fn listen_off_honors_persisted_remote_control_enable() -> Result<()> {
         "ws://{}/backend-api/wham/remote/control/server",
         listener.local_addr()?
     );
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
     state_db
         .upsert_remote_control_enrollment(&RemoteControlEnrollmentRecord {
             websocket_url,
@@ -301,8 +305,11 @@ async fn listen_off_ignores_persisted_enable_when_disabled_by_requirements() -> 
         "ws://{}/backend-api/wham/remote/control/server",
         listener.local_addr()?
     );
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
     state_db
         .upsert_remote_control_enrollment(&RemoteControlEnrollmentRecord {
             websocket_url: websocket_url.clone(),
@@ -351,9 +358,11 @@ async fn listen_off_exits_without_persisted_remote_control_enable() -> Result<()
                 "ws://{}/backend-api/wham/remote/control/server",
                 listener.local_addr()?
             );
-            let state_db =
-                StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string())
-                    .await?;
+            let state_db = StateRuntime::init(
+                codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+                "test-provider".to_string(),
+            )
+            .await?;
             state_db
                 .upsert_remote_control_enrollment(&RemoteControlEnrollmentRecord {
                     websocket_url,
@@ -463,8 +472,11 @@ async fn disable_waits_for_in_flight_durable_enable() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = BlockingRemoteControlBackend::start(codex_home.path()).await?;
     let websocket_url = backend.websocket_url().to_string();
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_auto_env()
@@ -497,8 +509,11 @@ async fn rpc_updates_durable_preference_but_ephemeral_does_not() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut backend = BlockingRemoteControlBackend::start(codex_home.path()).await?;
     let websocket_url = backend.websocket_url().to_string();
-    let state_db =
-        StateRuntime::init(codex_home.path().to_path_buf(), "test-provider".to_string()).await?;
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())

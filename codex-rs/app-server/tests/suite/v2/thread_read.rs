@@ -473,8 +473,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
     let thread_id = codex_protocol::ThreadId::default();
     let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
     let state_db =
-        codex_state::StateRuntime::init(sqlite.home().to_path_buf(), "mock_provider".to_string())
-            .await?;
+        codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     let store = LocalThreadStore::new(
         LocalThreadStoreConfig {
             codex_home: codex_home.path().to_path_buf(),
@@ -1469,8 +1468,7 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
     let thread_id = codex_protocol::ThreadId::default();
     let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
     let state_db =
-        codex_state::StateRuntime::init(sqlite.home().to_path_buf(), "mock_provider".to_string())
-            .await?;
+        codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     let store = LocalThreadStore::new(
         LocalThreadStoreConfig {
             codex_home: codex_home.path().to_path_buf(),
@@ -1539,6 +1537,15 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
                         memory_citation: None,
                     }),
                 ),
+                paginated_completed_item(
+                    thread_id,
+                    "turn-1",
+                    CoreTurnItem::UserMessage(UserMessageItem {
+                        id: "steer-1".to_string(),
+                        client_id: Some("updated-steer".to_string()),
+                        content: Vec::new(),
+                    }),
+                ),
                 paginated_turn_completed("turn-1"),
                 paginated_turn_started("turn-2"),
                 paginated_completed_item(
@@ -1571,7 +1578,7 @@ async fn paginated_history_lists_use_projected_turns_and_items() -> Result<()> {
             },
             ThreadItem::UserMessage {
                 id: "steer-1".to_string(),
-                client_id: None,
+                client_id: Some("updated-steer".to_string()),
                 content: Vec::new(),
             },
             ThreadItem::AgentMessage {

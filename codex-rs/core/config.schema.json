@@ -620,6 +620,9 @@
             "guardian_approval": {
               "type": "boolean"
             },
+            "guardianv2": {
+              "type": "boolean"
+            },
             "hooks": {
               "type": "boolean"
             },
@@ -672,7 +675,7 @@
               "$ref": "#/definitions/FeatureToml2"
             },
             "non_prefixed_mcp_tool_names": {
-              "type": "boolean"
+              "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
             },
             "personality": {
               "type": "boolean"
@@ -2597,6 +2600,22 @@
       },
       "type": "object"
     },
+    "NonPrefixedMcpToolNamesConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "server_names": {
+          "description": "MCP servers whose tools should omit the legacy `mcp__` namespace prefix.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "Notice": {
       "additionalProperties": false,
       "properties": {
@@ -3972,6 +3991,9 @@
             }
           ]
         },
+        "update_plan": {
+          "$ref": "#/definitions/UpdatePlanToolConfig"
+        },
         "web_search": {
           "default": null,
           "oneOf": [
@@ -4071,6 +4093,7 @@
               "toggle_fast_mode": null,
               "toggle_raw_output": null,
               "toggle_shortcuts": null,
+              "toggle_side_conversation": null,
               "toggle_vim_mode": null
             },
             "list": {
@@ -4811,6 +4834,14 @@
             }
           ]
         },
+        "toggle_side_conversation": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Switch between a side conversation and its parent without closing either."
+        },
         "toggle_vim_mode": {
           "description": "Toggle Vim mode for the composer input.",
           "oneOf": [
@@ -4915,6 +4946,7 @@
             "toggle_fast_mode": null,
             "toggle_raw_output": null,
             "toggle_shortcuts": null,
+            "toggle_side_conversation": null,
             "toggle_vim_mode": null
           }
         },
@@ -5882,6 +5914,16 @@
       },
       "type": "object"
     },
+    "UpdatePlanToolConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "UriBasedFileOpener": {
       "oneOf": [
         {
@@ -6426,6 +6468,9 @@
         "guardian_approval": {
           "type": "boolean"
         },
+        "guardianv2": {
+          "type": "boolean"
+        },
         "hooks": {
           "type": "boolean"
         },
@@ -6478,7 +6523,7 @@
           "$ref": "#/definitions/FeatureToml2"
         },
         "non_prefixed_mcp_tool_names": {
-          "type": "boolean"
+          "$ref": "#/definitions/FeatureToml_for_NonPrefixedMcpToolNamesConfigToml"
         },
         "personality": {
           "type": "boolean"

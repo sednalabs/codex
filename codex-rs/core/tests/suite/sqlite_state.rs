@@ -8,6 +8,9 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
+use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -21,8 +24,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
-use core_test_support::PathExt;
-use core_test_support::is_remote_test_environment;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -65,9 +66,7 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
 
     let thread_id = test.session_configured.thread_id;
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    let db_path =
-        codex_state::SqliteConfig::new_for_testing(test.config.sqlite_home.as_path().abs())
-            .state_db_path();
+    let db_path = test.config.sqlite.state_db_path();
 
     for _ in 0..100 {
         if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
@@ -112,11 +111,6 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Result<()> {
-    if is_remote_test_environment() {
-        eprintln!("skipping local stdio MCP fixture test under remote executor");
-        return Ok(());
-    }
-
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
         &server,
@@ -128,6 +122,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     .await;
 
     let namespace = "resume_tools";
+    let namespace_description = "Tools available after resume.";
     let tool_name = "resume_lookup";
     let tool_description = "Look up a value after resume.";
     let input_schema = json!({
@@ -136,15 +131,16 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
         "required": ["query"],
         "additionalProperties": false,
     });
-    let dynamic_tool = DynamicToolSpec {
-        namespace: Some(namespace.to_string()),
-        name: tool_name.to_string(),
-        description: tool_description.to_string(),
-        input_schema: input_schema.clone(),
-        defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
-    };
+    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: namespace.to_string(),
+        description: namespace_description.to_string(),
+        tools: vec![DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
+            name: tool_name.to_string(),
+            description: tool_description.to_string(),
+            input_schema: input_schema.clone(),
+            defer_loading: false,
+        })],
+    });
     let mut builder = test_codex().with_config(|config| {
         config
             .features
@@ -210,7 +206,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
         &json!({
             "type": "namespace",
             "name": namespace,
-            "description": "Tools in the resume_tools namespace.",
+            "description": namespace_description,
             "tools": [{
                 "type": "function",
                 "name": tool_name,
@@ -425,9 +421,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
 
     let test = builder.build(&server).await?;
 
-    let db_path =
-        codex_state::SqliteConfig::new_for_testing(test.config.sqlite_home.as_path().abs())
-            .state_db_path();
+    let db_path = test.config.sqlite.state_db_path();
     let rollout_path = test.config.codex_home.join(&rollout_rel_path);
     let default_provider = test.config.model_provider_id.clone();
 
@@ -478,9 +472,7 @@ async fn user_messages_persist_in_state_db() -> Result<()> {
     });
     let test = builder.build(&server).await?;
 
-    let db_path =
-        codex_state::SqliteConfig::new_for_testing(test.config.sqlite_home.as_path().abs())
-            .state_db_path();
+    let db_path = test.config.sqlite.state_db_path();
     for _ in 0..100 {
         if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
             break;
@@ -633,11 +625,6 @@ async fn standalone_web_search_marks_thread_memory_mode_polluted_when_configured
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if is_remote_test_environment() {
-        eprintln!("skipping local stdio MCP fixture test under remote executor");
-        return Ok(());
-    }
-
     let server = start_mock_server().await;
     let call_id = "call-123";
     let server_name = "rmcp";
@@ -698,10 +685,6 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 default_tools_approval_mode: None,
                 enabled_tools: None,
                 disabled_tools: None,
-                enable_elicitation: false,
-                read_only: false,
-                strict_tool_classification: false,
-                require_approval_for_mutating: false,
                 scopes: None,
                 oauth: None,
                 oauth_resource: None,

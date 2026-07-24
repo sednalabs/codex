@@ -18,6 +18,7 @@ use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
+use codex_core_plugins::PluginCommandAttribution;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::EventMsg;
@@ -155,6 +156,7 @@ pub(crate) fn spawn_exit_watcher(
     command: Vec<String>,
     cwd: PathUri,
     process_id: i32,
+    plugin_attribution: Option<PluginCommandAttribution>,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     started_at: Instant,
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
@@ -182,6 +184,7 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
+                plugin_attribution,
                 transcript,
                 String::new(),
                 message,
@@ -197,6 +200,7 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
+                plugin_attribution,
                 transcript,
                 String::new(),
                 exit_code,
@@ -244,6 +248,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathUri,
     process_id: Option<String>,
+    plugin_attribution: Option<PluginCommandAttribution>,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     fallback_output: String,
     exit_code: i32,
@@ -269,6 +274,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        plugin_attribution,
         /*terminal_wait*/ None,
     );
     emitter
@@ -290,6 +296,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathUri,
     process_id: Option<String>,
+    plugin_attribution: Option<PluginCommandAttribution>,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     fallback_output: String,
     message: String,
@@ -320,6 +327,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        plugin_attribution,
         /*terminal_wait*/ None,
     );
     emitter

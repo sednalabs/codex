@@ -9,6 +9,7 @@ use codex_protocol::approvals::GuardianAssessmentAction;
 use codex_protocol::approvals::GuardianAssessmentStatus;
 use codex_protocol::approvals::GuardianCommandSource;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentStatus;
@@ -265,12 +266,16 @@ async fn run_codex_thread_interactive_respects_pre_cancelled_spawn() {
             SubAgentSource::Review,
             /*initial_history*/ None,
             crate::session::GitEnrichmentPolicy::Fresh,
+            codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         ),
     )
     .await
     .expect("cancelled delegate spawn should not hang");
 
-    assert!(matches!(result, Err(CodexErr::TurnAborted)));
+    assert!(matches!(
+        result,
+        Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted)
+    ));
 }
 
 #[tokio::test]
@@ -413,6 +418,8 @@ async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_f
                 &parent_ctx,
                 ExecApprovalRequestEvent {
                     call_id: "command-item-1".to_string(),
+                    plugin_id: Some("sample@openai-curated".to_string()),
+                    script_path: Some("scripts/run.py".to_string()),
                     approval_id: Some("callback-approval-1".to_string()),
                     turn_id: "child-turn-1".to_string(),
                     environment_id: Some("remote".to_string()),
@@ -455,6 +462,14 @@ async fn handle_exec_approval_uses_call_id_for_guardian_review_and_approval_id_f
     assert_eq!(
         assessment_event.target_item_id.as_deref(),
         Some("command-item-1")
+    );
+    assert_eq!(
+        assessment_event.plugin_id.as_deref(),
+        Some("sample@openai-curated")
+    );
+    assert_eq!(
+        assessment_event.script_path.as_deref(),
+        Some("scripts/run.py")
     );
     assert_eq!(assessment_event.turn_id, parent_ctx.sub_id);
     assert_eq!(

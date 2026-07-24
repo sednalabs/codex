@@ -11,7 +11,7 @@ use crate::thread_manager::ThreadManagerState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
@@ -90,8 +90,10 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         .await
         .expect("second resident slot should evict the first idle agent");
     match manager.get_thread(first.thread_id).await {
-        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, first.thread_id),
-        Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
+            _ => panic!("expected evicted thread to be missing, got {err:?}"),
+        },
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
     let expected_status = AgentStatus::Errored(format!("{}...[truncated]", "\u{00e9}".repeat(57)));
@@ -173,8 +175,10 @@ async fn interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction
         .await
         .expect("second resident slot should evict the first interrupted idle agent");
     match manager.get_thread(first.thread_id).await {
-        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, first.thread_id),
-        Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
+            _ => panic!("expected evicted thread to be missing, got {err:?}"),
+        },
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
     assert_eq!(

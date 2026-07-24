@@ -32,7 +32,7 @@ use codex_connectors::ConnectorRuntimeContext;
 use codex_connectors::ConnectorRuntimeContextKey;
 use codex_connectors::ConnectorRuntimeFetchSource;
 use codex_connectors::ConnectorRuntimeManager;
-use codex_exec_server::EnvironmentManager;
+use codex_exec_server_test_support::environment_manager_without_environments;
 use codex_login::CodexAuth;
 use codex_protocol::ToolName;
 use codex_protocol::mcp::McpServerInfo;
@@ -92,6 +92,7 @@ impl McpConnectionSet {
             codex_apps_refresh_lock: Mutex::new(()),
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
             prefix_mcp_tool_names,
+            non_prefixed_mcp_tool_servers: Vec::new(),
             elicitation_requests: ElicitationRequestManager::new(
                 approval_policy.value(),
                 permission_profile.get().clone(),
@@ -821,13 +822,76 @@ fn test_normalize_tools_short_non_duplicated_names() {
     ];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     assert_eq!(
         model_tool_names(&model_tools),
         HashSet::from([
             ToolName::namespaced("mcp__server1", "tool1"),
             ToolName::namespaced("mcp__server1", "tool2")
+        ])
+    );
+}
+
+#[test]
+fn test_normalize_tools_omits_prefix_only_for_selected_servers() {
+    let tools = vec![
+        create_test_tool("history", "search"),
+        create_test_tool("notes", "read"),
+        create_test_tool("calendar", "list"),
+    ];
+
+    let model_tools = normalize_tools_for_model_with_prefix(
+        tools,
+        /*prefix_mcp_tool_names*/ true,
+        &["history".to_string(), "notes".to_string()],
+    );
+
+    assert_eq!(
+        model_tool_names(&model_tools),
+        HashSet::from([
+            ToolName::namespaced("history", "search"),
+            ToolName::namespaced("notes", "read"),
+            ToolName::namespaced("mcp__calendar", "list"),
+        ])
+    );
+}
+
+#[test]
+fn test_normalize_tools_selects_raw_server_name() {
+    let mut tool = create_test_tool("codex_apps", "search");
+    tool.callable_namespace = "codex_apps__calendar".to_string();
+
+    let model_tools = normalize_tools_for_model_with_prefix(
+        vec![tool],
+        /*prefix_mcp_tool_names*/ true,
+        &["codex_apps".to_string()],
+    );
+
+    assert_eq!(
+        model_tool_names(&model_tools),
+        HashSet::from([ToolName::namespaced("codex_apps__calendar", "search")])
+    );
+}
+
+#[test]
+fn test_normalize_tools_global_feature_omits_prefix_for_every_server() {
+    let tools = vec![
+        create_test_tool("history", "search"),
+        create_test_tool("calendar", "list"),
+    ];
+
+    let model_tools = normalize_tools_for_model_with_prefix(
+        tools,
+        /*prefix_mcp_tool_names*/ false,
+        &["history".to_string()],
+    );
+
+    assert_eq!(
+        model_tool_names(&model_tools),
+        HashSet::from([
+            ToolName::namespaced("history", "search"),
+            ToolName::namespaced("calendar", "list"),
         ])
     );
 }
@@ -840,7 +904,7 @@ fn test_normalize_tools_duplicated_names_skipped() {
     ];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     // Only the first tool should remain, the second is skipped
     assert_eq!(
@@ -865,7 +929,7 @@ fn test_normalize_tools_long_names_same_server() {
     ];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     assert_eq!(model_tools.len(), 2);
 
@@ -888,7 +952,7 @@ fn test_normalize_tools_sanitizes_invalid_characters() {
     let tools = vec![create_test_tool("server.one", "tool.two-three")];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     assert_eq!(model_tools.len(), 1);
     let tool = model_tools.into_iter().next().expect("one tool");
@@ -919,7 +983,7 @@ fn test_normalize_tools_keeps_hyphenated_mcp_tools_callable() {
     let tools = vec![create_test_tool("music-studio", "get-strudel-guide")];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     assert_eq!(model_tools.len(), 1);
     let tool = model_tools.into_iter().next().expect("one tool");
@@ -940,7 +1004,7 @@ fn test_normalize_tools_disambiguates_sanitized_namespace_collisions() {
     ];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     assert_eq!(model_tools.len(), 2);
     let mut namespaces = model_tools
@@ -971,7 +1035,7 @@ fn test_normalize_tools_disambiguates_sanitized_tool_name_collisions() {
     ];
 
     let model_tools =
-        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true);
+        normalize_tools_for_model_with_prefix(tools, /*prefix_mcp_tool_names*/ true, &[]);
 
     assert_eq!(model_tools.len(), 2);
     let raw_tool_names = model_tools
@@ -1306,7 +1370,7 @@ async fn hard_refresh_keeps_binding_override_local_when_shared_cache_loses_race(
 #[tokio::test(start_paused = true)]
 async fn tool_catalog_cache_sanitizes_tools_and_tracks_environment_generation() {
     let cache = McpToolCatalogCache::default();
-    let environment_manager = Arc::new(EnvironmentManager::without_environments());
+    let environment_manager = Arc::new(environment_manager_without_environments());
     let replace_environment = |url: &str| {
         environment_manager
             .upsert_environment(
@@ -1378,7 +1442,7 @@ async fn tool_catalog_cache_sanitizes_tools_and_tracks_environment_generation() 
 fn tool_catalog_cache_bypasses_remote_sourced_environment_variables() {
     let cache = McpToolCatalogCache::default();
     let runtime_context = McpRuntimeContext::new(
-        Arc::new(EnvironmentManager::without_environments()),
+        Arc::new(environment_manager_without_environments()),
         PathBuf::from("/tmp"),
     );
     let config: McpServerConfig = serde_json::from_value(serde_json::json!({
@@ -2263,7 +2327,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
             tx_event: None,
             startup_cancellation_token: cancel_token.clone(),
             runtime_context: McpRuntimeContext::new(
-                Arc::new(EnvironmentManager::without_environments()),
+                Arc::new(environment_manager_without_environments()),
                 PathBuf::from("/tmp"),
             ),
             codex_apps_tools_cache: ConnectorRuntimeManager::<ToolInfo>::default(),
@@ -2516,7 +2580,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
 
 fn reusable_server_runtime_context() -> McpRuntimeContext {
     McpRuntimeContext::new(
-        Arc::new(EnvironmentManager::without_environments()),
+        Arc::new(environment_manager_without_environments()),
         PathBuf::from("/tmp"),
     )
 }

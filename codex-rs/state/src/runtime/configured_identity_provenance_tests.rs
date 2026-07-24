@@ -5,12 +5,16 @@ use super::StateRuntime;
 use crate::runtime::test_support::test_thread_metadata;
 use crate::runtime::test_support::unique_temp_dir;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn configured_identity_provenance_transitions_monotonically() {
     let codex_home = unique_temp_dir();
-    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+    let runtime = StateRuntime::init(
+        crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
         .await
         .expect("state db should initialize");
     let first_thread_id =
@@ -110,10 +114,11 @@ async fn configured_identity_provenance_transitions_monotonically() {
 #[tokio::test]
 async fn configured_identity_provenance_competing_writers_preserve_present() {
     let codex_home = unique_temp_dir();
-    let runtime_a = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+    let sqlite = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+    let runtime_a = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
         .await
         .expect("first state runtime should initialize");
-    let runtime_b = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+    let runtime_b = StateRuntime::init(sqlite, "test-provider".to_string())
         .await
         .expect("second state runtime should initialize");
     let thread_id =
@@ -179,7 +184,10 @@ fn configured_identity_provenance_rejects_invalid_values() {
 #[tokio::test]
 async fn generic_thread_metadata_upsert_preserves_configured_identity_provenance() {
     let codex_home = unique_temp_dir();
-    let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+    let runtime = StateRuntime::init(
+        crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
         .await
         .expect("state db should initialize");
     let thread_id =

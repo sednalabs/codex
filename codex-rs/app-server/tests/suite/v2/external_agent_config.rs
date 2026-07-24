@@ -1,3 +1,4 @@
+use codex_utils_absolute_path::test_support::PathExt;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -539,9 +540,11 @@ async fn external_agent_config_import_sends_completion_notification_for_sync_onl
     )
     .await??;
     assert_eq!(completed.import_id, import_id);
-    let state_db =
-        codex_state::StateRuntime::init(sqlite_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     let details_record = state_db
         .external_agent_config_import_details_record(&import_id)
         .await?
@@ -1603,7 +1606,12 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
     let project_root = codex_home.path().join("repo");
-    let recent_timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let source_created_at_text = "2024-01-02T03:04:05Z";
+    let source_updated_at_text = "2024-03-01T04:05:06Z";
+    let source_created_at =
+        chrono::DateTime::parse_from_rfc3339(source_created_at_text)?.timestamp();
+    let source_updated_at =
+        chrono::DateTime::parse_from_rfc3339(source_updated_at_text)?.timestamp();
     let session_dir = external_agent_home(codex_home.path()).join("projects/repo");
     let session_path = session_dir.join("session.jsonl");
     let manifest_dir = connector_metadata_root(codex_home.path())
@@ -1630,21 +1638,21 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
             serde_json::json!({
                 "type": "user",
                 "cwd": &project_root,
-                "timestamp": &recent_timestamp,
+                "timestamp": source_created_at_text,
                 "message": { "content": control_request },
             })
             .to_string(),
             serde_json::json!({
                 "type": "user",
                 "cwd": &project_root,
-                "timestamp": &recent_timestamp,
+                "timestamp": "2024-01-03T00:00:00Z",
                 "message": { "content": first_request },
             })
             .to_string(),
             serde_json::json!({
                 "type": "assistant",
                 "cwd": &project_root,
-                "timestamp": &recent_timestamp,
+                "timestamp": source_updated_at_text,
                 "attributionMcpServer": "gmail-server",
                 "message": { "content": "first answer" },
             })
@@ -1750,7 +1758,7 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
             archived: None,
             is_pinned: None,
             cwd: None,
-            use_state_db_only: false,
+            use_state_db_only: true,
             search_term: None,
             parent_thread_id: None,
             ancestor_thread_id: None,
@@ -1766,6 +1774,9 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
     assert_eq!(imported_thread_id, thread.id.to_string());
     assert_eq!(thread.preview, control_request);
     assert_eq!(thread.name.as_deref(), Some("Fix auth flow"));
+    assert_eq!(thread.created_at, source_created_at);
+    assert_eq!(thread.updated_at, source_updated_at);
+    assert_eq!(thread.recency_at, Some(source_updated_at));
 
     let request_id = mcp
         .send_thread_read_request(ThreadReadParams {
