@@ -409,6 +409,7 @@ fn create_thread_params(thread_id: ThreadId, cwd: &std::path::Path) -> CreateThr
         selected_capability_roots: Vec::new(),
         multi_agent_version: None,
         history_mode: ThreadHistoryMode::Legacy,
+        history_base: None,
         subagent_history_start_ordinal: None,
         initial_window_id: uuid::Uuid::now_v7().to_string(),
         metadata: ThreadPersistenceMetadata {
