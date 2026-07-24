@@ -540,6 +540,7 @@ async fn loads_skills_from_home_agents_dir_for_user_scope() -> anyhow::Result<()
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 
@@ -606,7 +607,7 @@ async fn load_user_skills_root(root: &Path) -> SkillLoadOutcome {
             path: root.abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: None,
+            plugin_identity: None,
             plugin_namespace: None,
             plugin_root: None,
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -628,6 +629,7 @@ fn expected_user_skill(path: &Path, name: &str, description: &str) -> SkillMetad
         path_to_skills_md: normalized(path),
         scope: SkillScope::User,
         plugin_id: None,
+        remote_plugin_id: None,
     }
 }
 
@@ -715,6 +717,7 @@ async fn loads_skill_dependencies_metadata_from_yaml() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -771,6 +774,7 @@ interface:
             path_to_skills_md: normalized(skill_path.as_path()),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -925,6 +929,7 @@ async fn accepts_icon_paths_under_assets_dir() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -966,6 +971,7 @@ async fn ignores_invalid_brand_color() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1020,6 +1026,7 @@ async fn ignores_default_prompt_over_max_length() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1062,6 +1069,7 @@ async fn drops_interface_when_icons_are_invalid() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1094,7 +1102,10 @@ interface:
             path: plugin_root.join("skills").abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("twilio-developer-kit@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "twilio-developer-kit@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: None,
             plugin_root: Some(plugin_root_abs.clone()),
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1129,6 +1140,7 @@ interface:
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: Some("twilio-developer-kit@test".to_string()),
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1157,7 +1169,10 @@ interface:
             path: plugin_root.join("skills").abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("twilio-developer-kit@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "twilio-developer-kit@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: None,
             plugin_root: Some(plugin_root.abs()),
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1184,6 +1199,7 @@ interface:
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: Some("twilio-developer-kit@test".to_string()),
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1229,6 +1245,7 @@ async fn loads_skills_via_symlinked_subdir_for_user_scope() {
             path_to_skills_md: normalized(&shared_skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1315,6 +1332,7 @@ async fn does_not_loop_on_symlink_cycle_for_user_scope() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1335,7 +1353,7 @@ async fn loads_skills_via_symlinked_subdir_for_admin_scope() {
             path: admin_root.path().abs(),
             scope: SkillScope::Admin,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: None,
+            plugin_identity: None,
             plugin_namespace: None,
             plugin_root: None,
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1362,6 +1380,7 @@ async fn loads_skills_via_symlinked_subdir_for_admin_scope() {
             path_to_skills_md: normalized(&shared_skill_path),
             scope: SkillScope::Admin,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1402,6 +1421,7 @@ async fn loads_skills_via_symlinked_subdir_for_repo_scope() {
             path_to_skills_md: normalized(&linked_skill_path),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1423,7 +1443,7 @@ async fn system_scope_ignores_symlinked_subdir() {
             path: system_root.abs(),
             scope: SkillScope::System,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: None,
+            plugin_identity: None,
             plugin_namespace: None,
             plugin_root: None,
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1463,7 +1483,7 @@ async fn respects_max_scan_depth_for_user_scope() {
             path: skills_root.abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: None,
+            plugin_identity: None,
             plugin_namespace: None,
             plugin_root: None,
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1490,6 +1510,7 @@ async fn respects_max_scan_depth_for_user_scope() {
             path_to_skills_md: normalized(&within_depth_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1518,6 +1539,7 @@ async fn loads_valid_skill() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1551,6 +1573,7 @@ async fn falls_back_to_directory_name_when_skill_name_is_missing() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1576,7 +1599,10 @@ async fn namespaces_plugin_skills_using_provided_namespace() {
             path: plugin_root.join("skills").abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("sample@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "sample@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: Some("sample".to_string()),
             plugin_root: Some(plugin_root.abs()),
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1603,6 +1629,7 @@ async fn namespaces_plugin_skills_using_provided_namespace() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: Some("sample@test".to_string()),
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1825,7 +1852,10 @@ async fn plugin_skill_name_length_limit_allows_max_qualified_name() {
             path: plugin_root.join("skills").abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("sample@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "sample@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: Some(plugin_name.clone()),
             plugin_root: Some(plugin_root.abs()),
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1852,6 +1882,7 @@ async fn plugin_skill_name_length_limit_allows_max_qualified_name() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: Some("sample@test".to_string()),
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1876,7 +1907,10 @@ async fn plugin_skill_name_length_limit_rejects_overlong_qualified_name() {
             path: plugin_root.join("skills").abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("sample@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "sample@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: Some(plugin_name.clone()),
             plugin_root: Some(plugin_root.abs()),
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -1908,7 +1942,10 @@ async fn direct_child_discovery_ignores_nested_skills() {
             path: skills_root.abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("plugin@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "plugin@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: Some("plugin".to_string()),
             plugin_root: Some(plugin_root.abs()),
             discovery_mode: SkillDiscoveryMode::DirectChildren,
@@ -1931,6 +1968,7 @@ async fn direct_child_discovery_ignores_nested_skills() {
             path_to_skills_md: normalized(&direct),
             scope: SkillScope::User,
             plugin_id: Some("plugin@test".to_string()),
+            remote_plugin_id: None,
         }]
     );
 }
@@ -1952,7 +1990,10 @@ async fn direct_child_discovery_skips_skills_resolving_outside_plugin_root() {
             path: skills_root.abs(),
             scope: SkillScope::User,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: Some("plugin@test".to_string()),
+            plugin_identity: Some(PluginIdentity {
+                plugin_id: "plugin@test".to_string(),
+                remote_plugin_id: None,
+            }),
             plugin_namespace: Some("plugin".to_string()),
             plugin_root: Some(plugin_root.abs()),
             discovery_mode: SkillDiscoveryMode::DirectChildren,
@@ -1993,6 +2034,7 @@ async fn loads_short_description_from_metadata() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2025,6 +2067,7 @@ async fn loads_unquoted_description_containing_colon_space() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2057,6 +2100,7 @@ async fn loads_unquoted_short_description_containing_colon_space_and_apostrophe(
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2089,6 +2133,7 @@ async fn loads_unrecognized_frontmatter_fields_that_need_quotes() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2121,6 +2166,7 @@ async fn preserves_block_scalar_body_while_repairing_other_fields() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::User,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2238,6 +2284,7 @@ async fn loads_skills_from_repo_root() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2274,6 +2321,7 @@ async fn loads_skills_from_agents_dir_without_codex_dir() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2328,6 +2376,7 @@ async fn loads_skills_from_all_codex_dirs_under_project_root() {
                 path_to_skills_md: normalized(&nested_skill_path),
                 scope: SkillScope::Repo,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
             SkillMetadata {
                 name: "root-skill".to_string(),
@@ -2339,6 +2388,7 @@ async fn loads_skills_from_all_codex_dirs_under_project_root() {
                 path_to_skills_md: normalized(&root_skill_path),
                 scope: SkillScope::Repo,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
         ]
     );
@@ -2496,7 +2546,7 @@ async fn merges_root_results_in_input_order_when_scans_finish_out_of_order() {
                 SkillScope::User
             },
             file_system: Arc::clone(&root_file_system),
-            plugin_id: None,
+            plugin_identity: None,
             plugin_namespace: Some("test".to_string()),
             plugin_root: None,
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -2562,7 +2612,7 @@ async fn skill_root_scans_wait_for_shared_capacity() {
             path: root.abs(),
             scope: SkillScope::Repo,
             file_system: Arc::clone(&LOCAL_FS),
-            plugin_id: None,
+            plugin_identity: None,
             plugin_namespace: Some("test".to_string()),
             plugin_root: None,
             discovery_mode: SkillDiscoveryMode::Recursive,
@@ -2615,6 +2665,7 @@ async fn loads_skills_from_codex_dir_when_not_git_repo() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2631,7 +2682,7 @@ async fn deduplicates_by_path_preferring_first_root() {
                 path: root.path().abs(),
                 scope: SkillScope::Repo,
                 file_system: Arc::clone(&LOCAL_FS),
-                plugin_id: None,
+                plugin_identity: None,
                 plugin_namespace: None,
                 plugin_root: None,
                 discovery_mode: SkillDiscoveryMode::Recursive,
@@ -2640,7 +2691,7 @@ async fn deduplicates_by_path_preferring_first_root() {
                 path: root.path().abs(),
                 scope: SkillScope::User,
                 file_system: Arc::clone(&LOCAL_FS),
-                plugin_id: None,
+                plugin_identity: None,
                 plugin_namespace: None,
                 plugin_root: None,
                 discovery_mode: SkillDiscoveryMode::Recursive,
@@ -2668,6 +2719,7 @@ async fn deduplicates_by_path_preferring_first_root() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2710,6 +2762,7 @@ async fn keeps_duplicate_names_from_repo_and_user() {
                 path_to_skills_md: normalized(&repo_skill_path),
                 scope: SkillScope::Repo,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
             SkillMetadata {
                 name: "dupe-skill".to_string(),
@@ -2721,6 +2774,7 @@ async fn keeps_duplicate_names_from_repo_and_user() {
                 path_to_skills_md: normalized(&user_skill_path),
                 scope: SkillScope::User,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
         ]
     );
@@ -2784,6 +2838,7 @@ async fn keeps_duplicate_names_from_nested_codex_dirs() {
                 path_to_skills_md: first_path,
                 scope: SkillScope::Repo,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
             SkillMetadata {
                 name: "dupe-skill".to_string(),
@@ -2795,6 +2850,7 @@ async fn keeps_duplicate_names_from_nested_codex_dirs() {
                 path_to_skills_md: second_path,
                 scope: SkillScope::Repo,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
         ]
     );
@@ -2867,6 +2923,7 @@ async fn loads_skills_when_cwd_is_file_in_repo() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::Repo,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
@@ -2933,6 +2990,7 @@ async fn loads_skills_from_system_cache_when_present() {
             path_to_skills_md: normalized(&skill_path),
             scope: SkillScope::System,
             plugin_id: None,
+            remote_plugin_id: None,
         }]
     );
 }
