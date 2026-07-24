@@ -57,13 +57,13 @@ pub struct InferenceCallEvent {
     /// Exact usage for this response. This is never an accumulated or estimated total.
     pub token_usage: Option<TokenUsage>,
     /// Required string fields shortened to fit the durable observation limits.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub truncated_fields: Vec<InferenceCallField>,
+    pub truncated_fields: Option<Vec<InferenceCallField>>,
     /// Optional or lifecycle-inapplicable evidence removed from this observation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub omitted_fields: Vec<InferenceCallField>,
+    pub omitted_fields: Option<Vec<InferenceCallField>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -120,8 +120,8 @@ impl InferenceCallEvent {
             return None;
         }
 
-        self.truncated_fields.clear();
-        self.omitted_fields.clear();
+        self.truncated_fields = None;
+        self.omitted_fields = None;
         self.remove_lifecycle_inapplicable_evidence();
 
         truncate_required_string(
@@ -254,8 +254,8 @@ impl InferenceCallEvent {
             | InferenceCallField::ConfiguredProvider
             | InferenceCallField::RequestedModel => false,
         };
-        if present && !self.omitted_fields.contains(&field) {
-            self.omitted_fields.push(field);
+        if present {
+            record_field(&mut self.omitted_fields, field);
         }
     }
 
@@ -293,7 +293,7 @@ fn truncate_required_string(
     value: &mut String,
     max_bytes: usize,
     field: InferenceCallField,
-    truncated_fields: &mut Vec<InferenceCallField>,
+    truncated_fields: &mut Option<Vec<InferenceCallField>>,
 ) {
     if value.len() <= max_bytes {
         return;
@@ -303,8 +303,16 @@ fn truncate_required_string(
         boundary -= 1;
     }
     value.truncate(boundary);
-    if !truncated_fields.contains(&field) {
-        truncated_fields.push(field);
+    record_field(truncated_fields, field);
+}
+
+fn record_field(
+    fields: &mut Option<Vec<InferenceCallField>>,
+    field: InferenceCallField,
+) {
+    let fields = fields.get_or_insert_default();
+    if !fields.contains(&field) {
+        fields.push(field);
     }
 }
 
