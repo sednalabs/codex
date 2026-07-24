@@ -772,6 +772,7 @@
       "guardrail_lane": "codex.mcp-device-login-targeted",
       "tests": [
         "discover_streamable_http_oauth_returns_normalized_scopes",
+        "runtime_oauth_discovery_preserves_device_only_metadata",
         "device_login_dynamic_registration_uses_device_grant_shape",
         "device_login_dynamic_registration_omits_refresh_when_not_supported",
         "device_login_configured_client_id_skips_dynamic_registration",
@@ -782,7 +783,7 @@
         "mcp_login_parses_device_auth_flag"
       ],
       "owner": "downstream",
-      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths.",
+      "notes": "Keeps headless MCP server login on codex mcp login --device-auth until upstream offers equivalent headless MCP OAuth support, including configured-client-id and dynamic-registration paths. OAuth discovery uses the upstream authorization manager for standard and protected-resource metadata; the narrow device-only fallback is retained because upstream metadata currently requires an authorization endpoint.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "headless-oauth-login",
       "hotspot_files": [

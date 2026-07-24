@@ -873,6 +873,7 @@ User-visible behavior:
 - Dynamic registration keeps the request public-client shaped (`token_endpoint_auth_method=none`), uses `grant_types=["urn:ietf:params:oauth:grant-type:device_code"]`, adds `refresh_token` only when server metadata permits or omits grant support, and forwards the configured scope string when scopes are requested.
 - The device-code step uses PKCE, prints the verification URL and user code, polls the token endpoint, and stores the resulting OAuth tokens through the existing MCP credential cache.
 - Discovery keeps `token_endpoint`, `device_authorization_endpoint`, `registration_endpoint`, and `grant_types_supported` available to the login flow for Streamable HTTP MCP servers.
+- Standard and protected-resource discovery use the upstream authorization manager for both direct and runtime-routed HTTP. The only downstream discovery fallback is the device-only metadata shape that upstream cannot currently deserialize without an authorization endpoint.
 - If no configured client id exists and the authorization server does not advertise dynamic registration, the CLI fails with an explicit public-client-id-required error instead of reporting a misleading generic registration failure.
 - This is an intentional downstream carry until upstream has an equivalent headless MCP OAuth login path. If upstream lands native device-login support, compare behavior and drop or re-home this carry rather than keeping both paths.
 
