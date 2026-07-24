@@ -1,6 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "canPublishToWorkspace": {
+      "default": null,
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "remotePluginId": {
       "type": "string"
     },
