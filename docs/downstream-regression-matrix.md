@@ -609,6 +609,11 @@ history fixture initializes terminal-wait metadata. These are guarded by the
 same core, thread-store, app-server protocol, and cross-platform Bazel jobs
 rather than a parallel downstream API.
 
+GitHub-hosted lock-generation run `30064291087` resolves the combined
+code-mode-host WebSocket graph by qualifying its `tokio-tungstenite 0.28.0`
+edge. The verified artifact changes only `codex-rs/Cargo.lock`; the ordinary
+`--locked` Cargo jobs and Bazel lock checks remain authoritative.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.
