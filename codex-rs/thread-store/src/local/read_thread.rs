@@ -1113,7 +1113,7 @@ mod tests {
         )
         .expect("write turn context");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite.home().to_path_buf(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await

@@ -2157,6 +2157,7 @@ mod tests {
                 }],
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
+                terminal_wait: None,
                 stdout: "hello world\n".to_string(),
                 stderr: String::new(),
                 aggregated_output: "hello world\n".to_string(),

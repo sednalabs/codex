@@ -1308,7 +1308,7 @@ async fn run_sampling_request(
             original_input = Some(prompt.input);
         }
 
-        if matches!(&err, CodexErr::ServerOverloaded) {
+        if matches!(err.details(), CodexErrorDetails::ServerOverloaded) {
             capacity_retries += 1;
             notify_and_wait_for_capacity_retry(
                 sess.as_ref(),
