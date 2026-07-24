@@ -630,6 +630,11 @@ candidate's one-file `Cargo.lock` repair. It qualifies the `codex-cli`
 `tokio-tungstenite 0.28.0` dependency edge; ordinary `--locked` Cargo and Bazel
 jobs remain the authoritative regression checks.
 
+Signed merge `7de965e86f` advances through upstream `81da9deb06`, adopting
+Agent Plugin manifests and host-provided `wait_for_environment` descriptions.
+The upstream plugin, core-skills, tool-router, and remote-environment tests
+remain the regression boundary; no parallel downstream tool surface is kept.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.

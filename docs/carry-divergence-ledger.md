@@ -2581,6 +2581,10 @@ docs-only refresh commit that records this snapshot.
   SHA-256 `3b8f4c8b28fabf04fd8f949b7b7ae73992aa95ce5865f3d4b86af5f87ba712bb`.
   It qualifies the `codex-cli` edge as `tokio-tungstenite 0.28.0`; no package
   version or Bazel lock changed.
+- Signed merge `7de965e86f` preserves upstream `81da9deb06` and its parent
+  `a28374e0db`: Agent Plugin manifests and host-customized
+  `wait_for_environment` descriptions are adopted without a downstream plugin
+  or tool-description fork. The merge leaves generated locks unchanged.
 
 ### Typed Cyber-Policy Retry Boundary
 
