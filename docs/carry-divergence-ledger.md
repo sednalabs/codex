@@ -2575,6 +2575,12 @@ docs-only refresh commit that records this snapshot.
   upstream `AppServerCodeModeHostArgs`, `code_mode_host_transport`, and explicit
   disabled remote-control startup state; no fork-only transport override is
   retained.
+- GitHub-hosted lock generation run `30072197446` consumed exact candidate
+  `e64bf6a204cfaf2f255b9f00bb621f60b9205b4b`. Temporary workflow commit
+  `052ecf763d59d72b2e8ea170c168fefb126b0a54` produced a one-file patch with
+  SHA-256 `3b8f4c8b28fabf04fd8f949b7b7ae73992aa95ce5865f3d4b86af5f87ba712bb`.
+  It qualifies the `codex-cli` edge as `tokio-tungstenite 0.28.0`; no package
+  version or Bazel lock changed.
 
 ### Typed Cyber-Policy Retry Boundary
 

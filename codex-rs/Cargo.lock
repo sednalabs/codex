@@ -2677,7 +2677,7 @@ dependencies = [
  "pretty_assertions",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
+ "tokio-tungstenite 0.28.0",
  "tokio-util",
  "tracing",
  "v8",
