@@ -1391,6 +1391,22 @@ docs-only refresh commit that records this snapshot.
   - `scripts/just-shell.py`
   - `.codex/skills/codex-issue-digest/scripts/collect_issue_digest.py`
 
+### Coverage Upload Entitlement Compatibility
+
+- Upstream commit `dfdf9ff36b` added Code Coverage report uploads and assumes
+  that the repository has GitHub Code Quality enabled.
+- This repository intentionally does not configure that product. The three
+  report-generation test steps remain required, but their upload actions set
+  `fail-on-error: false` so an unavailable endpoint reports a warning rather
+  than turning completed coverage tests into a false CI failure.
+- The actions still attempt each upload. If Code Quality is enabled later, the
+  same reports are submitted without another workflow change.
+- Preserve this operator-specific compatibility carry while the repository is
+  not configured for Code Quality. Reassess it if the repository is configured
+  or upstream makes unavailable uploads non-fatal by default.
+- Primary file:
+  - `.github/workflows/code-coverage.yml`
+
 ### First-Party Usage Ledger Ownership
 
 - Downstream keeps usage-ledger ownership in this repo.

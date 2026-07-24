@@ -2808,6 +2808,43 @@
       "extraction_target": "upstreamable Python static-analysis corrections"
     },
     {
+      "id": "coverage-upload-entitlement-compatibility",
+      "title": "Coverage upload entitlement compatibility",
+      "status": "live",
+      "category": "build-validation",
+      "surface_type": "operator-facing",
+      "surface": [
+        "Python tool coverage upload",
+        "Python SDK coverage upload",
+        "TypeScript SDK coverage upload"
+      ],
+      "files": [
+        ".github/workflows/code-coverage.yml",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "Coverage commands and XML report generation remain required. When this repository is not configured for GitHub Code Quality, the three report uploads still run but report an unavailable endpoint as a warning rather than failing completed coverage-test jobs.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "dfdf9ff36b144df1c1c68f2e19b6a955c07e1113"
+      },
+      "guardrail_lane": "GitHub Code Coverage workflow; codex.downstream-divergence-audit",
+      "tests": [
+        "Python tool coverage produces coverage-python-tools.xml",
+        "Python SDK coverage produces sdk/python/coverage.xml",
+        "TypeScript SDK coverage produces sdk/typescript/coverage/cobertura-coverage.xml"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve while this repository is not configured for GitHub Code Quality. Reassess if the repository is configured or upstream makes unavailable uploads non-fatal by default; do not treat this as authorization to change repository product configuration.",
+      "upstreamability_tier": "operator-only",
+      "boundary_type": "hosted-validation-entitlement",
+      "hotspot_files": [
+        ".github/workflows/code-coverage.yml"
+      ],
+      "extraction_target": "repository-specific coverage upload policy"
+    },
+    {
       "id": "hook-command-early-exit-output",
       "title": "Hook command early-exit output preservation",
       "status": "live",
