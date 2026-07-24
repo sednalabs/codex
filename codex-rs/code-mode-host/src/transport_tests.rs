@@ -38,6 +38,23 @@ fn parse_listen_url_accepts_websocket_addresses() {
 }
 
 #[test]
+fn parse_listen_url_rejects_non_loopback_websocket_addresses() {
+    for listen_url in [
+        "ws://0.0.0.0:9000",
+        "ws://192.0.2.1:9000",
+        "ws://[::]:9000",
+        "ws://[2001:db8::1]:9000",
+    ] {
+        let error = parse_listen_url(listen_url)
+            .expect_err("code-mode host websocket listener must remain local-only");
+        assert!(
+            error.to_string().contains("loopback IP addresses"),
+            "unexpected error for {listen_url}: {error:#}"
+        );
+    }
+}
+
+#[test]
 fn parse_listen_url_rejects_invalid_transports() {
     let invalid_address = parse_listen_url("ws://localhost:9000")
         .expect_err("websocket listener requires an IP address");

@@ -598,8 +598,10 @@ remains the authoritative cross-platform proof for this build-configuration
 boundary.
 
 Signed merge `74c1d89ee4` advances the boundary through upstream `0dfa778dae`
-and adopts the code-mode host WebSocket transport without a downstream
-transport fork. The same checkpoint keeps the Schemars 1.2
+and adopts the code-mode host WebSocket transport. The downstream listener
+remains loopback-only until an authenticated remote transport exists; the
+parser regression rejects wildcard and non-loopback IPv4 and IPv6 addresses.
+The same checkpoint keeps the Schemars 1.2
 `NonPrefixedMcpToolNames` insertion on the downstream `properties` map and
 declares nextest setup for `codex.mcp-tool-exposure-targeted`; hosted config
 schema, planner, and Bazel jobs guard those integration repairs.
@@ -623,9 +625,11 @@ testing SQLite configuration, and Guardian metadata. The same cross-platform
 Bazel jobs remain the regression boundary for these compatibility fixtures.
 
 Signed merge `3c96cb99b5` advances the integration through upstream
-`f61b51ddd9` and adopts remote code-mode-host support without a downstream
-transport fork. The app-server protocol and cross-platform Bazel jobs cover the
-CLI transport wiring and remote-control startup-state compatibility boundary.
+`f61b51ddd9` and adopts remote code-mode-host support in the app server. The
+standalone host's unauthenticated WebSocket listener remains loopback-only; an
+authenticated remote listener is a separate future contract. The app-server
+protocol, `parse_listen_url_rejects_non_loopback_websocket_addresses`, and
+cross-platform Bazel jobs cover the CLI transport wiring and exposure boundary.
 
 GitHub-hosted lock-generation run `30072197446` produces the current
 candidate's one-file `Cargo.lock` repair. It qualifies the `codex-cli`

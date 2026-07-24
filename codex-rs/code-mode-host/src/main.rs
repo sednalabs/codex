@@ -2,7 +2,7 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 struct Cli {
-    /// Transport endpoint: `stdio`, `stdio://`, or `ws://IP:PORT`.
+    /// Transport endpoint: `stdio`, `stdio://`, or a loopback `ws://IP:PORT`.
     #[arg(
         long,
         value_name = "URL",
