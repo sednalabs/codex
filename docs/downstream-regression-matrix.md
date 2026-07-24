@@ -625,6 +625,11 @@ Signed merge `3c96cb99b5` advances the integration through upstream
 transport fork. The app-server protocol and cross-platform Bazel jobs cover the
 CLI transport wiring and remote-control startup-state compatibility boundary.
 
+GitHub-hosted lock-generation run `30072197446` produces the current
+candidate's one-file `Cargo.lock` repair. It qualifies the `codex-cli`
+`tokio-tungstenite 0.28.0` dependency edge; ordinary `--locked` Cargo and Bazel
+jobs remain the authoritative regression checks.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.
