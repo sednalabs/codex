@@ -306,10 +306,7 @@ fn truncate_required_string(
     record_field(truncated_fields, field);
 }
 
-fn record_field(
-    fields: &mut Option<Vec<InferenceCallField>>,
-    field: InferenceCallField,
-) {
+fn record_field(fields: &mut Option<Vec<InferenceCallField>>, field: InferenceCallField) {
     let fields = fields.get_or_insert_default();
     if !fields.contains(&field) {
         fields.push(field);
