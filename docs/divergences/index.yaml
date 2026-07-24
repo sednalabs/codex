@@ -2722,7 +2722,7 @@
         "stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently"
       ],
       "owner": "downstream",
-      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. The 2026-07-22 sync adopts upstream commit 84d2b203ed's live-runtime McpResourceClient and does not carry the removed per-binding resource-client identity layer. The 2026-07-23 sync composes the downstream slow-inventory budget test onto upstream 10cc57c95c's typed app-server helpers and pins it in the existing app-server V2 lane. The later 2026-07-23 reconciliation adopts upstream commits e19e65317a and 34b935e3e5 while preserving raw generation-aware snapshots: connection reuse shares the manager revision only when a connection is actually reused; view values remain current; cache winners never become exact live-client tool authority; and a successful notification clears an older Apps override. A hosted cache-ordering regression showed that refresh must not await a pending client before listing a published shared cache, including an empty snapshot; the focused connection-manager tests and regular MCP inference regression are the retained proof. The integration through upstream 94ebae725e additionally proves that a ready client, rather than a shared cache, supplies the exact binding catalogue and that read-only or explicit parallel RMCP calls overlap by event order. After adopting upstream ef2d3edb95's background prewarm, tool dispatch must prepare the call from the already advertised step binding rather than refresh and recapture it per call: a prepared RPC deliberately holds the catalogue read authority, while recapture refresh takes the writer authority and would serialize otherwise parallel calls. The follow-on integration through upstream 3947f0d0c3 adopts world-state-aware deferred source listings and preserves normalized exact-match entries only for ranking and namespace coalescing. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
+      "notes": "The 2026-07-15 sync retired the obsolete codex_apps_cache module and re-homed the carry on upstream's connector_runtime and tool_catalog_cache architecture. The 2026-07-21 sync adopts upstream commit 2d85e6d3a6's connection-manager module split and keeps only the generation-aware catalogue calls in its new tool_catalog module. The 2026-07-22 sync adopts upstream commit 84d2b203ed's live-runtime McpResourceClient and does not carry the removed per-binding resource-client identity layer. The 2026-07-23 sync composes the downstream slow-inventory budget test onto upstream 10cc57c95c's typed app-server helpers and pins it in the existing app-server V2 lane. The later 2026-07-23 reconciliation adopts upstream commits e19e65317a and 34b935e3e5 while preserving raw generation-aware snapshots: connection reuse shares the manager revision only when a connection is actually reused; view values remain current; cache winners never become exact live-client tool authority; and a successful notification clears an older Apps override. A hosted cache-ordering regression showed that refresh must not await a pending client before listing a published shared cache, including an empty snapshot; the focused connection-manager tests and regular MCP inference regression are the retained proof. The integration through upstream 94ebae725e additionally proves that a ready client, rather than a shared cache, supplies the exact binding catalogue and that read-only or explicit parallel RMCP calls overlap by event order. After adopting upstream ef2d3edb95's background prewarm, tool dispatch must prepare the call from the already advertised step binding rather than refresh and recapture it per call: a prepared RPC deliberately holds the catalogue read authority, while recapture refresh takes the writer authority and would serialize otherwise parallel calls. The integration through upstream 000d2540ad further adopts centralized McpRefresh startup coordination and current-runtime Guardian elicitation authority; immutable step bindings remain the only model-visible call authority. The follow-on integration through upstream 3947f0d0c3 adopts world-state-aware deferred source listings and preserves normalized exact-match entries only for ranking and namespace coalescing. Upstream commits 3307ea8b63 and 1bbdb32789 supply cache opt-out and live replacement-process safety, but not the bounded complete-snapshot and list_changed contract. Preserve the remaining carry until upstream issue #26094 is closed by equivalent behavior; closed PR #27290 covered only the basic page walk.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "runtime-tool-catalog-contract",
       "hotspot_files": [
@@ -2846,7 +2846,7 @@
     {
       "id": "hook-command-early-exit-output",
       "title": "Hook command early-exit output preservation",
-      "status": "live",
+      "status": "upstream-equivalent",
       "category": "core-runtime",
       "surface_type": "runtime-correctness",
       "surface": [
@@ -2858,20 +2858,20 @@
         "codex-rs/hooks/src/engine/command_runner_tests.rs"
       ],
       "behavior": "A successful command hook may emit output and exit without consuming stdin. BrokenPipe from the parent input write is treated as a closed-input signal so the runner still reports the child's real stdout, stderr, and exit status; all other write errors remain fatal.",
-      "upstream_equivalent": false,
+      "upstream_equivalent": true,
       "introduced_in": {
         "carry_commit": "932cbceeb85f1e3f7535f6d50e2b6430d7593faa",
-        "upstream_commit": "e4836f998da166aba456f60d2e74eb79d6e2542b"
+        "upstream_commit": "634a998d8aaeaf5f535e04d8475b17a62e7043a7"
       },
       "guardrail_lane": "GitHub blocking-ci Bazel hooks unit, core native, and core Wine-exec tests",
       "tests": [
         "hook_can_exit_successfully_without_reading_stdin",
         "session_start_hooks_apply_additional_context_limits_individually"
       ],
-      "owner": "downstream",
-      "notes": "Upstream's per-hook additional-context fixture exposed the pre-existing runner race, but current upstream main still discards valid output after BrokenPipe. Drop the production change and direct regression together when upstream has equivalent successful-early-exit handling; do not replace the fix with a Wine skip.",
-      "upstreamability_tier": "upstream-pr",
-      "boundary_type": "direct-upstream-fix",
+      "owner": "upstream",
+      "notes": "Upstream 634a998d8a adopts the production BrokenPipe handling and adds a cross-platform fast-exit regression. The remaining downstream Windows-specific regression is supplemental validation only; no runtime code diff remains. Keep this historical receipt so future integrations do not restore the former failure mode or mistake the extra fixture for live behavior carry.",
+      "upstreamability_tier": "already-upstream",
+      "boundary_type": "upstream-equivalent-history",
       "hotspot_files": [
         "codex-rs/hooks/src/engine/command_runner.rs"
       ],
