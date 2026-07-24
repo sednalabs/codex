@@ -179,6 +179,48 @@
       "extraction_target": "extension-owned usage event and spawn metadata storage"
     },
     {
+      "id": "provider-inference-attempt-observation-contract",
+      "title": "Provider inference-attempt observation contract",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": [
+        "inference_call protocol event",
+        "payload-free provider evidence",
+        "observation privacy bounds"
+      ],
+      "files": [
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/protocol/src/protocol/inference_observation.rs",
+        "codex-rs/protocol/src/protocol/inference_observation_tests.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/mcp-server/src/codex_tool_runner.rs",
+        "codex-rs/rollout/src/policy.rs",
+        "codex-rs/rollout-trace/src/protocol_event.rs"
+      ],
+      "behavior": "Downstream defines an immutable, payload-free inference-attempt observation contract with exact call, thread, turn, and optional spawn correlation; distinct configured-provider, requested model and tier, and provider-observed identity; started, completed, failed, and cancelled lifecycle shapes; optional exact completion usage; and explicit UTF-8-safe truncation or omission provenance under a 4096-byte serialized cap.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.inference-observation-contract-targeted",
+      "tests": [
+        "inference_call_event_has_payload_free_wire_shape_and_legacy_defaults",
+        "inference_call_event_bounds_multibyte_fields_and_aggregate_size",
+        "inference_call_event_enforces_lifecycle_shapes",
+        "inference_call_event_never_truncates_correlation_identifiers",
+        "event_msg_consumes_unknown_event_types"
+      ],
+      "owner": "downstream",
+      "notes": "This stage defines and bounds the contract only. Runtime transport emission, terminal arbitration, persistence and query projection, pricing, and identity reconciliation remain separate owners. Preserve the carry until upstream provides an equivalent payload-free lifecycle contract, exact correlation, explicit evidence provenance, and compatible unknown-event consumption; then drop the downstream event and guardrail together.",
+      "upstreamability_tier": "upstream-candidate",
+      "boundary_type": "protocol-extension",
+      "hotspot_files": [
+        "codex-rs/protocol/src/protocol.rs"
+      ],
+      "extraction_target": "upstream-native inference-attempt observation protocol"
+    },
+    {
       "id": "phase2-memory-attestation-and-fingerprinting",
       "title": "Phase-2 memory attestation and prepared-input fingerprinting",
       "status": "live",
