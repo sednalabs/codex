@@ -3123,6 +3123,7 @@ dependencies = [
  "codex-sandboxing",
  "codex-test-binary-support",
  "codex-utils-absolute-path",
+ "codex-utils-cargo-bin",
  "codex-utils-path-uri",
  "codex-utils-pty",
  "codex-utils-rustls-provider",

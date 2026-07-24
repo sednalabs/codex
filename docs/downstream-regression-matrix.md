@@ -641,6 +641,16 @@ and the SQLite resume fixture asserts the canonical default namespace
 description for a flat dynamic tool. Cross-platform Bazel core tests remain the
 authoritative regression boundary for those upstream compatibility adapters.
 
+Exact-head hosted run `30076449242` additionally reached the downstream
+deferred-tool default assertion, Windows filesystem test dependency, generated
+config schema, and keymap count fixtures. GitHub-hosted generator run
+`30079131774` produced and scope-checked the verified six-file patch for
+candidate `b6563273d9`; its SHA-256 is
+`6dfd7e18e50acce19f2eb986f8fe5a5a8c10db58d273982414283bb47f6762c4`.
+The generator reran the Bazel lock update, which left `MODULE.bazel.lock`
+unchanged. Cross-platform Bazel and Windows argument-comment-lint jobs remain
+the authoritative regression boundary after this generated repair.
+
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
 terminal-babysitter lock in both role-schema and V2 spawn tests.
