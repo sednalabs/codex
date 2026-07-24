@@ -234,7 +234,8 @@ def codex_rust_crate(
         integration_test_args: Optional args for integration test binaries.
         unit_test_args: Optional args for the unit test binary.
         binary_test_target_compatible_with: Optional platform constraints for
-            the generated unit-test binary and its public test wrapper.
+            the generated workspace-root unit-test wrapper. The inner test
+            binary remains analyzable by cross-platform lint targets.
         integration_test_timeout: Optional Bazel timeout for integration test
             targets generated from `tests/*.rs`.
         test_data_extra: Extra runtime data for tests.
@@ -348,7 +349,6 @@ def codex_rust_crate(
             ],
             rustc_env = rustc_env,
             data = test_data_extra,
-            target_compatible_with = binary_test_target_compatible_with,
             tags = test_tags + ["manual"],
         )
 

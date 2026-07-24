@@ -2521,11 +2521,13 @@ docs-only refresh commit that records this snapshot.
   parent. It adopts upstream's CLI snapshot runfiles and Windows-only sandbox
   binary-test declaration. The upstream commit omitted the corresponding
   `codex_rust_crate` macro parameter and failed its own hosted Bazel analysis, so
-  downstream temporarily accepts and forwards that platform constraint to the
-  generated unit-test binary and wrapper. Drop the shim when upstream supplies
-  the missing macro support. The argument-label changes from that upstream
-  commit were already present in the integrated tree, so this boundary adds no
-  downstream lint carry or duplicate test edits.
+  downstream temporarily accepts that platform constraint and applies it to the
+  generated public unit-test wrapper. The inner binary deliberately remains
+  analyzable by cross-platform lint targets; constraining it caused Linux Bazel
+  clippy to reject an explicitly selected incompatible target. Drop the shim
+  when upstream supplies the missing macro support. The argument-label changes
+  from that upstream commit were already present in the integrated tree, so this
+  boundary adds no downstream lint carry or duplicate test edits.
 - Signed merge `9e5b6909de` incorporates the landed runtime-receipt carry from
   `origin/main` through `4614b8037f`. Its documentation resolution is a union:
   Luna-low terminal babysitting and live inspect/send receipts remain, together
@@ -2548,6 +2550,13 @@ docs-only refresh commit that records this snapshot.
   The artifact formats `agent_resolver.rs`, `sqlite_state.rs`, `landlock.rs`,
   both state runtime test files, and this sync's regression-matrix prose; apply
   the output as one generated set rather than hand-selecting hunks.
+- Exact-head hosted run `30063180432` then exposed API drift only in retained
+  downstream seams. Error handling now inspects upstream's
+  `CodexErr::details()` payload for server-overload and missing-thread
+  classifications; downstream thread-store tests pass the complete upstream
+  `SqliteConfig`; and the app-server history fixture explicitly records no
+  terminal wait. These are compatibility repairs, not new runtime behavior.
+  The same run proved rustfmt clean before its final generated-lock check.
 
 ### Typed Cyber-Policy Retry Boundary
 

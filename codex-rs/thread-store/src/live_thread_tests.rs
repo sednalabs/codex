@@ -184,7 +184,7 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
         default_model_provider_id: "test-provider".to_string(),
     };
     let runtime = codex_state::StateRuntime::init(
-        config.sqlite.home().to_path_buf(),
+        config.sqlite.clone(),
         config.default_model_provider_id.clone(),
     )
     .await
@@ -335,7 +335,7 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
         default_model_provider_id: "test-provider".to_string(),
     };
     let runtime = codex_state::StateRuntime::init(
-        config.sqlite.home().to_path_buf(),
+        config.sqlite.clone(),
         config.default_model_provider_id.clone(),
     )
     .await

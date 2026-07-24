@@ -588,10 +588,12 @@ The final upstream boundary through `f47f28cd0d` supplies the CLI snapshot
 runfiles required by Bazel and limits the Windows sandbox binary test target to
 Windows. Signed merge `9092762358` adopts that declaration, while the temporary
 `codex_rust_crate` compatibility shim supplies the macro parameter omitted by
-the upstream commit and forwards its platform constraint to the generated test
-binary and wrapper. The same upstream commit's argument-label fixes were already
-patch-equivalent in the integration tree. Hosted `blocking-ci` remains the
-authoritative cross-platform proof for this build-configuration boundary.
+the upstream commit and applies its platform constraint only to the public test
+wrapper. The inner binary remains available to explicitly selected
+cross-platform lint targets. The same upstream commit's argument-label fixes
+were already patch-equivalent in the integration tree. Hosted `blocking-ci`
+remains the authoritative cross-platform proof for this build-configuration
+boundary.
 
 Signed merge `74c1d89ee4` advances the boundary through upstream `0dfa778dae`
 and adopts the code-mode host WebSocket transport without a downstream
@@ -599,6 +601,13 @@ transport fork. The same checkpoint keeps the Schemars 1.2
 `NonPrefixedMcpToolNames` insertion on the downstream `properties` map and
 declares nextest setup for `codex.mcp-tool-exposure-targeted`; hosted config
 schema, planner, and Bazel jobs guard those integration repairs.
+
+Exact-head hosted run `30063180432` identified the remaining compile adapters:
+downstream error branches inspect upstream's `CodexErr::details()`, retained
+thread-store fixtures pass the complete `SqliteConfig`, and the app-server
+history fixture initializes terminal-wait metadata. These are guarded by the
+same core, thread-store, app-server protocol, and cross-platform Bazel jobs
+rather than a parallel downstream API.
 
 Runtime agent identity receipts remain in the existing sub-agent guardrail
 lanes. `codex.core-subagent-model-pinning-targeted` proves the Luna-low
