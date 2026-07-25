@@ -164,6 +164,8 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         transcript,
         Instant::now(),
         Some(network_denial_monitor),
+        /*notify_on_completion*/ false,
+        uuid::Uuid::nil(),
     );
 
     let exited_at = Instant::now();
