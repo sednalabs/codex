@@ -590,6 +590,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 } else {
                     now
                 },
+                completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             },
         );
     }
