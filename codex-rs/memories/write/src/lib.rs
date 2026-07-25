@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Write-path implementation for Codex memories.
 //!
 //! This crate owns the startup memory pipeline, file-backed memory artifact

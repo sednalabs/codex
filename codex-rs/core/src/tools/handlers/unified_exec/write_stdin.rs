@@ -8,9 +8,8 @@ use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
+use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::TerminalInteractionEvent;
 use codex_protocol::protocol::TerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive;
 use codex_tools::ToolName;
@@ -111,26 +110,17 @@ impl WriteStdinHandler {
                 empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
                 max_output_tokens,
                 truncation_policy,
+                interaction_event: Some(WriteStdinInteractionEvent {
+                    session: &session,
+                    turn: &turn,
+                    terminal_wait: terminal_wait.clone(),
+                    emit_when_process_exited: args.terminal_wait.wait_until_terminal,
+                }),
             })
             .await
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
             })?;
-        let emitted_terminal_interaction = if args.terminal_wait.wait_until_terminal {
-            let process_id = response.process_id.unwrap_or(args.session_id);
-            let interaction = TerminalInteractionEvent {
-                call_id: response.event_call_id.clone(),
-                process_id: process_id.to_string(),
-                stdin: args.chars.clone(),
-                terminal_wait: terminal_wait.clone(),
-            };
-            session
-                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
-                .await;
-            true
-        } else {
-            false
-        };
         let response = if args.terminal_wait.wait_until_terminal {
             let Some(capability) = unified_exec_blocking_wait_capability() else {
                 return Ok(boxed_tool_output(response));
@@ -152,25 +142,6 @@ impl WriteStdinHandler {
         } else {
             response
         };
-
-        // Empty stdin is a background poll, so emit it only while there is
-        // still a live process for the UI to wait on. Non-empty stdin is a real
-        // terminal interaction and should remain visible even if it completes
-        // the process before the response returns.
-        if !emitted_terminal_interaction
-            && (!args.chars.is_empty() || response.process_id.is_some())
-        {
-            let process_id = response.process_id.unwrap_or(args.session_id);
-            let interaction = TerminalInteractionEvent {
-                call_id: response.event_call_id.clone(),
-                process_id: process_id.to_string(),
-                stdin: args.chars.clone(),
-                terminal_wait,
-            };
-            session
-                .send_event(turn.as_ref(), EventMsg::TerminalInteraction(interaction))
-                .await;
-        }
 
         Ok(boxed_tool_output(response))
     }

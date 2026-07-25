@@ -47,11 +47,13 @@ members = [
     "file-system",
     "exec-server-protocol",
     "exec-server",
+    "exec-server/tests/support",
     "execpolicy",
     "ext/agent",
     "ext/connectors",
     "ext/extension-api",
     "ext/goal",
+    "ext/git-attribution",
     "ext/guardian",
     "ext/image-generation",
     "ext/items",
@@ -183,10 +185,12 @@ codex-exec = { path = "exec" }
 codex-file-system = { path = "file-system" }
 codex-exec-server-protocol = { path = "exec-server-protocol" }
 codex-exec-server = { path = "exec-server" }
+codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
 codex-goal-extension = { path = "ext/goal" }
+codex-git-attribution = { path = "ext/git-attribution" }
 codex-guardian = { path = "ext/guardian" }
 codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
@@ -305,7 +309,6 @@ constant_time_eq = "0.3.1"
 crossbeam-channel = "0.5.15"
 crypto_box = { version = "0.9.1", features = ["seal"] }
 crossterm = "0.29.0"
-csv = "1.3.1"
 ctor = "0.6.3"
 deno_core_icudata = "0.77.0"
 derive_more = "2"
@@ -405,6 +408,13 @@ scopeguard = "1.2.0"
 sha2 = "0.11"
 shlex = "1.3.0"
 similar = "2.7.0"
+symphonia = { version = "0.6.0", default-features = false, features = [
+    "isomp4",
+    "mkv",
+    "mp3",
+    "ogg",
+    "wav",
+] }
 socket2 = "0.6.1"
 sqlx = { version = "0.9.0", default-features = false, features = [
     "chrono",

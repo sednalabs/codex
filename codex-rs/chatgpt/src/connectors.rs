@@ -233,6 +233,10 @@ struct BatchApp {
     name: String,
     description: Option<String>,
     icon_url: Option<String>,
+    #[serde(default, rename = "icon_dark_url", alias = "icon_url_dark")]
+    icon_url_dark: Option<String>,
+    #[serde(default)]
+    distribution_channel: Option<String>,
     #[serde(default)]
     tools: Option<Vec<BatchAppToolSummary>>,
 }
@@ -242,6 +246,12 @@ struct BatchAppToolSummary {
     name: String,
     title: Option<String>,
     description: String,
+    #[serde(default)]
+    is_enabled: Option<bool>,
+    #[serde(default)]
+    disabled_reason: Option<String>,
+    #[serde(default)]
+    is_read_only: bool,
 }
 
 fn batch_app_to_metadata(app: BatchApp) -> ConnectorMetadata {
@@ -250,6 +260,8 @@ fn batch_app_to_metadata(app: BatchApp) -> ConnectorMetadata {
         name,
         description,
         icon_url,
+        icon_url_dark,
+        distribution_channel,
         tools,
     } = app;
     ConnectorMetadata {
@@ -257,6 +269,8 @@ fn batch_app_to_metadata(app: BatchApp) -> ConnectorMetadata {
         name,
         description,
         icon_url,
+        icon_url_dark,
+        distribution_channel,
         tool_summaries: tools.map(|tools| {
             tools
                 .into_iter()
@@ -265,11 +279,17 @@ fn batch_app_to_metadata(app: BatchApp) -> ConnectorMetadata {
                         name,
                         title,
                         description,
+                        is_enabled,
+                        disabled_reason,
+                        is_read_only,
                     } = tool;
                     ConnectorToolSummary {
                         name,
                         title,
                         description,
+                        is_enabled: is_enabled.unwrap_or(true),
+                        disabled_reason,
+                        is_read_only,
                     }
                 })
                 .collect()
@@ -351,6 +371,43 @@ mod tests {
     use codex_connectors::metadata::connector_install_url;
     use codex_plugin::AppConnectorId;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
+
+    #[test]
+    fn batch_app_accepts_missing_optional_metadata() {
+        let app = serde_json::from_value::<BatchApp>(json!({
+            "id": "alpha",
+            "name": "Alpha",
+            "description": "Alpha description",
+            "icon_url": null,
+            "tools": [{
+                "name": "search",
+                "title": "Search",
+                "description": "Search Alpha",
+            }],
+        }))
+        .expect("valid legacy batch app");
+
+        assert_eq!(
+            batch_app_to_metadata(app),
+            ConnectorMetadata {
+                id: "alpha".to_string(),
+                name: "Alpha".to_string(),
+                description: Some("Alpha description".to_string()),
+                icon_url: None,
+                icon_url_dark: None,
+                distribution_channel: None,
+                tool_summaries: Some(vec![ConnectorToolSummary {
+                    name: "search".to_string(),
+                    title: Some("Search".to_string()),
+                    description: "Search Alpha".to_string(),
+                    is_enabled: true,
+                    disabled_reason: None,
+                    is_read_only: false,
+                }]),
+            }
+        );
+    }
 
     fn app(id: &str) -> AppInfo {
         AppInfo {

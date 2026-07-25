@@ -213,7 +213,8 @@ impl CodexFeedback {
             .with_filter(
                 Targets::new()
                     .with_default(Level::TRACE)
-                    .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF),
+                    .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF)
+                    .with_target("codex_core::post_sampling_token_estimate", LevelFilter::OFF),
             )
     }
 
@@ -395,10 +396,6 @@ pub struct FeedbackUploadOptions<'a> {
 }
 
 impl FeedbackSnapshot {
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
     pub fn feedback_diagnostics(&self) -> &FeedbackDiagnostics {
         &self.feedback_diagnostics
     }
@@ -414,14 +411,6 @@ impl FeedbackSnapshot {
         }
 
         self.feedback_diagnostics.attachment_text()
-    }
-
-    pub fn save_to_temp_file(&self) -> io::Result<PathBuf> {
-        let dir = std::env::temp_dir();
-        let filename = format!("codex-feedback-{}.log", self.thread_id);
-        let path = dir.join(filename);
-        fs::write(&path, self.as_bytes())?;
-        Ok(path)
     }
 
     /// Upload feedback to Sentry with optional attachments.
@@ -728,7 +717,7 @@ mod tests {
         }
         let snap = fb.snapshot(/*session_id*/ None);
         // Capacity 8: after writing 10 bytes, we should keep the last 8.
-        pretty_assertions::assert_eq!(std::str::from_utf8(snap.as_bytes()).unwrap(), "cdefghij");
+        pretty_assertions::assert_eq!(std::str::from_utf8(&snap.bytes).unwrap(), "cdefghij");
     }
 
     #[test]

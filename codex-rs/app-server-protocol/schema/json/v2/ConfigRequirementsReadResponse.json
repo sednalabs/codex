@@ -58,6 +58,17 @@
         }
       ]
     },
+    "BrowserUseRequirements": {
+      "properties": {
+        "disableAutoReview": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ComputerUseRequirements": {
       "properties": {
         "allowLockedComputerUse": {
@@ -72,6 +83,12 @@
     "ConfigRequirements": {
       "properties": {
         "allowAppshots": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allowLoginShell": {
           "type": [
             "boolean",
             "null"
@@ -143,6 +160,22 @@
             "null"
           ]
         },
+        "browserUse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BrowserUseRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkForUpdateOnStartup": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "computerUse": {
           "anyOf": [
             {
@@ -178,6 +211,16 @@
             "null"
           ]
         },
+        "feedback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FeedbackRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "hooks": {
           "anyOf": [
             {
@@ -186,6 +229,18 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "logDir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modelCatalogJson": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "models": {
@@ -207,6 +262,18 @@
               "type": "null"
             }
           ]
+        },
+        "sqliteHome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "windowsSandboxPrivateDesktop": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -215,6 +282,15 @@
       "oneOf": [
         {
           "properties": {
+            "additionalContextLimit": {
+              "description": "Approximate token threshold for spilling this hook's `additionalContext` to disk.\n`null` uses 2,500 tokens; `0` disables spilling for this hook. The threshold is\nevaluated against the original context; a spilled preview also includes recovery\nmetadata.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "async": {
               "type": "boolean"
             },
@@ -303,6 +379,17 @@
       "required": [
         "hooks"
       ],
+      "type": "object"
+    },
+    "FeedbackRequirements": {
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "ManagedHooksRequirements": {

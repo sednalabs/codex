@@ -2,7 +2,6 @@
 
 use crate::contributor_slots::UpdatePromptContribution;
 use crate::contributor_slots::contribute_update_prompt;
-use crate::history_cell::padded_emoji;
 use crate::key_hint;
 use crate::legacy_core::config::Config;
 use crate::render::Insets;
@@ -200,7 +199,7 @@ impl WidgetRef for &UpdatePromptScreen {
 
         column.push("");
         column.push(Line::from(vec![
-            padded_emoji("  ✨").bold().cyan(),
+            "  ✨\u{200A}".bold().cyan(),
             self.copy.title.clone().bold(),
             " ".into(),
             self.copy.version_label.clone().dim(),

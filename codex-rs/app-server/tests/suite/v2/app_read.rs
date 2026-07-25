@@ -8,7 +8,6 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::ChatGptIdTokenClaims;
 use app_test_support::TestAppServer;
 use app_test_support::encode_id_token;
-use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use axum::Json;
 use axum::Router;
@@ -16,16 +15,17 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
+use axum::routing::any;
 use axum::routing::post;
-use codex_app_server_protocol::AppToolSummary;
 use codex_app_server_protocol::AppsReadParams;
 use codex_app_server_protocol::AppsReadResponse;
 use codex_app_server_protocol::ConnectorMetadata;
 use codex_app_server_protocol::JSONRPCError;
-use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_login::AuthKeyringBackendKind;
+use codex_login::login_with_api_key;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -36,6 +36,54 @@ use tokio::time::timeout;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[test]
+fn app_read_deserializes_legacy_tool_summaries() -> Result<()> {
+    let response: AppsReadResponse = serde_json::from_value(json!({
+        "apps": [{
+            "id": "alpha",
+            "name": "Alpha",
+            "description": null,
+            "iconUrl": null,
+            "iconUrlDark": null,
+            "distributionChannel": null,
+            "installUrl": null,
+            "pluginDisplayNames": [],
+            "toolSummaries": [{
+                "name": "search",
+                "title": "Search",
+                "description": "Search Alpha",
+            }],
+        }],
+        "missingAppIds": [],
+    }))?;
+
+    assert_eq!(
+        serde_json::to_value(response)?,
+        json!({
+            "apps": [{
+                "id": "alpha",
+                "name": "Alpha",
+                "description": null,
+                "iconUrl": null,
+                "iconUrlDark": null,
+                "distributionChannel": null,
+                "installUrl": null,
+                "pluginDisplayNames": [],
+                "toolSummaries": [{
+                    "name": "search",
+                    "title": "Search",
+                    "description": "Search Alpha",
+                    "isEnabled": true,
+                    "disabledReason": null,
+                    "isReadOnly": false,
+                }],
+            }],
+            "missingAppIds": [],
+        })
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn app_read_deduplicates_orders_partial_misses_and_reuses_cached_metadata() -> Result<()> {
     let access_token = encode_id_token(
@@ -44,11 +92,22 @@ async fn app_read_deduplicates_orders_partial_misses_and_reuses_cached_metadata(
             .plan_type("plus")
             .chatgpt_account_id("account-123"),
     )?;
+    let mut beta_response = app_response(
+        "beta",
+        "Beta",
+        Some("https://files.openai.com/content?id=beta"),
+    );
+    let beta_icon_dark_url = beta_response
+        .as_object_mut()
+        .expect("app response is an object")
+        .remove("icon_dark_url")
+        .expect("app response contains icon_dark_url");
+    beta_response["icon_url_dark"] = beta_icon_dark_url;
     let state = BatchServerState::new(
         json!({
             "apps": [
                 app_response("alpha", "Alpha", Some("https://files.openai.com/content?id=alpha")),
-                app_response("beta", "Beta", Some("https://files.openai.com/content?id=beta")),
+                beta_response,
             ]
         }),
         &access_token,
@@ -61,9 +120,8 @@ async fn app_read_deduplicates_orders_partial_misses_and_reuses_cached_metadata(
         .with_codex_home(codex_home.path())
         .without_auto_env()
         .without_managed_config()
-        .build()
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
-    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
     let login_id = mcp
         .send_chatgpt_auth_tokens_login_request(
             access_token,
@@ -71,22 +129,27 @@ async fn app_read_deduplicates_orders_partial_misses_and_reuses_cached_metadata(
             Some("plus".to_string()),
         )
         .await?;
-    let login_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(login_id)),
-    )
-    .await??;
-    assert_eq!(
-        to_response::<LoginAccountResponse>(login_response)?,
-        LoginAccountResponse::ChatgptAuthTokens {}
-    );
+    let login_response: LoginAccountResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(login_id)).await??;
+    assert_eq!(login_response, LoginAccountResponse::ChatgptAuthTokens {});
 
-    let response = read_apps(
+    let raw_response = read_apps_raw(
         &mut mcp,
         vec!["beta", "missing", "alpha", "beta", "forbidden"],
         /*include_tools*/ true,
     )
     .await?;
+    assert_eq!(
+        raw_response,
+        json!({
+            "apps": [
+                metadata_json("beta", "Beta", Some("https://files.openai.com/content?id=beta")),
+                metadata_json("alpha", "Alpha", Some("https://files.openai.com/content?id=alpha")),
+            ],
+            "missingAppIds": ["missing", "forbidden"],
+        })
+    );
+    let response: AppsReadResponse = serde_json::from_value(raw_response)?;
     assert_eq!(
         response,
         AppsReadResponse {
@@ -161,9 +224,8 @@ async fn app_read_refetches_metadata_only_cache_entries_when_tools_are_requested
         .with_codex_home(codex_home.path())
         .without_auto_env()
         .without_managed_config()
-        .build()
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
-    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     assert_eq!(
         read_apps(&mut mcp, vec!["cached"], /*include_tools*/ false).await?,
@@ -247,9 +309,8 @@ async fn app_read_backend_failure_preserves_fresh_cached_records() -> Result<()>
         .with_codex_home(codex_home.path())
         .without_auto_env()
         .without_managed_config()
-        .build()
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
-    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     assert_eq!(
         read_apps(&mut mcp, vec!["cached"], /*include_tools*/ true).await?,
@@ -291,14 +352,119 @@ async fn app_read_backend_failure_preserves_fresh_cached_records() -> Result<()>
 }
 
 #[tokio::test]
+async fn app_read_resynchronizes_plugin_auth_after_external_login_without_starting_mcp()
+-> Result<()> {
+    let access_token = encode_id_token(
+        &ChatGptIdTokenClaims::new()
+            .email("external@example.com")
+            .plan_type("plus")
+            .chatgpt_account_id("account-123"),
+    )?;
+    let state = BatchServerState::new(
+        json!({
+            "apps": [
+                app_response("alpha", "Alpha", /*icon_url*/ None),
+                app_response("unclaimed", "Unclaimed", /*icon_url*/ None),
+            ]
+        }),
+        &access_token,
+        "codex",
+    );
+    let (server_url, server_handle) = start_batch_server(state.clone()).await?;
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"
+chatgpt_base_url = "{server_url}"
+
+[features]
+connectors = true
+plugins = true
+
+[plugins."alpha-z@test"]
+enabled = true
+
+[plugins."alpha-a@test"]
+enabled = true
+
+[plugins."disabled@test"]
+enabled = false
+"#,
+        ),
+    )?;
+    write_plugin_app(codex_home.path(), "alpha-z", "Alpha Z", "alpha")?;
+    write_plugin_app(codex_home.path(), "alpha-a", "Alpha A", "alpha")?;
+    write_plugin_app(
+        codex_home.path(),
+        "disabled",
+        "Disabled Plugin",
+        "unclaimed",
+    )?;
+    login_with_api_key(
+        codex_home.path(),
+        "sk-test-key",
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
+        .await?;
+    let login_id = mcp
+        .send_chatgpt_auth_tokens_login_request(
+            access_token,
+            "account-123".to_string(),
+            Some("plus".to_string()),
+        )
+        .await?;
+    let login_response: LoginAccountResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(login_id)).await??;
+    assert_eq!(login_response, LoginAccountResponse::ChatgptAuthTokens {});
+
+    let response = read_apps(
+        &mut mcp,
+        vec!["alpha", "unclaimed"],
+        /*include_tools*/ false,
+    )
+    .await?;
+    let mut alpha = metadata_without_tools("alpha", "Alpha", /*icon_url*/ None);
+    alpha.plugin_display_names = vec!["Alpha A".to_string(), "Alpha Z".to_string()];
+    assert_eq!(
+        response,
+        AppsReadResponse {
+            apps: vec![
+                alpha,
+                metadata_without_tools("unclaimed", "Unclaimed", /*icon_url*/ None),
+            ],
+            missing_app_ids: Vec::new(),
+        }
+    );
+    assert_eq!(
+        state.requests(),
+        vec![json!({
+            "app_ids": ["alpha", "unclaimed"],
+            "include_tools": false,
+        })]
+    );
+    assert_eq!(state.mcp_requests(), 0);
+
+    server_handle.abort();
+    let _ = server_handle.await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn app_read_rejects_more_than_one_hundred_input_ids() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_auto_env()
-        .build()
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
-    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
         .send_apps_read_request(AppsReadParams {
@@ -321,32 +487,48 @@ async fn read_apps(
     app_ids: Vec<&str>,
     include_tools: bool,
 ) -> Result<AppsReadResponse> {
+    Ok(serde_json::from_value(
+        read_apps_raw(mcp, app_ids, include_tools).await?,
+    )?)
+}
+
+async fn read_apps_raw(
+    mcp: &mut TestAppServer,
+    app_ids: Vec<&str>,
+    include_tools: bool,
+) -> Result<Value> {
     let request_id = mcp
         .send_apps_read_request(AppsReadParams {
             app_ids: app_ids.into_iter().map(str::to_string).collect(),
             include_tools,
         })
         .await?;
-    let response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    to_response(response)
+    timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await?
 }
 
 fn metadata(id: &str, name: &str, icon_url: Option<&str>) -> ConnectorMetadata {
-    ConnectorMetadata {
-        id: id.to_string(),
-        name: name.to_string(),
-        description: Some(format!("{name} description")),
-        icon_url: icon_url.map(str::to_string),
-        tool_summaries: Some(vec![AppToolSummary {
-            name: format!("{id}_tool"),
-            title: Some(format!("{name} Tool")),
-            description: format!("Use {name}"),
-        }]),
-    }
+    serde_json::from_value(metadata_json(id, name, icon_url)).expect("valid app metadata JSON")
+}
+
+fn metadata_json(id: &str, name: &str, icon_url: Option<&str>) -> Value {
+    json!({
+        "id": id,
+        "name": name,
+        "description": format!("{name} description"),
+        "iconUrl": icon_url,
+        "iconUrlDark": format!("https://files.openai.com/content?id={id}-dark"),
+        "distributionChannel": "ECOSYSTEM_DIRECTORY",
+        "installUrl": format!("https://chatgpt.com/apps/{}/{id}", name.to_ascii_lowercase()),
+        "pluginDisplayNames": [],
+        "toolSummaries": [{
+            "name": format!("{id}_tool"),
+            "title": format!("{name} Tool"),
+            "description": format!("Use {name}"),
+            "isEnabled": false,
+            "disabledReason": "disabled_by_admin",
+            "isReadOnly": true,
+        }],
+    })
 }
 
 fn metadata_without_tools(id: &str, name: &str, icon_url: Option<&str>) -> ConnectorMetadata {
@@ -362,12 +544,16 @@ fn app_response(id: &str, name: &str, icon_url: Option<&str>) -> Value {
         "name": name,
         "description": format!("{name} description"),
         "icon_url": null,
+        "icon_dark_url": format!("https://files.openai.com/content?id={id}-dark"),
+        "distribution_channel": "ECOSYSTEM_DIRECTORY",
         "tools": [{
             "name": format!("{id}_tool"),
             "title": format!("{name} Tool"),
             "description": format!("Use {name}"),
+            "is_enabled": false,
+            "disabled_reason": "disabled_by_admin",
+            "is_read_only": true,
         }],
-        "distribution_channel": "ECOSYSTEM_DIRECTORY",
         "branding": {
             "category": "PRODUCTIVITY",
             "developer": "Test Developer",
@@ -391,7 +577,6 @@ fn app_response(id: &str, name: &str, icon_url: Option<&str>) -> Value {
             "version": "1.0.0",
             "version_id": "version-1",
             "version_notes": "Initial release",
-            "first_party_type": "test",
             "first_party_requires_install": true,
             "show_in_composer_when_unlinked": true,
             "subtitle": "must-not-escape",
@@ -406,6 +591,33 @@ fn app_response(id: &str, name: &str, icon_url: Option<&str>) -> Value {
         response["icon_url"] = json!(icon_url);
     }
     response
+}
+
+fn write_plugin_app(
+    codex_home: &Path,
+    plugin_name: &str,
+    display_name: &str,
+    connector_id: &str,
+) -> Result<()> {
+    let plugin_root = codex_home
+        .join("plugins/cache/test")
+        .join(plugin_name)
+        .join("local");
+    std::fs::create_dir_all(plugin_root.join(".codex-plugin"))?;
+    std::fs::write(
+        plugin_root.join(".codex-plugin/plugin.json"),
+        serde_json::to_vec(&json!({
+            "name": plugin_name,
+            "interface": { "displayName": display_name },
+        }))?,
+    )?;
+    std::fs::write(
+        plugin_root.join(".app.json"),
+        serde_json::to_vec(&json!({
+            "apps": { "app": { "id": connector_id } }
+        }))?,
+    )?;
+    Ok(())
 }
 
 fn write_apps_config(
@@ -445,6 +657,7 @@ fn write_auth(codex_home: &Path) -> Result<()> {
 #[derive(Clone)]
 struct BatchServerState {
     requests: Arc<StdMutex<Vec<Value>>>,
+    mcp_requests: Arc<StdMutex<usize>>,
     response: Arc<StdMutex<Value>>,
     status: Arc<StdMutex<StatusCode>>,
     access_token: String,
@@ -455,6 +668,7 @@ impl BatchServerState {
     fn new(response: Value, access_token: &str, expected_product_sku: &str) -> Self {
         Self {
             requests: Arc::new(StdMutex::new(Vec::new())),
+            mcp_requests: Arc::new(StdMutex::new(0)),
             response: Arc::new(StdMutex::new(response)),
             status: Arc::new(StdMutex::new(StatusCode::OK)),
             access_token: access_token.to_string(),
@@ -475,6 +689,13 @@ impl BatchServerState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
     }
+
+    fn mcp_requests(&self) -> usize {
+        *self
+            .mcp_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 async fn start_batch_server(state: BatchServerState) -> Result<(String, JoinHandle<()>)> {
@@ -482,11 +703,20 @@ async fn start_batch_server(state: BatchServerState) -> Result<(String, JoinHand
     let addr = listener.local_addr()?;
     let router = Router::new()
         .route("/ps/apps/batch", post(batch_apps))
+        .route("/api/codex/ps/mcp", any(unexpected_mcp_request))
         .with_state(state);
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
     Ok((format!("http://{addr}"), handle))
+}
+
+async fn unexpected_mcp_request(State(state): State<BatchServerState>) -> StatusCode {
+    *state
+        .mcp_requests
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+    StatusCode::INTERNAL_SERVER_ERROR
 }
 
 async fn batch_apps(

@@ -11,7 +11,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -32,6 +31,7 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_json;
+use core_test_support::responses::strip_response_item_ids_from_json;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
@@ -815,19 +815,10 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
     // because the SubagentStop hook above intentionally matches all agent types.
     let internal_thread = test
         .thread_manager
-        .start_thread_with_options(StartThreadOptions {
-            config: test.config.clone(),
-            allow_provider_model_fallback: false,
-            initial_history: InitialHistory::New,
-            history_mode: None,
+        .start_thread(StartThreadOptions {
             session_source: Some(SessionSource::SubAgent(SubAgentSource::Review)),
-            thread_source: None,
-            dynamic_tools: Vec::new(),
-            metrics_service_name: None,
-            parent_trace: None,
-            environments: Vec::new(),
-            thread_extension_init: Default::default(),
-            supports_openai_form_elicitation: false,
+            environments: Some(Vec::new()),
+            ..StartThreadOptions::new(test.config.clone())
         })
         .await?;
 
@@ -1454,7 +1445,9 @@ async fn encrypted_multi_agent_v2_spawn_sends_agent_message_to_child() -> Result
         sleep(Duration::from_millis(10)).await;
     };
     assert_eq!(
-        strip_metadata_from_json(Value::Array(child_request.inputs_of_type("agent_message"))),
+        strip_response_item_ids_from_json(strip_metadata_from_json(Value::Array(
+            child_request.inputs_of_type("agent_message"),
+        ))),
         Value::Array(vec![json!({
             "type": "agent_message",
             "author": "/root",
@@ -1642,7 +1635,9 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
         .pop()
         .expect("agent message request");
     assert_eq!(
-        strip_metadata_from_json(Value::Array(request.inputs_of_type("agent_message"))),
+        strip_response_item_ids_from_json(strip_metadata_from_json(Value::Array(
+            request.inputs_of_type("agent_message"),
+        ))),
         Value::Array(vec![json!({
             "type": "agent_message",
             "author": "/root/worker",

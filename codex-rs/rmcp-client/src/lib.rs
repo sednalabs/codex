@@ -16,6 +16,7 @@ mod utils;
 
 pub use auth_status::McpAuthState;
 pub use auth_status::McpLoginRequirement;
+pub use auth_status::OAuthDiscoveryTimeout;
 pub use auth_status::StreamableHttpOAuthDiscovery;
 pub use auth_status::determine_streamable_http_auth_status;
 pub use auth_status::determine_streamable_http_auth_status_from_credentials;
@@ -31,6 +32,7 @@ pub use oauth::delete_oauth_tokens;
 pub use oauth::delete_oauth_tokens_locked;
 pub use oauth::save_oauth_tokens;
 pub use oauth::save_oauth_tokens_locked;
+pub use oauth::stored_oauth_credentials;
 pub use perform_oauth_device_login::DeviceAuthorizationPrompt;
 pub use perform_oauth_device_login::perform_oauth_device_login;
 pub use perform_oauth_login::OAuthProviderError;

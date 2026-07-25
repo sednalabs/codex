@@ -1,3 +1,4 @@
+use crate::StartThreadOptions;
 use crate::ThreadManager;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
@@ -10,7 +11,7 @@ use crate::thread_manager::ThreadManagerState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
@@ -38,7 +39,7 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let root = manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start root thread");
     let control = manager.agent_control();
@@ -89,8 +90,10 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
         .await
         .expect("second resident slot should evict the first idle agent");
     match manager.get_thread(first.thread_id).await {
-        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, first.thread_id),
-        Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
+            _ => panic!("expected evicted thread to be missing, got {err:?}"),
+        },
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
     let expected_status = AgentStatus::Errored(format!("{}...[truncated]", "\u{00e9}".repeat(57)));
@@ -138,7 +141,7 @@ async fn interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction
         Some(state_db.clone()),
     );
     let root = manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start root thread");
     let control = manager.agent_control();
@@ -172,8 +175,10 @@ async fn interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction
         .await
         .expect("second resident slot should evict the first interrupted idle agent");
     match manager.get_thread(first.thread_id).await {
-        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, first.thread_id),
-        Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
+        Err(err) => match err.details() {
+            CodexErrorDetails::ThreadNotFound(thread_id) => assert_eq!(*thread_id, first.thread_id),
+            _ => panic!("expected evicted thread to be missing, got {err:?}"),
+        },
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
     assert_eq!(
@@ -238,7 +243,7 @@ async fn ephemeral_v2_agent_is_not_evicted_without_reloadable_history() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
     let root = manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start ephemeral root thread");
     let control = manager.agent_control();
@@ -268,10 +273,10 @@ async fn ephemeral_v2_agent_is_not_evicted_without_reloadable_history() {
         }
         Err(err) => err,
     };
-    let CodexErr::AgentLimitReached { max_threads } = err else {
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
         panic!("expected AgentLimitReached, got {err:?}");
     };
-    assert_eq!(max_threads, 1);
+    assert_eq!(*max_threads, 1);
     let still_loaded = manager
         .get_thread(first.thread_id)
         .await

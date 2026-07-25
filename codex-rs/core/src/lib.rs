@@ -4,6 +4,8 @@
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// The combined downstream turn path exceeds rustc's default query-depth limit.
+#![recursion_limit = "256"]
 
 mod apply_patch;
 mod apps;
@@ -58,8 +60,6 @@ mod guardian;
 mod hook_runtime;
 mod image_preparation;
 mod installation_id;
-pub(crate) mod landlock;
-pub use landlock::spawn_command_under_linux_sandbox;
 pub(crate) mod mcp;
 mod mcp_openai_file;
 mod mcp_skill_dependencies;
@@ -108,7 +108,6 @@ pub(crate) use skills::injection;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 pub(crate) use skills::skills_load_input_from_config;
 mod stream_events_utils;
-pub use stream_events_utils::image_generation_artifact_path;
 pub mod test_support;
 #[allow(dead_code)]
 mod unified_exec;
@@ -137,8 +136,8 @@ pub use thread_manager::ThreadShutdownReport;
 pub use thread_manager::build_models_manager;
 pub use thread_manager::local_agent_graph_store_from_state_db;
 pub use thread_manager::thread_store_from_config;
+pub use tools::handlers::WaitForEnvironmentToolConfig;
 pub use web_search::web_search_action_detail;
-pub use web_search::web_search_detail;
 pub use windows_sandbox_read_grants::grant_read_root_non_elevated;
 #[deprecated(note = "use ThreadManager")]
 pub type ConversationManager = ThreadManager;

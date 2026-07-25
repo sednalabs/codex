@@ -223,7 +223,7 @@ impl Default for AppliedPatchDelta {
 /// A committed file change, preserved in the order it was applied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppliedPatchChange {
-    pub path: PathBuf,
+    pub path: PathUri,
     pub change: AppliedPatchFileChange,
 }
 
@@ -237,7 +237,7 @@ pub enum AppliedPatchFileChange {
         content: String,
     },
     Update {
-        move_path: Option<PathBuf>,
+        move_path: Option<PathUri>,
         old_content: String,
         overwritten_move_content: Option<String>,
         new_content: String,
@@ -329,7 +329,7 @@ pub async fn apply_hunks(
             Ok(delta)
         }
         Err(error) => {
-            let msg = error.to_string();
+            let msg = format_error_chain(&error);
             writeln!(stderr, "{msg}").map_err(|error| {
                 ApplyPatchFailure::new(ApplyPatchError::from(error), delta.clone())
             })?;
@@ -344,6 +344,22 @@ pub async fn apply_hunks(
             Err(ApplyPatchFailure::new(error, delta))
         }
     }
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    let mut chain = error.chain();
+    let Some(error) = chain.next() else {
+        return String::new();
+    };
+    let mut message = error.to_string();
+    for source in chain {
+        let source = source.to_string();
+        if !message.ends_with(&source) {
+            message.push_str(": ");
+            message.push_str(&source);
+        }
+    }
+    message
 }
 
 /// Applies each parsed patch hunk to the filesystem.
@@ -387,7 +403,6 @@ async fn apply_hunks_to_files(
         };
     }
 
-    // TODO(anp): Carry PathUri through committed patch deltas and the turn diff tracker.
     for hunk in hunks {
         let affected_path = hunk.path().to_path_buf();
         let path_uri = hunk.resolve_path(cwd)?;
@@ -406,7 +421,7 @@ async fn apply_hunks_to_files(
                     .await
                 );
                 delta.changes.push(AppliedPatchChange {
-                    path: path_uri.to_path_buf(),
+                    path: path_uri,
                     change: AppliedPatchFileChange::Add {
                         content: contents.clone(),
                         overwritten_content,
@@ -456,7 +471,7 @@ async fn apply_hunks_to_files(
                 }
                 if let Some(content) = deleted_content {
                     delta.changes.push(AppliedPatchChange {
-                        path: path_uri.to_path_buf(),
+                        path: path_uri,
                         change: AppliedPatchFileChange::Delete { content },
                     });
                 }
@@ -486,7 +501,7 @@ async fn apply_hunks_to_files(
                     );
                     let dest_write_change_index = delta.changes.len();
                     delta.changes.push(AppliedPatchChange {
-                        path: dest_uri.to_path_buf(),
+                        path: dest_uri.clone(),
                         change: AppliedPatchFileChange::Add {
                             content: new_contents.clone(),
                             overwritten_content: overwritten_move_content.clone(),
@@ -527,9 +542,9 @@ async fn apply_hunks_to_files(
                         return Err(error);
                     }
                     delta.changes[dest_write_change_index] = AppliedPatchChange {
-                        path: path_uri.to_path_buf(),
+                        path: path_uri,
                         change: AppliedPatchFileChange::Update {
-                            move_path: Some(dest_uri.to_path_buf()),
+                            move_path: Some(dest_uri),
                             old_content: original_contents,
                             overwritten_move_content,
                             new_content: new_contents,
@@ -546,7 +561,7 @@ async fn apply_hunks_to_files(
                             ))
                     );
                     delta.changes.push(AppliedPatchChange {
-                        path: path_uri.to_path_buf(),
+                        path: path_uri,
                         change: AppliedPatchFileChange::Update {
                             move_path: None,
                             old_content: original_contents,
@@ -888,6 +903,7 @@ pub fn print_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use codex_exec_server::LOCAL_FS;
     use pretty_assertions::assert_eq;
     use std::fs;
@@ -897,6 +913,26 @@ mod tests {
     /// Helper to construct a patch with the given body.
     fn wrap_patch(body: &str) -> String {
         format!("*** Begin Patch\n{body}\n*** End Patch")
+    }
+
+    #[test]
+    fn error_output_preserves_source_chain() {
+        let error = anyhow!("helper startup failed").context("failed to write file");
+
+        assert_eq!(
+            format_error_chain(&error),
+            "failed to write file: helper startup failed"
+        );
+    }
+
+    #[test]
+    fn error_output_does_not_repeat_embedded_source() {
+        let error = anyhow::Error::new(IoError {
+            context: "failed to read file".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        });
+
+        assert_eq!(format_error_chain(&error), "failed to read file: missing");
     }
 
     #[tokio::test]
@@ -1156,7 +1192,7 @@ mod tests {
             failure.delta(),
             &AppliedPatchDelta::new(
                 vec![AppliedPatchChange {
-                    path: dest.clone(),
+                    path: PathUri::from_host_native_path(&dest).expect("absolute destination path"),
                     change: AppliedPatchFileChange::Add {
                         content: "line2\n".to_string(),
                         overwritten_content: None,

@@ -34,6 +34,9 @@ threadSources?: Array<ThreadSource> | null, /**
  * If false or null, only non-archived threads are returned.
  */
 archived?: boolean | null, /**
+ * Optional pinned filter; when set, only threads matching this value are returned.
+ */
+isPinned?: boolean | null, /**
  * Optional cwd filter or filters; when set, only threads whose session cwd
  * exactly matches one of these paths are returned.
  */

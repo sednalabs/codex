@@ -326,6 +326,13 @@ impl AgentControl {
         let history = load_agent_model_context(state, thread_id, stored_thread.history_mode)
             .await?
             .ok_or(CodexErr::ThreadNotFound(thread_id))?;
+        let persisted_approvals_reviewer = history.iter().rev().find_map(|item| match item {
+            RolloutItem::TurnContext(turn_context) => turn_context.approvals_reviewer,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                Some(event.thread_settings.approvals_reviewer)
+            }
+            _ => None,
+        });
         let initial_history = InitialHistory::Resumed(ResumedHistory {
             conversation_id: thread_id,
             history: Arc::new(history),
@@ -380,6 +387,9 @@ impl AgentControl {
             stored_thread.reasoning_effort.clone(),
             thread_id,
         )?;
+        if let Some(approvals_reviewer) = persisted_approvals_reviewer {
+            config.approvals_reviewer = approvals_reviewer;
+        }
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);
@@ -655,26 +665,17 @@ impl AgentControl {
         };
 
         let parent_thread_id = *parent_thread_id;
-        let parent_thread = state.get_thread(parent_thread_id).await.ok();
-        if let Some(parent_thread) = parent_thread.as_ref() {
-            // `record_conversation_items` only queues persistence writes asynchronously.
-            // Flush before snapshotting store history for a fork.
-            parent_thread.ensure_rollout_materialized().await;
-            parent_thread.flush_rollout().await?;
-        }
-        let parent_metadata = state
-            .read_stored_thread(ReadThreadParams {
-                thread_id: parent_thread_id,
-                include_archived: true,
-                include_history: false,
-            })
-            .await?;
+        let parent_thread = state.get_thread(parent_thread_id).await?;
+        let parent_history_mode = parent_thread.config_snapshot().await.history_mode;
+        // `record_conversation_items` only queues persistence writes asynchronously.
+        // Flush before snapshotting store history for a fork.
+        parent_thread.ensure_rollout_materialized().await;
+        parent_thread.flush_rollout().await?;
 
-        let destination_history_mode =
-            matches!(parent_metadata.history_mode, ThreadHistoryMode::Paginated)
-                .then_some(ThreadHistoryMode::Paginated);
+        let destination_history_mode = matches!(parent_history_mode, ThreadHistoryMode::Paginated)
+            .then_some(ThreadHistoryMode::Paginated);
         let mut forked_rollout_items =
-            load_agent_model_context(state, parent_thread_id, parent_metadata.history_mode)
+            load_agent_model_context(state, parent_thread_id, parent_history_mode)
                 .await?
                 .ok_or_else(|| {
                     CodexErr::Fatal(format!(
@@ -696,29 +697,17 @@ impl AgentControl {
                 truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns);
         }
         let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
-            if let Some(parent_thread) = parent_thread.as_ref() {
-                if multi_agent_version == MultiAgentVersion::V2 {
-                    let parent_config = parent_thread.session.get_config().await;
-                    [
-                        parent_config
-                            .multi_agent_v2
-                            .root_agent_usage_hint_text
-                            .clone(),
-                        parent_config
-                            .multi_agent_v2
-                            .subagent_usage_hint_text
-                            .clone(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect()
-                } else {
-                    Vec::new()
-                }
-            } else if multi_agent_version == MultiAgentVersion::V2 {
+            if multi_agent_version == MultiAgentVersion::V2 {
+                let parent_config = parent_thread.session.get_config().await;
                 [
-                    config.multi_agent_v2.root_agent_usage_hint_text.clone(),
-                    config.multi_agent_v2.subagent_usage_hint_text.clone(),
+                    parent_config
+                        .multi_agent_v2
+                        .root_agent_usage_hint_text
+                        .clone(),
+                    parent_config
+                        .multi_agent_v2
+                        .subagent_usage_hint_text
+                        .clone(),
                 ]
                 .into_iter()
                 .flatten()

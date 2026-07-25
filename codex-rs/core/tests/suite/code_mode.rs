@@ -5,6 +5,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_core::StartThreadOptions;
 use codex_core::config::Config;
 use codex_core::config::CurrentTimeReminderConfig;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -3218,9 +3219,8 @@ async fn run_code_mode_native_browser_image_case(browser_success: bool) -> Resul
     let base_test = builder.build_with_auto_env(&server).await?;
     let new_thread = base_test
         .thread_manager
-        .start_thread_with_tools(
-            base_test.config.clone(),
-            vec![DynamicToolSpec {
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![DynamicToolSpec {
                 namespace: None,
                 name: "browser_observe".to_string(),
                 description: "Capture a native browser screenshot.".to_string(),
@@ -3233,7 +3233,8 @@ async fn run_code_mode_native_browser_image_case(browser_success: bool) -> Resul
                 persist_on_resume: true,
                 capability: None,
             }],
-        )
+            ..StartThreadOptions::new(base_test.config.clone())
+        })
         .await?;
     let mut test = base_test;
     test.codex = new_thread.thread;
@@ -3894,9 +3895,8 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
     let base_test = builder.build(&server).await?;
     let new_thread = base_test
         .thread_manager
-        .start_thread_with_tools(
-            base_test.config.clone(),
-            vec![DynamicToolSpec {
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![DynamicToolSpec {
                 namespace: Some("codex_app".to_string()),
                 name: "hidden_dynamic_tool".to_string(),
                 description: "A hidden dynamic tool.".to_string(),
@@ -3912,7 +3912,8 @@ async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
                 persist_on_resume: true,
                 capability: None,
             }],
-        )
+            ..StartThreadOptions::new(base_test.config.clone())
+        })
         .await?;
     let mut test = base_test;
     test.codex = new_thread.thread;
@@ -4060,9 +4061,8 @@ async fn code_mode_excludes_configured_nested_tool_namespaces() -> Result<()> {
     let base_test = builder.build(&server).await?;
     let new_thread = base_test
         .thread_manager
-        .start_thread_with_tools(
-            base_test.config.clone(),
-            vec![DynamicToolSpec {
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![DynamicToolSpec {
                 namespace: Some("excluded".to_string()),
                 name: "lookup".to_string(),
                 description: "An excluded dynamic tool.".to_string(),
@@ -4075,7 +4075,8 @@ async fn code_mode_excludes_configured_nested_tool_namespaces() -> Result<()> {
                 persist_on_resume: true,
                 capability: None,
             }],
-        )
+            ..StartThreadOptions::new(base_test.config.clone())
+        })
         .await?;
     let mut test = base_test;
     test.codex = new_thread.thread;

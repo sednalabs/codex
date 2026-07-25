@@ -622,6 +622,23 @@ class RouteSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_picker_lifecycle_surface_routes_to_both_picker_lanes(self) -> None:
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            [
+                "codex-rs/tui/src/app/loaded_threads.rs",
+                "codex-rs/tui/src/app/session_lifecycle.rs",
+                "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+            ],
+            self.routes,
+        )
+        self.assertEqual(
+            lanes,
+            [
+                "codex.tui-agent-picker-targeted",
+                "codex.tui-agent-picker-tree-targeted",
+            ],
+        )
+
     def test_picker_tree_unique_files_keep_tree_route_exact(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
@@ -674,7 +691,7 @@ class RouteSelectionTests(unittest.TestCase):
             ]
         )
         self.assertEqual(recipe.count("cargo nextest run"), 2)
-        self.assertEqual(recipe.count("RUST_MIN_STACK="), 2)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 3)
         self.assertEqual(recipe.count("--no-tests=fail"), 2)
         for test_name in (
             "agent::control::residency::tests::"
@@ -2892,12 +2909,26 @@ class ValidationPlanScriptTests(unittest.TestCase):
         multi_agent_recipe = "\n".join(
             recipes["core-multi-agent-orchestration-targeted"]
         )
-        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 2)
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 3)
 
-        unified_exec_recipe = "\n".join(
-            recipes["blocking-waits-unified-exec-targeted"]
+        blocking_waits_core_recipe = "\n".join(
+            recipes["blocking-waits-core-targeted"]
         )
-        self.assertEqual(unified_exec_recipe.count("RUST_MIN_STACK="), 8)
+        self.assertEqual(blocking_waits_core_recipe.count("RUST_MIN_STACK="), 1)
+
+        unified_exec_lines = recipes["blocking-waits-unified-exec-targeted"]
+        unified_exec_cargo_lines = [
+            line for line in unified_exec_lines if "cargo " in line
+        ]
+        self.assertTrue(unified_exec_cargo_lines)
+        self.assertEqual(
+            [
+                line
+                for line in unified_exec_cargo_lines
+                if "RUST_MIN_STACK=" not in line
+            ],
+            [],
+        )
 
     def test_run_just_recipe_lanes_declare_linux_build_deps_when_recipe_compiles_linux_sandbox(
         self,

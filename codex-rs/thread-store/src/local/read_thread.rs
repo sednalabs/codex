@@ -4,6 +4,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::find_archived_thread_path_by_id_str;
 use codex_rollout::find_thread_name_by_id;
@@ -18,7 +19,8 @@ use super::helpers::distinct_thread_metadata_title;
 use super::helpers::git_info_from_parts;
 use super::helpers::permission_profile_from_metadata_value;
 use super::helpers::rollout_path_is_archived;
-use super::helpers::set_thread_name_from_title;
+use super::helpers::set_thread_name;
+use super::helpers::sqlite_thread_name;
 use super::helpers::stored_thread_from_rollout_item;
 use super::live_writer;
 use crate::ReadThreadParams;
@@ -66,6 +68,7 @@ pub(super) async fn read_thread(
                         .await;
             }
             rollout_thread.recency_at = thread.recency_at;
+            rollout_thread.is_pinned = thread.is_pinned;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
@@ -137,21 +140,35 @@ pub(super) async fn read_thread_by_rollout_path(
         });
     }
     if let Some(metadata) = read_sqlite_metadata(store, thread.thread_id).await {
+        if thread.history_mode == ThreadHistoryMode::Paginated {
+            thread.name = sqlite_thread_name(&metadata);
+        }
         thread.recency_at = metadata.recency_at;
-        let existing_git_info = thread.git_info.take();
-        let (fallback_sha, fallback_branch, fallback_origin_url) = match existing_git_info {
-            Some(info) => (
-                info.commit_hash.map(|sha| sha.0),
-                info.branch,
-                info.repository_url,
-            ),
-            None => (None, None, None),
+        thread.is_pinned = metadata.is_pinned;
+        thread.git_info = if thread.history_mode == ThreadHistoryMode::Paginated {
+            // A paginated rollout only has the initial Git tuple. Do not turn an explicit SQLite
+            // clear back into the stale rollout value while reading by path.
+            git_info_from_parts(
+                metadata.git_sha,
+                metadata.git_branch,
+                metadata.git_origin_url,
+            )
+        } else {
+            let (fallback_sha, fallback_branch, fallback_origin_url) = match thread.git_info.take()
+            {
+                Some(info) => (
+                    info.commit_hash.map(|sha| sha.0),
+                    info.branch,
+                    info.repository_url,
+                ),
+                None => (None, None, None),
+            };
+            git_info_from_parts(
+                metadata.git_sha.or(fallback_sha),
+                metadata.git_branch.or(fallback_branch),
+                metadata.git_origin_url.or(fallback_origin_url),
+            )
         };
-        thread.git_info = git_info_from_parts(
-            metadata.git_sha.or(fallback_sha),
-            metadata.git_branch.or(fallback_branch),
-            metadata.git_origin_url.or(fallback_origin_url),
-        );
     }
     reject_paginated_history(&thread, include_history)?;
     attach_history_if_requested(&mut thread, include_history).await?;
@@ -301,10 +318,12 @@ async fn read_thread_from_rollout_path(
     {
         thread.model_provider = model_provider;
     }
-    if let Ok(Some(title)) =
-        find_thread_name_by_id(store.config.codex_home.as_path(), &thread.thread_id).await
+    if thread.history_mode == ThreadHistoryMode::Legacy
+        && let Ok(Some(name)) =
+            find_thread_name_by_id(store.config.codex_home.as_path(), &thread.thread_id).await
+        && !name.trim().is_empty()
     {
-        set_thread_name_from_title(&mut thread, title);
+        set_thread_name(&mut thread, name);
     }
     Ok(thread)
 }
@@ -354,14 +373,6 @@ async fn stored_thread_from_sqlite_metadata(
     store: &LocalThreadStore,
     metadata: ThreadMetadata,
 ) -> ThreadStoreResult<StoredThread> {
-    let name = match distinct_thread_metadata_title(&metadata) {
-        Some(title) => Some(title),
-        None => find_thread_name_by_id(store.config.codex_home.as_path(), &metadata.id)
-            .await
-            .ok()
-            .flatten()
-            .filter(|title| !title.trim().is_empty()),
-    };
     let session_meta = match read_required_session_meta_line(metadata.rollout_path.as_path()).await
     {
         Ok(meta_line) => Some(meta_line.meta),
@@ -388,6 +399,7 @@ async fn stored_thread_from_sqlite_metadata(
         .as_ref()
         .map(|meta| meta.history_mode)
         .unwrap_or(metadata.history_mode);
+    let name = thread_name_from_metadata(store, &metadata, history_mode).await;
     let preview = metadata
         .preview
         .clone()
@@ -414,6 +426,7 @@ async fn stored_thread_from_sqlite_metadata(
         updated_at: metadata.updated_at,
         recency_at: metadata.recency_at,
         archived_at: metadata.archived_at,
+        is_pinned: metadata.is_pinned,
         cwd: metadata.cwd,
         cli_version: metadata.cli_version,
         source: parse_session_source(&metadata.source),
@@ -433,6 +446,27 @@ async fn stored_thread_from_sqlite_metadata(
         first_user_message: metadata.first_user_message,
         history: None,
     })
+}
+
+async fn thread_name_from_metadata(
+    store: &LocalThreadStore,
+    metadata: &ThreadMetadata,
+    history_mode: ThreadHistoryMode,
+) -> Option<String> {
+    match history_mode {
+        ThreadHistoryMode::Paginated => sqlite_thread_name(metadata),
+        ThreadHistoryMode::Legacy => {
+            if let Some(title) = distinct_thread_metadata_title(metadata) {
+                Some(title)
+            } else {
+                find_thread_name_by_id(store.config.codex_home.as_path(), &metadata.id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|name| !name.trim().is_empty())
+            }
+        }
+    }
 }
 
 async fn stored_thread_from_session_meta(
@@ -488,6 +522,7 @@ fn stored_thread_from_meta_line(
         updated_at,
         recency_at: updated_at,
         archived_at: archived.then_some(updated_at),
+        is_pinned: false,
         cwd: meta_line.meta.cwd,
         cli_version: meta_line.meta.cli_version,
         source: meta_line.meta.source,
@@ -553,6 +588,7 @@ mod tests {
     use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
     use crate::local::test_support::write_session_file_with_fork;
+    use crate::local::test_support::write_session_file_with_history_mode;
 
     #[tokio::test]
     async fn read_thread_returns_active_rollout_summary() {
@@ -613,7 +649,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_thread_by_rollout_path_prefers_sqlite_git_info() {
+    async fn read_thread_by_rollout_path_preserves_legacy_name_and_sqlite_git_info() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let uuid = Uuid::from_u128(223);
@@ -621,7 +657,7 @@ mod tests {
         let active_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -639,10 +675,15 @@ mod tests {
             .expect("timestamp should parse")
             .with_timezone(&Utc);
         builder.recency_at = Some(recency_at);
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.title = "Stale SQLite name".to_string();
         runtime
-            .upsert_thread(&builder.build(config.default_model_provider_id.as_str()))
+            .upsert_thread(&metadata)
             .await
             .expect("state db upsert should succeed");
+        codex_rollout::append_thread_name(home.path(), thread_id, "Latest index name")
+            .await
+            .expect("append thread name");
 
         let thread = store
             .read_thread_by_rollout_path(
@@ -654,6 +695,7 @@ mod tests {
             .expect("read thread by rollout path");
 
         let git_info = thread.git_info.expect("git info should be present");
+        assert_eq!(thread.name.as_deref(), Some("Latest index name"));
         assert_eq!(thread.recency_at, recency_at);
         assert_eq!(git_info.branch.as_deref(), Some("sqlite-branch"));
         assert_eq!(
@@ -774,7 +816,7 @@ mod tests {
         let rollout_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -806,6 +848,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_paginated_thread_uses_sqlite_name_over_legacy_compatibility() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(228);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let rollout_path = write_session_file_with_history_mode(
+            home.path(),
+            "2025-01-03T12-00-00",
+            uuid,
+            ThreadHistoryMode::Paginated,
+        )
+        .expect("session file");
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config.clone(), Some(runtime.clone()));
+        let mut builder =
+            ThreadMetadataBuilder::new(thread_id, rollout_path, Utc::now(), SessionSource::Cli);
+        builder.history_mode = ThreadHistoryMode::Paginated;
+        builder.model_provider = Some(config.default_model_provider_id.clone());
+        builder.cwd = home.path().to_path_buf();
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.name = Some("Canonical SQLite name".to_string());
+        metadata.title = "Stale title name".to_string();
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("state db upsert should succeed");
+        codex_rollout::append_thread_name(home.path(), thread_id, "Stale index name")
+            .await
+            .expect("append legacy thread name");
+
+        let thread = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read thread");
+
+        assert_eq!(thread.name.as_deref(), Some("Canonical SQLite name"));
+    }
+
+    #[tokio::test]
     async fn read_thread_returns_permission_profile_from_sqlite_metadata() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
@@ -814,7 +904,7 @@ mod tests {
         let rollout_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -855,7 +945,7 @@ mod tests {
         let rollout_path =
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -889,7 +979,7 @@ mod tests {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1023,7 +1113,7 @@ mod tests {
         )
         .expect("write turn context");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1154,7 +1244,7 @@ mod tests {
         writeln!(file, "{meta}").expect("write session meta");
 
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1208,7 +1298,7 @@ mod tests {
             write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
         let stale_path = external.path().join("missing-rollout.jsonl");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1259,7 +1349,7 @@ mod tests {
         let stale_path = write_session_file(external.path(), "2025-01-04T12-00-00", other_uuid)
             .expect("other session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1358,7 +1448,7 @@ mod tests {
             .path()
             .join(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl"));
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1420,7 +1510,7 @@ mod tests {
             .path()
             .join(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl"));
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -1475,7 +1565,7 @@ mod tests {
         let archived_path = write_archived_session_file(home.path(), "2025-01-03T12-00-00", uuid)
             .expect("archived session file");
         let runtime = codex_state::StateRuntime::init(
-            config.sqlite_home.clone(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await

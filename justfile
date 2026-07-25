@@ -119,7 +119,7 @@ core-compile-smoke:
 
 # Carry-only downstream behavior smoke checks (core-only seam).
 core-carry-core-smoke:
-    RUST_MIN_STACK={{ rust_min_stack }} CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_exec_nested_limit_formats_result_variable_before_default_history_truncation suite::code_mode::code_mode_exec_nested_limit_truncates_result_variable_when_exceeded suite::code_mode::code_mode_exec_nested_limit_formats_result_variable_before_configured_history_truncation suite::code_mode::code_mode_exec_without_nested_limit_formats_result_variable_before_default_history_truncation suite::code_mode::code_mode_exec_without_nested_limit_formats_result_variable_before_configured_history_truncation suite::compact_remote::remote_request_with_v3_initial_items_uses_custom_experimental_realtime_start_instructions suite::unified_exec::exec_command_reports_chunk_and_exit_metadata suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
+    RUST_MIN_STACK={{ rust_min_stack }} CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_exec_nested_limit_formats_result_variable_before_default_history_truncation suite::code_mode::code_mode_exec_nested_limit_truncates_result_variable_when_exceeded suite::code_mode::code_mode_exec_nested_limit_formats_result_variable_before_configured_history_truncation suite::code_mode::code_mode_exec_without_nested_limit_formats_result_variable_before_default_history_truncation suite::code_mode::code_mode_exec_without_nested_limit_formats_result_variable_before_configured_history_truncation suite::compact_remote::remote_request_with_v3_initial_items_uses_custom_experimental_realtime_start_instructions suite::compact_resume_fork::snapshot_rollback_past_compaction_replays_append_only_history suite::compact_resume_fork::snapshot_rollback_followup_turn_trims_context_updates suite::unified_exec::exec_command_reports_chunk_and_exit_metadata suite::unified_exec::write_stdin_returns_exit_metadata_and_clears_session --exact
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 # Carry-only downstream behavior smoke checks (TUI/UI seam).
@@ -146,9 +146,10 @@ external-agent-migration-containment-targeted:
 
 # Focused downstream sub-agent surface contract slice.
 core-subagent-surface-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields send_message_tool_requires_target_items_interrupt_and_receipt_schema send_message_tool_declares_non_acknowledgement_handoff_receipt multi_agent_v2_inspect_agent_tree_receipt_includes_live_effective_identity multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_path multi_agent_v2_send_message_keeps_cold_target_unloaded
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- multi_agent_v2_list_agents_returns_completed_status multi_agent_v2_list_agents_filters_by_relative_path_prefix multi_agent_v2_list_agents_omits_closed_agents spawn_agent_tool_v2_requires_task_name_and_lists_visible_models list_agents_tool_includes_path_prefix_and_agent_fields multi_agent_v2_can_disable_wait_agent send_message_tool_requires_target_items_interrupt_and_receipt_schema send_message_tool_declares_non_acknowledgement_handoff_receipt multi_agent_v2_inspect_agent_tree_receipt_includes_live_effective_identity multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_path multi_agent_v2_send_message_keeps_cold_target_unloaded
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- config::schema::tests::config_schema_matches_fixture config::schema::tests::config_schema_allows_named_agent_roles codex_delegate_tests::run_codex_thread_interactive_respects_pre_cancelled_spawn --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::configured_agent_roles_control_spawn_agent_type
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::multi_agent_v2_wait_agent_tool_follows_configuration
 
 # Focused inspect_agent_tree stale-descendant fallback regression.
 core-subagent-inspect-tree-fallback-targeted:
@@ -179,10 +180,22 @@ tui-config-refresh-session-targeted:
     cargo test -p codex-tui app::tests::fresh_session_config_uses_current_session_state --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::fresh_session_config_preserves_policy_mutability --lib -- --exact --test-threads=1
 
-# Focused /agent picker usage and remaining-context visibility slice.
+# Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::thread_events::tests::thread_event_store_rebase_preserves_mcp_startup_notifications --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::enqueue_thread_event_does_not_block_when_channel_full --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::side_parent_status_tracks_parent_turn_lifecycle --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::side_parent_status_prioritizes_input_over_approval --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::handle_start_side_seeds_navigation_before_thread_started --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::side_fork_config_is_persistent_and_appends_developer_guardrails --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_server_session::tests::side_fork_skips_parent_title_lookup_but_normal_ephemeral_fork_keeps_it --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app_server_session::tests::side_fork_excludes_turns_without_clearing_regular_ephemeral_fork --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_falls_back_to_thread_id_without_usage --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_token_usage_when_present --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
@@ -215,6 +228,7 @@ tui-agent-picker-model-surface-targeted:
 tui-agent-picker-tree-targeted:
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::agent_navigation::tests::upsert_preserves_running_state_until_closed --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::agent_navigation::tests::picker_tree_prefixes_reflect_nested_agent_paths --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::loaded_threads::tests::finds_loaded_subagent_tree_for_primary_thread --lib -- --exact --test-threads=1
 
@@ -264,14 +278,31 @@ tui-front-queue-submit-targeted:
     cargo test -p codex-tui footer_snapshots -- --exact --test-threads=1
     cargo test -p codex-tui footer_collapse_snapshots -- --exact --test-threads=1
 
-# Focused TUI selected-turn copy feedback, viewport redraw, and clipping slice.
+# Focused TUI transcript, viewport, narrow-layout, and terminal rendering slice.
 tui-transcript-viewport-targeted:
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_stops_at_next_prompt_and_uses_latest_markdown --lib -- --exact --test-threads=1
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_supports_proposed_plan --lib -- --exact --test-threads=1
     cargo test -p codex-tui app_backtrack::tests::transcript_turn_copy_source_requires_finalized_markdown --lib -- --exact --test-threads=1
     cargo test -p codex-tui chatwidget::tests::slash_commands::transcript_turn_copy_includes_user_prompt_and_agent_markdown --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::finalized_markdown_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::finalized_markdown_cache_misses_when_width_or_render_style_changes --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::raw_markdown_bypasses_the_rich_render_cache --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::messages::tests::visualization_directives_are_not_cached --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::tests::raw_mode_toggle_transcript_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::tests::session_header_clamps_to_narrow_width --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::tests::single_line_command_over_highlight_limit_uses_plain_text_fallback --lib -- --exact --test-threads=1
+    cargo test -p codex-tui render::highlight::tests::long_single_line_bash_skips_highlighting_and_preserves_text --lib -- --exact --test-threads=1
+    cargo test -p codex-tui history_cell::plans::tests::finalized_plan_reuses_lines_primed_by_transcript_height --lib -- --exact --test-threads=1
+    cargo test -p codex-tui custom_terminal::tests::terminal_draw_coalesces_wrapped_hyperlink_output --lib -- --exact --test-threads=1
+    cargo test -p codex-tui bottom_pane::chat_composer::tests::default_unified_mention_popup_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui bottom_pane::chat_composer::tests::unified_mention_popup_falls_back_from_bound_plugin_on_right_snapshot --lib -- --exact --test-threads=1
+    cargo test -p codex-tui chatwidget::tests::app_server::live_app_server_turn_completion_repairs_dropped_message_deltas --lib -- --exact --test-threads=1
+    cargo test -p codex-tui inline_visualization::tests::transcript_overlay_remeasures_visualization_when_artifact_becomes_available --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_snapshot --lib -- --exact --test-threads=1
     cargo test -p codex-tui pager_overlay::tests::transcript_overlay_footer_status_replaces_previous_message --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_insert_preserves_cached_cell_heights --lib -- --exact --test-threads=1
+    cargo test -p codex-tui pager_overlay::tests::transcript_overlay_remeasures_dynamic_cells_on_same_width_redraw --lib -- --exact --test-threads=1
+    cargo test -p codex-tui status::tests::transcript_overlay_remeasures_status_after_rate_limit_refresh --lib -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::tmux_like_viewport_preserves_preexisting_history_content -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::android_style_narrow_viewport_keeps_url_content_from_being_clipped -- --exact --test-threads=1
     cargo test -p codex-tui --test all suite::vt100_history::committed_rows_survive_redraw_and_viewport_pressure -- --exact --test-threads=1
@@ -290,8 +321,9 @@ tui-brokered-tool-replay-targeted:
 # Focused multi-agent orchestration slice covering wait semantics, tool guidance,
 # and generation-safe V2 residency eviction.
 core-multi-agent-orchestration-targeted:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents::tests::multi_agent_v2_list_agents_returns_completed_status tools::handlers::multi_agents_v2::wait::tests::completion_rule_distinguishes_any_from_all agent::control::residency::tests::residency_slot_reservation_unloads_oldest_idle_v2_agent agent::control::residency::tests::interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction agent::control::residency::tests::ephemeral_v2_agent_is_not_evicted_without_reloadable_history agent::registry::tests::cold_status_text_stays_compact_when_json_escaped agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts suite::agent_execution::v2_evicted_completed_agent_keeps_final_status suite::agent_execution::v2_cold_mailbox_allows_eviction_and_replays_on_followup --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- tools::handlers::multi_agents::tests::multi_agent_v2_list_agents_returns_completed_status tools::handlers::multi_agents_v2::wait::tests::completion_rule_distinguishes_any_from_all agent::control::residency::tests::residency_slot_reservation_unloads_oldest_idle_v2_agent agent::control::residency::tests::interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction agent::control::residency::tests::ephemeral_v2_agent_is_not_evicted_without_reloadable_history agent::registry::tests::cold_status_text_stays_compact_when_json_escaped agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent context::world_state::multi_agent_mode::tests::custom_mode_removal_replaces_retained_instructions context::world_state::multi_agent_mode::tests::snapshots --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::spawn_agent_description::spawn_agent_description_lists_visible_models_and_reasoning_efforts suite::agent_execution::v2_evicted_completed_agent_keeps_final_status suite::agent_execution::v2_cold_mailbox_allows_eviction_and_replays_on_followup suite::multi_agent_mode::changing_configured_mode_hint_to_empty_appends_explicit_reset suite::pending_input::queue_only_agent_mail_wakes_sleeping_root_and_persists_message --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test --locked -p codex-exec --test all suite::completion_backfill::ignores_unrelated_turn_completion_before_backfilling_primary_turn -- --exact --test-threads=1
 
 # Focused blocking-wait slices split by compile surface so hosted validation
 
@@ -301,10 +333,15 @@ blocking-waits-core-targeted:
     cargo test -p codex-api retryable_by_turn_loop --lib -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all server_overloaded_ -- --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::compact_remote::auto_remote_compact_retries_server_overloaded -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core --test all suite::pending_input::any_new_input_interrupts_sleep -- --exact --test-threads=1
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 blocking-waits-unified-exec-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process::tests::source_transcript_preserves_exec_end_when_delta_receiver_lags --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::async_watcher::tests::streaming_output_finishes_on_close_without_waiting_for_grace --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::async_watcher::tests::streaming_output_keeps_grace_as_fallback_without_close --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::async_watcher::tests::exit_watcher_waits_for_late_network_denial_before_classifying_end --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::pruning_does_not_evict_live_process_while_exited_process_is_finalizing --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::failed_initial_end_for_unstored_process_prefers_source_transcript --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core unified_exec::process_manager::tests::failed_exec_end_uses_fallback_when_source_transcript_is_empty --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_formats_large_output_summary --exact
@@ -337,6 +374,10 @@ custom-prompts-targeted:
 # hardening.
 mcp-tool-exposure-targeted:
     cargo test -p codex-core mcp_tool_exposure::tests:: --lib -- --test-threads=1
+    cargo test -p codex-mcp list_all_tools_ --lib -- --test-threads=1
+    cargo test -p codex-mcp capture_binding_uses_the_ready_clients_own_tools --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently --exact
 
 mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1
@@ -349,7 +390,9 @@ mcp-safety-targeted:
     cargo test -p codex-rmcp-client persist_if_needed_ --lib -- --test-threads=1
     cargo test -p codex-rmcp-client rmcp_client::tests::oauth_authorization_required_refreshes_oauth --lib -- --exact --test-threads=1
     cargo test -p codex-rmcp-client rmcp_client::tests::streamable_http_auth_required_refreshes_oauth --lib -- --exact --test-threads=1
-    cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
+    cargo test --locked -p codex-rmcp-client --test streamable_http_user_agent streamable_http_requests_preserve_configured_user_agent -- --exact --test-threads=1
+    cargo test --locked -p codex-rmcp-client --test streamable_http_oauth_startup refreshes_expired_persisted_token_before_initialize -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-core --test all suite::rmcp_client::streamable_http_with_oauth_round_trip -- --exact --test-threads=1
 
 # Focused downstream MCP OAuth device-login slice for browserless hosts.
 mcp-device-login-targeted:
@@ -366,7 +409,7 @@ core-subagent-model-pinning-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawn_agent_uses_configured_subagent_defaults suite::subagent_notifications::spawn_agent_preserves_configured_defaults_through_unrelated_role suite::subagent_notifications::spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role suite::subagent_notifications::spawn_agent_role_overrides_requested_model_and_reasoning_settings suite::subagent_notifications::spawn_agent_rejects_reasoning_effort_unsupported_by_role_model --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::subagent_notifications::spawned_full_history_v2_child_uses_model_precedence_without_dropping_context
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-state -p codex-thread-store --no-fail-fast --no-tests=fail --lib -- extract::tests::turn_context_sets_model_and_reasoning_effort extract::tests::thread_settings_applied_updates_resume_metadata local::read_thread::tests::read_thread_keeps_complete_indexed_identity_during_rollout_overlay thread_metadata_sync::tests::thread_settings_applied_updates_live_metadata types::tests::thread_metadata_patch_round_trips_optional_clears --exact
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --lib -- agent::control::tests::spawn_agent_can_fork_parent_thread_history_with_sanitized_items agent::control::tests::paginated_subagent_fork_cold_resume_preserves_child_settings agent::control::tests::ensure_v2_agent_loaded_reloads_registered_unloaded_agent --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --no-tests=fail --test all -- suite::multi_agent_resume::cold_root_resume_restores_agent_identity_and_reloads_target_on_followup suite::multi_agent_resume::cold_root_resume_restores_agent_identity_and_role_on_followup --exact
 
 # Focused persisted-descendant inventory slice for subtree close/resume behavior.
@@ -386,17 +429,33 @@ app-server-thread-cwd-targeted:
 # Focused app-server v2 contract slice for high-signal client-facing RPCs.
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol
+    cargo test --locked -p codex-app-server-transport serialize_outgoing_message_preserves_wire_shape --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::app_read:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::plugin_list::plugin_list_force_refetch_waits_for_same_path_local_plugin_upgrade -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::skills_list::skills_list_uses_cached_result_after_session_default_writes_until_force_reload -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::mcp_server_status::mcp_server_status_list_tools_and_auth_only_skips_slow_inventory_calls -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_start:: -- --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_metadata_update::thread_metadata_update_pins_and_unpins_with_filtered_recency_pagination -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::paginated_thread_name_preserves_metadata_across_read_list_and_resume -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::thread_search_occurrences_reads_paginated_projection -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_read::paginated_history_lists_use_projected_turns_and_items -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_resume::thread_resume_preserves_goal_first_and_fork_settings -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::realtime_conversation::websocket_v3_routes_handoffs_by_session_mode -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::git_attribution::git_attribution_follows_authenticated_workspace_policy -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::git_attribution::cold_resume_replaces_legacy_attribution_without_duplication -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::web_search::standalone_web_search_round_trips_output_for_custom_provider -- --exact --test-threads=1
 
 # Focused MCP server contract slice for approval and tool response ordering.
 mcp-server-contract-targeted:
     cargo test --locked -p codex-mcp-server --test all suite::codex_tool::shell_command_approval_emits_task_complete_before_tool_response -- --exact --test-threads=1
     cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_patch_approval_triggers_elicitation -- --exact --test-threads=1
+    cargo test --locked -p codex-mcp-server --test all suite::codex_tool::test_codex_tool_passes_base_instructions -- --exact --test-threads=1
 
-# Focused exec-server protocol slice for websocket startup and process basics.
+# Focused exec-server protocol slice for websocket, process, and policy lifecycle.
 exec-server-targeted:
+    cargo test --locked -p codex-exec-server --lib -- --test-threads=1
     cargo test --locked -p codex-exec-server --test initialize -- --test-threads=1
     cargo test --locked -p codex-exec-server --test websocket -- --test-threads=1
     cargo test --locked -p codex-exec-server --test process exec_server_starts_process_over_websocket -- --exact --test-threads=1
@@ -406,6 +465,8 @@ cli-surface-targeted:
     cargo test --locked -p codex-cli --bin codex main::tests:: -- --test-threads=1
     cargo test --locked -p codex-cli --bin codex mcp_cmd::tests::mcp_login_parses_device_auth_flag -- --exact --test-threads=1
     cargo test --locked -p codex-cli doctor::tests:: --lib -- --test-threads=1
+    cargo test --locked -p codex-cli --test debug_clear_memories -- --test-threads=1
+    cargo test --locked -p codex-cli --test login debug_prompt_input_follows_authenticated_attribution_setting -- --exact --test-threads=1
 
 # Focused native computer-use bridge slice for app-server protocol routing,
 
@@ -487,7 +548,8 @@ build-policy-sanity:
 # Focused code-mode declaration rendering and metadata slice.
 code-mode-declaration-targeted:
     cargo test --locked -p codex-tools code_mode_ --lib -- --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict suite::code_mode::code_mode_native_browser_result_forwards_screenshot_as_input_image suite::code_mode::code_mode_failed_native_browser_result_forwards_input_image --exact
+    cargo test --locked -p codex-tools raw_tool_json_matches_value_encoding --lib -- --exact --test-threads=1
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict suite::code_mode::code_mode_native_browser_result_forwards_screenshot_as_input_image suite::code_mode::code_mode_failed_native_browser_result_forwards_input_image suite::code_mode::code_mode_can_call_hidden_dynamic_tools suite::code_mode::code_mode_excludes_configured_nested_tool_namespaces --exact
 
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
@@ -506,24 +568,43 @@ core-attestation-targeted:
 
 # missing SQLx migration records.
 state-migration-repair-targeted:
+    cargo test -p codex-state migrations::tests::state_migration_versions_are_unique --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::pinned_threads_migration_defaults_existing_and_legacy_rows_to_unpinned --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_recency_migration_that_was_applied_as_version_38 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_visible_sort_indexes_migration_that_was_applied_as_version_40 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_remote_control_enabled_migration_that_was_applied_as_version_41 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_external_agent_config_import_migration_that_was_applied_as_version_42 --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::external_agent_config_import_provider_migration_follows_table_creation_on_fresh_database --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repairs_external_agent_config_import_provider_migration_that_was_applied_as_version_44 --lib -- --exact --test-threads=1
+    cargo test -p codex-state runtime::external_agent_config_imports::tests::records_completion_by_import_id --lib -- --exact --test-threads=1
+    cargo test -p codex-state migrations::tests::repair_state_migration_version_collisions_succeeds_while_writer_slot_is_held --lib -- --exact --test-threads=1
     cargo test -p codex-state runtime::tests::open_state_sqlite_marks_existing_thread_source_migration_applied -- --exact --test-threads=1
 
 # Codex authoritative usage.sqlite logging contracts.
 core-ledger-smoke:
     cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
+    cargo test -p codex-thread-store live_thread_tests::concurrent_appends_keep_sqlite_metadata_in_canonical_history_order --lib -- --exact --test-threads=1
+    cargo test -p codex-thread-store live_thread_tests::persist_waits_for_append_observation_before_flushing_pending_metadata --lib -- --exact --test-threads=1
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 
 # one bounded runtime shard.
 core-runtime-surface-smoke:
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::stdio_server_round_trip suite::plugins::plugin_mcp_tools_are_listed suite::truncation::mcp_tool_call_output_exceeds_limit_truncated_for_model suite::client::usage_limit_error_emits_rate_limit_event suite::client_websockets::responses_websocket_usage_limit_error_emits_rate_limit_event suite::realtime_conversation::conversation_flushes_assistant_deltas_every_200ms_for_v3_handoff suite::guardian_review::guardian_session_prewarms_and_is_reused_for_first_review suite::responses_lite::responses_lite_exposes_standalone_web_search_for_opted_in_custom_provider suite::responses_lite::responses_lite_does_not_expose_standalone_web_search_for_custom_provider_by_default suite::responses_lite::responses_lite_does_not_expose_disabled_standalone_web_search_for_opted_in_provider suite::responses_lite::responses_lite_does_not_expose_standalone_web_search_for_opted_in_bedrock_provider --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all -- suite::rmcp_client::interrupt_during_mcp_startup_preserves_user_input_in_history
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --lib -- session::tests::build_initial_context_includes_turn_context_fragments_from_extensions session::tests::record_context_updates_includes_turn_context_fragments_on_steady_state_turns session::turn_tests::post_sampling_token_estimate_is_disabled_by_always_on_sinks guardian::review_session::tests::guardian_review_session_config_change_invalidates_cached_session guardian::tests::guardian_review_session_config_clears_context_overrides_for_distinct_effective_model guardian::tests::guardian_review_session_config_preserves_context_overrides_for_same_effective_model realtime_conversation::bem_tests::maps_bem_channels_to_realtime_phases realtime_conversation::bem_tests::client_prefixes_override_only_their_configured_channels realtime_conversation::bem_tests::empty_client_prefixes_do_not_match_every_message realtime_conversation::bem_tests::buffers_streamed_text_until_the_bem_channel_is_complete realtime_conversation::bem_tests::buffers_a_client_prefix_until_the_streamed_header_is_complete realtime_conversation::bem_tests::preserves_unrecognized_output_when_the_stream_finishes --exact
+    cargo test --locked -p codex-git-attribution --lib -- --test-threads=1
     cargo test -p codex-core-skills preferred_user_skill_names_from_stack_collects_user_and_session_layers --lib -- --exact --test-threads=1
     cargo test -p codex-core-skills finalize_skill_outcome_disables_repo_skill_when_user_preference_is_configured --lib -- --exact --test-threads=1
     cargo test -p codex-core parses_prefer_user_skill_names --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::runtimes::shell::tests::approval_key_uses_path_uri_and_includes_environment_id --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::runtimes::disable_powershell_profile_tests::inserts_no_profile_for_proxy_selected_elevated_windows_sandbox --lib -- --exact --test-threads=1
 
-# Focused skill-loader fixture hermeticity slice.
+# Focused skill-loader hermeticity and skill-catalog budget slice.
 skill-loader-fixture-hermeticity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core-skills --lib --no-tests=fail -- loader::tests::non_git_repo_skills_search_does_not_walk_parents loader::tests::skill_roots_include_admin_with_lowest_priority --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --lib --no-tests=fail -- provider::host::tests::host_catalog_entries_carry_their_prompt_scope render::tests::ordering_follows_render_policy render::tests::description_selection_follows_render_policy render::tests::omission_notice_follows_render_policy_and_is_charged_to_catalog_budget render::tests::character_fallback_counts_multibyte_metadata_by_characters render::tests::catalog_report_counts_partial_description_truncation render::tests::catalog_emits_omission_marker_when_every_minimum_skill_line_exceeds_budget render::tests::catalog_preserves_report_when_no_fragment_fits_budget --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-skills-extension --test skills_extension --no-tests=fail -- moderate_budget_pressure_keeps_every_catalog_entry extreme_budget_pressure_removes_descriptions_before_omitting_entries --exact
 
 # Focused persisted-state/usage lineage contract slice for subagent graph adoption.
 core-state-spawn-lineage-contract-targeted:

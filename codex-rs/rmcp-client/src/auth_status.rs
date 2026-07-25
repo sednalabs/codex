@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Error;
 use anyhow::Result;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
@@ -11,23 +10,41 @@ use codex_exec_server::HttpHeader;
 use codex_exec_server::HttpRedirectPolicy;
 use codex_exec_server::HttpRequestParams;
 use codex_protocol::protocol::McpAuthStatus;
+use futures::FutureExt;
 use reqwest::Client;
 use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::header::AUTHORIZATION;
 use reqwest::header::HeaderMap;
-use reqwest::header::WWW_AUTHENTICATE;
+use rmcp::transport::AuthorizationManager;
+use rmcp::transport::auth::AuthError;
+use rmcp::transport::auth::AuthorizationMetadata;
 use serde::Deserialize;
 use tracing::debug;
 
 use crate::oauth::StoredOAuthTokenStatus;
 use crate::oauth::oauth_token_status;
+use crate::oauth_http_client::OAuthHttpClientAdapter;
+use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
-use crate::utils::build_reqwest_client;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const OAUTH_DISCOVERY_HEADER: &str = "MCP-Protocol-Version";
 const OAUTH_DISCOVERY_VERSION: &str = "2024-11-05";
+
+/// Timeout policy for OAuth metadata discovery through a supplied HTTP client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthDiscoveryTimeout {
+    /// Preserve the timeout requested by the OAuth implementation.
+    Requested,
+    /// Cap OAuth discovery requests at the supplied duration.
+    Capped(Duration),
+}
+
+impl OAuthDiscoveryTimeout {
+    /// Preserves the existing timeout for local OAuth discovery.
+    pub const LOCAL: Self = Self::Capped(DISCOVERY_TIMEOUT);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamableHttpOAuthDiscovery {
@@ -110,6 +127,7 @@ pub async fn determine_streamable_http_auth_status_with_http_client(
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
     http_client: Arc<dyn HttpClient>,
+    discovery_timeout: OAuthDiscoveryTimeout,
 ) -> Result<McpAuthState> {
     let default_headers = match auth_status_before_discovery(
         server_name,
@@ -130,6 +148,7 @@ pub async fn determine_streamable_http_auth_status_with_http_client(
             url,
             default_headers,
             http_client,
+            discovery_timeout,
         )
         .await,
     )
@@ -234,129 +253,71 @@ pub async fn discover_streamable_http_oauth_with_http_client(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     http_client: Arc<dyn HttpClient>,
+    discovery_timeout: OAuthDiscoveryTimeout,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    discover_streamable_http_oauth_with_headers_and_http_client(url, default_headers, http_client)
-        .await
+    discover_streamable_http_oauth_with_headers_and_http_client(
+        url,
+        default_headers,
+        http_client,
+        discovery_timeout,
+    )
+    .await
 }
 
 async fn discover_streamable_http_oauth_with_headers(
     url: &str,
     default_headers: &HeaderMap,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let base_url = Url::parse(url)?;
-
     // Use no_proxy to avoid a bug in the system-configuration crate that
     // can result in a panic. See #8912.
     let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
-    let client = build_reqwest_client(builder, default_headers)?;
-
-    let mut last_error: Option<Error> = None;
-    for candidate_path in discovery_paths(base_url.path()) {
-        let mut discovery_url = base_url.clone();
-        discovery_url.set_path(&candidate_path);
-
-        let response = match client
-            .get(discovery_url.clone())
-            .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                last_error = Some(err.into());
-                continue;
-            }
-        };
-
-        if response.status() != StatusCode::OK {
-            continue;
-        }
-
-        let metadata = match response.json::<OAuthDiscoveryMetadata>().await {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                last_error = Some(err.into());
-                continue;
-            }
-        };
-
-        if let Some(discovery) = discovery_from_metadata(metadata) {
-            return Ok(Some(discovery));
-        }
+    let client = apply_default_headers(builder, default_headers).build()?;
+    let mut authorization_manager = AuthorizationManager::new(url).await?;
+    authorization_manager.with_client(client)?;
+    match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
+        Some(discovery) => Ok(Some(discovery)),
+        // rmcp's standard metadata type requires an authorization endpoint.
+        // Preserve the downstream device-only extension without bypassing the
+        // upstream manager for normal OAuth or protected-resource discovery.
+        None => discover_device_only_oauth_with_headers(url, default_headers).await,
     }
-
-    if let Some(err) = last_error {
-        debug!("OAuth discovery requests failed for {url}: {err:?}");
-    }
-
-    discover_from_protected_resource_metadata(&client, &base_url).await
 }
 
 async fn discover_streamable_http_oauth_with_headers_and_http_client(
     url: &str,
     default_headers: HeaderMap,
     http_client: Arc<dyn HttpClient>,
+    discovery_timeout: OAuthDiscoveryTimeout,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let base_url = Url::parse(url)?;
-
-    let mut last_error: Option<Error> = None;
-    for (index, candidate_path) in discovery_paths(base_url.path()).into_iter().enumerate() {
-        let mut discovery_url = base_url.clone();
-        discovery_url.set_path(&candidate_path);
-
-        let response = match http_client
-            .http_request(HttpRequestParams {
-                method: "GET".to_string(),
-                url: discovery_url.to_string(),
-                headers: oauth_discovery_protocol_headers(&default_headers)?,
-                body: None,
-                timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
-                redirect_policy: HttpRedirectPolicy::Follow,
-                request_id: format!("oauth-discovery-{index}"),
-                stream_response: false,
-            })
+    let oauth_http_client = match discovery_timeout {
+        OAuthDiscoveryTimeout::Requested => {
+            OAuthHttpClientAdapter::new(http_client.clone(), default_headers.clone())
+        }
+        OAuthDiscoveryTimeout::Capped(max_timeout) => OAuthHttpClientAdapter::new_with_max_timeout(
+            http_client.clone(),
+            default_headers.clone(),
+            max_timeout,
+        ),
+    };
+    let authorization_manager =
+        AuthorizationManager::new_with_oauth_http_client(url, Arc::new(oauth_http_client)).await?;
+    match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
+        Some(discovery) => Ok(Some(discovery)),
+        None => {
+            discover_device_only_oauth_with_http_client(
+                url,
+                &default_headers,
+                http_client.as_ref(),
+                discovery_timeout,
+            )
             .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                last_error = Some(err.into());
-                continue;
-            }
-        };
-
-        if response.status != StatusCode::OK.as_u16() {
-            continue;
-        }
-
-        let metadata =
-            match serde_json::from_slice::<OAuthDiscoveryMetadata>(&response.body.into_inner()) {
-                Ok(metadata) => metadata,
-                Err(err) => {
-                    last_error = Some(err.into());
-                    continue;
-                }
-            };
-
-        if let Some(discovery) = discovery_from_metadata(metadata) {
-            return Ok(Some(discovery));
         }
     }
-
-    if let Some(err) = last_error {
-        debug!("OAuth discovery requests failed for {url}: {err:?}");
-    }
-
-    discover_from_protected_resource_metadata_with_http_client(
-        &base_url,
-        &default_headers,
-        http_client.as_ref(),
-    )
-    .await
 }
 
 #[derive(Debug, Deserialize)]
-struct OAuthDiscoveryMetadata {
+struct DeviceOnlyOAuthDiscoveryMetadata {
     #[serde(default)]
     authorization_endpoint: Option<String>,
     #[serde(default)]
@@ -369,30 +330,51 @@ struct OAuthDiscoveryMetadata {
     grant_types_supported: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ProtectedResourceMetadata {
-    resource: String,
-    #[serde(default)]
-    authorization_servers: Vec<String>,
-}
-
-fn discovery_from_metadata(
-    metadata: OAuthDiscoveryMetadata,
+fn device_only_discovery_from_metadata(
+    metadata: DeviceOnlyOAuthDiscoveryMetadata,
 ) -> Option<StreamableHttpOAuthDiscovery> {
-    let authorization_endpoint = metadata.authorization_endpoint;
-    let device_authorization_endpoint = metadata.device_authorization_endpoint;
-    let token_endpoint = metadata.token_endpoint?;
-    if authorization_endpoint.is_none() && device_authorization_endpoint.is_none() {
+    if metadata.authorization_endpoint.is_some() {
         return None;
     }
+    let device_authorization_endpoint = metadata.device_authorization_endpoint?;
+    let token_endpoint = metadata.token_endpoint?;
 
     Some(StreamableHttpOAuthDiscovery {
-        authorization_endpoint,
+        authorization_endpoint: None,
         token_endpoint,
         scopes_supported: normalize_scopes(metadata.scopes_supported),
-        device_authorization_endpoint,
+        device_authorization_endpoint: Some(device_authorization_endpoint),
         grant_types_supported: normalize_scopes(metadata.grant_types_supported),
     })
+}
+
+fn discovery_from_authorization_metadata(
+    metadata: AuthorizationMetadata,
+) -> StreamableHttpOAuthDiscovery {
+    let device_authorization_endpoint = metadata
+        .additional_fields
+        .get("device_authorization_endpoint")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let grant_types_supported = metadata
+        .additional_fields
+        .get("grant_types_supported")
+        .and_then(serde_json::Value::as_array)
+        .map(|grant_types| {
+            grant_types
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        });
+
+    StreamableHttpOAuthDiscovery {
+        authorization_endpoint: Some(metadata.authorization_endpoint),
+        token_endpoint: metadata.token_endpoint,
+        scopes_supported: normalize_scopes(metadata.scopes_supported),
+        device_authorization_endpoint,
+        grant_types_supported: normalize_scopes(grant_types_supported),
+    }
 }
 
 fn oauth_discovery_protocol_headers(default_headers: &HeaderMap) -> Result<Vec<HttpHeader>> {
@@ -412,214 +394,98 @@ fn oauth_discovery_protocol_headers(default_headers: &HeaderMap) -> Result<Vec<H
     Ok(headers)
 }
 
-async fn discover_from_protected_resource_metadata(
-    client: &Client,
-    resource_url: &Url,
+async fn discover_device_only_oauth_with_headers(
+    url: &str,
+    default_headers: &HeaderMap,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let resource_response = client
-        .get(resource_url.clone())
-        .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
-        .send()
-        .await?;
-    let Some(resource_metadata_url) = resource_metadata_url_from_www_authenticate_values(
-        resource_response
-            .headers()
-            .get_all(WWW_AUTHENTICATE)
-            .iter()
-            .filter_map(|value| value.to_str().ok()),
-    ) else {
-        return Ok(None);
-    };
-    let metadata_response = client
-        .get(Url::parse(&resource_metadata_url)?)
-        .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
-        .send()
-        .await?;
-    if metadata_response.status() != StatusCode::OK {
-        return Ok(None);
-    }
-    let resource_metadata = metadata_response
-        .json::<ProtectedResourceMetadata>()
-        .await?;
-    discovery_from_protected_resource_metadata(client, resource_url, resource_metadata).await
-}
+    let base_url = Url::parse(url)?;
+    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
+    let client = apply_default_headers(builder, default_headers).build()?;
 
-async fn discovery_from_protected_resource_metadata(
-    client: &Client,
-    resource_url: &Url,
-    resource_metadata: ProtectedResourceMetadata,
-) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    if !protected_resource_matches(resource_url, &resource_metadata.resource) {
-        return Ok(None);
-    }
-    for authorization_server in resource_metadata.authorization_servers {
-        let Ok(authorization_server_url) = Url::parse(&authorization_server) else {
-            continue;
+    for candidate_path in discovery_paths(base_url.path()) {
+        let mut discovery_url = base_url.clone();
+        discovery_url.set_path(&candidate_path);
+        let response = match client
+            .get(discovery_url)
+            .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => continue,
         };
-        for candidate_path in discovery_paths(authorization_server_url.path()) {
-            let mut discovery_url = authorization_server_url.clone();
-            discovery_url.set_path(&candidate_path);
-            let response = match client
-                .get(discovery_url)
-                .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
-                .send()
-                .await
-            {
-                Ok(response) => response,
-                Err(_) => continue,
-            };
-            if response.status() != StatusCode::OK {
-                continue;
-            }
-            let metadata = match response.json::<OAuthDiscoveryMetadata>().await {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            if let Some(discovery) = discovery_from_metadata(metadata) {
-                return Ok(Some(discovery));
-            }
+        if response.status() != StatusCode::OK {
+            continue;
+        }
+        let metadata = match response.json::<DeviceOnlyOAuthDiscoveryMetadata>().await {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
+            return Ok(Some(discovery));
         }
     }
+
     Ok(None)
 }
 
-async fn discover_from_protected_resource_metadata_with_http_client(
-    resource_url: &Url,
+async fn discover_device_only_oauth_with_http_client(
+    url: &str,
     default_headers: &HeaderMap,
     http_client: &dyn HttpClient,
+    discovery_timeout: OAuthDiscoveryTimeout,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let resource_response = http_client
-        .http_request(HttpRequestParams {
-            method: "GET".to_string(),
-            url: resource_url.to_string(),
-            headers: oauth_discovery_protocol_headers(default_headers)?,
-            body: None,
-            timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
-            redirect_policy: HttpRedirectPolicy::Follow,
-            request_id: "oauth-resource-probe".to_string(),
-            stream_response: false,
-        })
-        .await?;
-    let Some(resource_metadata_url) = resource_metadata_url_from_www_authenticate_values(
-        resource_response
-            .headers
-            .iter()
-            .filter(|header| header.name.eq_ignore_ascii_case("www-authenticate"))
-            .map(|header| header.value.as_str()),
-    ) else {
-        return Ok(None);
+    let base_url = Url::parse(url)?;
+    let timeout_ms = match discovery_timeout {
+        OAuthDiscoveryTimeout::Requested => None,
+        OAuthDiscoveryTimeout::Capped(timeout) => {
+            Some(timeout.as_millis().try_into().unwrap_or(u64::MAX))
+        }
     };
-    let metadata_response = http_client
-        .http_request(HttpRequestParams {
-            method: "GET".to_string(),
-            url: resource_metadata_url,
-            headers: oauth_discovery_protocol_headers(default_headers)?,
-            body: None,
-            timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
-            redirect_policy: HttpRedirectPolicy::Follow,
-            request_id: "oauth-resource-metadata".to_string(),
-            stream_response: false,
-        })
-        .await?;
-    if metadata_response.status != StatusCode::OK.as_u16() {
-        return Ok(None);
-    }
-    let resource_metadata =
-        serde_json::from_slice::<ProtectedResourceMetadata>(&metadata_response.body.into_inner())?;
-    if !protected_resource_matches(resource_url, &resource_metadata.resource) {
-        return Ok(None);
-    }
-    for (authorization_server_index, authorization_server) in resource_metadata
-        .authorization_servers
-        .into_iter()
-        .enumerate()
-    {
-        let Ok(authorization_server_url) = Url::parse(&authorization_server) else {
-            continue;
-        };
-        for (candidate_index, candidate_path) in discovery_paths(authorization_server_url.path())
-            .into_iter()
-            .enumerate()
+
+    for (index, candidate_path) in discovery_paths(base_url.path()).into_iter().enumerate() {
+        let mut discovery_url = base_url.clone();
+        discovery_url.set_path(&candidate_path);
+        let response = match http_client
+            .http_request(HttpRequestParams {
+                method: "GET".to_string(),
+                url: discovery_url.to_string(),
+                headers: oauth_discovery_protocol_headers(default_headers)?,
+                body: None,
+                timeout_ms,
+                redirect_policy: HttpRedirectPolicy::Follow,
+                request_id: format!("oauth-device-only-discovery-{index}"),
+                stream_response: false,
+            })
+            .await
         {
-            let mut discovery_url = authorization_server_url.clone();
-            discovery_url.set_path(&candidate_path);
-            let response = match http_client
-                .http_request(HttpRequestParams {
-                    method: "GET".to_string(),
-                    url: discovery_url.to_string(),
-                    headers: oauth_discovery_protocol_headers(default_headers)?,
-                    body: None,
-                    timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis().try_into().unwrap_or(u64::MAX)),
-                    redirect_policy: HttpRedirectPolicy::Follow,
-                    request_id: format!(
-                        "oauth-resource-authorization-server-{authorization_server_index}-{candidate_index}"
-                    ),
-                    stream_response: false,
-                })
-                .await
-            {
-                Ok(response) => response,
-                Err(_) => continue,
-            };
-            if response.status != StatusCode::OK.as_u16() {
-                continue;
-            }
-            let metadata =
-                match serde_json::from_slice::<OAuthDiscoveryMetadata>(&response.body.into_inner())
-                {
-                    Ok(metadata) => metadata,
-                    Err(_) => continue,
-                };
-            if let Some(discovery) = discovery_from_metadata(metadata) {
-                return Ok(Some(discovery));
-            }
+            Ok(response) => response,
+            Err(_) => continue,
+        };
+        if response.status != StatusCode::OK.as_u16() {
+            continue;
+        }
+        let metadata = match serde_json::from_slice::<DeviceOnlyOAuthDiscoveryMetadata>(
+            &response.body.into_inner(),
+        ) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
+            return Ok(Some(discovery));
         }
     }
+
     Ok(None)
 }
 
-fn resource_metadata_url_from_www_authenticate_values<'a>(
-    values: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    values
-        .into_iter()
-        .find_map(resource_metadata_url_from_www_authenticate)
-}
-
-fn resource_metadata_url_from_www_authenticate(header: &str) -> Option<String> {
-    if !header
-        .split_once(' ')
-        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-    {
-        return None;
-    }
-    let (_, value) = header.split_once("resource_metadata=")?;
-    parse_auth_param_value(value.trim_start())
-}
-
-fn parse_auth_param_value(value: &str) -> Option<String> {
-    if let Some(rest) = value.strip_prefix('"') {
-        let mut parsed = String::new();
-        let mut chars = rest.chars();
-        while let Some(ch) = chars.next() {
-            match ch {
-                '"' => return Some(parsed),
-                '\\' => parsed.push(chars.next()?),
-                ch => parsed.push(ch),
-            }
-        }
-        return None;
-    }
-    let value = value
-        .split(|ch: char| ch == ',' || ch.is_ascii_whitespace())
-        .next()?;
-    (!value.is_empty()).then(|| value.to_string())
-}
-
-fn protected_resource_matches(resource_url: &Url, resource: &str) -> bool {
-    match Url::parse(resource) {
-        Ok(resource) => resource == *resource_url,
-        Err(_) => false,
+async fn discover_streamable_http_oauth_with_manager(
+    authorization_manager: &AuthorizationManager,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    match authorization_manager.discover_metadata().boxed().await {
+        Ok(metadata) => Ok(Some(discovery_from_authorization_metadata(metadata))),
+        Err(AuthError::NoAuthorizationSupport) => Ok(None),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -645,10 +511,8 @@ fn normalize_scopes(scopes_supported: Option<Vec<String>>) -> Option<Vec<String>
     }
 }
 
-/// Implements RFC 8414 section 3.1 for discovering well-known oauth endpoints.
-/// This is a requirement for MCP servers to support OAuth.
-/// https://datatracker.ietf.org/doc/html/rfc8414#section-3.1
-/// https://github.com/modelcontextprotocol/rust-sdk/blob/main/crates/rmcp/src/transport/auth.rs#L182
+/// Generates the narrow fallback paths used only for device-only metadata.
+/// The normal OAuth and protected-resource paths are owned by rmcp.
 fn discovery_paths(base_path: &str) -> Vec<String> {
     let trimmed = base_path.trim_start_matches('/').trim_end_matches('/');
     let canonical = "/.well-known/oauth-authorization-server".to_string();
@@ -682,10 +546,16 @@ mod tests {
     use axum::response::IntoResponse;
     use axum::response::Response;
     use axum::routing::get;
+    use codex_exec_server::ExecServerError;
+    use codex_exec_server::HttpRequestParams;
+    use codex_exec_server::HttpRequestResponse;
+    use codex_exec_server::HttpResponseBodyStream;
+    use futures::future::BoxFuture;
     use pretty_assertions::assert_eq;
     use serial_test::serial;
     use std::collections::HashMap;
     use std::ffi::OsString;
+    use std::sync::Mutex;
     use tokio::task::JoinHandle;
 
     struct TestServer {
@@ -701,6 +571,75 @@ mod tests {
 
     fn json_response(value: serde_json::Value) -> Response {
         ([(CONTENT_TYPE, "application/json")], value.to_string()).into_response()
+    }
+
+    #[derive(Default)]
+    struct RecordingHttpClient {
+        timeout_ms: Mutex<Option<Option<u64>>>,
+    }
+
+    impl HttpClient for RecordingHttpClient {
+        fn http_request(
+            &self,
+            _params: HttpRequestParams,
+        ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
+            Box::pin(async {
+                Err(ExecServerError::HttpRequest(
+                    "unexpected buffered request".to_string(),
+                ))
+            })
+        }
+
+        fn http_request_stream(
+            &self,
+            params: HttpRequestParams,
+        ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>>
+        {
+            *self
+                .timeout_ms
+                .lock()
+                .expect("timeout recorder lock should not be poisoned") = Some(params.timeout_ms);
+            Box::pin(async {
+                Err(ExecServerError::HttpRequest(
+                    "expected discovery request failure".to_string(),
+                ))
+            })
+        }
+    }
+
+    struct DeviceOnlyHttpClient;
+
+    impl HttpClient for DeviceOnlyHttpClient {
+        fn http_request(
+            &self,
+            _params: HttpRequestParams,
+        ) -> BoxFuture<'_, Result<HttpRequestResponse, ExecServerError>> {
+            Box::pin(async {
+                Ok(HttpRequestResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: serde_json::to_vec(&serde_json::json!({
+                        "token_endpoint": "https://example.com/token",
+                        "device_authorization_endpoint": "https://example.com/device",
+                        "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+                    }))
+                    .expect("device-only metadata should serialize")
+                    .into(),
+                })
+            })
+        }
+
+        fn http_request_stream(
+            &self,
+            _params: HttpRequestParams,
+        ) -> BoxFuture<'_, Result<(HttpRequestResponse, HttpResponseBodyStream), ExecServerError>>
+        {
+            Box::pin(async {
+                Err(ExecServerError::HttpRequest(
+                    "device-only metadata requires the narrow fallback".to_string(),
+                ))
+            })
+        }
     }
 
     async fn spawn_oauth_discovery_server(metadata: serde_json::Value) -> TestServer {
@@ -903,6 +842,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routed_oauth_discovery_caps_local_discovery_timeout() {
+        let http_client = Arc::new(RecordingHttpClient::default());
+
+        let discovery = discover_streamable_http_oauth_with_http_client(
+            "http://example.com/mcp",
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            http_client.clone(),
+            OAuthDiscoveryTimeout::LOCAL,
+        )
+        .await;
+
+        assert!(matches!(discovery, Ok(None)));
+        assert_eq!(
+            *http_client
+                .timeout_ms
+                .lock()
+                .expect("timeout recorder lock should not be poisoned"),
+            Some(Some(
+                u64::try_from(DISCOVERY_TIMEOUT.as_millis())
+                    .expect("discovery timeout should fit in u64")
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn routed_oauth_discovery_preserves_requested_timeout() {
+        let http_client = Arc::new(RecordingHttpClient::default());
+
+        let discovery = discover_streamable_http_oauth_with_http_client(
+            "http://example.com/mcp",
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            http_client.clone(),
+            OAuthDiscoveryTimeout::Requested,
+        )
+        .await;
+
+        assert!(matches!(discovery, Ok(None)));
+        assert_eq!(
+            *http_client
+                .timeout_ms
+                .lock()
+                .expect("timeout recorder lock should not be poisoned"),
+            Some(Some(30_000))
+        );
+    }
+    #[tokio::test]
     async fn discover_streamable_http_oauth_ignores_empty_scopes() {
         let server = spawn_oauth_discovery_server(serde_json::json!({
             "authorization_endpoint": "https://example.com/authorize",
@@ -993,6 +980,33 @@ mod tests {
         )
         .await
         .expect("discovery should succeed")
+        .expect("device-only oauth support should be detected");
+
+        assert_eq!(
+            discovery,
+            StreamableHttpOAuthDiscovery {
+                authorization_endpoint: None,
+                token_endpoint: "https://example.com/token".to_string(),
+                scopes_supported: None,
+                device_authorization_endpoint: Some("https://example.com/device".to_string()),
+                grant_types_supported: Some(vec![
+                    "urn:ietf:params:oauth:grant-type:device_code".to_string()
+                ]),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_oauth_discovery_preserves_device_only_metadata() {
+        let discovery = discover_streamable_http_oauth_with_http_client(
+            "http://example.com/mcp",
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            Arc::new(DeviceOnlyHttpClient),
+            OAuthDiscoveryTimeout::LOCAL,
+        )
+        .await
+        .expect("runtime discovery should succeed")
         .expect("device-only oauth support should be detected");
 
         assert_eq!(

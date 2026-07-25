@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use clap::Parser;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 

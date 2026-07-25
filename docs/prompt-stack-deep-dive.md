@@ -168,7 +168,6 @@ config and then applies explicit review-time overrides.
 The important review-time changes are:
 
 - `web_search_mode` is forced to `Disabled`
-- `Feature::SpawnCsv` is disabled
 - `Feature::Collab` is disabled
 - approval policy is forced to `AskForApproval::Never`
 - `base_instructions` is explicitly set to `crate::REVIEW_PROMPT.to_string()`
@@ -324,49 +323,43 @@ The relevant built-ins here are:
 implementation. Spark-like behavior remains an orchestration convention built
 from a `worker` plus explicit spawn overrides.
 
-## 7. Commit attribution instruction
+## 7. Git attribution world state
 
-Commit attribution is implemented in
-`codex-rs/core/src/commit_attribution.rs` and injected from
-`codex-rs/core/src/session/mod.rs`.
+Git attribution is implemented by the extension in
+`codex-rs/ext/git-attribution`. The app-server, MCP server, and CLI
+`debug prompt-input` entry points install it into their extension registries.
+The policy request always uses the process-level ChatGPT base URL; thread config
+or MCP tool-call overrides cannot redirect it.
 
-### 7.1 When it is injected
+### 7.1 When it is contributed
 
-The instruction is considered when `Feature::CodexGitCommit` is enabled.
+The extension resolves `commit_attribution_enabled` from authenticated workspace
+settings. Missing non-backend auth, request failure, timeout, or a deferred retry
+contributes no enabled instruction. Auth-generation changes invalidate cached
+policy and allow resolution against the current account.
 
-If that feature is enabled, `commit_message_trailer_instruction(...)` is called
-with `turn_context.config.commit_attribution.as_deref()`.
+The result is extension world state delimited by `<git_attribution>` markers and
+classified as contextual developer content. That lets policy changes replace or
+trim the old fragment during rollback and cold resume instead of accumulating
+stale instructions.
 
 ### 7.2 Exact behavior
 
-The helper builds a trailer of the form:
+When enabled, the model guidance requires this commit trailer exactly once:
 
 ```text
 Co-authored-by: <name and email>
 ```
 
-If config provides no explicit attribution value, it defaults to:
-
-```text
-Codex <noreply@openai.com>
-```
-
-If config provides a blank string, the helper treats that as disabled and
-returns no instruction.
-
-The injected instruction tells the model:
-
-- when it writes or edits a git commit message, the message must end with the
-  required trailer exactly once
-- keep existing trailers
-- append the trailer if missing
-- do not duplicate it
-- keep one blank line between the commit body and the trailer block
+The same guidance requires pull request bodies to contain the exact line
+`Generated with Codex.` once, before trailing hidden metadata. Disabled policy
+contributes an explicit replacement only when an older enabled or legacy
+attribution fragment must be cancelled; otherwise it adds no fragment.
 
 ### 7.3 What this means architecturally
 
-This is behavioral guidance, not hard enforcement. It shapes commit-message
-behavior, but the model could still fail to comply.
+This is behavioral guidance, not hard enforcement. It shapes commit-message and
+pull-request behavior, but the model could still fail to comply.
 
 ## 8. Realtime transition instructions
 
@@ -484,7 +477,12 @@ The key files for this behavior in the current implementation are:
 - `codex-rs/core/src/agent/builtins/explorer.toml`
 - `codex-rs/core/src/agent/builtins/awaiter.toml`
 - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
-- `codex-rs/core/src/commit_attribution.rs`
+- `codex-rs/ext/git-attribution/src/lib.rs`
+- `codex-rs/ext/git-attribution/src/policy.rs`
+- `codex-rs/ext/git-attribution/src/world_state.rs`
+- `codex-rs/app-server/src/extensions.rs`
+- `codex-rs/mcp-server/src/message_processor.rs`
+- `codex-rs/core/src/event_mapping.rs`
 - `codex-rs/core/src/context_manager/updates.rs`
 - `codex-rs/protocol/src/prompts/realtime/realtime_start.md`
 - `codex-rs/protocol/src/prompts/realtime/realtime_end.md`

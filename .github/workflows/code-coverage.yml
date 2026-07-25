@@ -72,6 +72,7 @@ jobs:
           file: coverage-python-tools.xml
           language: Python
           label: code-coverage/python-tools
+          fail-on-error: false
 
   python-sdk:
     name: Python SDK coverage
@@ -117,6 +118,7 @@ jobs:
           file: sdk/python/coverage.xml
           language: Python
           label: code-coverage/python-sdk
+          fail-on-error: false
 
   typescript-sdk:
     name: TypeScript SDK coverage
@@ -162,3 +164,4 @@ jobs:
           file: sdk/typescript/coverage/cobertura-coverage.xml
           language: TypeScript
           label: code-coverage/typescript-sdk
+          fail-on-error: false

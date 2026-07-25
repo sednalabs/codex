@@ -1,10 +1,14 @@
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tokio::time::Instant;
+use tokio::time::Sleep;
 
 use super::UnifiedExecContext;
+use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
 use crate::session::session::Session;
@@ -14,6 +18,7 @@ use crate::tools::events::ToolEventCtx;
 use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
+use codex_core_plugins::PluginCommandAttribution;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::EventMsg;
@@ -21,6 +26,8 @@ use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecOutputStream;
 use codex_utils_path_uri::PathUri;
+
+pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
 
 /// Upper bound for a single ExecCommandOutputDelta chunk emitted by unified exec.
 ///
@@ -36,7 +43,12 @@ const UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES: usize = 8192;
 pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &UnifiedExecContext) {
     let mut receiver = process.output_receiver();
     let output_drained = process.output_drained_notify();
-    let (output_closed, output_closed_notify) = process.output_completion_handles();
+    let exit_token = process.cancellation_token();
+    let OutputHandles {
+        output_closed,
+        output_closed_notify,
+        ..
+    } = process.output_handles();
 
     let session_ref = Arc::clone(&context.session);
     let turn_ref = Arc::clone(&context.turn);
@@ -47,12 +59,38 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
 
         let mut pending = Vec::<u8>::new();
         let mut emitted_deltas: usize = 0;
-        let source_closed =
-            UnifiedExecProcess::wait_for_output_closed_handles(output_closed, output_closed_notify);
-        tokio::pin!(source_closed);
+
+        let mut grace_sleep: Option<Pin<Box<Sleep>>> = None;
+        let output_closed_notified = output_closed_notify.notified();
+        tokio::pin!(output_closed_notified);
+        let mut output_complete = false;
 
         loop {
+            // Register before checking the atomic so a close between the check
+            // and the select cannot miss the notification.
+            output_closed_notified.as_mut().enable();
+            if grace_sleep.is_some() && output_closed.load(Ordering::Acquire) {
+                output_complete = true;
+                break;
+            }
+
             tokio::select! {
+                _ = exit_token.cancelled(), if grace_sleep.is_none() => {
+                    let deadline = Instant::now() + TRAILING_OUTPUT_GRACE;
+                    grace_sleep.replace(Box::pin(tokio::time::sleep_until(deadline)));
+                }
+
+                _ = async {
+                    if let Some(sleep) = grace_sleep.as_mut() {
+                        sleep.as_mut().await;
+                    }
+                }, if grace_sleep.is_some() => {
+                    break;
+                }
+
+                _ = &mut output_closed_notified, if grace_sleep.is_some() => {
+                    output_closed_notified.set(output_closed_notify.notified());
+                }
                 received = receiver.recv() => {
                     let chunk = match received {
                         Ok(chunk) => chunk,
@@ -60,6 +98,7 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
                             continue;
                         },
                         Err(RecvError::Closed) => {
+                            output_complete = true;
                             break;
                         }
                     };
@@ -73,26 +112,33 @@ pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &Uni
                         chunk,
                     ).await;
                 }
-                _ = &mut source_closed => break,
             }
         }
 
-        loop {
-            match receiver.try_recv() {
-                Ok(chunk) => {
-                    process_chunk(
-                        &mut pending,
-                        &call_id,
-                        &session_ref,
-                        &turn_ref,
-                        &mut emitted_deltas,
-                        chunk,
-                    )
-                    .await;
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-                | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+        output_complete |= output_closed.load(Ordering::Acquire);
+        if output_complete {
+            // Output producers publish all chunks before setting output_closed
+            // with Release ordering, so the Acquire above makes this a final
+            // safe drain.
+            loop {
+                let chunk = match receiver.try_recv() {
+                    Ok(chunk) => chunk,
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(
+                        tokio::sync::broadcast::error::TryRecvError::Empty
+                        | tokio::sync::broadcast::error::TryRecvError::Closed,
+                    ) => break,
+                };
+
+                process_chunk(
+                    &mut pending,
+                    &call_id,
+                    &session_ref,
+                    &turn_ref,
+                    &mut emitted_deltas,
+                    chunk,
+                )
+                .await;
             }
         }
         output_drained.notify_one();
@@ -110,14 +156,24 @@ pub(crate) fn spawn_exit_watcher(
     command: Vec<String>,
     cwd: PathUri,
     process_id: i32,
+    plugin_attribution: Option<PluginCommandAttribution>,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     started_at: Instant,
+    network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
 ) {
     let exit_token = process.cancellation_token();
+    let interaction_lock = process.interaction_lock();
 
     tokio::spawn(async move {
         exit_token.cancelled().await;
         process.wait_for_output_completion().await;
+        // Deferred network denial deliberately remains observable for a short
+        // window after process exit. Do not classify the terminal event until
+        // that monitor has settled, even when output closes immediately.
+        if let Some(network_denial_monitor) = network_denial_monitor {
+            let _ = network_denial_monitor.await;
+        }
+        let _interaction_guard = interaction_lock.lock_owned().await;
 
         let duration = Instant::now().saturating_duration_since(started_at);
         if let Some(message) = process.failure_message() {
@@ -128,6 +184,7 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
+                plugin_attribution,
                 transcript,
                 String::new(),
                 message,
@@ -143,6 +200,7 @@ pub(crate) fn spawn_exit_watcher(
                 command,
                 cwd,
                 Some(process_id.to_string()),
+                plugin_attribution,
                 transcript,
                 String::new(),
                 exit_code,
@@ -190,6 +248,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathUri,
     process_id: Option<String>,
+    plugin_attribution: Option<PluginCommandAttribution>,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     fallback_output: String,
     exit_code: i32,
@@ -215,6 +274,7 @@ pub(crate) async fn emit_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        plugin_attribution,
         /*terminal_wait*/ None,
     );
     emitter
@@ -236,6 +296,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
     command: Vec<String>,
     cwd: PathUri,
     process_id: Option<String>,
+    plugin_attribution: Option<PluginCommandAttribution>,
     transcript: Arc<Mutex<HeadTailBuffer>>,
     fallback_output: String,
     message: String,
@@ -266,6 +327,7 @@ pub(crate) async fn emit_failed_exec_end_for_unified_exec(
         cwd,
         ExecCommandSource::UnifiedExecStartup,
         process_id,
+        plugin_attribution,
         /*terminal_wait*/ None,
     );
     emitter
