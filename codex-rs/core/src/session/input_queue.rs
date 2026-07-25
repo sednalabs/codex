@@ -393,10 +393,10 @@ mod tests {
 
         let instance_id = uuid::Uuid::new_v4();
         input_queue
-            .enqueue_terminal_completion(terminal_completion(7, instance_id))
+            .enqueue_terminal_completion(terminal_completion(/*process_id*/ 7, instance_id))
             .await;
         input_queue
-            .enqueue_terminal_completion(terminal_completion(7, instance_id))
+            .enqueue_terminal_completion(terminal_completion(/*process_id*/ 7, instance_id))
             .await;
 
         activity_rx.changed().await.expect("terminal completion");
@@ -416,10 +416,16 @@ mod tests {
     async fn terminal_completion_identity_survives_process_id_reuse() {
         let input_queue = InputQueue::new();
         input_queue
-            .enqueue_terminal_completion(terminal_completion(7, uuid::Uuid::new_v4()))
+            .enqueue_terminal_completion(terminal_completion(
+                /*process_id*/ 7,
+                uuid::Uuid::new_v4(),
+            ))
             .await;
         input_queue
-            .enqueue_terminal_completion(terminal_completion(7, uuid::Uuid::new_v4()))
+            .enqueue_terminal_completion(terminal_completion(
+                /*process_id*/ 7,
+                uuid::Uuid::new_v4(),
+            ))
             .await;
 
         assert_eq!(input_queue.terminal_completions.lock().await.len(), 2);
