@@ -132,7 +132,11 @@ impl InputQueue {
         }
         if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS {
             if let Some(older) = pending.pop_front() {
-                completion.coalesce(older);
+                if let Some(next_oldest) = pending.front_mut() {
+                    next_oldest.coalesce(older);
+                } else {
+                    completion.coalesce(older);
+                }
             }
         }
         pending.push_back(completion);
@@ -445,6 +449,24 @@ mod tests {
 
         let pending = input_queue.terminal_completions.lock().await;
         assert_eq!(pending.len(), InputQueue::MAX_PENDING_TERMINAL_COMPLETIONS);
+        assert_eq!(
+            pending.front().map(|completion| completion.process_id),
+            Some(1)
+        );
+        assert_eq!(
+            pending
+                .front()
+                .map(|completion| completion.coalesced_exited),
+            Some(1)
+        );
+        assert_eq!(
+            pending.back().map(|completion| completion.process_id),
+            Some(InputQueue::MAX_PENDING_TERMINAL_COMPLETIONS as i32)
+        );
+        assert_eq!(
+            pending.back().map(|completion| completion.coalesced_exited),
+            Some(0)
+        );
         assert_eq!(
             pending
                 .iter()
