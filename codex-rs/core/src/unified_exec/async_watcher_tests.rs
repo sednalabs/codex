@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::COMPLETION_CAUSE_EXIT;
 use super::TRAILING_OUTPUT_GRACE;
 use super::spawn_exit_watcher;
 use super::split_valid_utf8_prefix_with_max;
