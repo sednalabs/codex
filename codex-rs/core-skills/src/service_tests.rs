@@ -907,6 +907,7 @@ prefer_user_skill_names = ["babysit-pr"]
                 path_to_skills_md: repo_skill_path.abs(),
                 scope: SkillScope::Repo,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
             SkillMetadata {
                 name: "babysit-pr".to_string(),
@@ -918,6 +919,7 @@ prefer_user_skill_names = ["babysit-pr"]
                 path_to_skills_md: user_skill_path.abs(),
                 scope: SkillScope::User,
                 plugin_id: None,
+                remote_plugin_id: None,
             },
         ],
         ..Default::default()
