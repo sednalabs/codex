@@ -166,6 +166,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         Some(network_denial_monitor),
         /*notify_on_completion*/ false,
         uuid::Uuid::nil(),
+        Arc::new(std::sync::atomic::AtomicU8::new(COMPLETION_CAUSE_EXIT)),
     );
 
     let exited_at = Instant::now();

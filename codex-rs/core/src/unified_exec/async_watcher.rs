@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 
 use tokio::sync::Mutex;
@@ -30,6 +31,10 @@ use codex_protocol::protocol::ExecOutputStream;
 use codex_utils_path_uri::PathUri;
 
 pub(crate) const TRAILING_OUTPUT_GRACE: Duration = Duration::from_millis(100);
+pub(crate) const COMPLETION_CAUSE_EXIT: u8 = 0;
+pub(crate) const COMPLETION_CAUSE_TERMINATED: u8 = 1;
+pub(crate) const COMPLETION_CAUSE_SESSION_SHUTDOWN: u8 = 2;
+pub(crate) const COMPLETION_CAUSE_PRUNED: u8 = 3;
 
 /// Upper bound for a single ExecCommandOutputDelta chunk emitted by unified exec.
 ///
@@ -164,6 +169,7 @@ pub(crate) fn spawn_exit_watcher(
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     notify_on_completion: bool,
     instance_id: uuid::Uuid,
+    completion_cause: Arc<AtomicU8>,
 ) {
     let exit_token = process.cancellation_token();
     let interaction_lock = process.interaction_lock();
@@ -225,12 +231,18 @@ pub(crate) fn spawn_exit_watcher(
             )
             .await;
             if notify_on_completion {
+                let status = match completion_cause.load(Ordering::Acquire) {
+                    COMPLETION_CAUSE_TERMINATED => TerminalCompletionStatus::Terminated,
+                    COMPLETION_CAUSE_SESSION_SHUTDOWN => TerminalCompletionStatus::SessionShutdown,
+                    COMPLETION_CAUSE_PRUNED => TerminalCompletionStatus::Pruned,
+                    _ => TerminalCompletionStatus::Exited,
+                };
                 session_ref
                     .input_queue
                     .enqueue_terminal_completion(TerminalCompletionNotification {
                         process_id,
                         instance_id,
-                        status: TerminalCompletionStatus::Exited,
+                        status,
                         exit_code: Some(exit_code),
                         coalesced_exited: 0,
                         coalesced_failed: 0,

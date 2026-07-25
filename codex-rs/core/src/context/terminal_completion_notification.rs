@@ -7,6 +7,9 @@ use super::ContextualUserFragment;
 pub(crate) enum TerminalCompletionStatus {
     Exited,
     Failed,
+    Terminated,
+    SessionShutdown,
+    Pruned,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +27,9 @@ impl TerminalCompletionNotification {
         match older.status {
             TerminalCompletionStatus::Exited => self.coalesced_exited += 1,
             TerminalCompletionStatus::Failed => self.coalesced_failed += 1,
+            TerminalCompletionStatus::Terminated
+            | TerminalCompletionStatus::SessionShutdown
+            | TerminalCompletionStatus::Pruned => self.coalesced_failed += 1,
         }
         self.coalesced_exited += older.coalesced_exited;
         self.coalesced_failed += older.coalesced_failed;

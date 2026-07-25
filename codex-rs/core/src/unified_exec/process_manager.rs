@@ -46,6 +46,10 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_EXIT;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_PRUNED;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_SESSION_SHUTDOWN;
+use crate::unified_exec::async_watcher::COMPLETION_CAUSE_TERMINATED;
 use crate::unified_exec::async_watcher::emit_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
@@ -979,6 +983,7 @@ impl UnifiedExecProcessManager {
         initial_exec_command_active: Arc<AtomicBool>,
         notify_on_completion: bool,
     ) {
+        let completion_cause = Arc::new(std::sync::atomic::AtomicU8::new(COMPLETION_CAUSE_EXIT));
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
@@ -990,6 +995,7 @@ impl UnifiedExecProcessManager {
             network_approval,
             session: Arc::downgrade(&context.session),
             last_used: started_at,
+            completion_cause: Arc::clone(&completion_cause),
         };
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
@@ -1001,6 +1007,9 @@ impl UnifiedExecProcessManager {
         // network-approval cleanup only after dropping that lock.
         if let Some(pruned_entry) = pruned_entry {
             unregister_network_approval_for_entry(&pruned_entry).await;
+            pruned_entry
+                .completion_cause
+                .store(COMPLETION_CAUSE_PRUNED, Ordering::Release);
             pruned_entry.process.terminate();
         }
 
@@ -1018,6 +1027,7 @@ impl UnifiedExecProcessManager {
             network_denial_monitor,
             notify_on_completion,
             Uuid::new_v4(),
+            completion_cause,
         );
     }
 
@@ -1486,6 +1496,9 @@ impl UnifiedExecProcessManager {
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
+            entry
+                .completion_cause
+                .store(COMPLETION_CAUSE_SESSION_SHUTDOWN, Ordering::Release);
             entry.process.terminate();
         }
     }
@@ -1515,6 +1528,9 @@ impl UnifiedExecProcessManager {
             let Some(entry) = store.processes.get(&process_id) else {
                 return false;
             };
+            entry
+                .completion_cause
+                .store(COMPLETION_CAUSE_TERMINATED, Ordering::Release);
             (Arc::clone(&entry.process), entry.process.has_exited())
         };
 
