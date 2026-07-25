@@ -1063,9 +1063,12 @@ class RouteSelectionTests(unittest.TestCase):
             native_condition,
         )
         native_steps = native_job.get("steps") or []
-        native_test_run = next(
-            step for step in native_steps if step.get("name") == "bazel test //..."
-        ).get("run") or ""
+        native_step = next(
+            (step for step in native_steps if step.get("name") == "bazel test //..."),
+            None,
+        )
+        self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
+        native_test_run = native_step.get("run") or ""
         self.assertIn("--remote_download_all", native_test_run)
 
     def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
