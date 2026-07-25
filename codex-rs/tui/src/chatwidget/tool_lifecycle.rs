@@ -45,50 +45,49 @@ impl ChatWidget {
     }
 
     pub(super) fn on_file_change_completed(&mut self, item: ThreadItem) {
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_completed(item),
-            |s| s.handle_file_change_completed_now(item2),
+            item,
+            InterruptManager::push_item_completed,
+            Self::handle_file_change_completed_now,
         );
     }
 
     pub(super) fn on_mcp_tool_call_started(&mut self, item: ThreadItem) {
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_started(item),
-            |s| s.handle_mcp_tool_call_started_now(item2),
+            item,
+            InterruptManager::push_item_started,
+            Self::handle_mcp_tool_call_started_now,
         );
     }
 
     pub(super) fn on_mcp_tool_call_completed(&mut self, item: ThreadItem) {
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_completed(item),
-            |s| s.handle_mcp_tool_call_completed_now(item2),
+            item,
+            InterruptManager::push_item_completed,
+            Self::handle_mcp_tool_call_completed_now,
         );
     }
 
     pub(super) fn on_computer_use_call_started(&mut self, item: ThreadItem) {
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_started(item),
-            |s| s.handle_computer_use_call_started_now(item2),
+            item,
+            InterruptManager::push_item_started,
+            Self::handle_computer_use_call_started_now,
         );
     }
 
     pub(super) fn on_computer_use_call_completed(&mut self, item: ThreadItem) {
-        let item2 = item.clone();
         self.defer_or_handle(
-            |q| q.push_item_completed(item),
-            |s| s.handle_computer_use_call_completed_now(item2),
+            item,
+            InterruptManager::push_item_completed,
+            Self::handle_computer_use_call_completed_now,
         );
     }
 
     pub(super) fn on_context_compaction_started(&mut self, item: ThreadItem) {
-        self.defer_or_handle(
-            |q| q.push_item_started(item),
-            super::ChatWidget::handle_context_compaction_started_now,
-        );
+        self.defer_or_handle(item, InterruptManager::push_item_started, |widget, _| {
+            widget.handle_context_compaction_started_now()
+        });
     }
 
     fn handle_context_compaction_started_now(&mut self) {
@@ -97,10 +96,9 @@ impl ChatWidget {
     }
 
     pub(super) fn on_context_compaction_completed(&mut self, item: ThreadItem) {
-        self.defer_or_handle(
-            |q| q.push_item_completed(item),
-            super::ChatWidget::handle_context_compaction_completed_now,
-        );
+        self.defer_or_handle(item, InterruptManager::push_item_completed, |widget, _| {
+            widget.handle_context_compaction_completed_now()
+        });
     }
 
     fn handle_context_compaction_completed_now(&mut self) {

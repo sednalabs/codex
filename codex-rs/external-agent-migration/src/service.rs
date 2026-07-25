@@ -13,6 +13,7 @@ pub use crate::model::ExternalAgentConfigImportRawError;
 pub use crate::model::ExternalAgentConfigImportSuccess;
 pub use crate::model::ExternalAgentConfigMigrationItem;
 pub use crate::model::ExternalAgentConfigMigrationItemType;
+pub use crate::model::ExternalAgentSessionImportLimits;
 pub use crate::model::MigrationDetails;
 pub use crate::model::NamedMigration;
 pub use crate::model::PendingPluginImport;
@@ -65,6 +66,7 @@ pub struct ExternalAgentConfigService {
     pub(crate) external_agent_home: PathBuf,
     pub(crate) analytics_events_client: Option<AnalyticsEventsClient>,
     pub(crate) source: ExternalAgentSource,
+    pub(crate) session_import_limits: ExternalAgentSessionImportLimits,
     state_db: Option<StateDbHandle>,
 }
 
@@ -83,6 +85,7 @@ impl ExternalAgentConfigService {
             external_agent_home,
             analytics_events_client: Some(analytics_events_client),
             source,
+            session_import_limits: ExternalAgentSessionImportLimits::default(),
             state_db,
         }
     }
@@ -97,8 +100,15 @@ impl ExternalAgentConfigService {
             external_agent_home,
             analytics_events_client: self.analytics_events_client.clone(),
             source,
+            session_import_limits: self.session_import_limits,
             state_db: self.state_db.clone(),
         }
+    }
+
+    pub fn with_session_import_limits(&self, limits: ExternalAgentSessionImportLimits) -> Self {
+        let mut service = self.clone();
+        service.session_import_limits = limits;
+        service
     }
 
     pub fn session_metadata_mode(&self) -> SessionMetadataMode {
@@ -123,6 +133,7 @@ impl ExternalAgentConfigService {
             external_agent_home,
             analytics_events_client: None,
             source,
+            session_import_limits: ExternalAgentSessionImportLimits::default(),
             state_db: None,
         }
     }

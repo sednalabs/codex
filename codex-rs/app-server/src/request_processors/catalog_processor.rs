@@ -33,6 +33,8 @@ fn skills_to_info(
                         short_description: interface.short_description,
                         icon_small: interface.icon_small,
                         icon_large: interface.icon_large,
+                        icon_small_url: None,
+                        icon_large_url: None,
                         brand_color: interface.brand_color,
                         default_prompt: interface.default_prompt,
                     }
@@ -72,6 +74,7 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
             command: hook.command.clone(),
             timeout_sec: hook.timeout_sec,
             status_message: hook.status_message.clone(),
+            additional_context_limit: hook.additional_context_limit,
             source_path: hook.source_path.clone(),
             source: hook.source.into(),
             plugin_id: hook.plugin_id.clone(),

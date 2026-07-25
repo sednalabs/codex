@@ -10,7 +10,7 @@ use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use codex_protocol::ThreadId;
-use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_tools::ToolSpec;
@@ -197,7 +197,7 @@ impl Handler {
                         status_rxs.push((*id, rx));
                     }
                 }
-                Err(CodexErr::ThreadNotFound(_)) => {
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
                     final_statuses.insert(*id, AgentStatus::NotFound);
                 }
                 Err(err) => {

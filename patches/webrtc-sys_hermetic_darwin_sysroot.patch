@@ -1,7 +1,7 @@
-diff --git a/build.rs b/build.rs
+diff --git a/webrtc-sys/build.rs b/webrtc-sys/build.rs
 index 3b4a24a..6aa06ff 100644
---- a/build.rs
-+++ b/build.rs
+--- a/webrtc-sys/build.rs
++++ b/webrtc-sys/build.rs
 @@ -15,1 +15,2 @@
 -use std::path::Path;
 +use std::fs;
@@ -45,13 +45,22 @@ index 3b4a24a..6aa06ff 100644
 +    if env::var_os("WEBRTC_SYS_LINK_OUT_DIR").is_none() {
 +        println!("cargo:rustc-link-lib={}", clang_rt);
 +    }
-@@ -378,6 +389,21 @@
+@@ -378,15 +389,32 @@
 -    let sysroot = Command::new("xcrun").args(["--sdk", sdk, "--show-sdk-path"]).output().unwrap();
 -
 -    let sysroot = String::from_utf8_lossy(&sysroot.stdout);
 -    let sysroot = sysroot.trim();
 -
 -    let search_dirs = Command::new("cc").arg("--print-search-dirs").output().unwrap();
+-
+-    let search_dirs = String::from_utf8_lossy(&search_dirs.stdout);
+-    for line in search_dirs.lines() {
+-        if line.contains("libraries: =") {
+-            let path = line.split('=').nth(1).unwrap();
+-            let path = format!("{}/lib/darwin", path);
+-            println!("cargo:rustc-link-search={}", path);
+-        }
+-    }
 +    let sysroot = env::var("WEBRTC_SYS_DARWIN_SDK_PATH").unwrap_or_else(|_| {
 +        let output = Command::new("xcrun")
 +            .args(["--sdk", sdk, "--show-sdk-path"])
@@ -68,8 +77,19 @@ index 3b4a24a..6aa06ff 100644
 +    builder.flag("CoreGraphics/CoreGraphics.h");
 +    builder.include(format!("{sysroot}/usr/include"));
 +
-+    let cc = env::var("CC").unwrap_or_else(|_| "cc".to_string());
-+    let search_dirs = Command::new(cc)
-+        .arg("--print-search-dirs")
-+        .output()
-+        .unwrap();
++    if env::var_os("WEBRTC_SYS_LINK_OUT_DIR").is_none() {
++        let cc = env::var("CC").unwrap_or_else(|_| "cc".to_string());
++        let search_dirs = Command::new(cc)
++            .arg("--print-search-dirs")
++            .output()
++            .unwrap();
++
++        let search_dirs = String::from_utf8_lossy(&search_dirs.stdout);
++        for line in search_dirs.lines() {
++            if line.contains("libraries: =") {
++                let path = line.split('=').nth(1).unwrap();
++                let path = format!("{}/lib/darwin", path);
++                println!("cargo:rustc-link-search={}", path);
++            }
++        }
++    }

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
+use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
-use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use axum::Router;
 use codex_app_server::in_process;
@@ -14,7 +14,6 @@ use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::InitializeParams;
-use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::McpResourceContent;
 use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::McpResourceReadResponse;
@@ -22,6 +21,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
@@ -29,14 +29,21 @@ use codex_config::LoaderOverrides;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
+use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use rmcp::handler::server::ServerHandler;
+use rmcp::model::BooleanSchema;
+use rmcp::model::CreateElicitationRequestParams;
+use rmcp::model::CreateElicitationResult;
+use rmcp::model::ElicitationAction;
+use rmcp::model::ElicitationSchema;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::Meta;
 use rmcp::model::PaginatedRequestParams;
+use rmcp::model::PrimitiveSchema;
 use rmcp::model::ProtocolVersion;
 use rmcp::model::RawResource;
 use rmcp::model::ReadResourceRequestParams;
@@ -61,6 +68,8 @@ const TEST_RESOURCE_URI: &str = "test://codex/resource";
 const TEST_BLOB_RESOURCE_URI: &str = "test://codex/resource.bin";
 const TEST_RESOURCE_BLOB: &str = "YmluYXJ5LXJlc291cmNl";
 const TEST_RESOURCE_TEXT: &str = "Resource body from the MCP server.";
+const TEST_ELICITATION_RESOURCE_URI: &str = "test://codex/elicitation";
+const TEST_ELICITATION_RESOURCE_TEXT: &str = "Threadless elicitation was declined.";
 const SKILL_NAME: &str = "demo-plugin:deploy";
 const RAW_SKILL_DESCRIPTION: &str = "Deploy\nthrough the <hosted> orchestrator.";
 const SKILL_DESCRIPTION: &str = "Deploy through the &lt;hosted&gt; orchestrator.";
@@ -96,35 +105,23 @@ async fn mcp_resource_read_returns_resource_contents() -> Result<()> {
     )
     .await?;
 
-    let thread_start_id = mcp
-        .send_thread_start_request_with_auto_env(ThreadStartParams {
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })
         .await?;
-    let thread_start_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_start_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response(thread_start_resp)?;
-
-    let read_request_id = mcp
-        .send_mcp_resource_read_request(McpResourceReadParams {
-            thread_id: Some(thread.id),
-            server: "codex_apps".to_string(),
-            uri: TEST_RESOURCE_URI.to_string(),
+    let read_response: McpResourceReadResponse = mcp
+        .request(|request_id| ClientRequest::McpResourceRead {
+            request_id,
+            params: McpResourceReadParams {
+                thread_id: Some(thread.id),
+                server: "codex_apps".to_string(),
+                uri: TEST_RESOURCE_URI.to_string(),
+            },
         })
         .await?;
-    let read_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(read_request_id)),
-    )
-    .await??;
-    assert_eq!(
-        to_response::<McpResourceReadResponse>(read_response)?,
-        expected_resource_read_response()
-    );
+    assert_eq!(read_response, expected_resource_read_response());
 
     apps_server_handle.abort();
     let _ = apps_server_handle.await;
@@ -151,12 +148,8 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
             ..Default::default()
         })
         .await?;
-    let thread_start_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_start_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response(thread_start_resp)?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_start_id)).await??;
 
     let response_mock = responses::mount_sse_sequence(
         &responses_server,
@@ -233,11 +226,8 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
             ..Default::default()
         })
         .await?;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
-    )
-    .await??;
+    let _: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_start_id)).await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -298,6 +288,7 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
                 "main_resource": SKILL_MAIN_PROMPT_URI,
             }],
             "warnings": ["Orchestrator skill discovery stopped after 2 resource pages: failed to list orchestrator skill resources: resources/list failed for `codex_apps`: Mcp error: -32603: simulated later-page failure"],
+            "next_cursor": null,
         })
     );
 
@@ -309,6 +300,7 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
         json!({
             "resource": SKILL_REFERENCE_URI,
             "contents": SKILL_REFERENCE_CONTENTS,
+            "next_cursor": null,
         })
     );
     let repeated_read_output = requests[3]
@@ -345,9 +337,9 @@ async fn orchestrator_skill_can_read_referenced_resource_without_an_executor() -
             ..Default::default()
         })
         .await?;
-    timeout(
+    let _: TurnStartResponse = timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(refreshed_turn_start_id)),
+        mcp.read_response(refreshed_turn_start_id),
     )
     .await??;
     timeout(
@@ -391,12 +383,8 @@ async fn local_executor_does_not_expose_orchestrator_skills() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    let thread_start_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_start_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response(thread_start_resp)?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_start_id)).await??;
 
     let response_mock = responses::mount_sse_once(
         &responses_server,
@@ -417,11 +405,8 @@ async fn local_executor_does_not_expose_orchestrator_skills() -> Result<()> {
             ..Default::default()
         })
         .await?;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
-    )
-    .await??;
+    let _: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_start_id)).await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -466,18 +451,12 @@ enabled = false
     )
     .await?;
 
-    let thread_start_id = mcp
-        .send_thread_start_request_with_auto_env(ThreadStartParams {
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })
         .await?;
-    let thread_start_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_start_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response(thread_start_resp)?;
 
     let response_mock = responses::mount_sse_once(
         &responses_server,
@@ -498,11 +477,8 @@ enabled = false
             ..Default::default()
         })
         .await?;
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
-    )
-    .await??;
+    let _: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(turn_start_id)).await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -539,7 +515,8 @@ enabled = false
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_resource_read_returns_resource_contents_without_thread() -> Result<()> {
+async fn mcp_resource_read_returns_contents_and_declines_elicitation_without_thread() -> Result<()>
+{
     let (apps_server_url, _apps_server_calls, apps_server_handle) =
         start_resource_apps_mcp_server().await?;
 
@@ -550,6 +527,7 @@ async fn mcp_resource_read_returns_resource_contents_without_thread() -> Result<
             r#"
 chatgpt_base_url = "{apps_server_url}"
 mcp_oauth_credentials_store = "file"
+approval_policy = "on-request"
 
 [features]
 apps = true
@@ -568,26 +546,39 @@ apps = true
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .without_auto_env()
-        .build()
+        .build_initialized()
         .await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-
-    let read_request_id = mcp
-        .send_mcp_resource_read_request(McpResourceReadParams {
-            thread_id: None,
-            server: "codex_apps".to_string(),
-            uri: TEST_RESOURCE_URI.to_string(),
+    let read_response: McpResourceReadResponse = mcp
+        .request(|request_id| ClientRequest::McpResourceRead {
+            request_id,
+            params: McpResourceReadParams {
+                thread_id: None,
+                server: "codex_apps".to_string(),
+                uri: TEST_RESOURCE_URI.to_string(),
+            },
         })
         .await?;
-    let read_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(read_request_id)),
-    )
-    .await??;
-
+    assert_eq!(read_response, expected_resource_read_response());
+    let read_response: McpResourceReadResponse = mcp
+        .request(|request_id| ClientRequest::McpResourceRead {
+            request_id,
+            params: McpResourceReadParams {
+                thread_id: None,
+                server: "codex_apps".to_string(),
+                uri: TEST_ELICITATION_RESOURCE_URI.to_string(),
+            },
+        })
+        .await?;
     assert_eq!(
-        to_response::<McpResourceReadResponse>(read_response)?,
-        expected_resource_read_response()
+        read_response,
+        McpResourceReadResponse {
+            contents: vec![McpResourceContent::Text {
+                uri: TEST_ELICITATION_RESOURCE_URI.to_string(),
+                mime_type: Some("text/plain".to_string()),
+                text: TEST_ELICITATION_RESOURCE_TEXT.to_string(),
+                meta: None,
+            }],
+        }
     );
 
     apps_server_handle.abort();
@@ -679,34 +670,16 @@ async fn start_resource_test_app_server_with_extra_config(
     environment: ResourceTestEnvironment,
 ) -> Result<(TempDir, TestAppServer)> {
     let codex_home = TempDir::new()?;
-    std::fs::write(
-        codex_home.path().join("config.toml"),
-        format!(
-            r#"
-model = "mock-model"
-approval_policy = "untrusted"
-sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
-chatgpt_base_url = "{apps_server_url}"
-mcp_oauth_credentials_store = "file"
-
-[features]
-apps = true
-
-[skills]
-include_instructions = true
-{extra_config}
-
-[model_providers.mock_provider]
-name = "Mock provider for test"
-base_url = "{responses_server_uri}/v1"
-wire_api = "responses"
-request_max_retries = 0
-stream_max_retries = 0
-"#
-        ),
-    )?;
+    MockResponsesConfig::new(responses_server_uri)
+        .with_approval_policy("untrusted")
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{apps_server_url}\"\nmcp_oauth_credentials_store = \"file\""
+        ))
+        .enable_feature(Feature::Apps)
+        .with_extra_config(&format!(
+            "[skills]\ninclude_instructions = true\n{extra_config}"
+        ))
+        .write(codex_home.path())?;
     write_chatgpt_auth(
         codex_home.path(),
         ChatGptAuthFixture::new("chatgpt-token")
@@ -722,8 +695,7 @@ stream_max_retries = 0
         // The Local caller explicitly exercises the implicit local executor.
         ResourceTestEnvironment::Local => builder.without_auto_env(),
     };
-    let mut mcp = builder.build().await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let mcp = builder.build_initialized().await?;
     Ok((codex_home, mcp))
 }
 
@@ -862,9 +834,37 @@ impl ServerHandler for ResourceAppsMcpServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, rmcp::ErrorData> {
         let uri = request.uri;
+        if uri == TEST_ELICITATION_RESOURCE_URI {
+            let requested_schema = ElicitationSchema::builder()
+                .required_property("confirmed", PrimitiveSchema::Boolean(BooleanSchema::new()))
+                .build()
+                .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
+            let result = context
+                .peer
+                .create_elicitation(CreateElicitationRequestParams::FormElicitationParams {
+                    meta: None,
+                    message: "Confirm the resource read.".to_string(),
+                    requested_schema,
+                })
+                .await
+                .map_err(|err| rmcp::ErrorData::internal_error(err.to_string(), None))?;
+            assert_eq!(
+                result,
+                CreateElicitationResult::new(ElicitationAction::Decline)
+            );
+
+            return Ok(ReadResourceResult::new(vec![
+                ResourceContents::TextResourceContents {
+                    uri: TEST_ELICITATION_RESOURCE_URI.to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                    text: TEST_ELICITATION_RESOURCE_TEXT.to_string(),
+                    meta: None,
+                },
+            ]));
+        }
         if uri == SKILL_MAIN_PROMPT_URI {
             self.calls.main_prompt_reads.fetch_add(1, Ordering::Relaxed);
             return Ok(ReadResourceResult::new(vec![

@@ -935,7 +935,7 @@
       ],
       "needs_just": true,
       "needs_node": false,
-      "needs_nextest": false,
+      "needs_nextest": true,
       "needs_linux_build_deps": true,
       "needs_dotslash": true,
       "needs_sccache": true
@@ -1867,6 +1867,12 @@
       ],
       "allowed_paths": [
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/loaded_threads.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
         "codex-rs/tui/src/multi_agents.rs",
         "codex-rs/tui/src/snapshots/codex_tui__multi_agents__tests__agent_picker*.snap",
         "docs/downstream-regression-matrix.md",
@@ -1874,6 +1880,11 @@
       ],
       "required_any_paths": [
         "codex-rs/tui/src/app.rs",
+        "codex-rs/tui/src/app/session_lifecycle.rs",
+        "codex-rs/tui/src/app/tests/session_lifecycle_requests.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/app/thread_events.rs",
+        "codex-rs/tui/src/app/thread_routing.rs",
         "codex-rs/tui/src/multi_agents.rs"
       ]
     },

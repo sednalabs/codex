@@ -51,9 +51,439 @@ regular, non-symlink `scope.json` are managed. Ordinary metadata is ignored,
 while project-root and marker symlinks fail closed before detection. Existing
 unchanged imports are not silently backfilled by this sync.
 
+## Upstream hook context limits
+
+Upstream commit `e4836f998d` owns per-hook `additionalContextLimit` behavior.
+An unset value keeps the approximate 2,500-token spill default, while `0`
+disables spilling for that hook. The setting is retained through hook
+discovery and hashing, app-server config and hook-list responses, generated
+schemas, and the TUI hook browser. This is upstream behavior, not a downstream
+divergence; schema refreshes must preserve it alongside the fork's dynamic-tool
+and native computer-use protocol additions.
+
+The hook runner additionally preserves stdout and the real exit status when a
+successful hook exits without consuming stdin and the parent observes
+`BrokenPipe`. Other stdin write errors remain fatal. This is temporary direct
+upstream-fix carry with a deterministic cross-platform regression and must be
+dropped when upstream adopts equivalent behavior.
+
+## Upstream compact-hook continuation ordering
+
+Upstream commit `8c41ed33ce` owns the post-compaction ordering contract. After
+mid-turn auto-compaction, pending `SessionStart` hooks run before sampling
+continues. A stop request ends the turn; otherwise hook-provided context reaches
+the immediately following sample, including when a turn compacts repeatedly.
+Future syncs must preserve this ordering alongside downstream realtime and
+permission-context reconstruction.
+
+## Upstream approval rejection reasons
+
+Upstream commit `e52c35b000` owns structured `ReviewDecision::Denied {
+rejection }` values and their `denied.rejection` wire shape. Rejection reasons
+must remain intact through command, patch, network, MCP, delegated, automatic
+review, and shell-escalation paths, while model-visible text stays bounded.
+Generated schemas must retain this upstream object beside downstream dynamic
+tool, timeout, and native computer-use additions. The fork-specific
+`GuardianUserAuthorization` module path remains an independent compatibility
+detail, not a reason to restore the removed guardian rejection side map.
+
+## Upstream history and hook test convergence
+
+Upstream commit `ec3140db12` now owns the `ContextManager::raw_items()` audio
+history assertion and the Windows hook fixture's
+`additional_context_limit` initializer. This semantically absorbs the earlier
+downstream-only test repair in `796d4248c5`; neither assertion represents live
+runtime carry.
+
+## Upstream paginated rollout lineages
+
+Upstream commit `b7e39aa316` owns bounded local rollout-lineage resolution for
+paginated threads. It follows ordered `history_base` segments, including
+archived ancestors and explicit history positions, while rejecting cycles,
+missing or mismatched sources, non-paginated sources, and invalid cutoffs.
+Downstream history, resume, and usage overlays must consume that canonical
+lineage rather than reconstructing a competing chain.
+
+## Upstream threadless MCP connections
+
+Upstream commit `19940967bd` lets callers create MCP connections without a
+session event channel. Threadless resource reads, status snapshots, and
+connector discovery skip startup notifications, decline interactive
+elicitations, and continue the underlying non-interactive operation. Preserve
+that behavior beside downstream MCP pagination, OAuth, blocking waits, and
+runtime-snapshot safety controls.
+
+## Upstream Linux preflight isolation
+
+Upstream commit `44481a1c45` runs the bubblewrap `/proc` probe with a temporary
+minimal read-only filesystem view instead of the requested command filesystem
+and working directory. The probe still preserves the requested network
+namespace mode. Downstream additionally retains the constrained-host fallback
+that retries the `/proc` mount preflight without network isolation when the
+network namespace itself is unavailable; the fallback must not broaden the
+probe's filesystem view.
+
+## Upstream SQLite tightening and CSV-job retirement
+
+Upstream commit `81e89fa5af` makes the test-only SQLite constructor accept an
+`AbsolutePathBuf` directly. Downstream-only state fixtures use the same checked
+`.abs()` conversion; production database paths and MCP behavior are unchanged.
+
+Upstream commit `687f05cb94` removes the legacy CSV batch-job tools
+`spawn_agents_on_csv` and `report_agent_job_result`, their coordinator/runtime
+state, and the obsolete job tables. The compatibility keys
+`features.enable_fanout` and `agents.job_max_runtime_seconds` still parse as
+no-ops. This does not remove ordinary `spawn_agent`, MultiAgentV2,
+role-configured skills, child-model selection, reasoning-effort selection,
+inventory, wait joins, or native/dynamic tool plumbing.
+
+The fork preserves upstream migration `0042_drop_agent_jobs.sql` exactly and
+moves the already-shipped downstream
+`0042_external_agent_config_imports.sql` to version `0047`. Startup repairs
+the exact legacy `0041` and `0042` checksums to downstream versions `0046` and
+`0047` before applying upstream migrations. The later provider-column migration
+uses downstream version `0049` because deployed version `0044` belongs to
+visible-sort indexes; startup repairs only the exact upstream provider-column
+checksum from `44` to `49`, leaving the legitimate visible-index record at
+`44` intact. A migrated database cannot be reopened by the pre-sync binary
+because that binary knows the former migration checksums, so rollback requires
+a pre-upgrade database copy. The upgrade also intentionally removes any
+unfinished CSV-job rows; ordinary thread rows, spawn edges, and external-import
+history remain intact.
+
+## Upstream completed-hook warning headers
+
+Upstream commit `cf821e8ec8` moves the first line of a completed hook warning
+into its TUI header after `says:`, indents any continuation lines, and avoids
+rendering the warning again in the body. Hooks without a warning keep the
+existing header. The downstream compact-transcript path uses the same header
+shape while continuing to collapse only hook context, so rich, compact, and
+raw transcript views do not disagree about warning content.
+
+## Upstream app/read connector metadata
+
+Upstream commit `60272096bc` enriches experimental `app/read` responses with
+dark-icon URLs, distribution channel, install URL, and the display names of
+plugins that declare each app. It accepts both supported dark-icon spellings
+and derives plugin names without starting MCP servers.
+
+Downstream keeps its auth-dependent plugin app routing. `app/read` synchronizes
+the plugin manager from the live ChatGPT auth snapshot before loading plugin
+declarations, so externally updated auth cannot leave connector metadata and
+plugin display names on different auth modes. The focused transition regression
+also proves that this projection does not issue an MCP request.
+
+## Upstream exec-server Windows sandbox spawning
+
+Upstream commit `35c2278dd5` adds a shared native process launcher for pipe,
+PTY, inherited-descriptor, and Windows sandbox execution, and routes exec-server
+Windows sandbox requests through it. The sync drops the fork's superseded
+direct launch block while retaining the downstream proxy-aware backend policy,
+prepared filesystem overrides, metrics, telemetry, and bounded final-output
+behavior around the new upstream seam.
+
+The upstream API migration missed one Wine PTY test call site, and the fork's
+argument-comment lint is stricter for one optional exec-server test argument.
+The downstream corrections are validation-only and should be dropped
+individually as soon as upstream carries equivalent fixes.
+
+## Upstream shared skill models
+
+Upstream commit `56c11cf658` moves shared host and environment skill metadata,
+policy, dependency, interface, and configuration-rule types into
+`codex-skills`. `codex-core-skills` retains compatibility re-exports, so the
+move preserves type identity, implicit-invocation defaults, and product
+restriction behavior for existing consumers.
+
+Downstream preferred-user skill-name precedence remains implemented in the
+upstream `SkillsService` architecture. Plugin auth routing, dynamic tools, and
+app/read's no-MCP-start projection are unchanged. The merge keeps only the
+still-used compatibility import in the downstream-expanded plugin tests and
+uses upstream's canonical `codex_skills::SkillConfigRules` type.
+
+## Upstream typed app-server test helpers
+
+Upstream commit `10cc57c95c` centralizes typed app-server initialization,
+request, response, notification, thread-start, and mock-response helpers.
+Downstream-expanded tests use those same helpers rather than maintaining a
+parallel JSON-RPC parsing harness. Exact-head hosted run `29942410506` passed
+the app-server V2 contract and core-runtime surface lanes after signed commit
+`bde9e26567` migrated the remaining retained tests.
+
+## Upstream skill-catalog notices and long-line highlighting
+
+Upstream commit `f343d1237d` keeps omission counts in skill render reports but
+suppresses omission notices for core-compatible catalogs. Downstream follows
+the renamed policy-aware regression in the existing skill lane. Upstream commit
+`5381edb133` falls back to plain text when one syntax-highlighted line exceeds
+4 KiB; downstream adds its unit and transcript snapshot tests to the existing
+TUI transcript/viewport lane and supplies the downstream-only `terminal_wait`
+fixture field without changing upstream runtime behavior.
+
+## Upstream shell-approval path URI keys
+
+Upstream commit `a59a419afa` represents the shell approval key's working
+directory as a `PathUri` instead of a raw absolute-path wrapper. Downstream
+adopts that identity shape unchanged, including the environment ID component,
+while retaining the independent managed-network rule that suppresses a
+PowerShell profile for the proxy-selected elevated Windows sandbox.
+
+## Upstream centralized SQLite configuration
+
+Upstream commit `946ed315a4` makes `SqliteConfig` the single owner of managed
+database paths, connection options, open/migrate telemetry, and typed
+initialization errors. Downstream no longer carries a parallel runtime database
+spec or free path-helper API. It extends the upstream owner narrowly with the
+sixth `usage_1.sqlite` database and a distinct pre-migration repair phase, then
+runs extension migrations after the state database opens.
+
+The existing usage-ledger, generalized migration-collision repair,
+`thread_source` repair, extension-storage routing, legacy-file cleanup, and
+failure-path pool cleanup remain intact around that upstream seam. Exact-head
+GitHub-hosted run `29951153938` passed the state-migration, usage-ledger,
+thread-store ordering, shell runtime, sub-agent model-selection, app-server V2,
+and CLI database-management guards at signed merge `de2ba7d16b`.
+
+## Upstream sandbox network placeholder syntax
+
+Upstream commit `06782eded7` canonicalizes the built-in sandbox permission
+templates from `{{network_access}}` to `{{ network_access }}`. Downstream adopts
+the three template changes unchanged. The shared renderer already accepts both
+spellings, and the change affects model-visible text construction only; it does
+not change sandbox enforcement, approval policy, or network authorization.
+
+## Upstream consolidated thread startup
+
+Upstream commit `08ae0fc0ce` makes `ThreadManager::start_thread` with
+`StartThreadOptions` the single thread-start owner. Downstream uses that API
+instead of restoring the removed `start_thread_with_tools` or
+`start_thread_with_options` helpers. Its flat dynamic-tool compatibility fields
+continue to enter through `StartThreadOptions::dynamic_tools`, while explicit
+empty environment selections remain distinct from omitted selections.
+
+This API consolidation does not narrow downstream child model, provider, or
+reasoning-effort selection. Full and partial fork history, live-parent context,
+residency and cold reload, persisted child identity, and exact model/reasoning
+assertions remain on their existing agent-control seams and guardrail lanes.
+
+## Upstream configurable realtime BEM prefixes
+
+Upstream commit `4ebd976312` lets V3 Frameless Bidi clients replace the default
+`[ANALYSIS]`, `[COMMENTARY]`, and `[FINAL]` text prefixes per BEM channel.
+Downstream adopts the upstream protocol, parser, buffering, and app-server
+routing unchanged. This is text routing over the existing realtime transport,
+not a new audio, native browser, Android, desktop, image, or dynamic-tool
+capability. Downstream custom realtime world-state and initial-history behavior
+remain orthogonal and continue through their existing session seams. Hosted
+generator run `29955881580` supplied the exact schema fixture update, and
+exact-head validation run `29956395279` passed both affected app-server lanes at
+signed repair `ce7c9f9815`.
+
+## Upstream attribution, review identity, and request efficiency
+
+Upstream commit `88eb3a2b8a` installs the git-attribution extension in the
+app-server, MCP server, and CLI prompt-debug entry points. Authenticated
+workspace policy, resolved from the process-level ChatGPT base URL, controls the
+developer-context contribution. Downstream keeps its app-server hook seam beside
+the upstream installation rather than wrapping or forking it. The earlier
+two-line git-attribution fixture carry is now upstream-equivalent and historical.
+
+Upstream `7fd7a2f9a2` enables the complete code-mode integration suite in Linux
+and macOS Bazel CI while keeping two narrow Windows exclusions. This strengthens
+hosted proof of downstream native-browser image forwarding and dynamic-tool
+compatibility; it adds no runtime capability. Upstream `bbfc3f0152` canonicalizes
+Guardian review cwd reuse through `PathUri` without changing model, provider,
+reasoning, permission, or reviewer selection.
+
+Upstream `12c115d558` shares raw Responses tool JSON and compares incremental
+WebSocket prefixes in place. The merged tree retains downstream response-model
+identity, receiver retention, retry, dynamic-tool, native computer-use, and image
+semantics. Signed merge `f7165094c8` adopted all four commits without textual
+conflicts, and signed validation commit `0ecb2c0f02` extends the existing hosted
+recipes over the new entry-point and serialization seams.
+
+## Upstream analytics, interruption recovery, and thread pinning
+
+Upstream commits `88f1cd9664`, `bd5b55e403`, and `d7e8f4c3dc` flush queued
+analytics during in-process app-server shutdown, account compaction time in
+turn profiles, and retain submitted input if MCP startup is interrupted. The
+interruption path retains a single tool-router snapshot, so downstream dynamic
+tools, image results, and native computer-use providers retain their existing
+advertised/executable contract.
+
+Upstream `400ee190c3` adds persisted `is_pinned` thread metadata and
+`79500d3cc` removes the current app-metadata `first_party_type` field. Signed
+merge `680fd3386d` keeps upstream pinning together with downstream `model`,
+reasoning effort, `thread_source`, and `history_mode` fields. The Python SDK is
+separately generated from its released `0.144.4` runtime pin, so its historical
+app-metadata shape remains a release-boundary artifact rather than a source
+protocol carry. Hosted targeted lanes cover pin/unpin pagination and
+interrupted MCP startup input preservation.
+
+## Core compiler query-depth guardrail
+
+Upstream's interrupted-MCP recovery now threads cancellation through a larger
+portion of `run_turn`. Combined with the retained downstream multi-agent,
+dynamic-tool, and native-computer-use state, the resulting async type exceeded
+rustc's default query-depth limit in hosted targeted run `29968292080` before
+any selected test ran. `codex-core` therefore sets
+`#![recursion_limit = "256"]`, the limit recommended by rustc for this crate.
+It affects compiler query evaluation only, not runtime recursion or request
+behavior. `core-runtime-surface-smoke` remains the focused hosted proof; remove
+the attribute when upstream adopts an equivalent bound or the composed type no
+longer needs it.
+
+## Upstream multi-agent state, custom web search, and Guardian limits
+
+Upstream `0da13c6c99` persists effective multi-agent mode in world-state
+snapshots, `0f9fb40fa9` allows custom providers to opt into standalone web
+search, and `9d82334302` gives a selected Guardian review model its own limits
+when it differs from the parent turn model. Signed merge `e1187d4e3b` preserves
+that upstream ancestry. The downstream reset guardrail only ensures that
+removing a retained custom mode emits the existing explicit default once; it
+does not replace upstream mode, custom-provider, dynamic-tool, MCP, or Guardian
+selection behavior.
+
+## Upstream remote compaction optimization
+
+Upstream commit `fd3c1dc13d` avoids repeatedly estimating and cloning large
+remote-compaction histories. It caches per-item token estimates, preserves an
+unclamped total while rewriting trailing tool outputs, snapshots input history
+only when rollout tracing is enabled, and reuses the v2 request input before
+removing the compaction trigger for installed history.
+
+The touched compaction runtime was upstream-exact before the merge and required
+no downstream resolution. Existing downstream realtime world-state, hook
+ordering, capacity retry, compaction metadata, and dynamic-media guardrails
+remain independently tracked.
+
+## Upstream catalog approval messages
+
+Upstream commit `2be7d3bcd9` lets model catalogs provide approval instructions
+for `never` and `unless_trusted` policies as well as `on_request`. Missing keys
+retain the built-in policy text, while an explicitly empty value suppresses
+only that approval section. This affects model-visible instructions, not policy
+enforcement. Downstream's Schemars 1.2 protocol adapter remains in place
+without changing the new field semantics.
+
+## Upstream explicit outbound proxy routes
+
+Upstream commit `c9ef7eff00` resolves system-proxy failures into explicit
+environment-proxy or direct routes, carries `NO_PROXY` across HTTP and
+WebSocket transports, and uses cached decisions first. It also provides an
+async resolver that keeps serialized platform discovery off Tokio workers, but
+the current production WebSocket connector still uses the synchronous resolver.
+Downstream adopts the route behavior intact and retains only its sha2
+0.11-compatible hexadecimal cache-key encoder.
+
+## Upstream managed-profile proxy lookup
+
+Upstream commit `88fac6fe10` includes permission profiles supplied by
+`requirements.toml` when resolving the active profile's network proxy settings.
+Duplicate profile IDs still fail closed, inheritance is resolved before proxy
+construction, and top-level managed network constraints remain authoritative.
+Downstream Windows elevated-backend and firewall enforcement continues after
+the shared `NetworkProxySpec` is resolved.
+
+## Upstream patch-approval test stabilization
+
+Upstream commit `c0cd337766` increases the patch-approval test helper's Linux
+per-event silence timeout from 10 to 15 seconds. The macOS floor remains 30
+seconds, the suite remains excluded on Windows, and production approval policy,
+protocol, request handling, and deadlines are unchanged.
+
+## Upstream buffered code-mode yields
+
+Upstream commit `99efeef650` adds disabled-by-default
+`code_mode_buffered_exec`. When enabled, omitted nested-exec yield times default
+to 30 seconds instead of 10 seconds, while explicit values stay authoritative.
+The declaration reports the effective default. Downstream retains its usage,
+audio, generated-image, native-tool, and `ALL_TOOLS` description additions
+around that upstream behavior.
+
+## Upstream route-aware HTTP clients
+
+Upstream commit `9078e32371` exports a bounded route-aware client pool that
+resolves the exact request URL, reuses clients per resolved route, and prevents
+system-proxy transport redirects from crossing route decisions. The pool has no
+production consumer at this boundary; it is upstream-owned infrastructure and
+a future transport-migration harvest seam, not live downstream carry.
+
+## Upstream external-session limits and attribution
+
+Upstream commit `3bc49e1721` lets trusted local clients choose optional maximum
+session age and count for external-agent detection while preserving the existing
+30-day and 50-session defaults when omitted. Upstream commit `a30aee8d90` adds
+an independent optional provider ID to import completion and failure analytics.
+Neither change weakens downstream repository path containment, imported-session
+identity, or migration-version carry. Custom and zero-limit coverage, an
+operational maximum, and provider-ID data-hygiene bounds remain suitable
+upstream harvests.
+
+## Upstream alpha hotfix release versions
+
+Upstream commit `9970cd706f` adds one shared release-version conversion path and
+maps Python alpha hotfix versions such as `0.116.0a1.post2` to Codex tags such
+as `rust-v0.116.0-alpha.1.2`. The sync adopts the upstream workflow, Python
+runtime, SDK, installer-test, and conversion changes. The shell and PowerShell
+installer conflicts retain downstream's broader SemVer validator because it
+subsumes the new upstream tag shape while preserving Sedna prerelease suffixes
+and optional build metadata.
+
+## Upstream release distribution and plugin proxy routing
+
+Upstream commits `cc875d61ce` and `a148e0b50a` publish verified Rust release
+artifacts and channel metadata to the upstream distribution service. Commits
+`94bb6a09a6` and `d937bfac84` make plugin startup and remote-plugin transport
+honor system proxy settings. The accompanying generated lock repair is carried
+as one exact `http 1.4.0` to `1.4.2` key correction; these changes do not add a
+native browser, Android, desktop, or computer-use provider.
+
+## Upstream optional installer source
+
+Upstream commit `765675a122` adds opt-in `releases.openai.com` metadata and
+asset downloads, GitHub fallback, installed-version verification, and legacy
+package fallback to both installers. Downstream composes that feature with its
+release-origin adapter: the upstream source is available for the default
+`openai/codex` plus `rust-v` origin, while any configured repository or tag
+prefix remains on its own GitHub metadata and asset URLs. Commit `7982aa27ff`
+is codespell configuration only, and `b9800de486` supplies the explicit empty
+inherited-descriptor argument in the Wine PTY test.
+
+## Upstream MCP connection-manager structure
+
+Upstream commit `2d85e6d3a6` splits required-server validation and tool-catalog
+operations into focused connection-manager modules without changing the public
+API. Downstream adopts the new structure and keeps its existing
+generation-aware async catalogue snapshot and publication adapter only in the
+new `connection_manager/tool_catalog.rs` module. The refactor is a cleaner seam
+for separately tracked stale-server lifecycle work, but does not itself unload
+servers or add a native browser, Android, desktop, or computer-use provider.
+
+## Upstream step-scoped extension data
+
+Upstream commit `c44c4de7b4` adds one `ExtensionData` store to each sampling
+step and passes it to context, world-state, turn-input, and tool contributors.
+Compaction and initial-context reconstruction retain that captured store.
+Downstream adopts it as the canonical step-local extension seam: dynamic tools,
+image generation, memories, skills, goals, web search, realtime world state,
+and native computer-use adapters should compose through it rather than adding
+parallel state in hot session code. This is extension infrastructure, not a new
+native browser, Android, desktop, or computer-use provider.
+
+## Upstream compacted rollout item construction
+
+Upstream commit `f69f88f811` centralizes persisted `CompactedItem`
+construction in `Session::replace_compacted_history`, after assigning missing
+response-item IDs. Compaction callers now pass only message and window
+metadata, ensuring the live and persisted replacement histories use the same
+items. Downstream adopts this boundary without a carry-specific patch;
+capacity retry, realtime world state, hooks, dynamic media, compaction
+metadata, and step-scoped extension data remain composed around it.
+
 ## Validation policy
 
-- use tiny local sanity checks first (`git diff --check`, formatting, focused unit tests)
+- use tiny local static sanity checks first (`git diff --check`, schema parsing, and conflict-marker scans)
 - use remote validation as the default measurement surface for substantive work
 - `validation-lab` `profile=smoke`, `targeted`, and `frontier` are the default non-PR remote validation ladder
 - PR and merge-group workflows are promotion surfaces rather than the default inner-loop validator
@@ -79,17 +509,18 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-18`):
+Current downstream audit baseline (validated on `2026-07-23`):
 
 - downstream integration code tree:
-  `7bd2859b6b53f9202a3cf8efba4d625fa81a2701`
+  `8751e96182ff33392d381494a2dbebfb11cfac8f`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `56395bddaf26eb2829387ca6a417bf9128e5b239`
+  `9d823343026e600dab694e41865ed60613da31b6`
 - `upstream/main`:
-  `56395bddaf26eb2829387ca6a417bf9128e5b239`
+  `9d823343026e600dab694e41865ed60613da31b6`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `1823` downstream ahead
+  `0` upstream ahead, `2037` downstream ahead
+- downstream-only non-merge commits: `1730` unique, `0` patch-equivalent
 - mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
   behind (`exact`)
 
@@ -187,6 +618,13 @@ User-visible behavior:
   `true`. A future tagged
   function/namespace migration must preserve app-server input, persisted thread
   state, resume filtering, and native promotion before this carry is removed.
+- Ordinary dynamic-tool and code-mode audio follows upstream preparation,
+  duration-aware accounting, truncation, compaction, and history replay while
+  preserving downstream optional image detail. The upstream audio fixtures are
+  adapted to the flat compatibility record rather than reviving the tagged
+  namespace representation. Cargo and Bazel locks must be regenerated from the
+  merged graph so Symphonia resolves to the dependency version actually
+  selected downstream; parent lock entries are not safe to union mechanically.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`, including atomic two-to-five-pointer `multi_touch` input that never degrades to sequential single-touch calls; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
 - `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
 - The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chrome/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.
@@ -309,6 +747,9 @@ User-visible behavior:
 - The built-in `explorer` role no longer hard-locks a model or reasoning setting; instead the cheap-first policy lives in availability-aware `spawn_agent` behavior and supporting guidance so codebase-question lanes stay compatible with the caller's loaded model catalog.
 - The built-in `terminal-babysitter` role intentionally locks
   `gpt-5.6-luna` with low reasoning for bounded monitored waits.
+- Removing a custom multi-agent policy, including setting it to the empty
+  external-mode value, emits the explicit-request-only developer fragment once
+  so retained model history cannot continue to apply stale custom guidance.
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits. Live rows include effective model and reasoning configuration; stale rows leave those fields null because configuration snapshots are not persisted. These fields are configuration evidence, not provider-usage proof.
 - V2 `send_message` returns a queue-acceptance receipt with the canonical target and, when its runtime is already loaded, its effective model, provider, reasoning effort, and service tier. Those configuration fields are null for a cold or evicted target so receipt generation does not activate it. `handoff_state: queued` does not claim that the target agent acknowledged or completed the work.
@@ -333,6 +774,9 @@ User-visible behavior:
 - Full-history forks keep their conversation and agent identity while accepting
   configured or explicit child model/reasoning selection; they still reject an
   explicit `agent_type` because that would change the preserved identity.
+- Paginated cold V2 reload restores the child's newest persisted
+  `approvals_reviewer` alongside its indexed model, provider, reasoning, role,
+  and agent path, rather than inheriting the reload caller's ambient reviewer.
 - Docs and tooling now spell out the precedence stack and the intended `list_agents` / `inspect_agent_tree` / `wait_agent` workflow: cheap live view first to keep nested-agent visibility, compact nested or stale inspection when deeper context is needed, and blocking wait only when a transition must complete.
 
 Primary files:
@@ -429,6 +873,7 @@ User-visible behavior:
 - Dynamic registration keeps the request public-client shaped (`token_endpoint_auth_method=none`), uses `grant_types=["urn:ietf:params:oauth:grant-type:device_code"]`, adds `refresh_token` only when server metadata permits or omits grant support, and forwards the configured scope string when scopes are requested.
 - The device-code step uses PKCE, prints the verification URL and user code, polls the token endpoint, and stores the resulting OAuth tokens through the existing MCP credential cache.
 - Discovery keeps `token_endpoint`, `device_authorization_endpoint`, `registration_endpoint`, and `grant_types_supported` available to the login flow for Streamable HTTP MCP servers.
+- Standard and protected-resource discovery use the upstream authorization manager for both direct and runtime-routed HTTP. The only downstream discovery fallback is the device-only metadata shape that upstream cannot currently deserialize without an authorization endpoint.
 - If no configured client id exists and the authorization server does not advertise dynamic registration, the CLI fails with an explicit public-client-id-required error instead of reporting a misleading generic registration failure.
 - This is an intentional downstream carry until upstream has an equivalent headless MCP OAuth login path. If upstream lands native device-login support, compare behavior and drop or re-home this carry rather than keeping both paths.
 
@@ -567,6 +1012,17 @@ User-visible behavior:
 - Thread records preserve downstream `thread_source` provenance alongside
   upstream `history_mode`; list, read, resume, and stored-session paths carry
   both fields independently.
+- Goal-first and forked threads cold-resume their newest persisted approval
+  policy and permissions together with model, provider, reasoning effort,
+  approvals reviewer, cwd, and active named permission profile. Explicit resume
+  overrides still win, and a later `TurnContext` supersedes an older settings
+  snapshot.
+- Thread-store writes serialize canonical rollout append order with derived
+  SQLite metadata observation and persistence barriers. Concurrent handles to
+  one live thread therefore cannot leave indexed model, provider, reasoning,
+  or cwd metadata ordered differently from the JSONL settings history. The
+  holistic ordering assertion canonicalizes both cwd values so Windows verbatim
+  prefixes do not masquerade as metadata drift.
 
 ### Core: MCP forced approvals still participate in session remember keys
 
@@ -605,6 +1061,15 @@ User-visible behavior:
 - The compatible restricted token excludes Everyone from its restricting SID
   set while retaining Everyone on the default DACL needed for child-process
   pipes and IPC.
+- Workspace writes fail closed if the matching root-capability ACE cannot be
+  installed; the restricted child is never launched after a silently failed
+  grant. A direct local-filesystem helper regression asserts the promised write
+  on release-shaped targets and reports the exact Bazel gnullvm loader
+  incompatibility instead of treating it as an ACL denial. Hosted Windows MSVC
+  proof remains required before promotion.
+- Write-root ACL refresh uses effective rights for required access but only
+  explicit allow ACEs when checking stale `FILE_DELETE_CHILD`. An inherited
+  grant does not trigger a repair that `SET_ACCESS` cannot make converge.
 - Proxy-enforced Windows commands use one effective elevated-backend decision
   for filesystem overrides, PowerShell startup, process spawning, and telemetry.
 - Unified exec cannot bypass the managed proxy with an unrelated direct

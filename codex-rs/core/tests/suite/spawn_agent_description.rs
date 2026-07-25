@@ -315,3 +315,65 @@ async fn configured_agent_roles_control_spawn_agent_type(
     );
     Ok(())
 }
+
+#[test_case(true, false; "wait agent remains available without clock sleep")]
+#[test_case(true, true; "wait agent remains available with clock sleep")]
+#[test_case(false, false; "wait agent can be disabled without clock sleep")]
+#[test_case(false, true; "wait agent can be disabled with clock sleep")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_wait_agent_tool_follows_configuration(
+    wait_agent_enabled: bool,
+    sleep_tool_enabled: bool,
+) -> Result<()> {
+    let current_time_reminder = if sleep_tool_enabled {
+        r#"
+[features.current_time_reminder]
+enabled = true
+sleep_tool = true
+"#
+    } else {
+        ""
+    };
+    let config_toml = format!(
+        r#"
+[features.multi_agent_v2]
+enabled = true
+wait_agent_enabled = {wait_agent_enabled}
+{current_time_reminder}"#
+    );
+    let server = start_mock_server().await;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+    let test = test_codex()
+        .with_pre_build_hook(move |home| {
+            std::fs::write(home.join("config.toml"), &config_toml)
+                .expect("write multi-agent configuration");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_turn("hello").await?;
+
+    let request = response.single_request();
+    let body = request.body_json();
+    let namespace = test
+        .config
+        .multi_agent_v2
+        .tool_namespace
+        .as_deref()
+        .expect("multi-agent V2 test config should define a tool namespace");
+    assert!(namespace_child_tool(&body, namespace, SPAWN_AGENT_TOOL_NAME).is_some());
+    assert_eq!(
+        namespace_child_tool(&body, namespace, "wait_agent").is_some(),
+        wait_agent_enabled
+    );
+    assert_eq!(
+        namespace_child_tool(&body, "clock", "sleep").is_some(),
+        sleep_tool_enabled
+    );
+
+    Ok(())
+}

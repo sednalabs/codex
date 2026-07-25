@@ -530,7 +530,7 @@
           ]
         },
         "reloadUserConfig": {
-          "description": "When true, hot-reload the updated user config into all loaded threads after writing.",
+          "description": "When true, hot-reload updated runtime settings into loaded threads after writing.\nSession-static model, reasoning-effort, Plan-mode reasoning-effort, service-tier, and\npersonality defaults are not reloaded.",
           "type": "boolean"
         }
       },
@@ -891,6 +891,24 @@
           "description": "If true, include detection under the user's home directory.",
           "type": "boolean"
         },
+        "maxSessionAgeDays": {
+          "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "maxSessions": {
+          "description": "Maximum number of sessions to detect. Missing values use the default limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "migrationSource": {
           "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
           "type": [
@@ -908,6 +926,98 @@
       },
       "type": "object"
     },
+    "ExternalAgentConfigImportHistoryRecordParams": {
+      "properties": {
+        "itemTypeResults": {
+          "description": "Completed results grouped by imported item type.",
+          "items": {
+            "$ref": "#/$defs/ExternalAgentConfigImportTypeResult"
+          },
+          "type": "array"
+        },
+        "providerId": {
+          "description": "Opaque provider identifier for the externally completed import.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "providerId",
+        "itemTypeResults"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentConfigImportItemTypeFailure": {
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failureStage": {
+          "type": "string"
+        },
+        "itemType": {
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+        },
+        "message": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subErrorType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "itemType",
+        "failureStage",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentConfigImportItemTypeSuccess": {
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "itemType": {
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "itemType"
+      ],
+      "type": "object"
+    },
     "ExternalAgentConfigImportParams": {
       "properties": {
         "migrationItems": {
@@ -923,6 +1033,13 @@
             "null"
           ]
         },
+        "providerId": {
+          "description": "Opaque provider identifier supplied by the caller for analytics attribution and import\nhistory display. This does not select the migration source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "description": "Optional identifier for the product that initiated the import.",
           "type": [
@@ -933,6 +1050,31 @@
       },
       "required": [
         "migrationItems"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentConfigImportTypeResult": {
+      "properties": {
+        "failures": {
+          "items": {
+            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure"
+          },
+          "type": "array"
+        },
+        "itemType": {
+          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+        },
+        "successes": {
+          "items": {
+            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "itemType",
+        "successes",
+        "failures"
       ],
       "type": "object"
     },
@@ -2167,6 +2309,10 @@
             "array",
             "null"
           ]
+        },
+        "forceRefetch": {
+          "description": "Whether the client requests a fresh remote plugin catalog fetch.",
+          "type": "boolean"
         },
         "marketplaceKinds": {
           "description": "Optional marketplace kind filter. When omitted, only local marketplaces are queried, plus\nthe default remote catalog when enabled by feature flag.",
@@ -4470,6 +4616,13 @@
           ],
           "description": "Optional cwd filter or filters; when set, only threads whose session cwd\nexactly matches one of these paths are returned."
         },
+        "isPinned": {
+          "description": "Optional pinned filter; when set, only threads matching this value are returned.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "limit": {
           "description": "Optional page size; defaults to a reasonable server-side value.",
           "format": "uint32",
@@ -4634,6 +4787,13 @@
           ],
           "description": "Patch the stored Git metadata for this thread.\nOmit a field to leave it unchanged, set it to `null` to clear it, or\nprovide a string to replace the stored value."
         },
+        "isPinned": {
+          "description": "Patch whether this thread is pinned. Omit to leave the stored value unchanged.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         }
@@ -4776,6 +4936,19 @@
           "description": "Leaves Codex response handoffs to the client's explicit append calls instead of forwarding\nthem automatically. Defaults to false.",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "codexResponseHandoffChannelPrefixes": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": "Overrides BEM channel prefixes by `analysis`, `commentary`, or `final`.\nOmitted channels retain their default uppercase bracketed prefixes.",
+          "type": [
+            "object",
             "null"
           ]
         },
@@ -8048,6 +8221,28 @@
         "params"
       ],
       "title": "ExternalAgentConfig/importRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "const": "externalAgentConfig/import/recordHistory",
+          "title": "ExternalAgentConfig/import/recordHistoryRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ExternalAgentConfigImportHistoryRecordParams"
+        }
+      },
+      "required": [
+        "method",
+        "id",
+        "params"
+      ],
+      "title": "ExternalAgentConfig/import/recordHistoryRequest",
       "type": "object"
     },
     {

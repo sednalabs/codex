@@ -1,4 +1,5 @@
 use anyhow::Result;
+use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
@@ -7,12 +8,11 @@ use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::rollout_path;
 use app_test_support::test_absolute_path;
-use app_test_support::to_response;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::GitInfo as ApiGitInfo;
 use codex_app_server_protocol::JSONRPCError;
-use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::SortDirection;
@@ -36,6 +36,7 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use std::cmp::Reverse;
@@ -50,12 +51,10 @@ use uuid::Uuid;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn init_mcp(codex_home: &Path) -> Result<TestAppServer> {
-    let mut mcp = TestAppServer::builder()
+    TestAppServer::builder()
         .with_codex_home(codex_home)
-        .build()
-        .await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-    Ok(mcp)
+        .build_initialized()
+        .await
 }
 
 async fn list_threads(
@@ -87,8 +86,9 @@ async fn list_threads_with_sort(
     sort_key: Option<ThreadSortKey>,
     archived: Option<bool>,
 ) -> Result<ThreadListResponse> {
-    let request_id = mcp
-        .send_thread_list_request(codex_app_server_protocol::ThreadListParams {
+    mcp.request(|request_id| ClientRequest::ThreadList {
+        request_id,
+        params: codex_app_server_protocol::ThreadListParams {
             cursor,
             limit,
             sort_key,
@@ -97,19 +97,15 @@ async fn list_threads_with_sort(
             source_kinds,
             thread_sources: None,
             archived,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
             parent_thread_id: None,
             ancestor_thread_id: None,
-        })
-        .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    to_response::<ThreadListResponse>(resp)
+        },
+    })
+    .await
 }
 
 enum ThreadListRelation {
@@ -129,8 +125,9 @@ async fn list_threads_for_relation(
         ThreadListRelation::DirectChildrenOf(thread_id) => (Some(thread_id.to_string()), None),
         ThreadListRelation::DescendantsOf(thread_id) => (None, Some(thread_id.to_string())),
     };
-    let request_id = mcp
-        .send_thread_list_request(codex_app_server_protocol::ThreadListParams {
+    mcp.request(|request_id| ClientRequest::ThreadList {
+        request_id,
+        params: codex_app_server_protocol::ThreadListParams {
             cursor,
             limit: Some(limit),
             sort_key: None,
@@ -139,19 +136,15 @@ async fn list_threads_for_relation(
             source_kinds,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
             parent_thread_id,
             ancestor_thread_id,
-        })
-        .await?;
-    let response = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    to_response::<ThreadListResponse>(response)
+        },
+    })
+    .await
 }
 
 fn create_fake_rollouts<F, G>(
@@ -261,18 +254,12 @@ async fn thread_list_reports_system_error_idle_flag_after_failed_turn() -> Resul
     create_runtime_config(codex_home.path(), &server.uri())?;
     let mut mcp = init_mcp(codex_home.path()).await?;
 
-    let start_id = mcp
-        .send_thread_start_request_with_auto_env(ThreadStartParams {
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
             ..Default::default()
         })
         .await?;
-    let start_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
 
     let seed_turn_id = mcp
         .send_turn_start_request(TurnStartParams {
@@ -285,12 +272,8 @@ async fn thread_list_reports_system_error_idle_flag_after_failed_turn() -> Resul
             ..Default::default()
         })
         .await?;
-    let seed_turn_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(seed_turn_id)),
-    )
-    .await??;
-    let _: TurnStartResponse = to_response::<TurnStartResponse>(seed_turn_resp)?;
+    let _: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(seed_turn_id)).await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -308,12 +291,8 @@ async fn thread_list_reports_system_error_idle_flag_after_failed_turn() -> Resul
             ..Default::default()
         })
         .await?;
-    let failed_turn_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(failed_turn_id)),
-    )
-    .await??;
-    let _: TurnStartResponse = to_response::<TurnStartResponse>(failed_turn_resp)?;
+    let _: TurnStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(failed_turn_id)).await??;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("error"),
@@ -355,26 +334,7 @@ approval_policy = "never"
 }
 
 fn create_runtime_config(codex_home: &std::path::Path, server_uri: &str) -> std::io::Result<()> {
-    let config_toml = codex_home.join("config.toml");
-    std::fs::write(
-        config_toml,
-        format!(
-            r#"
-model = "mock-model"
-approval_policy = "never"
-sandbox_mode = "read-only"
-
-model_provider = "mock_provider"
-
-[model_providers.mock_provider]
-name = "Mock provider for test"
-base_url = "{server_uri}/v1"
-wire_api = "responses"
-request_max_retries = 0
-stream_max_retries = 0
-"#
-        ),
-    )
+    MockResponsesConfig::new(server_uri).write(codex_home)
 }
 
 #[tokio::test]
@@ -579,6 +539,7 @@ async fn thread_list_respects_cwd_filters() -> Result<()> {
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: Some(ThreadListCwdFilter::Many(vec![
                 first_target_cwd.to_string_lossy().into_owned(),
                 second_target_cwd.to_string_lossy().into_owned(),
@@ -589,14 +550,9 @@ async fn thread_list_respects_cwd_filters() -> Result<()> {
             ancestor_thread_id: None,
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
     let ThreadListResponse {
         data, next_cursor, ..
-    } = to_response::<ThreadListResponse>(resp)?;
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
 
     assert_eq!(next_cursor, None);
     let filtered_ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
@@ -654,15 +610,17 @@ sqlite = true
     // `thread/list` applies `search_term` on the sqlite fast path. This test creates
     // rollouts manually, so mark the DB backfill complete and then run an unsearched
     // list large enough to repair every rollout the searched list should find.
-    let state_db =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     let rollout_config = codex_rollout::RolloutConfig {
         codex_home: codex_home.path().to_path_buf(),
-        sqlite_home: codex_home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         cwd: codex_home.path().to_path_buf(),
         model_provider_id: "mock_provider".to_string(),
         generate_memories: false,
@@ -694,6 +652,7 @@ sqlite = true
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: Some("needle".to_string()),
@@ -701,14 +660,9 @@ sqlite = true
             ancestor_thread_id: None,
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
     let ThreadListResponse {
         data, next_cursor, ..
-    } = to_response::<ThreadListResponse>(resp)?;
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
 
     assert_eq!(next_cursor, None);
     let ids: Vec<_> = data.iter().map(|thread| thread.id.as_str()).collect();
@@ -760,14 +714,9 @@ async fn thread_search_returns_content_matches() -> Result<()> {
             search_term: "needle".to_string(),
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
     let ThreadSearchResponse {
         data, next_cursor, ..
-    } = to_response::<ThreadSearchResponse>(resp)?;
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
 
     assert_eq!(next_cursor, None);
     let ids: Vec<_> = data
@@ -808,12 +757,8 @@ async fn thread_search_matches_json_escaped_content() -> Result<()> {
             search_term: search_term.to_string(),
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let ThreadSearchResponse { data, .. } = to_response::<ThreadSearchResponse>(resp)?;
+    let ThreadSearchResponse { data, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
 
     assert_eq!(data.len(), 1);
     assert_eq!(data[0].thread.id, thread_id);
@@ -858,12 +803,8 @@ async fn thread_search_filters_by_source_kind() -> Result<()> {
             search_term: "needle".to_string(),
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let ThreadSearchResponse { data, .. } = to_response::<ThreadSearchResponse>(resp)?;
+    let ThreadSearchResponse { data, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
 
     let ids: Vec<_> = data
         .iter()
@@ -898,9 +839,11 @@ sqlite = true
         Some("mock_provider"),
         /*git_info*/ None,
     )?;
-    let state_db =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
@@ -916,6 +859,7 @@ sqlite = true
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -923,12 +867,8 @@ sqlite = true
             ancestor_thread_id: None,
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let repaired_response = to_response::<ThreadListResponse>(resp)?;
+    let repaired_response: ThreadListResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
     let ids: Vec<_> = repaired_response
         .data
         .iter()
@@ -955,6 +895,7 @@ sqlite = true
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
             )),
@@ -964,12 +905,8 @@ sqlite = true
             ancestor_thread_id: None,
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let state_db_only_response = to_response::<ThreadListResponse>(resp)?;
+    let state_db_only_response: ThreadListResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
     let ids: Vec<_> = state_db_only_response
         .data
         .iter()
@@ -987,6 +924,7 @@ sqlite = true
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: Some(ThreadListCwdFilter::One(
                 stale_cwd.to_string_lossy().into_owned(),
             )),
@@ -996,12 +934,8 @@ sqlite = true
             ancestor_thread_id: None,
         })
         .await?;
-    let resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-    )
-    .await??;
-    let scanned_response = to_response::<ThreadListResponse>(resp)?;
+    let scanned_response: ThreadListResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
     assert_eq!(scanned_response.data.len(), 0);
 
     Ok(())
@@ -1017,7 +951,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
     let newer_child_id = ThreadId::new();
     let grandchild_id = ThreadId::new();
     let state_db = codex_state::StateRuntime::init(
-        codex_home.path().to_path_buf(),
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         "mock_provider".to_string(),
     )
     .await?;
@@ -1025,7 +959,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
         (
             older_child_id,
             "2025-02-01T10:00:00Z",
-            CoreSessionSource::SubAgent(SubAgentSource::Other("agent_job:job-1".to_string())),
+            CoreSessionSource::SubAgent(SubAgentSource::Other("custom:worker-1".to_string())),
             "other_provider",
         ),
         (
@@ -1037,7 +971,7 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
         (
             grandchild_id,
             "2025-02-01T12:00:00Z",
-            CoreSessionSource::SubAgent(SubAgentSource::Other("agent_job:job-2".to_string())),
+            CoreSessionSource::SubAgent(SubAgentSource::Other("custom:worker-2".to_string())),
             "mock_provider",
         ),
     ] {
@@ -1175,6 +1109,7 @@ async fn thread_list_relation_filters_reject_invalid_requests() -> Result<()> {
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -1200,6 +1135,7 @@ async fn thread_list_relation_filters_reject_invalid_requests() -> Result<()> {
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -1800,15 +1736,17 @@ async fn thread_list_sort_recency_at_uses_state_db_order_with_provider_filter() 
         "2025-01-03T00:00:00Z",
     )?;
 
-    let state_db =
-        codex_state::StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into())
-            .await?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
     state_db
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     let rollout_config = codex_rollout::RolloutConfig {
         codex_home: codex_home.path().to_path_buf(),
-        sqlite_home: codex_home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         cwd: codex_home.path().to_path_buf(),
         model_provider_id: "mock_provider".to_string(),
         generate_memories: false,
@@ -1989,6 +1927,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 source_kinds: None,
                 thread_sources: None,
                 archived: None,
+                is_pinned: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -1996,12 +1935,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 ancestor_thread_id: None,
             })
             .await?;
-        let resp: JSONRPCResponse = timeout(
-            DEFAULT_READ_TIMEOUT,
-            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-        )
-        .await??;
-        to_response::<ThreadListResponse>(resp)?
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??
     };
     let ids_page1: Vec<_> = page1.iter().map(|thread| thread.id.as_str()).collect();
     assert_eq!(ids_page1, vec![id_watermark.as_str()]);
@@ -2034,6 +1968,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 source_kinds: None,
                 thread_sources: None,
                 archived: None,
+                is_pinned: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -2041,12 +1976,7 @@ async fn thread_list_backwards_cursor_can_seed_forward_delta_sync() -> Result<()
                 ancestor_thread_id: None,
             })
             .await?;
-        let resp: JSONRPCResponse = timeout(
-            DEFAULT_READ_TIMEOUT,
-            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
-        )
-        .await??;
-        to_response::<ThreadListResponse>(resp)?
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??
     };
     let ids_delta: Vec<_> = delta_page.iter().map(|thread| thread.id.as_str()).collect();
     assert_eq!(ids_delta, vec![id_watermark.as_str(), id_new.as_str()]);
@@ -2275,6 +2205,7 @@ async fn thread_list_invalid_cursor_returns_error() -> Result<()> {
             source_kinds: None,
             thread_sources: None,
             archived: None,
+            is_pinned: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,

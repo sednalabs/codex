@@ -67,6 +67,7 @@ async fn source_transcript_preserves_exec_end_when_delta_receiver_lags() {
         #[allow(deprecated)]
         turn.cwd.clone().into(),
         Some("123".to_string()),
+        /*plugin_attribution*/ None,
         aggregated_output,
         String::new(),
         /*exit_code*/ 0,

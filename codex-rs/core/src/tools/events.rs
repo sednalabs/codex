@@ -4,7 +4,8 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::sandboxing::ToolError;
 use codex_apply_patch::AppliedPatchDelta;
-use codex_protocol::error::CodexErr;
+use codex_core_plugins::PluginCommandAttribution;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::items::CommandExecutionItem;
@@ -22,11 +23,18 @@ use codex_protocol::protocol::TurnDiffEvent;
 use codex_shell_command::parse_command::parse_command;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
+use codex_utils_string::truncate_middle_with_token_budget;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use super::format_exec_output_str;
+
+const REJECTION_MESSAGE_MAX_TOKENS: usize = 900;
+
+pub(super) fn truncate_rejection_message(message: &str) -> String {
+    truncate_middle_with_token_budget(message, REJECTION_MESSAGE_MAX_TOKENS).0
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct ToolEventCtx<'a> {
@@ -93,29 +101,22 @@ fn tracker_update_for_known_delta<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn emit_exec_command_begin(
-    ctx: ToolEventCtx<'_>,
-    command: &[String],
-    cwd: &PathUri,
-    parsed_cmd: &[ParsedCommand],
-    source: ExecCommandSource,
-    interaction_input: Option<String>,
-    process_id: Option<&str>,
-    terminal_wait: Option<TerminalWaitInfo>,
-) {
+async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommandInput<'_>) {
+    let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
     ctx.session
         .emit_turn_item_started(
             ctx.turn,
             &TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
-                process_id: process_id.map(str::to_owned),
-                command: command.to_vec(),
-                cwd: cwd.clone(),
-                parsed_cmd: parsed_cmd.to_vec(),
-                source,
-                interaction_input,
-                terminal_wait,
+                plugin_id,
+                script_path,
+                process_id: exec_input.process_id.map(str::to_owned),
+                command: exec_input.command.to_vec(),
+                cwd: exec_input.cwd.clone(),
+                parsed_cmd: exec_input.parsed_cmd.to_vec(),
+                source: exec_input.source,
+                interaction_input: exec_input.interaction_input.map(str::to_owned),
+                terminal_wait: exec_input.terminal_wait.clone(),
                 status: CommandExecutionStatus::InProgress,
                 stdout: None,
                 stderr: None,
@@ -134,6 +135,7 @@ pub(crate) enum ToolEmitter {
         cwd: PathUri,
         source: ExecCommandSource,
         parsed_cmd: Vec<ParsedCommand>,
+        plugin_attribution: Option<PluginCommandAttribution>,
     },
     ApplyPatch {
         changes: HashMap<PathBuf, FileChange>,
@@ -146,18 +148,25 @@ pub(crate) enum ToolEmitter {
         source: ExecCommandSource,
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
+        plugin_attribution: Option<PluginCommandAttribution>,
         terminal_wait: Option<TerminalWaitInfo>,
     },
 }
 
 impl ToolEmitter {
-    pub fn shell(command: Vec<String>, cwd: AbsolutePathBuf, source: ExecCommandSource) -> Self {
+    pub fn shell(
+        command: Vec<String>,
+        cwd: AbsolutePathBuf,
+        source: ExecCommandSource,
+        plugin_attribution: Option<PluginCommandAttribution>,
+    ) -> Self {
         let parsed_cmd = parse_command(&command);
         Self::Shell {
             command,
             cwd: PathUri::from_abs_path(&cwd),
             source,
             parsed_cmd,
+            plugin_attribution,
         }
     }
 
@@ -178,6 +187,7 @@ impl ToolEmitter {
         cwd: PathUri,
         source: ExecCommandSource,
         process_id: Option<String>,
+        plugin_attribution: Option<PluginCommandAttribution>,
         terminal_wait: Option<TerminalWaitInfo>,
     ) -> Self {
         let parsed_cmd = parse_command(command);
@@ -187,6 +197,7 @@ impl ToolEmitter {
             source,
             parsed_cmd,
             process_id,
+            plugin_attribution,
             terminal_wait,
         }
     }
@@ -199,6 +210,7 @@ impl ToolEmitter {
                     cwd,
                     source,
                     parsed_cmd,
+                    plugin_attribution,
                     ..
                 },
                 stage,
@@ -206,8 +218,14 @@ impl ToolEmitter {
                 emit_exec_stage(
                     ctx,
                     ExecCommandInput::new(
-                        command, cwd, parsed_cmd, *source, /*interaction_input*/ None,
-                        /*process_id*/ None, /*terminal_wait*/ None,
+                        command,
+                        cwd,
+                        parsed_cmd,
+                        *source,
+                        /*interaction_input*/ None,
+                        /*process_id*/ None,
+                        plugin_attribution.as_ref(),
+                        /*terminal_wait*/ None,
                     ),
                     stage,
                 )
@@ -329,6 +347,7 @@ impl ToolEmitter {
                     source,
                     parsed_cmd,
                     process_id,
+                    plugin_attribution,
                     terminal_wait,
                 },
                 stage,
@@ -342,6 +361,7 @@ impl ToolEmitter {
                         *source,
                         /*interaction_input*/ None,
                         process_id.as_deref(),
+                        plugin_attribution.as_ref(),
                         terminal_wait.clone(),
                     ),
                     stage,
@@ -384,33 +404,37 @@ impl ToolEmitter {
                 };
                 (event, result)
             }
-            Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Timeout { output }))) => {
-                let response = self.format_exec_output_for_model(&output, ctx);
-                let event = ToolEventStage::Failure(ToolEventFailure::Output(*output));
-                let result = Err(FunctionCallError::RespondToModel(response));
-                (event, result)
-            }
-            Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied { output, .. }))) => {
-                let response = self.format_exec_output_for_model(&output, ctx);
-                // apply_patch can be denied after it has already committed a
-                // known prefix. Reuse the output-bearing path so the visible
-                // item still fails while the turn diff consumes that prefix.
-                let event = match (self, applied_patch_delta) {
-                    (Self::ApplyPatch { .. }, Some(delta)) => ToolEventStage::Success {
-                        output: *output,
-                        applied_patch_delta: Some(delta),
-                    },
-                    _ => ToolEventStage::Failure(ToolEventFailure::Output(*output)),
-                };
-                let result = Err(FunctionCallError::RespondToModel(response));
-                (event, result)
-            }
-            Err(ToolError::Codex(err)) => {
-                let message = format!("execution error: {err:?}");
-                let event = ToolEventStage::Failure(ToolEventFailure::Message(message.clone()));
-                let result = Err(FunctionCallError::RespondToModel(message));
-                (event, result)
-            }
+            Err(ToolError::Codex(err)) => match err.details() {
+                CodexErrorDetails::Sandbox(SandboxErr::Timeout { output }) => {
+                    let output = output.as_ref().clone();
+                    let response = self.format_exec_output_for_model(&output, ctx);
+                    let event = ToolEventStage::Failure(ToolEventFailure::Output(output));
+                    let result = Err(FunctionCallError::RespondToModel(response));
+                    (event, result)
+                }
+                CodexErrorDetails::Sandbox(SandboxErr::Denied { output, .. }) => {
+                    let output = output.as_ref().clone();
+                    let response = self.format_exec_output_for_model(&output, ctx);
+                    // apply_patch can be denied after it has already committed a
+                    // known prefix. Reuse the output-bearing path so the visible
+                    // item still fails while the turn diff consumes that prefix.
+                    let event = match (self, applied_patch_delta) {
+                        (Self::ApplyPatch { .. }, Some(delta)) => ToolEventStage::Success {
+                            output,
+                            applied_patch_delta: Some(delta),
+                        },
+                        _ => ToolEventStage::Failure(ToolEventFailure::Output(output)),
+                    };
+                    let result = Err(FunctionCallError::RespondToModel(response));
+                    (event, result)
+                }
+                _ => {
+                    let message = format!("execution error: {err:?}");
+                    let event = ToolEventStage::Failure(ToolEventFailure::Message(message.clone()));
+                    let result = Err(FunctionCallError::RespondToModel(message));
+                    (event, result)
+                }
+            },
             Err(ToolError::Rejected(msg)) => {
                 // Normalize common rejection messages for exec tools so tests and
                 // users see a clear, consistent phrase.
@@ -431,6 +455,7 @@ impl ToolEmitter {
                 } else {
                     msg
                 };
+                let normalized = truncate_rejection_message(&normalized);
                 let event = ToolEventStage::Failure(ToolEventFailure::Rejected {
                     message: normalized.clone(),
                     applied_patch_delta,
@@ -451,10 +476,12 @@ struct ExecCommandInput<'a> {
     source: ExecCommandSource,
     interaction_input: Option<&'a str>,
     process_id: Option<&'a str>,
+    plugin_attribution: Option<&'a PluginCommandAttribution>,
     terminal_wait: Option<TerminalWaitInfo>,
 }
 
 impl<'a> ExecCommandInput<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         command: &'a [String],
         cwd: &'a PathUri,
@@ -462,6 +489,7 @@ impl<'a> ExecCommandInput<'a> {
         source: ExecCommandSource,
         interaction_input: Option<&'a str>,
         process_id: Option<&'a str>,
+        plugin_attribution: Option<&'a PluginCommandAttribution>,
         terminal_wait: Option<TerminalWaitInfo>,
     ) -> Self {
         Self {
@@ -471,6 +499,7 @@ impl<'a> ExecCommandInput<'a> {
             source,
             interaction_input,
             process_id,
+            plugin_attribution,
             terminal_wait,
         }
     }
@@ -493,17 +522,7 @@ async fn emit_exec_stage(
 ) {
     match stage {
         ToolEventStage::Begin => {
-            emit_exec_command_begin(
-                ctx,
-                exec_input.command,
-                exec_input.cwd,
-                exec_input.parsed_cmd,
-                exec_input.source,
-                exec_input.interaction_input.map(str::to_owned),
-                exec_input.process_id,
-                exec_input.terminal_wait.clone(),
-            )
-            .await;
+            emit_exec_command_begin(ctx, &exec_input).await;
         }
         ToolEventStage::Success { output, .. }
         | ToolEventStage::Failure(ToolEventFailure::Output(output)) => {
@@ -559,11 +578,14 @@ async fn emit_exec_end(
     exec_input: ExecCommandInput<'_>,
     exec_result: ExecCommandResult,
 ) {
+    let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
     ctx.session
         .emit_turn_item_completed(
             ctx.turn,
             TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
+                plugin_id,
+                script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
                 command: exec_input.command.to_vec(),
                 cwd: exec_input.cwd.clone(),
@@ -581,6 +603,14 @@ async fn emit_exec_end(
             }),
         )
         .await;
+}
+
+fn plugin_attribution_fields(
+    attribution: Option<&PluginCommandAttribution>,
+) -> (Option<String>, Option<String>) {
+    attribution
+        .map(PluginCommandAttribution::serialized_fields)
+        .unzip()
 }
 
 async fn emit_patch_end(

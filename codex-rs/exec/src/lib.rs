@@ -558,10 +558,15 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     )?;
     let state_db = codex_core::init_state_db(&config).await;
     let environment_manager = if run_loader_overrides.ignore_user_config {
-        EnvironmentManager::from_env(Some(local_runtime_paths)).await?
-    } else {
-        EnvironmentManager::from_codex_home(config.codex_home.clone(), Some(local_runtime_paths))
+        EnvironmentManager::from_env(Some(local_runtime_paths), config.http_client_factory())
             .await?
+    } else {
+        EnvironmentManager::from_codex_home(
+            config.codex_home.clone(),
+            Some(local_runtime_paths),
+            config.http_client_factory(),
+        )
+        .await?
     };
     let in_process_start_args = InProcessClientStartArgs {
         arg0_paths,
@@ -1028,20 +1033,19 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     error_seen = true;
                 }
 
-                if should_backfill_turn_completed_items(config.ephemeral, &notification) {
-                    maybe_backfill_turn_completed_items(
-                        &client,
-                        &mut request_ids,
-                        &mut notification,
-                    )
-                    .await;
-                }
-
                 if should_process_notification(
                     &notification,
                     &primary_thread_id_for_requests,
                     &task_id,
                 ) {
+                    maybe_backfill_turn_completed_items(
+                        config.ephemeral,
+                        &client,
+                        &mut request_ids,
+                        &mut notification,
+                    )
+                    .await;
+
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
                         CodexStatus::InitiateShutdown => {
@@ -1465,21 +1469,8 @@ fn should_process_notification(
     }
 }
 
-fn should_backfill_turn_completed_items(
-    thread_is_ephemeral: bool,
-    notification: &ServerNotification,
-) -> bool {
-    if thread_is_ephemeral {
-        return false;
-    }
-
-    matches!(
-        notification,
-        ServerNotification::TurnCompleted(payload) if payload.turn.items.is_empty()
-    )
-}
-
 async fn maybe_backfill_turn_completed_items(
+    thread_ephemeral: bool,
     client: &InProcessAppServerClient,
     request_ids: &mut RequestIdSequencer,
     notification: &mut ServerNotification,
@@ -1488,12 +1479,13 @@ async fn maybe_backfill_turn_completed_items(
     // guaranteeing `turn/completed`. Because app-server currently emits that completion with an
     // empty `turn.items`, exec does one last `thread/read` here so human/json output can recover
     // the final message and reconcile any still-running items before shutdown.
+    if !should_backfill_turn_completed_items(thread_ephemeral, notification) {
+        return;
+    }
+
     let ServerNotification::TurnCompleted(payload) = notification else {
         return;
     };
-    if !payload.turn.items.is_empty() {
-        return;
-    }
 
     let response = send_request_with_response::<ThreadReadResponse>(
         client,
@@ -1518,6 +1510,19 @@ async fn maybe_backfill_turn_completed_items(
             warn!("thread/read failed while backfilling turn items for turn completion: {err}");
         }
     }
+}
+
+/// Returns true only when `exec` can safely recover missing turn items from
+/// rollout-backed thread history.
+fn should_backfill_turn_completed_items(
+    thread_ephemeral: bool,
+    notification: &ServerNotification,
+) -> bool {
+    let ServerNotification::TurnCompleted(payload) = notification else {
+        return false;
+    };
+
+    !thread_ephemeral && payload.turn.items_view != codex_app_server_protocol::TurnItemsView::Full
 }
 
 fn turn_items_for_thread(
@@ -1606,6 +1611,7 @@ async fn resolve_resume_thread_id(
                         source_kinds: Some(all_thread_source_kinds()),
                         thread_sources: None,
                         archived: Some(false),
+                        is_pinned: None,
                         parent_thread_id: None,
                         ancestor_thread_id: None,
                         cwd: None,
@@ -1674,6 +1680,7 @@ async fn resolve_resume_thread_id(
                     source_kinds: Some(all_thread_source_kinds()),
                     thread_sources: None,
                     archived: Some(false),
+                    is_pinned: None,
                     parent_thread_id: None,
                     ancestor_thread_id: None,
                     cwd: None,
@@ -2430,6 +2437,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             recency_at: Some(0),
+            is_pinned: false,
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
             cwd: test_path_buf("/tmp/project").abs(),
@@ -2663,6 +2671,7 @@ mod tests {
                 created_at: 0,
                 updated_at: 0,
                 recency_at: Some(0),
+                is_pinned: false,
                 status: codex_app_server_protocol::ThreadStatus::Idle,
                 path: Some(PathBuf::from("/tmp/rollout.jsonl")),
                 cwd: test_path_buf("/tmp").abs(),

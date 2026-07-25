@@ -191,9 +191,33 @@ impl From<ExecCommandStatus> for CommandExecutionStatus {
     }
 }
 
+/// Returns whether a path is safe to serialize as a trusted plugin-relative path.
+///
+/// This validates the cross-platform wire shape only. The trusted plugin resolver
+/// remains responsible for establishing that the path actually came from a plugin root.
+pub fn is_safe_plugin_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path.split('/').all(|component| {
+            !component.is_empty()
+                && !matches!(component, "." | "..")
+                && !matches!(
+                    component.as_bytes(),
+                    [drive, b':', ..] if drive.is_ascii_alphabetic()
+                )
+        })
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CommandExecutionItem {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub script_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub process_id: Option<String>,
@@ -689,17 +713,6 @@ fn serialize_hook_prompt_fragment(text: &str, hook_run_id: &str) -> Option<Strin
     .ok()
 }
 
-impl AgentMessageItem {
-    pub fn new(content: &[AgentMessageContent]) -> Self {
-        Self {
-            id: new_item_id(),
-            content: content.to_vec(),
-            phase: None,
-            memory_citation: None,
-        }
-    }
-}
-
 impl TurnItem {
     pub fn id(&self) -> String {
         match self {
@@ -772,6 +785,28 @@ mod tests {
                 vec![std::path::PathBuf::from("local.wav")],
             )
         );
+    }
+
+    #[test]
+    fn plugin_relative_paths_use_safe_wire_shape() {
+        assert!(is_safe_plugin_relative_path("scripts/run.py"));
+
+        for path in [
+            "",
+            "/home/user/.codex/plugins/cache/sample/scripts/run.py",
+            "C:/Users/user/.codex/plugins/cache/sample/scripts/run.py",
+            "scripts/C:/run.py",
+            r"\\server\share\sample\scripts\run.py",
+            r"scripts\run.py",
+            "scripts//run.py",
+            "scripts/./run.py",
+            "scripts/../run.py",
+        ] {
+            assert!(
+                !is_safe_plugin_relative_path(path),
+                "unsafe plugin-relative path should be rejected: {path:?}"
+            );
+        }
     }
 
     #[test]

@@ -1908,6 +1908,7 @@ fn thread_list_params(
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
         thread_sources: thread_source_filter.thread_sources(),
         archived: Some(false),
+        is_pinned: None,
         parent_thread_id: None,
         ancestor_thread_id: None,
         cwd: cwd_filter.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned())),
@@ -5642,6 +5643,7 @@ session_picker_view = "dense"
             parent_thread_id: None,
             preview: String::from("remote thread"),
             ephemeral: false,
+            is_pinned: false,
             history_mode: Default::default(),
             model_provider: String::from("openai"),
             model: None,
@@ -5683,6 +5685,7 @@ session_picker_view = "dense"
             parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
+            is_pinned: false,
             history_mode: Default::default(),
             model_provider: String::from("openai"),
             model: None,
@@ -5733,7 +5736,7 @@ session_picker_view = "dense"
         };
 
         let rendered = thread_to_transcript_cells(
-            &thread,
+            thread,
             RawReasoningVisibility::Visible,
             /*codex_home*/ None,
         )
@@ -5762,6 +5765,7 @@ session_picker_view = "dense"
             parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
+            is_pinned: false,
             history_mode: Default::default(),
             model_provider: String::from("openai"),
             model: None,
@@ -5797,7 +5801,7 @@ session_picker_view = "dense"
         };
 
         let hidden = thread_to_transcript_cells(
-            &thread,
+            thread.clone(),
             RawReasoningVisibility::Hidden,
             /*codex_home*/ None,
         )
@@ -5807,7 +5811,7 @@ session_picker_view = "dense"
         .collect::<Vec<_>>()
         .join("\n");
         let visible = thread_to_transcript_cells(
-            &thread,
+            thread,
             RawReasoningVisibility::Visible,
             /*codex_home*/ None,
         )
@@ -5834,6 +5838,7 @@ session_picker_view = "dense"
             parent_thread_id: None,
             preview: String::from("preview"),
             ephemeral: false,
+            is_pinned: false,
             history_mode: Default::default(),
             model_provider: String::from("openai"),
             model: None,
@@ -5869,7 +5874,7 @@ session_picker_view = "dense"
         };
 
         let rendered = thread_to_transcript_cells(
-            &thread,
+            thread,
             RawReasoningVisibility::Visible,
             /*codex_home*/ None,
         )

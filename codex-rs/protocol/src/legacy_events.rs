@@ -85,6 +85,8 @@ impl UserMessageItem {
             image_details: self.image_details(),
             local_images: self.local_image_paths(),
             local_image_details: self.local_image_details(),
+            audio: Some(self.audio_urls()),
+            local_audio: self.local_audio_paths(),
             text_elements: self.text_elements(),
         }
     }
@@ -159,6 +161,8 @@ impl CommandExecutionItem {
     pub(crate) fn as_legacy_begin_event(&self, turn_id: String, started_at_ms: i64) -> EventMsg {
         EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
             call_id: self.id.clone(),
+            plugin_id: self.plugin_id.clone(),
+            script_path: self.script_path.clone(),
             process_id: self.process_id.clone(),
             turn_id,
             started_at_ms,
@@ -184,6 +188,8 @@ impl CommandExecutionItem {
         };
         Some(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
             call_id: self.id.clone(),
+            plugin_id: self.plugin_id.clone(),
+            script_path: self.script_path.clone(),
             process_id: self.process_id.clone(),
             turn_id,
             completed_at_ms,

@@ -101,13 +101,17 @@ impl AgentNavigationState {
         created_at: Option<i64>,
         updated_at: Option<i64>,
     ) {
+        let previous_is_running = self
+            .threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running);
         self.upsert_with_path(
             thread_id,
             AgentPickerThreadEntry {
                 agent_nickname,
                 agent_role,
                 agent_path: None,
-                is_running: false,
+                is_running: previous_is_running && !is_closed,
                 is_closed,
                 created_at,
                 updated_at,
@@ -590,6 +594,64 @@ mod tests {
         assert_eq!(
             state.ordered_thread_ids(),
             vec![main_thread_id, first_agent_id, second_agent_id]
+        );
+    }
+
+    #[test]
+    fn upsert_preserves_running_state_until_closed() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Scout".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+        state.mark_running(thread_id);
+
+        state.upsert(
+            thread_id,
+            Some("Scout renamed".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(3),
+        );
+        assert_eq!(
+            state.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Scout renamed".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: None,
+                is_running: true,
+                is_closed: false,
+                created_at: Some(1),
+                updated_at: Some(3),
+            })
+        );
+
+        state.upsert(
+            thread_id,
+            Some("Scout renamed".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(4),
+        );
+        assert_eq!(
+            state.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Scout renamed".to_string()),
+                agent_role: Some("worker".to_string()),
+                agent_path: None,
+                is_running: false,
+                is_closed: true,
+                created_at: Some(1),
+                updated_at: Some(4),
+            })
         );
     }
 

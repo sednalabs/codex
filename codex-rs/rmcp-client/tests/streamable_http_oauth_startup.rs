@@ -51,6 +51,10 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
+        .and(header(
+            "user-agent",
+            concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION")),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
             "token_endpoint": format!("{}/oauth/token", server.uri()),
@@ -61,6 +65,10 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
         .await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
+        .and(header(
+            "user-agent",
+            concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION")),
+        ))
         .and(body_string_contains("grant_type=refresh_token"))
         .and(body_string_contains(format!(
             "refresh_token={REFRESH_TOKEN}"
@@ -83,6 +91,10 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
         .await;
     Mock::given(method("POST"))
         .and(path("/mcp"))
+        .and(header(
+            "user-agent",
+            concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION")),
+        ))
         .and(header(
             "authorization",
             format!("Bearer {REFRESHED_ACCESS_TOKEN}"),

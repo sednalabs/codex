@@ -73,7 +73,7 @@ pub struct ExtractionOutcome {
     pub parse_errors: usize,
 }
 
-/// Canonical thread metadata derived from rollout files.
+/// Canonical persisted thread metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadMetadata {
     /// The thread identifier.
@@ -110,6 +110,8 @@ pub struct ThreadMetadata {
     pub cli_version: String,
     /// A best-effort thread title.
     pub title: String,
+    /// Explicit user-facing thread name, if one was set.
+    pub name: Option<String>,
     /// Best available user-facing preview for discovery and list display.
     pub preview: Option<String>,
     /// The sandbox policy (stringified enum).
@@ -122,6 +124,8 @@ pub struct ThreadMetadata {
     pub first_user_message: Option<String>,
     /// The archive timestamp, if the thread is archived.
     pub archived_at: Option<DateTime<Utc>>,
+    /// Whether the thread was explicitly pinned by the user.
+    pub is_pinned: bool,
     /// The git commit SHA, if known.
     pub git_sha: Option<String>,
     /// The git branch name, if known.
@@ -245,12 +249,14 @@ impl ThreadMetadataBuilder {
             cwd: self.cwd.clone(),
             cli_version: self.cli_version.clone().unwrap_or_default(),
             title: String::new(),
+            name: None,
             preview: None,
             sandbox_policy,
             approval_mode,
             tokens_used: 0,
             first_user_message: None,
             archived_at: self.archived_at.map(canonicalize_datetime),
+            is_pinned: false,
             git_sha: self.git_sha.clone(),
             git_branch: self.git_branch.clone(),
             git_origin_url: self.git_origin_url.clone(),
@@ -259,8 +265,20 @@ impl ThreadMetadataBuilder {
 }
 
 impl ThreadMetadata {
-    /// Preserve existing non-null Git fields when rollout-derived metadata is reconciled.
+    /// Preserve SQLite-owned Git fields when rollout-derived metadata is reconciled.
     pub fn prefer_existing_git_info(&mut self, existing: &Self) {
+        if matches!(self.history_mode, ThreadHistoryMode::Paginated)
+            && matches!(existing.history_mode, ThreadHistoryMode::Paginated)
+        {
+            // `self` was rebuilt from the rollout's initial SessionMeta. `existing` is the
+            // current SQLite row. Once that row says paginated, metadata updates are SQLite-only,
+            // so a NULL is an explicit clear, not missing data. Copy the whole tuple or the stale
+            // rollout value would be written back during reconciliation.
+            self.git_sha = existing.git_sha.clone();
+            self.git_branch = existing.git_branch.clone();
+            self.git_origin_url = existing.git_origin_url.clone();
+            return;
+        }
         if existing.git_sha.is_some() {
             self.git_sha = existing.git_sha.clone();
         }
@@ -332,6 +350,9 @@ impl ThreadMetadata {
         if self.title != other.title {
             diffs.push("title");
         }
+        if self.name != other.name {
+            diffs.push("name");
+        }
         if self.preview != other.preview {
             diffs.push("preview");
         }
@@ -349,6 +370,9 @@ impl ThreadMetadata {
         }
         if self.archived_at != other.archived_at {
             diffs.push("archived_at");
+        }
+        if self.is_pinned != other.is_pinned {
+            diffs.push("is_pinned");
         }
         if self.git_sha != other.git_sha {
             diffs.push("git_sha");
@@ -386,12 +410,14 @@ pub(crate) struct ThreadRow {
     cwd: String,
     cli_version: String,
     title: String,
+    name: Option<String>,
     preview: String,
     sandbox_policy: String,
     approval_mode: String,
     tokens_used: i64,
     first_user_message: String,
     archived_at: Option<i64>,
+    is_pinned: bool,
     git_sha: Option<String>,
     git_branch: Option<String>,
     git_origin_url: Option<String>,
@@ -417,12 +443,14 @@ impl ThreadRow {
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
             title: row.try_get("title")?,
+            name: row.try_get("name")?,
             preview: row.try_get("preview")?,
             sandbox_policy: row.try_get("sandbox_policy")?,
             approval_mode: row.try_get("approval_mode")?,
             tokens_used: row.try_get("tokens_used")?,
             first_user_message: row.try_get("first_user_message")?,
             archived_at: row.try_get("archived_at")?,
+            is_pinned: row.try_get("is_pinned")?,
             git_sha: row.try_get("git_sha")?,
             git_branch: row.try_get("git_branch")?,
             git_origin_url: row.try_get("git_origin_url")?,
@@ -452,12 +480,14 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             cwd,
             cli_version,
             title,
+            name,
             preview,
             sandbox_policy,
             approval_mode,
             tokens_used,
             first_user_message,
             archived_at,
+            is_pinned,
             git_sha,
             git_branch,
             git_origin_url,
@@ -486,12 +516,14 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             cwd: PathBuf::from(cwd),
             cli_version,
             title,
+            name,
             preview: (!preview.is_empty()).then_some(preview),
             sandbox_policy,
             approval_mode,
             tokens_used,
             first_user_message: (!first_user_message.is_empty()).then_some(first_user_message),
             archived_at: archived_at.map(epoch_seconds_to_datetime).transpose()?,
+            is_pinned,
             git_sha,
             git_branch,
             git_origin_url,
@@ -583,12 +615,14 @@ mod tests {
             cwd: "/tmp/workspace".to_string(),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
+            name: None,
             preview: String::new(),
             sandbox_policy: "read-only".to_string(),
             approval_mode: "on-request".to_string(),
             tokens_used: 1,
             first_user_message: String::new(),
             archived_at: None,
+            is_pinned: false,
             git_sha: None,
             git_branch: None,
             git_origin_url: None,
@@ -615,12 +649,14 @@ mod tests {
             cwd: PathBuf::from("/tmp/workspace"),
             cli_version: "0.0.0".to_string(),
             title: String::new(),
+            name: None,
             preview: None,
             sandbox_policy: "read-only".to_string(),
             approval_mode: "on-request".to_string(),
             tokens_used: 1,
             first_user_message: None,
             archived_at: None,
+            is_pinned: false,
             git_sha: None,
             git_branch: None,
             git_origin_url: None,
@@ -655,5 +691,20 @@ mod tests {
         row.history_mode = "future".to_string();
 
         assert!(ThreadMetadata::try_from(row).is_err());
+    }
+
+    #[test]
+    fn paginated_rollout_git_info_keeps_rollout_values_until_sqlite_mode_is_paginated() {
+        let mut reconciled = expected_thread_metadata(/*reasoning_effort*/ None);
+        reconciled.history_mode = ThreadHistoryMode::Paginated;
+        reconciled.git_sha = Some("rollout-sha".to_string());
+        reconciled.git_branch = Some("rollout-branch".to_string());
+        reconciled.git_origin_url = Some("rollout-origin".to_string());
+        let existing = expected_thread_metadata(/*reasoning_effort*/ None);
+        let expected = reconciled.clone();
+
+        reconciled.prefer_existing_git_info(&existing);
+
+        assert_eq!(reconciled, expected);
     }
 }

@@ -151,6 +151,7 @@ async fn complete_terminal_wait(
                 empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
                 max_output_tokens,
                 truncation_policy: response.truncation_policy,
+                interaction_event: None,
             }) => {
                 response = result?;
             }

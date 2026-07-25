@@ -9,17 +9,15 @@ use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use crate::session::turn::built_tools;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_rollout_trace::CompactionTraceContext;
-use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 pub(super) struct RemoteCompactAttempt {
     pub(super) new_history: Vec<ResponseItem>,
-    pub(super) trace_input_history: Vec<ResponseItem>,
+    pub(super) trace_input_history: Option<Vec<ResponseItem>>,
 }
 
 pub(super) async fn run_remote_compact_attempt(
@@ -57,14 +55,11 @@ pub(super) async fn run_remote_compact_attempt(
                     .saturating_sub(estimated_deleted_tokens.min(max_local_deleted_tokens))
             });
     }
-    let trace_input_history = history.raw_items().to_vec();
+    let trace_input_history = compaction_trace
+        .is_enabled()
+        .then(|| history.raw_items().to_vec());
     let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
-    let tool_router = built_tools(
-        sess.as_ref(),
-        step_context.as_ref(),
-        &CancellationToken::new(),
-    )
-    .await?;
+    let tool_router = &step_context.tool_router;
     let prompt = Prompt {
         input: prompt_input,
         tools: tool_router.model_visible_specs(),

@@ -312,6 +312,8 @@ async fn mcp_startup_complete_preserves_review_status() {
     chat.on_guardian_assessment(GuardianAssessmentEvent {
         id: "guardian-1".to_string(),
         target_item_id: Some("guardian-target-1".to_string()),
+        plugin_id: None,
+        script_path: None,
         turn_id: "turn-1".to_string(),
         started_at_ms: 0,
         completed_at_ms: None,
@@ -666,6 +668,8 @@ async fn guardian_parallel_reviews_render_aggregate_status_snapshot() {
             msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
                 id: id.to_string(),
                 target_item_id: Some(format!("{id}-target")),
+                plugin_id: None,
+                script_path: None,
                 turn_id: "turn-1".to_string(),
                 started_at_ms: 0,
                 completed_at_ms: None,
@@ -700,6 +704,8 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
         msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
             id: "guardian-1".to_string(),
             target_item_id: Some("guardian-1-target".to_string()),
+            plugin_id: None,
+            script_path: None,
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
             completed_at_ms: None,
@@ -720,6 +726,8 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
         msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
             id: "guardian-2".to_string(),
             target_item_id: Some("guardian-2-target".to_string()),
+            plugin_id: None,
+            script_path: None,
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
             completed_at_ms: None,
@@ -740,6 +748,8 @@ async fn guardian_parallel_reviews_keep_remaining_review_visible_after_denial() 
         msg: EventMsg::GuardianAssessment(GuardianAssessmentEvent {
             id: "guardian-1".to_string(),
             target_item_id: Some("guardian-1-target".to_string()),
+            plugin_id: None,
+            script_path: None,
             turn_id: "turn-1".to_string(),
             started_at_ms: 0,
             completed_at_ms: Some(0),

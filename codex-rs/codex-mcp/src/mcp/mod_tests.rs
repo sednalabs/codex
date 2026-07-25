@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
+pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
     McpConfig {
         chatgpt_base_url: "https://chatgpt.com".to_string(),
         apps_mcp_product_sku: None,
@@ -28,10 +28,15 @@ fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
         mcp_oauth_callback_url: None,
         skill_mcp_dependency_install_enabled: true,
         approval_policy: Constrained::allow_any(AskForApproval::OnRequest),
+        permission_profile: PermissionProfile::default(),
+        config_layer_stack: codex_config::ConfigLayerStack::default(),
+        approvals_reviewer: codex_config::types::ApprovalsReviewer::default(),
+        environment_cwds: HashMap::new(),
         codex_linux_sandbox_exe: None,
         use_legacy_landlock: false,
         apps_enabled: false,
         prefix_mcp_tool_names: true,
+        non_prefixed_mcp_tool_servers: Vec::new(),
         client_elicitation_capability: ElicitationCapability::default(),
         mcp_server_catalog: ResolvedMcpCatalog::default(),
         connector_snapshot: codex_connectors::ConnectorSnapshot::default(),
@@ -239,27 +244,27 @@ fn selected_mcp_attribution_does_not_join_an_unrelated_local_summary() {
 }
 
 #[test]
-fn codex_apps_mcp_url_for_base_url_keeps_existing_paths() {
+fn codex_apps_mcp_url_for_base_url_uses_plugin_service_paths() {
     assert_eq!(
         codex_apps_mcp_url_for_base_url("https://chatgpt.com/backend-api"),
-        "https://chatgpt.com/backend-api/wham/apps"
+        "https://chatgpt.com/backend-api/ps/mcp"
     );
     assert_eq!(
         codex_apps_mcp_url_for_base_url("https://chat.openai.com"),
-        "https://chat.openai.com/backend-api/wham/apps"
+        "https://chat.openai.com/backend-api/ps/mcp"
     );
     assert_eq!(
         codex_apps_mcp_url_for_base_url("http://localhost:8080/api/codex"),
-        "http://localhost:8080/api/codex/apps"
+        "http://localhost:8080/api/codex/ps/mcp"
     );
     assert_eq!(
         codex_apps_mcp_url_for_base_url("http://localhost:8080"),
-        "http://localhost:8080/api/codex/apps"
+        "http://localhost:8080/api/codex/ps/mcp"
     );
 }
 
 #[test]
-fn codex_apps_server_config_uses_legacy_codex_apps_path() {
+fn codex_apps_server_config_uses_plugin_service_path() {
     let config = codex_apps_mcp_server_config(
         "https://chatgpt.com",
         /*apps_mcp_product_sku*/ None,
@@ -270,7 +275,7 @@ fn codex_apps_server_config_uses_legacy_codex_apps_path() {
         _ => panic!("expected streamable http transport for codex apps"),
     };
 
-    assert_eq!(url, "https://chatgpt.com/backend-api/wham/apps");
+    assert_eq!(url, "https://chatgpt.com/backend-api/ps/mcp");
 }
 
 #[test]
@@ -444,15 +449,9 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
         .get(CODEX_APPS_MCP_SERVER_NAME)
         .expect("codex apps server should exist");
 
-    let sample = sample
-        .configured_config()
-        .expect("configured server should retain transport");
-    let docs = docs
-        .configured_config()
-        .expect("configured server should retain transport");
-    let codex_apps = codex_apps
-        .configured_config()
-        .expect("codex apps should use configured transport");
+    let sample = sample.config();
+    let docs = docs.config();
+    let codex_apps = codex_apps.config();
 
     match &sample.transport {
         McpServerTransportConfig::StreamableHttp { url, .. } => {
@@ -468,7 +467,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
     }
     match &codex_apps.transport {
         McpServerTransportConfig::StreamableHttp { url, .. } => {
-            assert_eq!(url, "https://chatgpt.com/backend-api/wham/apps");
+            assert_eq!(url, "https://chatgpt.com/backend-api/ps/mcp");
         }
         other => panic!("expected streamable http transport, got {other:?}"),
     }

@@ -155,6 +155,7 @@ mod otel;
 mod permission_profile_catalog;
 mod permissions;
 pub mod profile;
+mod requirements;
 mod resolved_permission_profile;
 #[cfg(test)]
 mod schema;
@@ -279,24 +280,21 @@ pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
 pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
-pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_PROFILE_V2_SUFFIX: &str = ".config.toml";
 
-fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<PathBuf> {
+fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<AbsolutePathBuf> {
     let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let path = PathBuf::from(trimmed);
-    if path.is_absolute() {
-        Some(path)
-    } else {
-        Some(resolved_cwd.join(path))
-    }
+    Some(AbsolutePathBuf::resolve_path_against_base(
+        trimmed,
+        resolved_cwd,
+    ))
 }
 
 fn resolve_cli_auth_credentials_store_mode(
@@ -848,6 +846,9 @@ pub struct Config {
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
+    /// When present, only these MCP servers omit the legacy `mcp__` namespace prefix.
+    pub non_prefixed_mcp_tool_servers: Option<Vec<String>>,
+
     /// Preferred store for MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
     ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
@@ -893,9 +894,6 @@ pub struct Config {
     /// Default reasoning effort for spawned subagents when the spawn call does not select one.
     pub agent_default_subagent_reasoning_effort: Option<ReasoningEffort>,
 
-    /// Maximum runtime in seconds for agent job workers before they are failed.
-    pub agent_job_max_runtime_seconds: Option<u64>,
-
     /// Whether to record a model-visible message when an agent turn is interrupted.
     pub agent_interrupt_message_enabled: bool,
 
@@ -912,8 +910,8 @@ pub struct Config {
     /// overridden by the `CODEX_HOME` environment variable).
     pub codex_home: AbsolutePathBuf,
 
-    /// Directory where Codex stores the SQLite state DB.
-    pub sqlite_home: PathBuf,
+    /// Resolved configuration shared by all Codex SQLite databases.
+    pub sqlite: codex_state::SqliteConfig,
 
     /// Directory where Codex writes log files (defaults to `$CODEX_HOME/log`).
     pub log_dir: PathBuf,
@@ -1050,6 +1048,9 @@ pub struct Config {
 
     /// Whether to register the experimental request_user_input tool.
     pub experimental_request_user_input_enabled: bool,
+
+    /// Whether to register the update_plan tool.
+    pub update_plan_enabled: bool,
 
     /// Configuration for the experimental code-mode tool surface.
     pub code_mode: CodeModeConfig,
@@ -1199,6 +1200,7 @@ pub struct MultiAgentV2Config {
     pub tool_namespace: Option<String>,
     pub hide_spawn_agent_metadata: bool,
     pub expose_spawn_agent_model_overrides: bool,
+    pub wait_agent_enabled: bool,
     pub non_code_mode_only: bool,
 }
 
@@ -1222,6 +1224,7 @@ impl MultiAgentV2Config {
             tool_namespace: Some(DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE.to_string()),
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
+            wait_agent_enabled: true,
             non_code_mode_only: true,
         }
     }
@@ -1272,7 +1275,7 @@ impl AuthManagerConfig for Config {
         self.chatgpt_base_url.clone()
     }
 
-    fn auth_route_config(&self) -> Option<AuthRouteConfig> {
+    fn auth_route_config(&self) -> AuthRouteConfig {
         Config::auth_route_config(self)
     }
 }
@@ -1454,6 +1457,10 @@ impl ConfigBuilder {
 }
 
 impl Config {
+    pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
+        &self.sqlite
+    }
+
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
         if self.features.enabled(Feature::MultiAgentV2) {
             Some(MultiAgentVersion::V2)
@@ -1536,9 +1543,9 @@ impl Config {
         }
     }
 
-    pub fn auth_route_config(&self) -> Option<AuthRouteConfig> {
-        self.respect_system_proxy
-            .then(AuthRouteConfig::respect_system_proxy)
+    /// Returns auth routing resolved from the effective feature configuration.
+    pub fn auth_route_config(&self) -> AuthRouteConfig {
+        AuthRouteConfig::from_http_client_factory(self.http_client_factory())
     }
 
     /// Creates the HTTP client factory resolved from the effective feature configuration.
@@ -1555,9 +1562,11 @@ impl Config {
     pub fn plugins_config_input(&self) -> PluginsConfigInput {
         PluginsConfigInput::new(
             self.config_layer_stack.clone(),
+            self.model_provider_id.clone(),
             self.features.enabled(Feature::Plugins),
             self.features.enabled(Feature::RemotePlugin),
             self.chatgpt_base_url.clone(),
+            self.http_client_factory(),
         )
     }
 
@@ -1651,10 +1660,24 @@ impl Config {
                 .features
                 .enabled(Feature::SkillMcpDependencyInstall),
             approval_policy: self.permissions.approval_policy.clone(),
+            permission_profile: self.permissions.permission_profile().clone(),
+            config_layer_stack: self.config_layer_stack.clone(),
+            approvals_reviewer: self.approvals_reviewer,
+            environment_cwds: HashMap::new(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             use_legacy_landlock: self.features.use_legacy_landlock(),
             apps_enabled: self.features.enabled(Feature::Apps),
             prefix_mcp_tool_names: self.prefix_mcp_tool_names(),
+            non_prefixed_mcp_tool_servers: if self
+                .features
+                .enabled(Feature::NonPrefixedMcpToolNames)
+            {
+                self.non_prefixed_mcp_tool_servers
+                    .clone()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             client_elicitation_capability: if self.features.enabled(Feature::AuthElicitation) {
                 ElicitationCapability {
                     form: Some(FormElicitationCapability::default()),
@@ -1675,6 +1698,7 @@ impl Config {
 
     pub(crate) fn prefix_mcp_tool_names(&self) -> bool {
         !self.features.enabled(Feature::NonPrefixedMcpToolNames)
+            || self.non_prefixed_mcp_tool_servers.is_some()
     }
 
     pub async fn rebuild_preserving_session_layers(
@@ -2450,6 +2474,7 @@ fn apply_managed_filesystem_constraints(
                     pattern: deny_read.as_str().to_string(),
                 },
                 access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             }
         } else {
             let Ok(path) = AbsolutePathBuf::try_from(deny_read.as_str()) else {
@@ -2458,6 +2483,7 @@ fn apply_managed_filesystem_constraints(
             codex_protocol::permissions::FileSystemSandboxEntry {
                 path: codex_protocol::permissions::FileSystemPath::Path { path },
                 access: codex_protocol::permissions::FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             }
         };
         if !file_system_sandbox_policy
@@ -2552,6 +2578,13 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
         .is_none_or(|config| config.enabled)
 }
 
+fn resolve_update_plan_enabled(config_toml: &ConfigToml) -> bool {
+    config_toml
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.update_plan.as_ref())
+        .is_none_or(|config| config.enabled)
+}
 fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
     let base = code_mode_toml_config(config_toml.features.as_ref());
 
@@ -2600,6 +2633,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let expose_spawn_agent_model_overrides = base
         .and_then(|config| config.expose_spawn_agent_model_overrides)
         .unwrap_or(default.expose_spawn_agent_model_overrides);
+    let wait_agent_enabled = base
+        .and_then(|config| config.wait_agent_enabled)
+        .unwrap_or(default.wait_agent_enabled);
     let mut default_root_agent_usage_hint_text = default.root_agent_usage_hint_text;
     let mut default_subagent_usage_hint_text = default.subagent_usage_hint_text;
     if expose_spawn_agent_model_overrides {
@@ -2644,6 +2680,7 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         tool_namespace,
         hide_spawn_agent_metadata,
         expose_spawn_agent_model_overrides,
+        wait_agent_enabled,
         non_code_mode_only,
     }
 }
@@ -2931,9 +2968,24 @@ pub fn resolve_bootstrap_respect_system_proxy(
 pub fn resolve_bootstrap_auth_route_config(
     cfg: &ConfigToml,
     feature_requirements: Option<&Sourced<FeatureRequirementsToml>>,
-) -> std::io::Result<Option<AuthRouteConfig>> {
-    resolve_bootstrap_respect_system_proxy(cfg, feature_requirements)
-        .map(|enabled| enabled.then(AuthRouteConfig::respect_system_proxy))
+) -> std::io::Result<AuthRouteConfig> {
+    resolve_bootstrap_http_client_factory(cfg, feature_requirements)
+        .map(AuthRouteConfig::from_http_client_factory)
+}
+
+/// Resolves shared HTTP routing for startup work that runs before final [`Config`] loading.
+pub fn resolve_bootstrap_http_client_factory(
+    cfg: &ConfigToml,
+    feature_requirements: Option<&Sourced<FeatureRequirementsToml>>,
+) -> std::io::Result<HttpClientFactory> {
+    resolve_bootstrap_respect_system_proxy(cfg, feature_requirements).map(|respect_system_proxy| {
+        let outbound_proxy_policy = if respect_system_proxy {
+            OutboundProxyPolicy::RespectSystemProxy
+        } else {
+            OutboundProxyPolicy::ReqwestDefault
+        };
+        HttpClientFactory::new(outbound_proxy_policy)
+    })
 }
 
 pub(crate) fn resolve_web_search_mode_for_turn(
@@ -3073,7 +3125,7 @@ impl Config {
 
     pub(crate) async fn load_config_with_layer_stack(
         fs: &dyn ExecutorFileSystem,
-        cfg: ConfigToml,
+        mut cfg: ConfigToml,
         overrides: ConfigOverrides,
         codex_home: AbsolutePathBuf,
         config_layer_stack: ConfigLayerStack,
@@ -3094,13 +3146,31 @@ impl Config {
             resolve_orchestrator_feature_enabled(orchestrator.and_then(|value| value.skills.as_ref()));
         let orchestrator_mcp_enabled =
             resolve_orchestrator_feature_enabled(orchestrator.and_then(|value| value.mcp.as_ref()));
-        // Ensure that every field of ConfigRequirements is applied to the final
-        // Config.
+        let mut startup_warnings = config_layer_stack
+            .startup_warnings()
+            .unwrap_or_default()
+            .to_vec();
+        let configured_sqlite_home = cfg.sqlite_home.clone();
+        requirements::apply_to_config(
+            &mut cfg,
+            config_layer_stack.requirements(),
+            &mut startup_warnings,
+        );
+
+        // Destructure every field to ensure ConfigRequirements additions are
+        // either applied above or handled while constructing the final Config.
         let ConfigRequirements {
+            sqlite_home: _,
+            log_dir: _,
+            model_catalog_json: _,
+            check_for_update_on_startup: _,
+            allow_login_shell: _,
+            feedback: _,
             approval_policy: mut constrained_approval_policy,
             approvals_reviewer: mut constrained_approvals_reviewer,
             permission_profile: mut constrained_permission_profile,
             windows_sandbox_mode: mut constrained_windows_sandbox_mode,
+            windows_sandbox_private_desktop: _,
             web_search_mode: mut constrained_web_search_mode,
             allow_managed_hooks_only: _,
             allow_appshots: _,
@@ -3118,10 +3188,6 @@ impl Config {
             guardian_policy_config_source: _,
         } = config_layer_stack.requirements().clone();
 
-        let mut startup_warnings = config_layer_stack
-            .startup_warnings()
-            .unwrap_or_default()
-            .to_vec();
         let user_instructions = None;
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
@@ -3207,6 +3273,17 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
+        let non_prefixed_mcp_tool_servers = if features.enabled(Feature::NonPrefixedMcpToolNames) {
+            cfg.features
+                .as_ref()
+                .and_then(|features| features.non_prefixed_mcp_tool_names.as_ref())
+                .and_then(|feature| match feature {
+                    FeatureToml::Enabled(_) => None,
+                    FeatureToml::Config(config) => config.server_names.clone(),
+                })
+        } else {
+            None
+        };
         let respect_system_proxy = features.enabled(Feature::RespectSystemProxy);
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let configured_windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);
@@ -3545,6 +3622,7 @@ impl Config {
         let web_search_config = resolve_web_search_config(&cfg);
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
+        let update_plan_enabled = resolve_update_plan_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let token_budget = resolve_token_budget_config(&cfg, &features)?;
@@ -3650,25 +3728,6 @@ impl Config {
             .agents
             .as_ref()
             .and_then(|agents| agents.default_subagent_reasoning_effort.clone());
-        let agent_job_max_runtime_seconds = cfg
-            .agents
-            .as_ref()
-            .and_then(|agents| agents.job_max_runtime_seconds)
-            .or(DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS);
-        if agent_job_max_runtime_seconds == Some(0) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "agents.job_max_runtime_seconds must be at least 1",
-            ));
-        }
-        if let Some(max_runtime_seconds) = agent_job_max_runtime_seconds
-            && max_runtime_seconds > i64::MAX as u64
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "agents.job_max_runtime_seconds must fit within a 64-bit signed integer",
-            ));
-        }
         let agent_interrupt_message_enabled = cfg
             .agents
             .as_ref()
@@ -3810,12 +3869,19 @@ impl Config {
             .as_ref()
             .map(AbsolutePathBuf::to_path_buf)
             .unwrap_or_else(|| codex_home.join("log").to_path_buf());
+        let sqlite_home_env = resolve_sqlite_home_env(&resolved_cwd);
+        requirements::push_sqlite_home_env_override_warning(
+            configured_sqlite_home.as_ref(),
+            sqlite_home_env.as_deref(),
+            config_layer_stack.requirements().sqlite_home.as_ref(),
+            &mut startup_warnings,
+        );
         let sqlite_home = cfg
             .sqlite_home
             .as_ref()
-            .map(AbsolutePathBuf::to_path_buf)
-            .or_else(|| resolve_sqlite_home_env(&resolved_cwd))
-            .unwrap_or_else(|| codex_home.to_path_buf());
+            .cloned()
+            .or(sqlite_home_env)
+            .unwrap_or_else(|| codex_home.clone());
         let original_permission_profile = permission_profile.clone();
         apply_requirement_constrained_value(
             "approval_policy",
@@ -3978,6 +4044,7 @@ impl Config {
                 env!("CARGO_PKG_VERSION"),
             ),
             mcp_servers,
+            non_prefixed_mcp_tool_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
             mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
@@ -4009,10 +4076,9 @@ impl Config {
             agent_max_depth,
             agent_roles,
             memories: memories_config,
-            agent_job_max_runtime_seconds,
             agent_interrupt_message_enabled,
             codex_home,
-            sqlite_home,
+            sqlite: codex_state::SqliteConfig::from_sqlite_home(sqlite_home),
             log_dir,
             config_lock_export_dir: cfg
                 .debug
@@ -4090,6 +4156,7 @@ impl Config {
             web_search_mode: constrained_web_search_mode.value,
             web_search_config,
             experimental_request_user_input_enabled,
+            update_plan_enabled,
             code_mode,
             use_experimental_unified_exec_tool,
             background_terminal_max_timeout,
@@ -4269,8 +4336,12 @@ impl Config {
                         ),
                     )
                 })?;
-            let mut configured_network_proxy_config = network_proxy_config_for_profile_selection(
+            let permissions = merge_managed_permission_profiles(
                 cfg.permissions.as_ref(),
+                self.config_layer_stack.requirements_toml(),
+            )?;
+            let mut configured_network_proxy_config = network_proxy_config_for_profile_selection(
+                permissions.as_ref(),
                 active_permission_profile.id.as_str(),
             )?;
             if self.features.enabled(Feature::NetworkProxy)

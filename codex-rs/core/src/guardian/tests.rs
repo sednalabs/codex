@@ -9,6 +9,7 @@ use crate::guardian::approval_request::guardian_request_target_item_id;
 use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY;
 use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 use crate::guardian::prompt::guardian_policy_prompt_with_config_and_template;
+use crate::guardian::review::guardian_review_session_config;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::test_support;
@@ -472,18 +473,21 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
                     value: codex_protocol::permissions::FileSystemSpecialPath::Root,
                 },
                 access: FileSystemAccessMode::Read,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path {
                     path: denied_root.clone(),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::GlobPattern {
                     pattern: denied_glob.clone(),
                 },
                 access: FileSystemAccessMode::Deny,
+                missing_path_behavior: None,
             },
         ]),
         NetworkSandboxPolicy::Restricted,
@@ -1163,8 +1167,11 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
                 .to_string(),
         },
         /*retry_reason*/ None,
-        GuardianApprovalRequestSource::MainTurn,
-        cancel_token,
+        GuardianReviewOptions {
+            plugin_attribution_override: None,
+            approval_request_source: GuardianApprovalRequestSource::MainTurn,
+            external_cancel: Some(cancel_token),
+        },
     )
     .await;
 
@@ -2340,7 +2347,9 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
     )
     .await;
 
-    assert_eq!(decision, ReviewDecision::Denied);
+    let ReviewDecision::Denied { rejection } = decision else {
+        panic!("guardian error should deny the approval");
+    };
     assert_eq!(request_log.requests().len(), 1);
 
     let mut warnings = Vec::new();
@@ -2376,17 +2385,10 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
         }),
         "denial rationale should not fall back to the generic missing payload error"
     );
-    {
-        let rationales = session.services.guardian_rejections.lock().await;
-        assert!(rationales.contains_key("review-shell-guardian-error"));
-        assert!(!rationales.contains_key("shell-guardian-error"));
-    }
-    let rejection_message =
-        guardian_rejection_message(session.as_ref(), "review-shell-guardian-error").await;
     assert!(
-        rejection_message.contains("Reason: Automatic approval review failed:")
-            && rejection_message.contains(error_message),
-        "rejection message should include guardian rationale: {rejection_message}"
+        rejection.contains("Reason: Automatic approval review failed:")
+            && rejection.contains(error_message),
+        "rejection message should include guardian rationale: {rejection}"
     );
 
     Ok(())
@@ -2475,7 +2477,7 @@ async fn guardian_review_does_not_retry_missing_assessment_payload() -> anyhow::
     )
     .await;
 
-    assert_eq!(decision, ReviewDecision::Denied);
+    assert!(matches!(decision, ReviewDecision::Denied { .. }));
     assert_eq!(request_log.requests().len(), 1);
     Ok(())
 }
@@ -2579,7 +2581,7 @@ async fn guardian_review_exhausts_three_failures_with_one_terminal_event() -> an
     )
     .await;
 
-    assert_eq!(decision, ReviewDecision::Denied);
+    assert!(matches!(decision, ReviewDecision::Denied { .. }));
     assert_eq!(request_log.requests().len(), 3);
     let mut statuses = Vec::new();
     while let Ok(event) = rx.try_recv() {
@@ -2630,7 +2632,7 @@ async fn guardian_review_does_not_retry_valid_denial() -> anyhow::Result<()> {
     )
     .await;
 
-    assert_eq!(decision, ReviewDecision::Denied);
+    assert!(matches!(decision, ReviewDecision::Denied { .. }));
     assert_eq!(request_log.requests().len(), 1);
     Ok(())
 }
@@ -2936,6 +2938,69 @@ async fn guardian_review_session_config_preserves_parent_network_proxy() {
     assert_eq!(
         guardian_config.permissions.permission_profile(),
         &PermissionProfile::read_only()
+    );
+}
+
+#[tokio::test]
+async fn guardian_review_session_config_clears_context_overrides_for_distinct_effective_model() {
+    let server = start_mock_server().await;
+    let (session, mut turn) = guardian_test_session_and_turn(&server).await;
+    let mut config = (*turn.config).clone();
+    config.model = Some("codex-auto-review".to_string());
+    config.model_context_window = Some(900_000);
+    config.model_auto_compact_token_limit = Some(600_000);
+    Arc::get_mut(&mut turn)
+        .expect("turn should be unique")
+        .config = Arc::new(config);
+
+    let guardian_config = guardian_review_session_config(session.as_ref(), turn.as_ref())
+        .await
+        .expect("guardian config")
+        .spawn_config;
+
+    assert_eq!(
+        (
+            guardian_config.model_context_window,
+            guardian_config.model_auto_compact_token_limit,
+        ),
+        (None, None)
+    );
+}
+
+#[tokio::test]
+async fn guardian_review_session_config_preserves_context_overrides_for_same_effective_model() {
+    let server = start_mock_server().await;
+    let (mut session, mut turn) = guardian_test_session_and_turn(&server).await;
+    let parent_model = turn.model_info.clone();
+    let auth_manager = Arc::clone(&session.services.auth_manager);
+    Arc::get_mut(&mut session)
+        .expect("session should be unique")
+        .services
+        .models_manager = Arc::new(StaticModelsManager::new(
+        Some(auth_manager),
+        ModelsResponse {
+            models: vec![parent_model],
+        },
+    ));
+    let mut config = (*turn.config).clone();
+    config.model = Some("stale-parent-model".to_string());
+    config.model_context_window = Some(128_000);
+    config.model_auto_compact_token_limit = Some(100_000);
+    Arc::get_mut(&mut turn)
+        .expect("turn should be unique")
+        .config = Arc::new(config);
+
+    let guardian_config = guardian_review_session_config(session.as_ref(), turn.as_ref())
+        .await
+        .expect("guardian config")
+        .spawn_config;
+
+    assert_eq!(
+        (
+            guardian_config.model_context_window,
+            guardian_config.model_auto_compact_token_limit,
+        ),
+        (Some(128_000), Some(100_000))
     );
 }
 

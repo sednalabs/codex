@@ -119,6 +119,20 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub empty_input_min_yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
     pub truncation_policy: TruncationPolicy,
+    pub interaction_event: Option<WriteStdinInteractionEvent<'a>>,
+}
+
+pub(crate) struct WriteStdinInteractionEvent<'a> {
+    pub session: &'a Arc<Session>,
+    pub turn: &'a Arc<TurnContext>,
+    pub terminal_wait: Option<TerminalWaitInfo>,
+    pub emit_when_process_exited: bool,
+}
+
+impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("WriteStdinInteractionEvent")
+    }
 }
 
 #[derive(Default)]

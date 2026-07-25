@@ -120,6 +120,7 @@ impl ChatWidget {
                             }
                         }),
                     },
+                    &turn_id,
                     from_replay,
                 );
             }

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_core::StartThreadOptions;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
@@ -20,7 +21,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
-use core_test_support::is_remote_test_environment;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call;
@@ -63,7 +63,7 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
 
     let thread_id = test.session_configured.thread_id;
     let rollout_path = test.codex.rollout_path().expect("rollout path");
-    let db_path = codex_state::state_db_path(test.config.sqlite_home.as_path());
+    let db_path = test.config.sqlite.state_db_path();
 
     for _ in 0..100 {
         if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
@@ -108,11 +108,6 @@ async fn new_thread_is_recorded_in_state_db() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Result<()> {
-    if is_remote_test_environment() {
-        eprintln!("skipping local stdio MCP fixture test under remote executor");
-        return Ok(());
-    }
-
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
         &server,
@@ -150,7 +145,10 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     let base_test = builder.build(&server).await?;
     let started = base_test
         .thread_manager
-        .start_thread_with_tools(base_test.config.clone(), vec![dynamic_tool])
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![dynamic_tool],
+            ..StartThreadOptions::new(base_test.config.clone())
+        })
         .await?;
     let rollout_path = started
         .session_configured
@@ -203,7 +201,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
         &json!({
             "type": "namespace",
             "name": namespace,
-            "description": "Tools in the resume_tools namespace.",
+            "description": codex_tools::default_namespace_description(namespace),
             "tools": [{
                 "type": "function",
                 "name": tool_name,
@@ -247,7 +245,7 @@ async fn resume_restores_legacy_dynamic_tools_from_rollout_with_sqlite_enabled()
     let base_test = builder.build(&server).await?;
     let started = base_test
         .thread_manager
-        .start_thread_with_tools(base_test.config.clone(), Vec::new())
+        .start_thread(StartThreadOptions::new(base_test.config.clone()))
         .await?;
     let rollout_path = started
         .session_configured
@@ -418,7 +416,7 @@ async fn backfill_scans_existing_rollouts() -> Result<()> {
 
     let test = builder.build(&server).await?;
 
-    let db_path = codex_state::state_db_path(test.config.sqlite_home.as_path());
+    let db_path = test.config.sqlite.state_db_path();
     let rollout_path = test.config.codex_home.join(&rollout_rel_path);
     let default_provider = test.config.model_provider_id.clone();
 
@@ -469,7 +467,7 @@ async fn user_messages_persist_in_state_db() -> Result<()> {
     });
     let test = builder.build(&server).await?;
 
-    let db_path = codex_state::state_db_path(test.config.sqlite_home.as_path());
+    let db_path = test.config.sqlite.state_db_path();
     for _ in 0..100 {
         if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
             break;
@@ -622,11 +620,6 @@ async fn standalone_web_search_marks_thread_memory_mode_polluted_when_configured
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<()> {
     skip_if_no_network!(Ok(()));
-    if is_remote_test_environment() {
-        eprintln!("skipping local stdio MCP fixture test under remote executor");
-        return Ok(());
-    }
-
     let server = start_mock_server().await;
     let call_id = "call-123";
     let server_name = "rmcp";
