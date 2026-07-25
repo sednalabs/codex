@@ -264,9 +264,11 @@ jobs:
 
   test-windows-native-main:
     # Native Windows Bazel tests are slower and frequently approach the
-    # 30-minute PR budget. Run this only for post-merge commits to main and give
-    # it a larger timeout.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # 30-minute PR budget. Run this for post-merge commits to main or an
+    # explicit hosted-validation dispatch, and give it a larger timeout.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     timeout-minutes: 40
     runs-on: windows-2022
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native main)
@@ -303,6 +305,9 @@ jobs:
 
           bazel_test_args=(
             test
+            # Remote-cached proc-macro outputs must be present for native
+            # Windows consumers that execute locally.
+            --remote_download_all
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
