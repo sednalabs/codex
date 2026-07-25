@@ -1375,7 +1375,7 @@ docs-only refresh commit that records this snapshot.
   in `codex.app-server-v2-contract-targeted`, together with the complete
   `suite::v2::app_read::` group.
 - Primary files:
-  - `codex-rs/app-server/src/request_processors/apps_processor.rs`
+  - `codex-rs/app-server/src/request_processors/apps_processor/read.rs`
   - `codex-rs/app-server/tests/suite/v2/app_read.rs`
   - `justfile`
 

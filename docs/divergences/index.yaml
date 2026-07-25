@@ -1834,12 +1834,12 @@
         "auth-dependent plugin app routing"
       ],
       "files": [
-        "codex-rs/app-server/src/request_processors/apps_processor.rs",
+        "codex-rs/app-server/src/request_processors/apps_processor/read.rs",
         "codex-rs/app-server/tests/suite/v2/app_read.rs",
         "justfile"
       ],
       "required_markers": {
-        "codex-rs/app-server/src/request_processors/apps_processor.rs": [
+        "codex-rs/app-server/src/request_processors/apps_processor/read.rs": [
           "plugins_manager.set_auth_mode(Some(auth.api_auth_mode()))"
         ],
         "codex-rs/app-server/tests/suite/v2/app_read.rs": [
@@ -1865,7 +1865,7 @@
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "direct-upstream-fix",
       "hotspot_files": [
-        "codex-rs/app-server/src/request_processors/apps_processor.rs"
+        "codex-rs/app-server/src/request_processors/apps_processor/read.rs"
       ],
       "extraction_target": "upstream request-scoped plugin auth synchronization"
     },
