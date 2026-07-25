@@ -90,6 +90,13 @@ fn exec_command_tool_matches_expected_spec() {
             )),
         ),
         (
+            "notify_on_completion".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, queue one metadata-only notification for the next model input after a background process exits. This does not start an idle turn."
+                    .to_string(),
+            )),
+        ),
+        (
             "login".to_string(),
             JsonSchema::boolean(Some(
                     "True runs the shell with -l/-i semantics; false disables them. Defaults to true.".to_string(),

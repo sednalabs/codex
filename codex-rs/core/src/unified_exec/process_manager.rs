@@ -488,6 +488,7 @@ impl UnifiedExecProcessManager {
                 network_denial_monitor,
                 Arc::clone(&transcript),
                 Arc::clone(&initial_exec_command_active),
+                request.notify_on_completion,
             )
             .await;
             Some(InitialExecCommandGuard {
@@ -976,6 +977,7 @@ impl UnifiedExecProcessManager {
         network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
         initial_exec_command_active: Arc<AtomicBool>,
+        notify_on_completion: bool,
     ) {
         let entry = ProcessEntry {
             process: Arc::clone(&process),
@@ -1014,6 +1016,8 @@ impl UnifiedExecProcessManager {
             transcript,
             started_at,
             network_denial_monitor,
+            notify_on_completion,
+            Uuid::new_v4(),
         );
     }
 

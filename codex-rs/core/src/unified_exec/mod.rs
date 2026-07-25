@@ -109,6 +109,7 @@ pub(crate) struct ExecCommandRequest {
     pub justification: Option<String>,
     pub prefix_rule: Option<Vec<String>>,
     pub terminal_wait: Option<TerminalWaitInfo>,
+    pub notify_on_completion: bool,
 }
 
 #[derive(Debug)]

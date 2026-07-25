@@ -10,6 +10,8 @@ use tokio::time::Sleep;
 use super::UnifiedExecContext;
 use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
+use crate::context::TerminalCompletionNotification;
+use crate::context::TerminalCompletionStatus;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -160,6 +162,8 @@ pub(crate) fn spawn_exit_watcher(
     transcript: Arc<Mutex<HeadTailBuffer>>,
     started_at: Instant,
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
+    notify_on_completion: bool,
+    instance_id: uuid::Uuid,
 ) {
     let exit_token = process.cancellation_token();
     let interaction_lock = process.interaction_lock();
@@ -191,6 +195,19 @@ pub(crate) fn spawn_exit_watcher(
                 duration,
             )
             .await;
+            if notify_on_completion {
+                session_ref
+                    .input_queue
+                    .enqueue_terminal_completion(TerminalCompletionNotification {
+                        process_id,
+                        instance_id,
+                        status: TerminalCompletionStatus::Failed,
+                        exit_code: None,
+                        coalesced_exited: 0,
+                        coalesced_failed: 0,
+                    })
+                    .await;
+            }
         } else {
             let exit_code = process.exit_code().unwrap_or(-1);
             emit_exec_end_for_unified_exec(
@@ -207,6 +224,19 @@ pub(crate) fn spawn_exit_watcher(
                 duration,
             )
             .await;
+            if notify_on_completion {
+                session_ref
+                    .input_queue
+                    .enqueue_terminal_completion(TerminalCompletionNotification {
+                        process_id,
+                        instance_id,
+                        status: TerminalCompletionStatus::Exited,
+                        exit_code: Some(exit_code),
+                        coalesced_exited: 0,
+                        coalesced_failed: 0,
+                    })
+                    .await;
+            }
         }
     });
 }

@@ -1,3 +1,5 @@
+use crate::context::ContextualUserFragment;
+use crate::context::TerminalCompletionNotification;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
@@ -23,6 +25,7 @@ pub(crate) enum TurnInput {
 pub(crate) enum InputQueueActivity {
     Mailbox,
     Steer,
+    TerminalCompletion,
 }
 
 /// Turn-local pending input storage owned by the input queue flow.
@@ -35,14 +38,18 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<InterAgentCommunication>>,
+    terminal_completions: Mutex<VecDeque<TerminalCompletionNotification>>,
 }
 
 impl InputQueue {
+    const MAX_PENDING_TERMINAL_COMPLETIONS: usize = 64;
+
     pub(crate) fn new() -> Self {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            terminal_completions: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -63,6 +70,8 @@ impl InputQueue {
             Some(InputQueueActivity::Steer)
         } else if self.has_pending_mailbox_items().await {
             Some(InputQueueActivity::Mailbox)
+        } else if self.has_pending_terminal_completions().await {
+            Some(InputQueueActivity::TerminalCompletion)
         } else {
             None
         };
@@ -108,6 +117,41 @@ impl InputQueue {
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
         !self.mailbox_pending_mails.lock().await.is_empty()
+    }
+
+    pub(crate) async fn enqueue_terminal_completion(
+        &self,
+        mut completion: TerminalCompletionNotification,
+    ) {
+        let mut pending = self.terminal_completions.lock().await;
+        if pending
+            .iter()
+            .any(|queued| queued.instance_id == completion.instance_id)
+        {
+            return;
+        }
+        if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS {
+            if let Some(older) = pending.pop_front() {
+                completion.coalesce(older);
+            }
+        }
+        pending.push_back(completion);
+        drop(pending);
+        self.activity_tx
+            .send_replace(InputQueueActivity::TerminalCompletion);
+    }
+
+    pub(crate) async fn has_pending_terminal_completions(&self) -> bool {
+        !self.terminal_completions.lock().await.is_empty()
+    }
+
+    async fn drain_terminal_completion_items(&self) -> Vec<TurnInput> {
+        self.terminal_completions
+            .lock()
+            .await
+            .drain(..)
+            .map(|completion| TurnInput::ResponseItem(ContextualUserFragment::into(completion)))
+            .collect()
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -255,11 +299,15 @@ impl InputQueue {
             return pending_input;
         }
         let mailbox_items = self.drain_mailbox_input_items().await.into_iter();
+        let terminal_items = self.drain_terminal_completion_items().await;
         if pending_input.is_empty() {
-            mailbox_items.collect()
+            let mut items: Vec<_> = mailbox_items.collect();
+            items.extend(terminal_items);
+            items
         } else {
             let mut pending_input = pending_input;
             pending_input.extend(mailbox_items);
+            pending_input.extend(terminal_items);
             pending_input
         }
     }
@@ -288,7 +336,7 @@ impl InputQueue {
         if has_turn_pending_input {
             return true;
         }
-        self.has_pending_mailbox_items().await
+        self.has_pending_mailbox_items().await || self.has_pending_terminal_completions().await
     }
 }
 
@@ -303,6 +351,7 @@ impl TurnInputQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::TerminalCompletionStatus;
     use codex_protocol::AgentPath;
     use pretty_assertions::assert_eq;
 
@@ -319,6 +368,84 @@ mod tests {
             content.to_string(),
             trigger_turn,
         )
+    }
+
+    fn terminal_completion(
+        process_id: i32,
+        instance_id: uuid::Uuid,
+    ) -> TerminalCompletionNotification {
+        TerminalCompletionNotification {
+            process_id,
+            instance_id,
+            status: TerminalCompletionStatus::Exited,
+            exit_code: Some(0),
+            coalesced_exited: 0,
+            coalesced_failed: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_completion_notifies_subscriber_and_drains_once() {
+        let input_queue = InputQueue::new();
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(/*turn_state*/ None).await;
+        assert_eq!(pending_activity, None);
+
+        let instance_id = uuid::Uuid::new_v4();
+        input_queue
+            .enqueue_terminal_completion(terminal_completion(7, instance_id))
+            .await;
+        input_queue
+            .enqueue_terminal_completion(terminal_completion(7, instance_id))
+            .await;
+
+        activity_rx.changed().await.expect("terminal completion");
+        assert_eq!(
+            *activity_rx.borrow_and_update(),
+            InputQueueActivity::TerminalCompletion
+        );
+        assert_eq!(input_queue.terminal_completions.lock().await.len(), 1);
+        assert_eq!(
+            input_queue.get_pending_input(&Mutex::new(None)).await.len(),
+            1
+        );
+        assert!(!input_queue.has_pending_terminal_completions().await);
+    }
+
+    #[tokio::test]
+    async fn terminal_completion_identity_survives_process_id_reuse() {
+        let input_queue = InputQueue::new();
+        input_queue
+            .enqueue_terminal_completion(terminal_completion(7, uuid::Uuid::new_v4()))
+            .await;
+        input_queue
+            .enqueue_terminal_completion(terminal_completion(7, uuid::Uuid::new_v4()))
+            .await;
+
+        assert_eq!(input_queue.terminal_completions.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn terminal_completion_queue_coalesces_overflow_without_losing_final_state_count() {
+        let input_queue = InputQueue::new();
+        for process_id in 0..=InputQueue::MAX_PENDING_TERMINAL_COMPLETIONS {
+            input_queue
+                .enqueue_terminal_completion(terminal_completion(
+                    process_id as i32,
+                    uuid::Uuid::new_v4(),
+                ))
+                .await;
+        }
+
+        let pending = input_queue.terminal_completions.lock().await;
+        assert_eq!(pending.len(), InputQueue::MAX_PENDING_TERMINAL_COMPLETIONS);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|completion| 1 + completion.coalesced_exited + completion.coalesced_failed)
+                .sum::<u64>(),
+            InputQueue::MAX_PENDING_TERMINAL_COMPLETIONS as u64 + 1
+        );
     }
 
     #[tokio::test]

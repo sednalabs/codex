@@ -394,6 +394,7 @@ async fn failed_initial_end_for_unstored_process_prefers_source_transcript() {
         justification: None,
         prefix_rule: None,
         terminal_wait: None,
+        notify_on_completion: false,
     };
 
     let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));

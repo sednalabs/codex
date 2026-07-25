@@ -2,6 +2,48 @@
   "version": 1,
   "divergences": [
     {
+      "id": "background-terminal-completion-input",
+      "title": "Opt-in background terminal completion input",
+      "status": "live",
+      "category": "agent-runtime",
+      "surface_type": "model-input",
+      "surface": [
+        "unified-exec completion watcher",
+        "session pending-input queue"
+      ],
+      "files": [
+        "codex-rs/core/src/context/terminal_completion_notification.rs",
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/tools/handlers/shell_spec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec.rs",
+        "codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
+        "codex-rs/core/src/unified_exec/async_watcher.rs",
+        "codex-rs/core/src/unified_exec/mod.rs",
+        "codex-rs/core/src/unified_exec/process_manager.rs"
+      ],
+      "behavior": "An explicitly subscribed background unified-exec process queues one bounded metadata-only completion fragment for the owning session's next model input. The existing ordered exit watcher emits after output drain and deferred network-denial settlement, and InputQueue wakes notification-aware blocked waits without starting an idle turn. Opaque process-instance UUIDs deduplicate reused process IDs; bounded overflow coalesces final-state counts rather than injecting output or silently losing terminal state.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-unified-exec-targeted; codex.core-multi-agent-orchestration-targeted",
+      "tests": [
+        "terminal_completion_fragment_is_metadata_only",
+        "terminal_completion_notifies_subscriber_and_drains_once",
+        "terminal_completion_identity_survives_process_id_reuse"
+      ],
+      "owner": "downstream",
+      "notes": "The 2026-07-25 upstream harvest at 4c43465133428898aa84f0bfc02c306ed65fb66a found no adoption candidate. Preserve upstream's terminal events, explicit write_stdin output retrieval, interaction lock, trailing-output drain, and deferred network-denial classification. Do not extend this carry to raw output injection or default idle inference.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-extension",
+      "hotspot_files": [
+        "codex-rs/core/src/session/input_queue.rs",
+        "codex-rs/core/src/unified_exec/async_watcher.rs"
+      ],
+      "extraction_target": "upstream opt-in terminal completion notification"
+    },
+    {
       "id": "branch-policy-sync-plumbing",
       "title": "Branch policy sync plumbing and audit runner",
       "status": "live",
