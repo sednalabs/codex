@@ -1891,7 +1891,8 @@
         "codex-rs/windows-sandbox-rs/src/token_tests.rs",
         "codex-rs/windows-sandbox-rs/src/spawn_prep.rs",
         "codex-rs/exec-server/tests/file_system_windows.rs",
-        "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs"
+        "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs",
+        "codex-rs/network-proxy/tests/windows_stable_ingress.rs"
       ],
       "required_markers": {
         "codex-rs/protocol/src/permissions.rs": [
@@ -1929,6 +1930,10 @@
         ],
         "codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs": [
           "legacy_write_restricted_deletion_limitation_is_explicit"
+        ],
+        "codex-rs/network-proxy/tests/windows_stable_ingress.rs": [
+          "restricted_tokens_select_stable_routes_and_cleanup",
+          "UnsupportedGnuLoader"
         ]
       },
       "behavior": "Upstream's GeneratedDefault provenance and setup-time metadata normalization are retired. The /tmp special root remains Unix-only, while explicit read-only carveouts and pre-existing protected metadata remain the enforceable Windows boundary. The compatible legacy token excludes Everyone from the restricting SID set, retains it on the default DACL for IPC, and uses WRITE_RESTRICTED for launch compatibility. Because Everyone is not a restricting SID, each promised workspace write depends on its root-capability allow ACE; ACL preparation therefore fails closed instead of launching after a lost grant. Apply-patch preserves the filesystem-helper source chain, and the hosted tests distinguish the exact Bazel gnullvm loader incompatibility from ACL denial while requiring positive Windows MSVC proof. Standalone DELETE and FILE_DELETE_CHILD checks remain an explicit legacy-backend limitation until bounded capability-SID read access makes full restriction safe. Downstream does not claim that absent protected child names can be reserved without filesystem interception.",
@@ -1948,7 +1953,8 @@
         "file_system_local_fs_helper_allows_windows_workspace_root_write",
         "workspace_roots_allow_file_and_command_writes",
         "error_output_preserves_source_chain",
-        "legacy_write_restricted_deletion_limitation_is_explicit"
+        "legacy_write_restricted_deletion_limitation_is_explicit",
+        "restricted_tokens_select_stable_routes_and_cleanup"
       ],
       "owner": "downstream",
       "notes": "The 2026-07-16 sync adopts upstream commit 5a85351dfe and removes obsolete generated-default setup assertions. The 2026-07-21 sync adopts upstream commit bd92b056dd and preserves its explicit-versus-inherited ACE distinction so an inherited FILE_DELETE_CHILD grant cannot trigger a non-convergent SET_ACCESS refresh. The 2026-07-17 repair separates IPC DACL compatibility from restricting-token authority: Everyone belongs only to the former. Hosted full-restriction experiments exposed missing launch/runtime read capabilities and an Everyone-write bypass, so the compatible WRITE_RESTRICTED shape is retained and its deletion limitation is characterized rather than misreported as containment. Signed commit 0b66edecaf makes the mandatory write-root capability grant fail closed and adds a direct local-filesystem helper regression. The executable characterization uses PowerShell 7. Exact gnullvm test-binary status 0xc0000142 proves wrapper traversal only; MSVC and other release-shaped targets retain the read and denied-write assertions. The stable divergence id is retained for ledger continuity. Existing protected metadata, explicit carveouts, the SID-set split, and the Unix-only SlashTmp guard remain the live boundary; do not restore sentinel-directory or command-text workarounds.",
@@ -2319,6 +2325,8 @@
         "scripts/codex-resume-recent.sh",
         "codex-rs/http-client/src/outbound_proxy.rs",
         "codex-rs/network-proxy/src/certs.rs",
+        "codex-rs/network-proxy/src/proxy.rs",
+        "codex-rs/network-proxy/src/windows_tcp_attribution_tests.rs",
         "codex-rs/secrets/src/lib.rs",
         "sdk/typescript/tests/runStreamed.test.ts"
       ],
@@ -2388,6 +2396,7 @@
         ".github/workflows/sedna-release.yml",
         ".github/workflows/sedna-release-install.yml",
         "codex-rs/app-server-daemon/src/update_loop.rs",
+        "codex-rs/app-server-daemon/src/update_loop_tests.rs",
         "codex-rs/tui/src/update_action.rs",
         "codex-rs/tui/src/update_prompt.rs",
         "codex-rs/tui/src/update_versions.rs",
@@ -2412,6 +2421,7 @@
         "test_custom_repository_and_tag_prefix_drive_latest_urls",
         "test_releases_latest_installs_verified_package",
         "test_releases_asset_download_falls_back_to_github",
+        "sedna_installer_fetch_uses_exact_url_and_preserves_bytes",
         "sedna-release workflow policy checks"
       ],
       "owner": "downstream",

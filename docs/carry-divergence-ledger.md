@@ -1286,6 +1286,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/windows-sandbox-rs/src/spawn_prep.rs`
   - `codex-rs/windows-sandbox-rs/src/unified_exec/tests.rs`
   - `codex-rs/exec-server/tests/file_system_windows.rs`
+  - `codex-rs/network-proxy/tests/windows_stable_ingress.rs`
 
 ### Windows Proxy-Aware Backend Selection
 
