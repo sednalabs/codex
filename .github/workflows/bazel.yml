@@ -305,9 +305,11 @@ jobs:
 
           bazel_test_args=(
             test
-            # Remote-cached proc-macro outputs must be present for native
-            # Windows consumers that execute locally.
-            --remote_download_all
+            # The upstream native-main job runs on a stable dedicated runner.
+            # Hosted Windows image changes can make cached Rust proc-macro DLLs
+            # unloadable even when Bazel fully materializes them. Rebuild only
+            # Rust actions locally while retaining remote cache reuse elsewhere.
+            --modify_execution_info=Rustc=+no-remote-cache
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
