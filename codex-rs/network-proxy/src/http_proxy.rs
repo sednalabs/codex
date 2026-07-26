@@ -1300,6 +1300,8 @@ mod tests {
     #[tokio::test]
     async fn http_connect_accept_blocks_hooked_host_in_full_mode_without_mitm_state() {
         let mut policy = NetworkProxyConfig {
+            // This policy-only test must not depend on live DNS during hosted runs.
+            allow_local_binding: true,
             mitm: true,
             mitm_hooks: vec![crate::mitm_hook::MitmHookConfig {
                 host: "api.github.com".to_string(),
