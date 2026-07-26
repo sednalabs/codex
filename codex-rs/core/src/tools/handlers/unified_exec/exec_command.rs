@@ -209,6 +209,7 @@ impl ExecCommandHandler {
             wait_until_terminal,
             max_wait_ms,
             heartbeat_interval_ms,
+            notify_on_completion,
             sandbox_permissions,
             additional_permissions,
             justification,
@@ -336,6 +337,7 @@ impl ExecCommandHandler {
                     justification,
                     prefix_rule,
                     terminal_wait: terminal_wait.clone(),
+                    notify_on_completion,
                 },
                 &context,
             )

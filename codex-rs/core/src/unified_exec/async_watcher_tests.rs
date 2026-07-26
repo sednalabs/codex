@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use super::COMPLETION_CAUSE_EXIT;
 use super::TRAILING_OUTPUT_GRACE;
 use super::spawn_exit_watcher;
 use super::split_valid_utf8_prefix_with_max;
@@ -164,6 +165,9 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         transcript,
         Instant::now(),
         Some(network_denial_monitor),
+        /*notify_on_completion*/ false,
+        uuid::Uuid::nil(),
+        Arc::new(std::sync::atomic::AtomicU8::new(COMPLETION_CAUSE_EXIT)),
     );
 
     let exited_at = Instant::now();

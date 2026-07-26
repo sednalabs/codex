@@ -910,6 +910,13 @@ for a removed crate path.
   final-output authority. `WriteStdinInteractionEvent` is the sole ordered
   publication seam for downstream terminal-wait metadata; internal blocking
   polls must not emit duplicate interactions.
+- Opt-in background-terminal completion input is emitted only by that ordered
+  watcher after final classification. Its contextual fragment is metadata-only,
+  keyed by an opaque process-instance UUID, and queued through `InputQueue`.
+  Notification-aware waits may wake, but completion must not start an idle
+  model turn; explicit `write_stdin` remains the only output-retrieval path.
+  Queue saturation must retain coalesced exited/failed counts rather than
+  injecting output or silently discarding terminal state.
 - When an upstream merge changes workspace manifests, regenerate
   `codex-rs/Cargo.lock` on GitHub-hosted compute and record the resulting
   SHA-256 in the carry ledger. Do not hand-merge arbitrary generated package

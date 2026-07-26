@@ -394,6 +394,7 @@ async fn failed_initial_end_for_unstored_process_prefers_source_transcript() {
         justification: None,
         prefix_rule: None,
         terminal_wait: None,
+        notify_on_completion: false,
     };
 
     let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
@@ -589,6 +590,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 } else {
                     now
                 },
+                completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             },
         );
     }
