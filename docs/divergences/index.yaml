@@ -2956,7 +2956,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "GitHub blocking-ci core and TUI tests; validation-lab rust-ci-full",
+      "guardrail_lane": "GitHub blocking-ci core and TUI tests; rust-ci-full",
       "tests": [
         "request_user_input_tool_includes_questions_schema",
         "normalize_request_user_input_args_maps_legacy_payloads_to_explicit_wait_modes",
