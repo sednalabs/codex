@@ -1824,7 +1824,7 @@ mod tests {
             request_event_with_auto_resolution(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1861,7 +1861,7 @@ mod tests {
                     question_with_options("q2", "Second"),
                     question_with_options("q3", "Third"),
                 ],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1884,7 +1884,7 @@ mod tests {
             request_event_with_auto_resolution(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1925,7 +1925,7 @@ mod tests {
             request_event_with_auto_resolution(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1970,7 +1970,7 @@ mod tests {
             request_event_with_auto_resolution(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -1998,7 +1998,7 @@ mod tests {
             request_event_with_auto_resolution(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -2026,7 +2026,7 @@ mod tests {
             request_event_with_auto_resolution(
                 "turn-1",
                 vec![question_with_options("q1", "First")],
-                90_000,
+                /*auto_resolution_ms*/ 90_000,
             ),
             tx,
             /*has_input_focus*/ true,
@@ -2036,7 +2036,7 @@ mod tests {
         overlay.try_consume_user_input_request(request_event_with_auto_resolution(
             "turn-2",
             vec![question_with_options("q2", "Second")],
-            90_000,
+            /*auto_resolution_ms*/ 90_000,
         ));
         let now = Instant::now();
         let total_timeout = Duration::from_secs(90);

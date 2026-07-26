@@ -80,8 +80,8 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
 async fn request_user_input_round_trip_emits_auto_resolution_ms() -> anyhow::Result<()> {
     request_user_input_round_trip_for_mode(
         ModeKind::Plan,
-        Some("advisory"),
-        Some(90_000),
+        /*wait_mode*/ Some("advisory"),
+        /*auto_resolution_ms*/ Some(90_000),
     )
     .await
 }

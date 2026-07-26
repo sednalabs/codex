@@ -31,7 +31,7 @@ impl HistoryCell for RequestUserInputResultCell {
         if self.interrupted {
             header.push(" (interrupted)".cyan());
         } else if self.advisory_timed_out {
-            header.push(" (advisory timeout)".yellow());
+            header.push(" (advisory timeout)".cyan());
         }
 
         let mut lines: Vec<Line<'static>> = vec![header.into()];
@@ -107,14 +107,15 @@ impl HistoryCell for RequestUserInputResultCell {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
             ));
         } else if self.advisory_timed_out && unanswered > 0 {
-            let summary =
-                format!("continued after advisory timeout with {unanswered} unanswered");
+            let summary = format!("continued after advisory timeout with {unanswered} unanswered");
             lines.extend(wrap_with_prefix(
                 &summary,
                 width,
-                "  ↳ ".yellow().dim(),
+                "  ↳ ".cyan().dim(),
                 "    ".dim(),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::DIM),
             ));
         }
 
