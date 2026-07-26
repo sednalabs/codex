@@ -162,6 +162,32 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
         .collect()
 }
 
+#[test]
+fn request_user_input_advisory_timeout_is_explicit_in_history() {
+    let cell = RequestUserInputResultCell {
+        questions: vec![ToolRequestUserInputQuestion {
+            id: "confirm".to_string(),
+            header: "Confirm".to_string(),
+            question: "Proceed with the plan?".to_string(),
+            is_other: true,
+            is_secret: false,
+            options: None,
+        }],
+        answers: HashMap::new(),
+        interrupted: false,
+        advisory_timed_out: true,
+    };
+
+    insta::assert_snapshot!(
+        render_lines(&cell.display_lines(/*width*/ 80)).join("\n"),
+        @r"
+    • Questions 0/1 answered (advisory timeout)
+      • Proceed with the plan? (unanswered)
+      ↳ continued after advisory timeout with 1 unanswered
+    "
+    );
+}
+
 fn render_transcript(cell: &dyn HistoryCell) -> Vec<String> {
     render_lines(&cell.transcript_lines(u16::MAX))
 }

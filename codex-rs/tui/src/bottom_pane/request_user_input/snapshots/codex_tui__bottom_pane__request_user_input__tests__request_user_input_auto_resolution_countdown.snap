@@ -1,6 +1,6 @@
 ---
 source: tui/src/bottom_pane/request_user_input/mod.rs
-assertion_line: 1854
+assertion_line: 1876
 expression: "render_snapshot_at(&overlay, Rect::new(0, 0, 120, 16), now)"
 ---
                                                                                                                         

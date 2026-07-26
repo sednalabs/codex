@@ -2926,6 +2926,57 @@
         "codex-rs/exec-server/src/process_sandbox_tests.rs"
       ],
       "extraction_target": "upstream shared-launcher validation fixes"
+    },
+    {
+      "id": "blocking-decision-prompt-waits",
+      "title": "Explicit blocking and advisory decision-prompt waits",
+      "status": "live",
+      "category": "interactive-workflow",
+      "surface_type": "user-facing",
+      "surface": [
+        "request_user_input tool contract",
+        "TUI decision-prompt countdown",
+        "decision-prompt transcript result"
+      ],
+      "files": [
+        "codex-rs/protocol/src/request_user_input.rs",
+        "codex-rs/core/src/tools/handlers/request_user_input_spec.rs",
+        "codex-rs/core/src/tools/handlers/request_user_input_spec_tests.rs",
+        "codex-rs/core/tests/suite/request_user_input.rs",
+        "codex-rs/app-server/tests/suite/v2/request_user_input.rs",
+        "codex-rs/tui/src/bottom_pane/request_user_input/mod.rs",
+        "codex-rs/tui/src/history_cell/request_user_input.rs",
+        "codex-rs/tui/src/history_cell/tests.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/downstream-regression-matrix.md"
+      ],
+      "behavior": "Decision prompts default to an indefinite blocking wait. Advisory prompts are explicit, require a bounded auto-resolution duration, display that supplied countdown from the first frame, and record when the turn continues without a user response. Legacy payloads without waitMode retain their prior mapping: autoResolutionMs present means advisory, while its absence means blocking.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "GitHub blocking-ci core and TUI tests; validation-lab rust-ci-full",
+      "tests": [
+        "request_user_input_tool_includes_questions_schema",
+        "normalize_request_user_input_args_maps_legacy_payloads_to_explicit_wait_modes",
+        "normalize_request_user_input_args_rejects_contradictory_wait_settings",
+        "request_user_input_round_trip_emits_auto_resolution_ms",
+        "auto_resolution_absent_has_no_timer",
+        "auto_resolution_uses_requested_duration_from_first_frame",
+        "auto_resolution_visible_countdown_snapshot",
+        "auto_resolution_expiry_records_advisory_fallback",
+        "request_user_input_advisory_timeout_is_explicit_in_history"
+      ],
+      "owner": "downstream",
+      "notes": "Preserve until upstream provides equivalent explicit wait semantics and compatibility mapping. Keep blocking as the omission default, reject contradictory mode-duration pairs before showing a prompt, and do not restore a client-side fixed timeout that ignores autoResolutionMs.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "direct-upstream-fix",
+      "hotspot_files": [
+        "codex-rs/core/src/tools/handlers/request_user_input_spec.rs",
+        "codex-rs/tui/src/bottom_pane/request_user_input/mod.rs"
+      ],
+      "extraction_target": "upstream request_user_input wait-mode contract"
     }
   ]
 }

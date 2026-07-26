@@ -8,6 +8,7 @@ pub(crate) struct RequestUserInputResultCell {
     pub(crate) questions: Vec<ToolRequestUserInputQuestion>,
     pub(crate) answers: HashMap<String, ToolRequestUserInputAnswer>,
     pub(crate) interrupted: bool,
+    pub(crate) advisory_timed_out: bool,
 }
 
 impl HistoryCell for RequestUserInputResultCell {
@@ -29,6 +30,8 @@ impl HistoryCell for RequestUserInputResultCell {
         header.push(format!(" {answered}/{total} answered").dim());
         if self.interrupted {
             header.push(" (interrupted)".cyan());
+        } else if self.advisory_timed_out {
+            header.push(" (advisory timeout)".yellow());
         }
 
         let mut lines: Vec<Line<'static>> = vec![header.into()];
@@ -103,6 +106,16 @@ impl HistoryCell for RequestUserInputResultCell {
                 "    ".dim(),
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
             ));
+        } else if self.advisory_timed_out && unanswered > 0 {
+            let summary =
+                format!("continued after advisory timeout with {unanswered} unanswered");
+            lines.extend(wrap_with_prefix(
+                &summary,
+                width,
+                "  ↳ ".yellow().dim(),
+                "    ".dim(),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM),
+            ));
         }
 
         lines
@@ -122,6 +135,8 @@ impl HistoryCell for RequestUserInputResultCell {
         let mut lines = vec![Line::from(format!("Questions {answered}/{total} answered"))];
         if self.interrupted {
             lines.push(Line::from("(interrupted)"));
+        } else if self.advisory_timed_out {
+            lines.push(Line::from("(advisory timeout)"));
         }
         for question in &self.questions {
             lines.push(Line::from(question.question.clone()));
