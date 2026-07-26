@@ -5,6 +5,15 @@ use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum RequestUserInputWaitMode {
+    Blocking,
+    Advisory,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct RequestUserInputQuestionOption {
     pub label: String,
@@ -31,6 +40,10 @@ pub struct RequestUserInputQuestion {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct RequestUserInputArgs {
     pub questions: Vec<RequestUserInputQuestion>,
+    #[serde(rename = "waitMode", skip_serializing_if = "Option::is_none")]
+    #[schemars(rename = "waitMode")]
+    #[ts(rename = "waitMode")]
+    pub wait_mode: Option<RequestUserInputWaitMode>,
     #[serde(rename = "autoResolutionMs", skip_serializing_if = "Option::is_none")]
     #[schemars(rename = "autoResolutionMs")]
     pub auto_resolution_ms: Option<u64>,

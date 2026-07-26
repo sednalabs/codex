@@ -1,8 +1,10 @@
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::request_user_input::RequestUserInputArgs;
+use codex_protocol::request_user_input::RequestUserInputWaitMode;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
+use serde_json::json;
 use std::collections::BTreeMap;
 
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
@@ -69,11 +71,21 @@ pub fn create_request_user_input_tool(description: String) -> ToolSpec {
     );
 
     let auto_resolution_ms_schema = JsonSchema::number(Some(format!(
-        "Optional auto-resolution window in milliseconds, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. Include this only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required before continuing. Use {MIN_AUTO_RESOLUTION_MS} for lightly helpful context and up to {MAX_AUTO_RESOLUTION_MS} when the answer would materially unblock better work."
+        "Required for advisory waitMode and forbidden for blocking waitMode. Sets the visible auto-resolution countdown in milliseconds, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. Use {MIN_AUTO_RESOLUTION_MS} for lightly helpful context and up to {MAX_AUTO_RESOLUTION_MS} when the answer would materially unblock better work."
     )));
 
     let properties = BTreeMap::from([
         ("questions".to_string(), questions_schema),
+        (
+            "waitMode".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("blocking"), json!("advisory")],
+                Some(
+                    "Wait behavior. blocking is the default and waits indefinitely; advisory requires autoResolutionMs and may continue with best judgment when the countdown expires. For compatibility, older payloads that omit waitMode map to advisory only when autoResolutionMs is present."
+                        .to_string(),
+                ),
+            ),
+        ),
         ("autoResolutionMs".to_string(), auto_resolution_ms_schema),
     ]);
 
@@ -120,6 +132,26 @@ pub fn normalize_request_user_input_args(
         question.is_other = true;
     }
 
+    args.wait_mode = Some(match (args.wait_mode, args.auto_resolution_ms) {
+        (None, None) | (Some(RequestUserInputWaitMode::Blocking), None) => {
+            RequestUserInputWaitMode::Blocking
+        }
+        (None, Some(_)) | (Some(RequestUserInputWaitMode::Advisory), Some(_)) => {
+            RequestUserInputWaitMode::Advisory
+        }
+        (Some(RequestUserInputWaitMode::Blocking), Some(_)) => {
+            return Err(
+                "request_user_input waitMode blocking forbids autoResolutionMs; omit the duration or use advisory"
+                    .to_string(),
+            );
+        }
+        (Some(RequestUserInputWaitMode::Advisory), None) => {
+            return Err(
+                "request_user_input waitMode advisory requires autoResolutionMs".to_string(),
+            );
+        }
+    });
+
     if let Some(auto_resolution_ms) = args.auto_resolution_ms {
         let clamped_auto_resolution_ms =
             auto_resolution_ms.clamp(MIN_AUTO_RESOLUTION_MS, MAX_AUTO_RESOLUTION_MS);
@@ -139,7 +171,7 @@ pub fn normalize_request_user_input_args(
 pub fn request_user_input_tool_description(available_modes: &[ModeKind]) -> String {
     let allowed_modes = format_allowed_modes(available_modes);
     format!(
-        "Request user input for one to three short questions and wait for the response. Set autoResolutionMs, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS} milliseconds, only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required. This tool is only available in {allowed_modes}."
+        "Request user input for one to three short questions and wait for the response. Use waitMode blocking (the default) without autoResolutionMs when explicit user input is required; it waits indefinitely. Use waitMode advisory with autoResolutionMs from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS} only when continuing with best judgment is acceptable if the user does not answer. This tool is only available in {allowed_modes}."
     )
 }
 

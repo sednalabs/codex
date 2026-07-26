@@ -39,6 +39,7 @@ fn create_request_user_input_sse_response_with_auto_resolution(
                 "description": "Stop and revisit the approach."
             }]
         }],
+        "waitMode": "advisory",
         "autoResolutionMs": auto_resolution_ms
     }))?;
 
@@ -54,7 +55,7 @@ async fn request_user_input_round_trip() -> Result<()> {
     let codex_home = tempfile::TempDir::new()?;
     let responses = vec![
         create_request_user_input_sse_response_with_auto_resolution(
-            "call1", /*auto_resolution_ms*/ 60_000,
+            "call1", /*auto_resolution_ms*/ 90_000,
         )?,
         create_final_assistant_message_sse_response("done")?,
     ];
@@ -113,7 +114,7 @@ async fn request_user_input_round_trip() -> Result<()> {
     assert_eq!(params.turn_id, turn.id);
     assert_eq!(params.item_id, "call1");
     assert_eq!(params.questions.len(), 1);
-    assert_eq!(params.auto_resolution_ms, Some(60_000));
+    assert_eq!(params.auto_resolution_ms, Some(90_000));
     let resolved_request_id = request_id.clone();
 
     mcp.send_response(

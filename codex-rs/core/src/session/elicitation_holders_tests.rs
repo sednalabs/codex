@@ -172,6 +172,7 @@ async fn request_user_input_holds_an_elicitation_until_response() {
                     "call-1".to_string(),
                     RequestUserInputArgs {
                         questions: Vec::new(),
+                        wait_mode: None,
                         auto_resolution_ms: None,
                     },
                 )

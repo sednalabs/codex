@@ -3093,6 +3093,35 @@ docs-only refresh commit that records this snapshot.
   - `rust-ci-full`
   - `CodeQL Advanced`
 
+### Explicit Blocking And Advisory Decision-Prompt Waits
+
+- `request_user_input` uses an optional `waitMode` with two explicit behaviors:
+  `blocking` waits indefinitely and forbids `autoResolutionMs`, while
+  `advisory` requires a bounded `autoResolutionMs` and may continue when that
+  countdown expires.
+- Omission remains wire-compatible with older tool calls. A legacy payload with
+  `autoResolutionMs` maps to advisory; omission of both fields maps to blocking.
+  Explicit contradictory combinations fail before the prompt is emitted.
+- The TUI uses the supplied advisory duration as the visible countdown from the
+  first frame. It does not substitute a fixed hidden grace or a second fixed
+  timer. Blocking prompts never schedule an auto-resolution frame.
+- When an advisory countdown expires, the tool result records that no user
+  response was received and that execution continued with best judgment. The
+  transcript keeps the questions unanswered and labels the result as an
+  advisory timeout, so it cannot be mistaken for a user choice.
+- Primary files:
+  - `codex-rs/protocol/src/request_user_input.rs`
+  - `codex-rs/core/src/tools/handlers/request_user_input_spec.rs`
+  - `codex-rs/core/src/tools/handlers/request_user_input_spec_tests.rs`
+  - `codex-rs/core/tests/suite/request_user_input.rs`
+  - `codex-rs/app-server/tests/suite/v2/request_user_input.rs`
+  - `codex-rs/tui/src/bottom_pane/request_user_input/mod.rs`
+  - `codex-rs/tui/src/history_cell/request_user_input.rs`
+  - `codex-rs/tui/src/history_cell/tests.rs`
+- Hosted guardrails:
+  - GitHub `blocking-ci` core and TUI tests
+  - validation-lab `rust-ci-full`
+
 ## Not Counted As Standalone Live Divergences
 
 - Merge and sync history:

@@ -1423,6 +1423,7 @@ async fn maybe_request_mcp_tool_approval(
 
     let args = RequestUserInputArgs {
         questions: vec![question],
+        wait_mode: None,
         auto_resolution_ms: None,
     };
     let response = sess
