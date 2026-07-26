@@ -56,6 +56,8 @@ pub(crate) struct ExecCommandArgs {
     #[serde(default)]
     heartbeat_interval_ms: Option<u64>,
     #[serde(default)]
+    notify_on_completion: bool,
+    #[serde(default)]
     sandbox_permissions: SandboxPermissions,
     #[serde(default)]
     additional_permissions: Option<AdditionalPermissionProfile>,

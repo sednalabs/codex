@@ -73,6 +73,13 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         &mut properties,
         registered_tool_runtime_capabilities(),
     );
+    properties.insert(
+        "notify_on_completion".to_string(),
+        JsonSchema::boolean(Some(
+            "When true, queue one metadata-only notification for the next model input after a background process exits. This does not start an idle turn."
+                .to_string(),
+        )),
+    );
     if options.allow_login_shell {
         properties.insert(
             "login".to_string(),
