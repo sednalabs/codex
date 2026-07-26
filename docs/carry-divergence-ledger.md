@@ -3120,7 +3120,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/tui/src/history_cell/tests.rs`
 - Hosted guardrails:
   - GitHub `blocking-ci` core and TUI tests
-  - validation-lab `rust-ci-full`
+  - GitHub `rust-ci-full`
 
 ## Not Counted As Standalone Live Divergences
 
