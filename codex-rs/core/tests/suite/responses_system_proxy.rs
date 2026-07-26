@@ -112,7 +112,7 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
             .expect("test config should allow feature update");
         config.respect_system_proxy = true;
     });
-    let test = builder.build_with_auto_env(&server).await?;
+    let test = builder.build(&server).await?;
 
     test.submit_turn("hello through the system proxy").await?;
 

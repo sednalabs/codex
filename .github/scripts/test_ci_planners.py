@@ -1053,6 +1053,25 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
+    def test_bazel_windows_native_main_avoids_remote_rust_cache(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
+        native_condition = native_job.get("if") or ""
+        self.assertIn("workflow_dispatch", native_condition)
+        self.assertIn("push", native_condition)
+        self.assertIn("refs/heads/main", native_condition)
+        native_steps = native_job.get("steps") or []
+        native_step = next(
+            (step for step in native_steps if step.get("name") == "bazel test //..."),
+            None,
+        )
+        self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
+        native_test_run = native_step.get("run") or ""
+        self.assertIn(
+            "--modify_execution_info=Rustc=+no-remote-cache",
+            native_test_run,
+        )
+
     def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
         script = (REPO_ROOT / ".github/scripts/run-bazel-ci.sh").read_text()
         config_append = 'bazel_run_args+=("--config=${ci_config}")'
