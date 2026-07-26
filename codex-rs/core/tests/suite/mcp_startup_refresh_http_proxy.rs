@@ -123,7 +123,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
                 .set(servers)
                 .expect("test MCP servers should accept any configuration");
         })
-        .build_with_auto_env(&responses_server)
+        .build(&responses_server)
         .await?;
     wait_for_mcp_server(&fixture.codex, SERVER_NAME).await?;
 
