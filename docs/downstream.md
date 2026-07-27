@@ -683,6 +683,9 @@ User-visible behavior:
   do not share a billing unit. `billing_surface = 'chatgpt_credits'` plus
   `fast_mode_used = 1` selects an explicit Fast credit row. API-token calls do
   not silently receive ChatGPT credit estimates.
+- Fast rows follow the model-specific card: GPT-5.6 and GPT-5.5 are 2.5x
+  their Standard rates; GPT-5.4 is 2x its Standard rate. These are explicit
+  versioned rows, not a multiplier hidden in the view.
 - Cache-write input remains diagnostic. A non-zero value produces
   `token_breakdown_incomplete` until its relationship to uncached input is
   contractually established, preventing double-counting.
