@@ -15,8 +15,11 @@ The call view distinguishes routing intent from execution evidence:
   provider-facing priority service tier.
 
 Credit estimates use the actual model, actual tier, started_at, and the
-versioned rows in usage_codex_credit_rates. The rate table stores the source
-URL and observation timestamp for every rate regime. Effective intervals use
+versioned rows in usage_codex_credit_rates, gated by the workspace's
+usage_codex_credit_policies row. The policy table prevents a token-based rate
+from being silently applied when a workspace is marked for a legacy card. The
+rate table stores the source URL and observation timestamp for every rate
+regime. Effective intervals use
 the half-open rule effective_from <= started_at < effective_to.
 
 The estimate is calculated from uncached input, cached input, and output

@@ -40,6 +40,62 @@ CREATE TABLE usage_codex_credit_rates (
 CREATE INDEX usage_codex_credit_rates_lookup_idx
 ON usage_codex_credit_rates(provider, model, service_tier, speed_mode, effective_from);
 
+CREATE TABLE usage_codex_credit_policies (
+    policy_id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    rate_card_kind TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    effective_to TEXT,
+    source_url TEXT NOT NULL,
+    source_observed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    CHECK (effective_to IS NULL OR effective_to > effective_from)
+);
+
+CREATE UNIQUE INDEX usage_codex_credit_policies_lookup_idx
+ON usage_codex_credit_policies(provider, effective_from);
+
+CREATE TRIGGER usage_codex_credit_policies_no_overlap_insert
+BEFORE INSERT ON usage_codex_credit_policies
+BEGIN
+    SELECT RAISE(ABORT, 'ambiguous Codex credit policy interval')
+    WHERE EXISTS (
+        SELECT 1
+        FROM usage_codex_credit_policies AS existing
+        WHERE existing.provider = NEW.provider
+          AND existing.effective_from < COALESCE(NEW.effective_to, '9999-12-31T23:59:59.999Z')
+          AND COALESCE(existing.effective_to, '9999-12-31T23:59:59.999Z') > NEW.effective_from
+    );
+END;
+
+CREATE TRIGGER usage_codex_credit_policies_no_overlap_update
+BEFORE UPDATE OF provider, effective_from, effective_to
+ON usage_codex_credit_policies
+BEGIN
+    SELECT RAISE(ABORT, 'ambiguous Codex credit policy interval')
+    WHERE EXISTS (
+        SELECT 1
+        FROM usage_codex_credit_policies AS existing
+        WHERE existing.policy_id <> NEW.policy_id
+          AND existing.provider = NEW.provider
+          AND existing.effective_from < COALESCE(NEW.effective_to, '9999-12-31T23:59:59.999Z')
+          AND COALESCE(existing.effective_to, '9999-12-31T23:59:59.999Z') > NEW.effective_from
+    );
+END;
+
+INSERT INTO usage_codex_credit_policies (
+    policy_id, provider, rate_card_kind, effective_from, effective_to,
+    source_url, source_observed_at
+) VALUES (
+    'openai-codex-token-based-20260402',
+    'openai',
+    'codex_token_based',
+    '2026-04-02T00:00:00Z',
+    NULL,
+    'https://help.openai.com/en/articles/20001106-codex-rate-card',
+    '2026-07-27T00:00:00Z'
+);
+
 CREATE TRIGGER usage_codex_credit_rates_no_overlap_insert
 BEFORE INSERT ON usage_codex_credit_rates
 BEGIN
@@ -113,13 +169,21 @@ WITH rate_matches AS (
     SELECT
         p.provider_call_id,
         COUNT(r.rate_id) AS matching_rate_count,
-        MIN(r.rate_id) AS rate_id
+        MIN(r.rate_id) AS rate_id,
+        MIN(c.rate_card_kind) AS selected_rate_card_kind
     FROM usage_provider_calls AS p
+    LEFT JOIN usage_codex_credit_policies AS c
+      ON c.provider = p.provider
+     AND p.started_at >= c.effective_from
+     AND (c.effective_to IS NULL OR p.started_at < c.effective_to)
     LEFT JOIN usage_codex_credit_rates AS r
       ON r.provider = p.provider
      AND r.model = lower(p.actual_model_used)
      AND r.service_tier = p.effective_service_tier
      AND r.speed_mode = CASE WHEN p.fast_mode_used = 1 THEN 'fast' ELSE 'standard' END
+     AND (r.rate_card_kind = c.rate_card_kind
+          OR (c.rate_card_kind = 'codex_token_based'
+              AND r.rate_card_kind IN ('api_priority_token_based', 'codex_fast_token_based')))
      AND p.started_at >= r.effective_from
      AND (r.effective_to IS NULL OR p.started_at < r.effective_to)
     GROUP BY p.provider_call_id
@@ -163,6 +227,7 @@ SELECT
     r.effective_to AS rate_effective_to,
     r.source_url AS rate_source_url,
     r.source_observed_at AS rate_source_observed_at,
+    m.selected_rate_card_kind,
     CASE
         WHEN p.provider_reported_credits IS NOT NULL THEN 'provider_reported'
         WHEN p.status IS NULL OR p.total_tokens IS NULL THEN 'provider_usage_missing'
@@ -170,6 +235,8 @@ SELECT
         WHEN p.effective_service_tier IS NULL THEN 'actual_tier_missing'
         WHEN p.fast_mode_used IS NULL THEN 'fast_rate_unknown'
         WHEN COALESCE(p.input_tokens_cache_write, 0) > 0 THEN 'token_breakdown_incomplete'
+        WHEN m.selected_rate_card_kind IS NULL THEN 'rate_card_unknown'
+        WHEN m.selected_rate_card_kind LIKE 'legacy%' THEN 'legacy_rate_card'
         WHEN m.matching_rate_count > 1 THEN 'ambiguous_rate'
         WHEN m.matching_rate_count = 0 AND p.fast_mode_used = 1 THEN 'fast_rate_unknown'
         WHEN m.matching_rate_count = 0 THEN 'model_rate_missing'
