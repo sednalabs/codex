@@ -288,7 +288,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
         let requested_model = turn_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.requested_model.clone())
-            .or_else(|| token_count.model_used.clone());
+            .or_else(|| token_count.model_used.clone())
+            .map(|value| value.to_ascii_lowercase());
         let provider = token_count
             .provider
             .as_ref()
@@ -309,14 +310,18 @@ ON CONFLICT(thread_id) DO UPDATE SET
             .billing_surface
             .as_ref()
             .map(|value| value.to_ascii_lowercase());
-        let account_plan = token_count.account_plan.clone().or_else(|| {
-            token_count
-                .rate_limits
-                .as_ref()
-                .and_then(|snapshot| snapshot.plan_type.as_ref())
-                .and_then(|plan| serde_json::to_value(plan).ok())
-                .and_then(|value| value.as_str().map(str::to_owned))
-        });
+        let account_plan = token_count
+            .account_plan
+            .clone()
+            .or_else(|| {
+                token_count
+                    .rate_limits
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.plan_type.as_ref())
+                    .and_then(|plan| serde_json::to_value(plan).ok())
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            })
+            .map(|value| value.to_ascii_lowercase());
         let spawn_request_id = self.lookup_spawn_request_id().await?;
         let provider_call_id = Uuid::new_v4().to_string();
         let started_at = Utc::now();
@@ -1196,12 +1201,48 @@ WHERE thread_id = ?
         let pool_arc = runtime.usage_pool();
         let pool: &SqlitePool = pool_arc.as_ref();
         for (id, model, tier, fast, started_at) in [
-            ("luna", "gpt-5.6-luna", "default", false, "2026-07-28T00:00:00Z"),
-            ("terra", "gpt-5.6-terra", "default", false, "2026-07-28T00:00:00Z"),
-            ("sol", "gpt-5.6-sol", "default", false, "2026-07-28T00:00:00Z"),
-            ("fast", "gpt-5.6-luna", "priority", true, "2026-07-28T00:00:00Z"),
-            ("before", "gpt-5.6-luna", "default", false, "2026-04-01T23:59:59Z"),
-            ("boundary", "gpt-5.6-luna", "default", false, "2026-04-02T00:00:00Z"),
+            (
+                "luna",
+                "gpt-5.6-luna",
+                "default",
+                false,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "terra",
+                "gpt-5.6-terra",
+                "default",
+                false,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "sol",
+                "gpt-5.6-sol",
+                "default",
+                false,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "fast",
+                "gpt-5.6-luna",
+                "priority",
+                true,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "before",
+                "gpt-5.6-luna",
+                "default",
+                false,
+                "2026-04-01T23:59:59Z",
+            ),
+            (
+                "boundary",
+                "gpt-5.6-luna",
+                "default",
+                false,
+                "2026-04-02T00:00:00Z",
+            ),
         ] {
             insert_test_provider_call(
                 pool,
@@ -1497,7 +1538,7 @@ ORDER BY provider_call_id
 
         let statuses: Vec<(String, String, Option<f64>, Option<f64>, Option<String>)> =
             sqlx::query_as(
-            r#"
+                r#"
 SELECT provider_call_id, pricing_status, rate_card_estimated_total_credits,
        estimated_total_credits, credit_source
 FROM usage_provider_call_credit_estimates
@@ -1517,8 +1558,20 @@ ORDER BY provider_call_id
                     None,
                     None
                 ),
-                ("missing-model".into(), "actual_model_missing".into(), None, None, None),
-                ("missing-tier".into(), "actual_tier_missing".into(), None, None, None),
+                (
+                    "missing-model".into(),
+                    "actual_model_missing".into(),
+                    None,
+                    None,
+                    None
+                ),
+                (
+                    "missing-tier".into(),
+                    "actual_tier_missing".into(),
+                    None,
+                    None,
+                    None
+                ),
                 (
                     "priced".into(),
                     "priced_estimate".into(),
@@ -1533,8 +1586,20 @@ ORDER BY provider_call_id
                     Some(9.0),
                     Some("provider_reported".into())
                 ),
-                ("unknown-model".into(), "model_rate_missing".into(), None, None, None),
-                ("unknown-tier".into(), "tier_rate_missing".into(), None, None, None),
+                (
+                    "unknown-model".into(),
+                    "model_rate_missing".into(),
+                    None,
+                    None,
+                    None
+                ),
+                (
+                    "unknown-tier".into(),
+                    "tier_rate_missing".into(),
+                    None,
+                    None,
+                    None
+                ),
             ]
         );
 
@@ -1578,7 +1643,11 @@ INSERT INTO usage_codex_credit_rates (
         .execute(pool)
         .await
         .expect_err("overlapping rate intervals must fail");
-        assert!(overlap.to_string().contains("ambiguous Codex credit rate interval"));
+        assert!(
+            overlap
+                .to_string()
+                .contains("ambiguous Codex credit rate interval")
+        );
         Ok(())
     }
 

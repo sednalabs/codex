@@ -230,6 +230,7 @@ rate_matches AS (
      AND r.provider = lower(p.provider)
      AND r.rate_card_kind = c.rate_card_kind
      AND r.model = p.pricing_model
+     AND p.actual_service_tier_source IS NOT NULL
      AND r.service_tier = lower(p.actual_service_tier)
      AND r.speed_mode = p.speed_mode
      AND p.started_at >= r.effective_from
@@ -266,16 +267,25 @@ priced AS (
         r.source_observed_at AS rate_source_observed_at,
         CASE WHEN c.matching_policy_count = 1
                   AND m.matching_rate_count = 1
+                  AND p.input_tokens_uncached IS NOT NULL
+                  AND p.input_tokens_cached IS NOT NULL
+                  AND p.output_tokens IS NOT NULL
                   AND COALESCE(p.input_tokens_cache_write, 0) = 0
              THEN p.input_tokens_uncached * r.credits_per_1m_uncached_input / 1000000.0
         END AS uncached_input_credits,
         CASE WHEN c.matching_policy_count = 1
                   AND m.matching_rate_count = 1
+                  AND p.input_tokens_uncached IS NOT NULL
+                  AND p.input_tokens_cached IS NOT NULL
+                  AND p.output_tokens IS NOT NULL
                   AND COALESCE(p.input_tokens_cache_write, 0) = 0
              THEN p.input_tokens_cached * r.credits_per_1m_cached_input / 1000000.0
         END AS cached_input_credits,
         CASE WHEN c.matching_policy_count = 1
                   AND m.matching_rate_count = 1
+                  AND p.input_tokens_uncached IS NOT NULL
+                  AND p.input_tokens_cached IS NOT NULL
+                  AND p.output_tokens IS NOT NULL
                   AND COALESCE(p.input_tokens_cache_write, 0) = 0
              THEN p.output_tokens * r.credits_per_1m_output / 1000000.0
         END AS output_credits
@@ -329,9 +339,14 @@ SELECT
     selected_rate_card_kind,
     CASE
         WHEN provider_reported_credits IS NOT NULL THEN 'provider_reported'
-        WHEN status IS NULL OR total_tokens IS NULL THEN 'provider_usage_missing'
+        WHEN status IS NULL
+          OR total_tokens IS NULL
+          OR input_tokens_uncached IS NULL
+          OR input_tokens_cached IS NULL
+          OR output_tokens IS NULL THEN 'provider_usage_missing'
         WHEN pricing_model IS NULL THEN 'actual_model_missing'
-        WHEN actual_service_tier IS NULL THEN 'actual_tier_missing'
+        WHEN actual_service_tier IS NULL OR actual_service_tier_source IS NULL
+            THEN 'actual_tier_missing'
         WHEN fast_mode_used IS NULL THEN 'fast_rate_unknown'
         WHEN COALESCE(input_tokens_cache_write, 0) > 0 THEN 'token_breakdown_incomplete'
         WHEN matching_policy_count > 1 OR matching_rate_count > 1 THEN 'ambiguous_rate'
@@ -358,6 +373,9 @@ SELECT
         WHEN provider_reported_credits IS NOT NULL THEN 'provider_reported'
         WHEN matching_policy_count = 1
          AND matching_rate_count = 1
+         AND input_tokens_uncached IS NOT NULL
+         AND input_tokens_cached IS NOT NULL
+         AND output_tokens IS NOT NULL
          AND COALESCE(input_tokens_cache_write, 0) = 0 THEN 'rate_card_estimate'
     END AS credit_source
 FROM priced;
