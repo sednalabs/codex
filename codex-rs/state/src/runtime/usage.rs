@@ -912,6 +912,15 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct CreditEstimateStatusRow {
+        provider_call_id: String,
+        pricing_status: String,
+        rate_card_estimated_total_credits: Option<f64>,
+        estimated_total_credits: Option<f64>,
+        credit_source: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
     struct CreditThreadSummaryRow {
         provider_call_count: i64,
         priced_call_count: i64,
@@ -1536,70 +1545,69 @@ ORDER BY provider_call_id
             insert_test_provider_call(pool, call).await?;
         }
 
-        let statuses: Vec<(String, String, Option<f64>, Option<f64>, Option<String>)> =
-            sqlx::query_as(
-                r#"
+        let statuses: Vec<CreditEstimateStatusRow> = sqlx::query_as(
+            r#"
 SELECT provider_call_id, pricing_status, rate_card_estimated_total_credits,
        estimated_total_credits, credit_source
 FROM usage_provider_call_credit_estimates
 WHERE thread_id = 'partial'
 ORDER BY provider_call_id
 "#,
-            )
-            .fetch_all(pool)
-            .await?;
+        )
+        .fetch_all(pool)
+        .await?;
         assert_eq!(
             statuses,
             vec![
-                (
-                    "cache-write".into(),
-                    "token_breakdown_incomplete".into(),
-                    None,
-                    None,
-                    None
-                ),
-                (
-                    "missing-model".into(),
-                    "actual_model_missing".into(),
-                    None,
-                    None,
-                    None
-                ),
-                (
-                    "missing-tier".into(),
-                    "actual_tier_missing".into(),
-                    None,
-                    None,
-                    None
-                ),
-                (
-                    "priced".into(),
-                    "priced_estimate".into(),
-                    Some(25.0),
-                    Some(25.0),
-                    Some("rate_card_estimate".into())
-                ),
-                (
-                    "reported".into(),
-                    "provider_reported".into(),
-                    Some(25.0),
-                    Some(9.0),
-                    Some("provider_reported".into())
-                ),
-                (
-                    "unknown-model".into(),
-                    "model_rate_missing".into(),
-                    None,
-                    None,
-                    None
-                ),
-                (
-                    "unknown-tier".into(),
-                    "tier_rate_missing".into(),
-                    None,
-                    None,
-                    None
-                ),
+                CreditEstimateStatusRow {
+                    provider_call_id: "cache-write".into(),
+                    pricing_status: "token_breakdown_incomplete".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "missing-model".into(),
+                    pricing_status: "actual_model_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "missing-tier".into(),
+                    pricing_status: "actual_tier_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "priced".into(),
+                    pricing_status: "priced_estimate".into(),
+                    rate_card_estimated_total_credits: Some(25.0),
+                    estimated_total_credits: Some(25.0),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "reported".into(),
+                    pricing_status: "provider_reported".into(),
+                    rate_card_estimated_total_credits: Some(25.0),
+                    estimated_total_credits: Some(9.0),
+                    credit_source: Some("provider_reported".into()),
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "unknown-model".into(),
+                    pricing_status: "model_rate_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "unknown-tier".into(),
+                    pricing_status: "tier_rate_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
             ]
         );
 
