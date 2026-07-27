@@ -329,8 +329,16 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(token_count.model_used.clone())
         .bind(token_count.requested_service_tier.clone())
         .bind(token_count.effective_service_tier.clone())
-        .bind(token_count.fast_mode_requested.map(|value| if value { 1 } else { 0 }))
-        .bind(token_count.fast_mode_used.map(|value| if value { 1 } else { 0 }))
+        .bind(
+            token_count
+                .fast_mode_requested
+                .map(|value| if value { 1 } else { 0 }),
+        )
+        .bind(
+            token_count
+                .fast_mode_used
+                .map(|value| if value { 1 } else { 0 }),
+        )
         .bind(started_at.to_rfc3339())
         .bind(Utc::now().to_rfc3339())
         .bind(uncached_input_tokens)
