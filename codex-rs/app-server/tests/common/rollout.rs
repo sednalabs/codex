@@ -100,6 +100,10 @@ pub fn create_fake_rollout_with_token_usage(
         rate_limits: None,
         provider: None,
         model_used: None,
+        requested_service_tier: None,
+        effective_service_tier: None,
+        fast_mode_requested: None,
+        fast_mode_used: None,
     }))?;
     let file_path = rollout_path(codex_home, filename_ts, &thread_id);
     let line = json!({

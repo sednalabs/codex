@@ -1794,6 +1794,10 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                 rate_limits: None,
                 provider: None,
                 model_used: None,
+                requested_service_tier: None,
+                effective_service_tier: None,
+                fast_mode_requested: None,
+                fast_mode_used: None,
             }))?,
         })
         .to_string(),

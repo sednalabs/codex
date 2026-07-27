@@ -3764,6 +3764,10 @@ mod tests {
                 rate_limits: Some(rate_limits),
                 provider: None,
                 model_used: None,
+                requested_service_tier: None,
+                effective_service_tier: None,
+                fast_mode_requested: None,
+                fast_mode_used: None,
             },
             &outgoing,
         )
@@ -3823,6 +3827,10 @@ mod tests {
                 rate_limits: None,
                 provider: None,
                 model_used: None,
+                requested_service_tier: None,
+                effective_service_tier: None,
+                fast_mode_requested: None,
+                fast_mode_used: None,
             },
             &outgoing,
         )

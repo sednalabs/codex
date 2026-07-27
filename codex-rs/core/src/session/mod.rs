@@ -3395,6 +3395,22 @@ impl Session {
             rate_limits,
             provider: Some(turn_context.config.model_provider_id.clone()),
             model_used: Some(turn_context.model_info.slug.clone()),
+            requested_service_tier: turn_context.config.service_tier.clone(),
+            effective_service_tier: Some(
+                turn_context
+                    .model_info
+                    .service_tier_for_request(turn_context.config.service_tier.clone())
+                    .unwrap_or_else(|| "default".to_string()),
+            ),
+            fast_mode_requested: Some(turn_context.features.enabled(Feature::FastMode)),
+            fast_mode_used: Some(
+                turn_context.features.enabled(Feature::FastMode)
+                    && turn_context
+                        .model_info
+                        .service_tier_for_request(turn_context.config.service_tier.clone())
+                        .as_deref()
+                        == Some("priority"),
+            ),
         });
         self.send_event(turn_context, event).await;
     }

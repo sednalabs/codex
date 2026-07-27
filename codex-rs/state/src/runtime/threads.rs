@@ -2394,6 +2394,10 @@ mod tests {
                 rate_limits: None,
                 provider: None,
                 model_used: None,
+                requested_service_tier: None,
+                effective_service_tier: None,
+                fast_mode_requested: None,
+                fast_mode_used: None,
             },
         ))];
         let override_updated_at =
