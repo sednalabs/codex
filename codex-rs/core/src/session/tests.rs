@@ -2482,6 +2482,13 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             rate_limits: None,
             provider: None,
             model_used: None,
+            requested_service_tier: None,
+            actual_service_tier: None,
+            actual_service_tier_source: None,
+            fast_mode_requested: None,
+            fast_mode_used: None,
+            billing_surface: None,
+            account_plan: None,
         },
     )));
     rollout_items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
@@ -2490,6 +2497,13 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             rate_limits: None,
             provider: None,
             model_used: None,
+            requested_service_tier: None,
+            actual_service_tier: None,
+            actual_service_tier_source: None,
+            fast_mode_requested: None,
+            fast_mode_used: None,
+            billing_surface: None,
+            account_plan: None,
         },
     )));
     rollout_items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
@@ -2498,6 +2512,13 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             rate_limits: None,
             provider: None,
             model_used: None,
+            requested_service_tier: None,
+            actual_service_tier: None,
+            actual_service_tier_source: None,
+            fast_mode_requested: None,
+            fast_mode_used: None,
+            billing_surface: None,
+            account_plan: None,
         },
     )));
     rollout_items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
@@ -2506,6 +2527,13 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             rate_limits: None,
             provider: None,
             model_used: None,
+            requested_service_tier: None,
+            actual_service_tier: None,
+            actual_service_tier_source: None,
+            fast_mode_requested: None,
+            fast_mode_used: None,
+            billing_surface: None,
+            account_plan: None,
         },
     )));
 

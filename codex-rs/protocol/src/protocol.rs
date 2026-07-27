@@ -2160,6 +2160,28 @@ pub struct TokenCountEvent {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_used: Option<String>,
+    /// Provider-facing tier selected for the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
+    /// Tier established by the runtime contract for the completed provider call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_service_tier: Option<String>,
+    /// Evidence used to establish [`Self::actual_service_tier`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_service_tier_source: Option<String>,
+    /// Whether the request selected Codex Fast mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode_requested: Option<bool>,
+    /// Whether the completed call used the ChatGPT Fast credit regime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode_used: Option<bool>,
+    /// Billing surface established by authentication, such as `chatgpt_credits`
+    /// or `api_tokens`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_surface: Option<String>,
+    /// Normalized account plan used to select the applicable credit policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_plan: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]
