@@ -1475,6 +1475,16 @@ docs-only refresh commit that records this snapshot.
   count as a distinct accounting dimension. The existing non-cached input
   total remains input minus cache reads, matching upstream telemetry semantics;
   cache-write usage is stored alongside it rather than silently collapsed.
+- Provider calls record requested and runtime-established service tiers,
+  Fast-mode request/use flags, billing surface, and account plan. The shared
+  `priority` wire value is priced as Codex Fast only when authentication
+  establishes the ChatGPT credit surface; API Priority remains unpriced in
+  Codex-credit views.
+- `usage_codex_credit_rates` and `usage_codex_credit_policies` retain
+  source-backed, half-open effective intervals. The call, turn, and thread
+  views expose raw tokens, provenance, component estimates, partial coverage,
+  and explicit uncertainty. Provider-reported credits take precedence without
+  overwriting the independently calculated rate-card estimate.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
@@ -1500,6 +1510,7 @@ docs-only refresh commit that records this snapshot.
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
   - `codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql`
+  - `codex-rs/state/usage_migrations/0005_usage_codex_credits.sql`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`

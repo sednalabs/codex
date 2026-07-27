@@ -666,6 +666,26 @@ User-visible behavior:
 - Downstream builds maintain a local `usage.sqlite` alongside `state.sqlite` and `logs.sqlite` under `CODEX_SQLITE_HOME`.
 - `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
 - Billing turns are canonicalized before ingest, and downstream reporting can consume exact local facts directly from `usage.sqlite`.
+- `usage_provider_call_credit_estimates` is the canonical call-level Codex
+  credit surface. It retains requested and actual model/tier evidence, Fast
+  mode and billing-surface evidence, raw cached/uncached/cache-write/output
+  tokens, component estimates, provider-reported credits, rate provenance,
+  `credit_source`, and `pricing_status`.
+- `usage_thread_credit_summary` and `usage_turn_credit_summary` are the
+  aggregate surfaces. Their authoritative total remains `NULL` when any call
+  is unpriced; `partial`, priced/unpriced counts, and `priced_credits_total`
+  expose coverage without treating unknown consumption as zero.
+- Rates live in `usage_codex_credit_rates`; applicable plan/card intervals live
+  in `usage_codex_credit_policies`. Both use
+  `effective_from <= started_at < effective_to`, reject overlapping intervals,
+  and retain source URL plus observation time.
+- ChatGPT Fast and API Priority share the provider-facing `priority` tier but
+  do not share a billing unit. `billing_surface = 'chatgpt_credits'` plus
+  `fast_mode_used = 1` selects an explicit Fast credit row. API-token calls do
+  not silently receive ChatGPT credit estimates.
+- Cache-write input remains diagnostic. A non-zero value produces
+  `token_breakdown_incomplete` until its relationship to uncached input is
+  contractually established, preventing double-counting.
 - Rollout JSONL remains a compatibility fallback for historical or unpatched installs, not the primary ledger source.
 
 ### MCP tool orchestration: blocking waits before task support matured
