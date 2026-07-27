@@ -307,6 +307,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
             provider,
             requested_model,
             actual_model_used,
+            requested_service_tier,
+            effective_service_tier,
+            fast_mode_requested,
+            fast_mode_used,
             started_at,
             completed_at,
             input_tokens_uncached,
@@ -314,7 +318,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             output_tokens,
             total_tokens,
             status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(provider_call_id.clone())
         .bind(self.thread_id.to_string())
@@ -323,6 +327,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(provider.clone())
         .bind(requested_model.clone())
         .bind(token_count.model_used.clone())
+        .bind(token_count.requested_service_tier.clone())
+        .bind(token_count.effective_service_tier.clone())
+        .bind(token_count.fast_mode_requested.map(|value| if value { 1 } else { 0 }))
+        .bind(token_count.fast_mode_used.map(|value| if value { 1 } else { 0 }))
         .bind(started_at.to_rfc3339())
         .bind(Utc::now().to_rfc3339())
         .bind(uncached_input_tokens)
@@ -804,6 +812,10 @@ mod tests {
         actual_model_used: Option<String>,
         final_model: Option<String>,
         model_snapshot: Option<String>,
+        requested_service_tier: Option<String>,
+        effective_service_tier: Option<String>,
+        fast_mode_requested: Option<i64>,
+        fast_mode_used: Option<i64>,
         input_tokens_uncached: i64,
         input_tokens_cached: i64,
         output_tokens: i64,
@@ -897,6 +909,10 @@ mod tests {
                 rate_limits,
                 provider: Some("test-provider".to_string()),
                 model_used: Some("actual-model".to_string()),
+                requested_service_tier: Some("priority".to_string()),
+                effective_service_tier: Some("priority".to_string()),
+                fast_mode_requested: Some(true),
+                fast_mode_used: Some(true),
             }),
         }
     }
@@ -943,6 +959,10 @@ SELECT
   actual_model_used,
   final_model,
   model_snapshot,
+  requested_service_tier,
+  effective_service_tier,
+  fast_mode_requested,
+  fast_mode_used,
   input_tokens_uncached,
   input_tokens_cached,
   output_tokens,
@@ -963,6 +983,10 @@ WHERE thread_id = ?
                 actual_model_used: Some("actual-model".to_string()),
                 final_model: None,
                 model_snapshot: None,
+                requested_service_tier: Some("priority".to_string()),
+                effective_service_tier: Some("priority".to_string()),
+                fast_mode_requested: Some(1),
+                fast_mode_used: Some(1),
                 input_tokens_uncached: 8,
                 input_tokens_cached: 2,
                 output_tokens: 3,

@@ -2041,6 +2041,19 @@ pub struct TokenCountEvent {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_used: Option<String>,
+    /// Service tier requested by configuration, using provider-facing values such as
+    /// `priority` (Fast) or `flex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
+    /// Service tier resolved and placed on the outbound provider request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_service_tier: Option<String>,
+    /// Whether the Codex Fast-mode feature was requested for this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode_requested: Option<bool>,
+    /// Whether the runtime established that Fast mode was used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_mode_used: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]

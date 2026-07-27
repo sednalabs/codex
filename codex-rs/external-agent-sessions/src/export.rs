@@ -162,6 +162,10 @@ fn token_count_item(last_model_visible_tokens: i64) -> RolloutItem {
         rate_limits: None,
         provider: None,
         model_used: None,
+        requested_service_tier: None,
+        effective_service_tier: None,
+        fast_mode_requested: None,
+        fast_mode_used: None,
     }))
 }
 
