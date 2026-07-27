@@ -3486,7 +3486,12 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "rate_limit_reached_type": null
             },
             "provider": "openai",
-            "model_used": session_model
+            "model_used": session_model,
+            "actual_service_tier": "default",
+            "actual_service_tier_source": "runtime_contract",
+            "fast_mode_requested": false,
+            "fast_mode_used": false,
+            "billing_surface": "api_tokens"
         })
     );
     let usage = final_payload
@@ -3603,7 +3608,12 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             "info": null,
             "model_used": session_model,
             "provider": "openai",
-            "rate_limits": expected_limits
+            "rate_limits": expected_limits,
+            "actual_service_tier": "default",
+            "actual_service_tier_source": "runtime_contract",
+            "fast_mode_requested": false,
+            "fast_mode_used": false,
+            "billing_surface": "api_tokens"
         })
     );
 

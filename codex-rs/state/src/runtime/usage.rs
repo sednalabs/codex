@@ -288,8 +288,40 @@ ON CONFLICT(thread_id) DO UPDATE SET
         let requested_model = turn_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.requested_model.clone())
-            .or_else(|| token_count.model_used.clone());
-        let provider = token_count.provider.clone();
+            .or_else(|| token_count.model_used.clone())
+            .map(|value| value.to_ascii_lowercase());
+        let provider = token_count
+            .provider
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase());
+        let actual_model_used = token_count
+            .model_used
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase());
+        let requested_service_tier = token_count
+            .requested_service_tier
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase());
+        let actual_service_tier = token_count
+            .actual_service_tier
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase());
+        let billing_surface = token_count
+            .billing_surface
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase());
+        let account_plan = token_count
+            .account_plan
+            .clone()
+            .or_else(|| {
+                token_count
+                    .rate_limits
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.plan_type.as_ref())
+                    .and_then(|plan| serde_json::to_value(plan).ok())
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            })
+            .map(|value| value.to_ascii_lowercase());
         let spawn_request_id = self.lookup_spawn_request_id().await?;
         let provider_call_id = Uuid::new_v4().to_string();
         let started_at = Utc::now();
@@ -308,6 +340,13 @@ ON CONFLICT(thread_id) DO UPDATE SET
             provider,
             requested_model,
             actual_model_used,
+            requested_service_tier,
+            actual_service_tier,
+            actual_service_tier_source,
+            fast_mode_requested,
+            fast_mode_used,
+            billing_surface,
+            account_plan,
             started_at,
             completed_at,
             input_tokens_uncached,
@@ -316,7 +355,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             output_tokens,
             total_tokens,
             status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(provider_call_id.clone())
         .bind(self.thread_id.to_string())
@@ -324,7 +363,14 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(spawn_request_id)
         .bind(provider.clone())
         .bind(requested_model.clone())
-        .bind(token_count.model_used.clone())
+        .bind(actual_model_used)
+        .bind(requested_service_tier)
+        .bind(actual_service_tier)
+        .bind(token_count.actual_service_tier_source.clone())
+        .bind(token_count.fast_mode_requested)
+        .bind(token_count.fast_mode_used)
+        .bind(billing_surface)
+        .bind(account_plan)
         .bind(started_at.to_rfc3339())
         .bind(Utc::now().to_rfc3339())
         .bind(uncached_input_tokens)
@@ -788,6 +834,7 @@ mod tests {
     use crate::DirectionalThreadSpawnEdgeStatus;
     use anyhow::Result;
     use codex_protocol::ThreadId;
+    use codex_protocol::account::PlanType;
     use codex_protocol::mcp::CallToolResult;
     use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
     use codex_protocol::protocol::AgentStatus;
@@ -820,6 +867,13 @@ mod tests {
         actual_model_used: Option<String>,
         final_model: Option<String>,
         model_snapshot: Option<String>,
+        requested_service_tier: Option<String>,
+        actual_service_tier: Option<String>,
+        actual_service_tier_source: Option<String>,
+        fast_mode_requested: Option<bool>,
+        fast_mode_used: Option<bool>,
+        billing_surface: Option<String>,
+        account_plan: Option<String>,
         input_tokens_uncached: i64,
         input_tokens_cached: i64,
         input_tokens_cache_write: i64,
@@ -839,6 +893,98 @@ mod tests {
         quota_source: Option<String>,
         quota_percent_remaining: f64,
         quota_percent_used: f64,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct CreditEstimateRow {
+        provider_call_id: String,
+        pricing_model: Option<String>,
+        actual_service_tier: Option<String>,
+        fast_mode_used: Option<bool>,
+        rate_id: Option<String>,
+        uncached_input_credits: Option<f64>,
+        cached_input_credits: Option<f64>,
+        output_credits: Option<f64>,
+        rate_card_estimated_total_credits: Option<f64>,
+        estimated_total_credits: Option<f64>,
+        pricing_status: String,
+        credit_source: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct CreditEstimateStatusRow {
+        provider_call_id: String,
+        pricing_status: String,
+        rate_card_estimated_total_credits: Option<f64>,
+        estimated_total_credits: Option<f64>,
+        credit_source: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct CreditThreadSummaryRow {
+        provider_call_count: i64,
+        priced_call_count: i64,
+        unpriced_call_count: i64,
+        partial: bool,
+        estimated_total_credits: Option<f64>,
+        priced_credits_total: Option<f64>,
+        models_used: Option<String>,
+        service_tiers_used: Option<String>,
+    }
+
+    struct TestProviderCall<'a> {
+        id: &'a str,
+        thread_id: &'a str,
+        started_at: &'a str,
+        requested_model: Option<&'a str>,
+        actual_model: Option<&'a str>,
+        actual_tier: Option<&'a str>,
+        fast_mode_used: Option<bool>,
+        billing_surface: &'a str,
+        account_plan: Option<&'a str>,
+        uncached: i64,
+        cached: i64,
+        cache_write: i64,
+        output: i64,
+        total: i64,
+        provider_reported_credits: Option<f64>,
+    }
+
+    async fn insert_test_provider_call(
+        pool: &SqlitePool,
+        call: TestProviderCall<'_>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+INSERT INTO usage_provider_calls (
+  provider_call_id, thread_id, provider, requested_model, actual_model_used,
+  actual_service_tier, actual_service_tier_source, fast_mode_used,
+  billing_surface, account_plan, started_at, completed_at,
+  input_tokens_uncached, input_tokens_cached, input_tokens_cache_write,
+  output_tokens, total_tokens, provider_reported_credits, status
+) VALUES (?, ?, 'openai', ?, ?, ?, 'runtime_contract', ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, 'ok')
+"#,
+        )
+        .bind(call.id)
+        .bind(call.thread_id)
+        .bind(call.requested_model)
+        .bind(call.actual_model)
+        .bind(call.actual_tier)
+        .bind(call.fast_mode_used)
+        .bind(call.billing_surface)
+        .bind(call.account_plan)
+        .bind(call.started_at)
+        .bind(call.started_at)
+        .bind(call.uncached)
+        .bind(call.cached)
+        .bind(call.cache_write)
+        .bind(call.output)
+        .bind(call.total)
+        .bind(call.provider_reported_credits)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
@@ -906,7 +1052,7 @@ mod tests {
             secondary: None,
             credits: None,
             rate_limit_reached_type: None,
-            plan_type: None,
+            plan_type: Some(PlanType::Pro),
             individual_limit: None,
             spend_control_reached: None,
         });
@@ -917,6 +1063,13 @@ mod tests {
                 rate_limits,
                 provider: Some("test-provider".to_string()),
                 model_used: Some("actual-model".to_string()),
+                requested_service_tier: Some("priority".to_string()),
+                actual_service_tier: Some("priority".to_string()),
+                actual_service_tier_source: Some("runtime_contract".to_string()),
+                fast_mode_requested: Some(true),
+                fast_mode_used: Some(true),
+                billing_surface: Some("chatgpt_credits".to_string()),
+                account_plan: include_rate_limit.then(|| "pro".to_string()),
             }),
         }
     }
@@ -966,6 +1119,13 @@ SELECT
   actual_model_used,
   final_model,
   model_snapshot,
+  requested_service_tier,
+  actual_service_tier,
+  actual_service_tier_source,
+  fast_mode_requested,
+  fast_mode_used,
+  billing_surface,
+  account_plan,
   input_tokens_uncached,
   input_tokens_cached,
   input_tokens_cache_write,
@@ -987,6 +1147,13 @@ WHERE thread_id = ?
                 actual_model_used: Some("actual-model".to_string()),
                 final_model: None,
                 model_snapshot: None,
+                requested_service_tier: Some("priority".to_string()),
+                actual_service_tier: Some("priority".to_string()),
+                actual_service_tier_source: Some("runtime_contract".to_string()),
+                fast_mode_requested: Some(true),
+                fast_mode_used: Some(true),
+                billing_surface: Some("chatgpt_credits".to_string()),
+                account_plan: Some("pro".to_string()),
                 input_tokens_uncached: 8,
                 input_tokens_cached: 2,
                 input_tokens_cache_write: 3,
@@ -1034,6 +1201,540 @@ WHERE thread_id = ?
         );
         assert!(!display_models.contains_key(&missing_thread_id));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn credit_views_select_standard_fast_and_half_open_rates() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        for (id, model, tier, fast, started_at) in [
+            (
+                "luna",
+                "gpt-5.6-luna",
+                "default",
+                false,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "terra",
+                "gpt-5.6-terra",
+                "default",
+                false,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "sol",
+                "gpt-5.6-sol",
+                "default",
+                false,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "gpt55-fast",
+                "gpt-5.5",
+                "priority",
+                true,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "gpt54-fast",
+                "gpt-5.4",
+                "priority",
+                true,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "fast",
+                "gpt-5.6-luna",
+                "priority",
+                true,
+                "2026-07-28T00:00:00Z",
+            ),
+            (
+                "before",
+                "gpt-5.6-luna",
+                "default",
+                false,
+                "2026-04-01T23:59:59Z",
+            ),
+            (
+                "boundary",
+                "gpt-5.6-luna",
+                "default",
+                false,
+                "2026-04-02T00:00:00Z",
+            ),
+        ] {
+            insert_test_provider_call(
+                pool,
+                TestProviderCall {
+                    id,
+                    thread_id: "rates",
+                    started_at,
+                    requested_model: Some(model),
+                    actual_model: Some(model),
+                    actual_tier: Some(tier),
+                    fast_mode_used: Some(fast),
+                    billing_surface: "chatgpt_credits",
+                    account_plan: Some("pro"),
+                    uncached: 1_000_000,
+                    cached: 1_000_000,
+                    cache_write: 0,
+                    output: 1_000_000,
+                    total: 9_999_999,
+                    provider_reported_credits: None,
+                },
+            )
+            .await?;
+        }
+        insert_test_provider_call(
+            pool,
+            TestProviderCall {
+                id: "api-priority",
+                thread_id: "rates",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: Some("gpt-5.6-luna"),
+                actual_tier: Some("priority"),
+                fast_mode_used: Some(false),
+                billing_surface: "api_tokens",
+                account_plan: None,
+                uncached: 1_000_000,
+                cached: 1_000_000,
+                cache_write: 0,
+                output: 1_000_000,
+                total: 3_000_000,
+                provider_reported_credits: None,
+            },
+        )
+        .await?;
+
+        let rows: Vec<CreditEstimateRow> = sqlx::query_as(
+            r#"
+SELECT provider_call_id, pricing_model, actual_service_tier, fast_mode_used,
+       rate_id, uncached_input_credits, cached_input_credits, output_credits,
+       rate_card_estimated_total_credits, estimated_total_credits,
+       pricing_status, credit_source
+FROM usage_provider_call_credit_estimates
+WHERE thread_id = 'rates'
+ORDER BY provider_call_id
+"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            rows,
+            vec![
+                CreditEstimateRow {
+                    provider_call_id: "api-priority".into(),
+                    pricing_model: Some("gpt-5.6-luna".into()),
+                    actual_service_tier: Some("priority".into()),
+                    fast_mode_used: Some(false),
+                    rate_id: None,
+                    uncached_input_credits: None,
+                    cached_input_credits: None,
+                    output_credits: None,
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    pricing_status: "rate_card_unknown".into(),
+                    credit_source: None,
+                },
+                CreditEstimateRow {
+                    provider_call_id: "before".into(),
+                    pricing_model: Some("gpt-5.6-luna".into()),
+                    actual_service_tier: Some("default".into()),
+                    fast_mode_used: Some(false),
+                    rate_id: None,
+                    uncached_input_credits: None,
+                    cached_input_credits: None,
+                    output_credits: None,
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    pricing_status: "rate_card_unknown".into(),
+                    credit_source: None,
+                },
+                CreditEstimateRow {
+                    provider_call_id: "boundary".into(),
+                    pricing_model: Some("gpt-5.6-luna".into()),
+                    actual_service_tier: Some("default".into()),
+                    fast_mode_used: Some(false),
+                    rate_id: Some("openai-gpt-5.6-luna-standard-20260402".into()),
+                    uncached_input_credits: Some(25.0),
+                    cached_input_credits: Some(2.5),
+                    output_credits: Some(150.0),
+                    rate_card_estimated_total_credits: Some(177.5),
+                    estimated_total_credits: Some(177.5),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateRow {
+                    provider_call_id: "fast".into(),
+                    pricing_model: Some("gpt-5.6-luna".into()),
+                    actual_service_tier: Some("priority".into()),
+                    fast_mode_used: Some(true),
+                    rate_id: Some("openai-gpt-5.6-luna-fast-20260727".into()),
+                    uncached_input_credits: Some(62.5),
+                    cached_input_credits: Some(6.25),
+                    output_credits: Some(375.0),
+                    rate_card_estimated_total_credits: Some(443.75),
+                    estimated_total_credits: Some(443.75),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateRow {
+                    provider_call_id: "gpt54-fast".into(),
+                    pricing_model: Some("gpt-5.4".into()),
+                    actual_service_tier: Some("priority".into()),
+                    fast_mode_used: Some(true),
+                    rate_id: Some("openai-gpt-5.4-fast-20260727".into()),
+                    uncached_input_credits: Some(125.0),
+                    cached_input_credits: Some(12.5),
+                    output_credits: Some(750.0),
+                    rate_card_estimated_total_credits: Some(887.5),
+                    estimated_total_credits: Some(887.5),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateRow {
+                    provider_call_id: "gpt55-fast".into(),
+                    pricing_model: Some("gpt-5.5".into()),
+                    actual_service_tier: Some("priority".into()),
+                    fast_mode_used: Some(true),
+                    rate_id: Some("openai-gpt-5.5-fast-20260727".into()),
+                    uncached_input_credits: Some(312.5),
+                    cached_input_credits: Some(31.25),
+                    output_credits: Some(1875.0),
+                    rate_card_estimated_total_credits: Some(2218.75),
+                    estimated_total_credits: Some(2218.75),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateRow {
+                    provider_call_id: "luna".into(),
+                    pricing_model: Some("gpt-5.6-luna".into()),
+                    actual_service_tier: Some("default".into()),
+                    fast_mode_used: Some(false),
+                    rate_id: Some("openai-gpt-5.6-luna-standard-20260402".into()),
+                    uncached_input_credits: Some(25.0),
+                    cached_input_credits: Some(2.5),
+                    output_credits: Some(150.0),
+                    rate_card_estimated_total_credits: Some(177.5),
+                    estimated_total_credits: Some(177.5),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateRow {
+                    provider_call_id: "sol".into(),
+                    pricing_model: Some("gpt-5.6-sol".into()),
+                    actual_service_tier: Some("default".into()),
+                    fast_mode_used: Some(false),
+                    rate_id: Some("openai-gpt-5.6-sol-standard-20260402".into()),
+                    uncached_input_credits: Some(125.0),
+                    cached_input_credits: Some(12.5),
+                    output_credits: Some(750.0),
+                    rate_card_estimated_total_credits: Some(887.5),
+                    estimated_total_credits: Some(887.5),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateRow {
+                    provider_call_id: "terra".into(),
+                    pricing_model: Some("gpt-5.6-terra".into()),
+                    actual_service_tier: Some("default".into()),
+                    fast_mode_used: Some(false),
+                    rate_id: Some("openai-gpt-5.6-terra-standard-20260402".into()),
+                    uncached_input_credits: Some(62.5),
+                    cached_input_credits: Some(6.25),
+                    output_credits: Some(375.0),
+                    rate_card_estimated_total_credits: Some(443.75),
+                    estimated_total_credits: Some(443.75),
+                    pricing_status: "priced_estimate".into(),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn credit_views_preserve_uncertainty_and_partial_totals() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        for call in [
+            TestProviderCall {
+                id: "priced",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: Some("gpt-5.6-luna"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 99,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "missing-model",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: None,
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "missing-tier",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-terra"),
+                actual_model: Some("gpt-5.6-terra"),
+                actual_tier: None,
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "unknown-model",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("unknown"),
+                actual_model: Some("unknown"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "unknown-tier",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-sol"),
+                actual_model: Some("gpt-5.6-sol"),
+                actual_tier: Some("flex"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "unknown-fast-mode",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: Some("gpt-5.6-luna"),
+                actual_tier: Some("default"),
+                fast_mode_used: None,
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1_000_000,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "cache-write",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: Some("gpt-5.6-luna"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 0,
+                cache_write: 50,
+                output: 0,
+                total: 1_000_050,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
+                id: "reported",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: Some("gpt-5.6-luna"),
+                actual_tier: Some("default"),
+                fast_mode_used: Some(false),
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1_000_000,
+                provider_reported_credits: Some(9.0),
+            },
+        ] {
+            insert_test_provider_call(pool, call).await?;
+        }
+
+        let statuses: Vec<CreditEstimateStatusRow> = sqlx::query_as(
+            r#"
+SELECT provider_call_id, pricing_status, rate_card_estimated_total_credits,
+       estimated_total_credits, credit_source
+FROM usage_provider_call_credit_estimates
+WHERE thread_id = 'partial'
+ORDER BY provider_call_id
+"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            statuses,
+            vec![
+                CreditEstimateStatusRow {
+                    provider_call_id: "cache-write".into(),
+                    pricing_status: "token_breakdown_incomplete".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "missing-model".into(),
+                    pricing_status: "actual_model_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "missing-tier".into(),
+                    pricing_status: "actual_tier_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "priced".into(),
+                    pricing_status: "priced_estimate".into(),
+                    rate_card_estimated_total_credits: Some(25.0),
+                    estimated_total_credits: Some(25.0),
+                    credit_source: Some("rate_card_estimate".into()),
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "reported".into(),
+                    pricing_status: "provider_reported".into(),
+                    rate_card_estimated_total_credits: Some(25.0),
+                    estimated_total_credits: Some(9.0),
+                    credit_source: Some("provider_reported".into()),
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "unknown-fast-mode".into(),
+                    pricing_status: "fast_rate_unknown".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "unknown-model".into(),
+                    pricing_status: "model_rate_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
+                    provider_call_id: "unknown-tier".into(),
+                    pricing_status: "tier_rate_missing".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+            ]
+        );
+
+        let summary: CreditThreadSummaryRow = sqlx::query_as(
+            r#"
+SELECT provider_call_count, priced_call_count, unpriced_call_count, partial,
+       estimated_total_credits, priced_credits_total, models_used, service_tiers_used
+FROM usage_thread_credit_summary
+WHERE thread_id = 'partial'
+"#,
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(summary.provider_call_count, 8);
+        assert_eq!(summary.priced_call_count, 2);
+        assert_eq!(summary.unpriced_call_count, 6);
+        assert!(summary.partial);
+        assert_eq!(summary.estimated_total_credits, None);
+        assert_eq!(summary.priced_credits_total, Some(34.0));
+
+        let mut models = summary
+            .models_used
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .collect::<Vec<_>>();
+        models.sort_unstable();
+        assert_eq!(
+            models,
+            vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "unknown"]
+        );
+        let mut service_tiers = summary
+            .service_tiers_used
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .collect::<Vec<_>>();
+        service_tiers.sort_unstable();
+        assert_eq!(service_tiers, vec!["default", "flex"]);
+
+        let overlap = sqlx::query(
+            r#"
+INSERT INTO usage_codex_credit_rates (
+  rate_id, provider, model, service_tier, speed_mode, rate_card_kind,
+  credits_per_1m_uncached_input, credits_per_1m_cached_input,
+  credits_per_1m_output, effective_from, source_url, source_observed_at
+) VALUES (
+  'overlap', 'openai', 'gpt-5.6-luna', 'default', 'standard',
+  'codex_token_based', 1, 1, 1, '2026-07-01T00:00:00Z',
+  'https://example.invalid', '2026-07-27T00:00:00Z'
+)
+"#,
+        )
+        .execute(pool)
+        .await
+        .expect_err("overlapping rate intervals must fail");
+        assert!(
+            overlap
+                .to_string()
+                .contains("ambiguous Codex credit rate interval")
+        );
         Ok(())
     }
 
@@ -1090,6 +1791,13 @@ SELECT
   actual_model_used,
   final_model,
   model_snapshot,
+  requested_service_tier,
+  actual_service_tier,
+  actual_service_tier_source,
+  fast_mode_requested,
+  fast_mode_used,
+  billing_surface,
+  account_plan,
   input_tokens_uncached,
   input_tokens_cached,
   input_tokens_cache_write,
@@ -1111,6 +1819,13 @@ WHERE thread_id = ?
                 actual_model_used: Some("actual-model".to_string()),
                 final_model: Some("provider-final-model".to_string()),
                 model_snapshot: Some("provider-model-snapshot".to_string()),
+                requested_service_tier: Some("priority".to_string()),
+                actual_service_tier: Some("priority".to_string()),
+                actual_service_tier_source: Some("runtime_contract".to_string()),
+                fast_mode_requested: Some(true),
+                fast_mode_used: Some(true),
+                billing_surface: Some("chatgpt_credits".to_string()),
+                account_plan: None,
                 input_tokens_uncached: 8,
                 input_tokens_cached: 2,
                 input_tokens_cache_write: 3,
@@ -1240,6 +1955,13 @@ SELECT
   actual_model_used,
   final_model,
   model_snapshot,
+  requested_service_tier,
+  actual_service_tier,
+  actual_service_tier_source,
+  fast_mode_requested,
+  fast_mode_used,
+  billing_surface,
+  account_plan,
   input_tokens_uncached,
   input_tokens_cached,
   input_tokens_cache_write,
@@ -1263,6 +1985,13 @@ ORDER BY rowid
                     actual_model_used: Some("actual-model".to_string()),
                     final_model: None,
                     model_snapshot: None,
+                    requested_service_tier: Some("priority".to_string()),
+                    actual_service_tier: Some("priority".to_string()),
+                    actual_service_tier_source: Some("runtime_contract".to_string()),
+                    fast_mode_requested: Some(true),
+                    fast_mode_used: Some(true),
+                    billing_surface: Some("chatgpt_credits".to_string()),
+                    account_plan: None,
                     input_tokens_uncached: 8,
                     input_tokens_cached: 2,
                     input_tokens_cache_write: 3,
@@ -1276,6 +2005,13 @@ ORDER BY rowid
                     actual_model_used: Some("actual-model".to_string()),
                     final_model: None,
                     model_snapshot: None,
+                    requested_service_tier: Some("priority".to_string()),
+                    actual_service_tier: Some("priority".to_string()),
+                    actual_service_tier_source: Some("runtime_contract".to_string()),
+                    fast_mode_requested: Some(true),
+                    fast_mode_used: Some(true),
+                    billing_surface: Some("chatgpt_credits".to_string()),
+                    account_plan: None,
                     input_tokens_uncached: 8,
                     input_tokens_cached: 2,
                     input_tokens_cache_write: 3,

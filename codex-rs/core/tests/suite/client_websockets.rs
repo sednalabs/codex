@@ -1556,7 +1556,12 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
                 "spend_control_reached": null,
                 "plan_type": null,
                 "rate_limit_reached_type": "workspace_member_usage_limit_reached"
-            }
+            },
+            "actual_service_tier": "default",
+            "actual_service_tier_source": "runtime_contract",
+            "fast_mode_requested": false,
+            "fast_mode_used": false,
+            "billing_surface": "api_tokens"
         })
     );
 
