@@ -130,13 +130,13 @@ impl InputQueue {
         {
             return;
         }
-        if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS {
-            if let Some(older) = pending.pop_front() {
-                if let Some(next_oldest) = pending.front_mut() {
-                    next_oldest.coalesce(older);
-                } else {
-                    completion.coalesce(older);
-                }
+        if pending.len() == Self::MAX_PENDING_TERMINAL_COMPLETIONS
+            && let Some(older) = pending.pop_front()
+        {
+            if let Some(next_oldest) = pending.front_mut() {
+                next_oldest.coalesce(older);
+            } else {
+                completion.coalesce(older);
             }
         }
         pending.push_back(completion);
