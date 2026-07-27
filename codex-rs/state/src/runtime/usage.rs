@@ -1508,6 +1508,23 @@ ORDER BY provider_call_id
                 provider_reported_credits: None,
             },
             TestProviderCall {
+                id: "unknown-fast-mode",
+                thread_id: "partial",
+                started_at: "2026-07-28T00:00:00Z",
+                requested_model: Some("gpt-5.6-luna"),
+                actual_model: Some("gpt-5.6-luna"),
+                actual_tier: Some("default"),
+                fast_mode_used: None,
+                billing_surface: "chatgpt_credits",
+                account_plan: Some("pro"),
+                uncached: 1_000_000,
+                cached: 0,
+                cache_write: 0,
+                output: 0,
+                total: 1_000_000,
+                provider_reported_credits: None,
+            },
+            TestProviderCall {
                 id: "cache-write",
                 thread_id: "partial",
                 started_at: "2026-07-28T00:00:00Z",
@@ -1595,6 +1612,13 @@ ORDER BY provider_call_id
                     credit_source: Some("provider_reported".into()),
                 },
                 CreditEstimateStatusRow {
+                    provider_call_id: "unknown-fast-mode".into(),
+                    pricing_status: "fast_rate_unknown".into(),
+                    rate_card_estimated_total_credits: None,
+                    estimated_total_credits: None,
+                    credit_source: None,
+                },
+                CreditEstimateStatusRow {
                     provider_call_id: "unknown-model".into(),
                     pricing_status: "model_rate_missing".into(),
                     rate_card_estimated_total_credits: None,
@@ -1621,19 +1645,32 @@ WHERE thread_id = 'partial'
         )
         .fetch_one(pool)
         .await?;
+        assert_eq!(summary.provider_call_count, 8);
+        assert_eq!(summary.priced_call_count, 2);
+        assert_eq!(summary.unpriced_call_count, 6);
+        assert!(summary.partial);
+        assert_eq!(summary.estimated_total_credits, None);
+        assert_eq!(summary.priced_credits_total, Some(34.0));
+
+        let mut models = summary
+            .models_used
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .collect::<Vec<_>>();
+        models.sort_unstable();
         assert_eq!(
-            summary,
-            CreditThreadSummaryRow {
-                provider_call_count: 7,
-                priced_call_count: 2,
-                unpriced_call_count: 5,
-                partial: true,
-                estimated_total_credits: None,
-                priced_credits_total: Some(34.0),
-                models_used: Some("gpt-5.6-luna,gpt-5.6-terra,unknown,gpt-5.6-sol".into()),
-                service_tiers_used: Some("default,flex".into()),
-            }
+            models,
+            vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "unknown"]
         );
+        let mut service_tiers = summary
+            .service_tiers_used
+            .as_deref()
+            .unwrap_or_default()
+            .split(',')
+            .collect::<Vec<_>>();
+        service_tiers.sort_unstable();
+        assert_eq!(service_tiers, vec!["default", "flex"]);
 
         let overlap = sqlx::query(
             r#"

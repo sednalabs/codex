@@ -199,7 +199,10 @@ WITH calls AS (
         p.*,
         COALESCE(NULLIF(lower(p.final_model), ''), NULLIF(lower(p.actual_model_used), ''))
             AS pricing_model,
-        CASE WHEN p.fast_mode_used = 1 THEN 'fast' ELSE 'standard' END AS speed_mode
+        CASE p.fast_mode_used
+            WHEN 1 THEN 'fast'
+            WHEN 0 THEN 'standard'
+        END AS speed_mode
     FROM usage_provider_calls AS p
 ),
 policy_matches AS (
@@ -219,27 +222,20 @@ policy_matches AS (
 rate_matches AS (
     SELECT
         p.provider_call_id,
-        COUNT(r.rate_id) AS matching_rate_count,
-        MIN(r.rate_id) AS rate_id,
-        COUNT(DISTINCT CASE WHEN r.model = p.pricing_model THEN r.model END)
-            AS matching_model_count
-    FROM calls AS p
-    JOIN policy_matches AS c ON c.provider_call_id = p.provider_call_id
-    LEFT JOIN usage_codex_credit_rates AS r
-      ON c.matching_policy_count = 1
-     AND r.provider = lower(p.provider)
-     AND r.rate_card_kind = c.rate_card_kind
-     AND r.model = p.pricing_model
-     AND p.actual_service_tier_source IS NOT NULL
-     AND r.service_tier = lower(p.actual_service_tier)
-     AND r.speed_mode = p.speed_mode
-     AND p.started_at >= r.effective_from
-     AND (r.effective_to IS NULL OR p.started_at < r.effective_to)
-    GROUP BY p.provider_call_id
-),
-model_matches AS (
-    SELECT
-        p.provider_call_id,
+        COUNT(
+            CASE WHEN p.actual_service_tier_source IS NOT NULL
+                       AND r.service_tier = lower(p.actual_service_tier)
+                       AND r.speed_mode = p.speed_mode
+                 THEN r.rate_id
+            END
+        ) AS matching_rate_count,
+        MIN(
+            CASE WHEN p.actual_service_tier_source IS NOT NULL
+                       AND r.service_tier = lower(p.actual_service_tier)
+                       AND r.speed_mode = p.speed_mode
+                 THEN r.rate_id
+            END
+        ) AS rate_id,
         COUNT(r.rate_id) AS matching_model_rate_count
     FROM calls AS p
     JOIN policy_matches AS c ON c.provider_call_id = p.provider_call_id
@@ -258,7 +254,7 @@ priced AS (
         c.matching_policy_count,
         c.rate_card_kind AS selected_rate_card_kind,
         m.matching_rate_count,
-        mm.matching_model_rate_count,
+        m.matching_model_rate_count,
         r.rate_id,
         r.rate_card_kind,
         r.effective_from AS rate_effective_from,
@@ -292,7 +288,6 @@ priced AS (
     FROM calls AS p
     JOIN policy_matches AS c ON c.provider_call_id = p.provider_call_id
     JOIN rate_matches AS m ON m.provider_call_id = p.provider_call_id
-    JOIN model_matches AS mm ON mm.provider_call_id = p.provider_call_id
     LEFT JOIN usage_codex_credit_rates AS r
       ON r.rate_id = m.rate_id AND m.matching_rate_count = 1
 )
