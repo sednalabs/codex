@@ -2419,11 +2419,10 @@ impl ThreadRequestProcessor {
                     priced_credits_total += credits;
                     any_priced_credits = true;
                 }
-                if thread.provider_call_count > 0 {
-                    match thread.estimated_total_credits {
-                        Some(credits) => estimated_total_credits += credits,
-                        None => complete_credit_coverage = false,
-                    }
+                if let Some(credits) = thread.estimated_total_credits {
+                    estimated_total_credits += credits;
+                } else if thread.provider_call_count > 0 {
+                    complete_credit_coverage = false;
                 }
                 ThreadUsageSummaryNode {
                     thread_id: thread.thread_id,
