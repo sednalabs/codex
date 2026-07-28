@@ -21,6 +21,14 @@ WORKFLOW_PATTERNS = (
 )
 RELEASE_INSTALL_WORKFLOW = "sedna-release-install.yml"
 RELEASE_INSTALL_SCRIPT = "scripts/install_sedna_release_asset"
+MACOS_DISABLED_WORKFLOWS = frozenset(
+    {
+        ".github/workflows/bazel.yml",
+        ".github/workflows/rust-ci.yml",
+        ".github/workflows/v8-canary.yml",
+    }
+)
+MACOS_RUNNER_PATTERN = re.compile(r"^macos-(?:latest|\d{2}(?:-intel)?)$")
 DRY_RUN_FIELD_PATTERN = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field)\s+['\"]?dry_run=true['\"]?(?:\s|$)"
 )
@@ -221,6 +229,23 @@ def runner_policy_violations(payload: Any) -> list[str]:
     return sorted(violations)
 
 
+def disabled_macos_runner_violations(relative_path: Path, payload: Any) -> list[str]:
+    if relative_path.as_posix() not in MACOS_DISABLED_WORKFLOWS:
+        return []
+
+    labels = {
+        label
+        for _key, value in iter_runner_fields(payload)
+        for label in iter_runner_labels(value)
+        if MACOS_RUNNER_PATTERN.fullmatch(label)
+    }
+    return [
+        f"runner label '{label}' is disabled in reusable CI workflows; use a "
+        "Linux or Windows runner instead."
+        for label in sorted(labels)
+    ]
+
+
 def is_action_ref(uses: Any, action: str) -> bool:
     return isinstance(uses, str) and uses.startswith(f"{action}@")
 
@@ -366,6 +391,8 @@ def collect_violations(root: Path = REPO_ROOT) -> list[str]:
     for path in workflow_paths(root):
         relative_path = path.relative_to(root)
         payload = load_workflow(path)
+        for violation in disabled_macos_runner_violations(relative_path, payload):
+            violations.append(f"{relative_path}: {violation}")
         for violation in runner_policy_violations(payload):
             violations.append(f"{relative_path}: {violation}")
         for node in walk_mappings(payload):
