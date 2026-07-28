@@ -657,6 +657,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadReadResponse,
     },
+    #[experimental("thread/usageSummary")]
+    ThreadUsageSummary => "thread/usageSummary" {
+        params: v2::ThreadUsageSummaryParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadUsageSummaryResponse,
+    },
     #[experimental("thread/turns/list")]
     ThreadTurnsList => "thread/turns/list" {
         params: v2::ThreadTurnsListParams,

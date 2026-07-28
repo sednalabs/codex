@@ -817,6 +817,15 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_usage_summary(
+        &self,
+        params: ThreadUsageSummaryParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.thread_usage_summary_response_inner(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn thread_turns_list(
         &self,
         params: ThreadTurnsListParams,
@@ -2349,6 +2358,125 @@ impl ThreadRequestProcessor {
             .await
             .map_err(thread_read_view_error)?;
         Ok(ThreadReadResponse { thread })
+    }
+
+    async fn thread_usage_summary_response_inner(
+        &self,
+        params: ThreadUsageSummaryParams,
+    ) -> Result<ThreadUsageSummaryResponse, JSONRPCErrorError> {
+        let thread_uuid = ThreadId::from_string(&params.thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let Some(state_db) = self.state_db.as_ref() else {
+            return Ok(empty_thread_usage_summary());
+        };
+        let telemetry = state_db
+            .get_usage_lineage_telemetry(&thread_uuid.to_string())
+            .await
+            .map_err(|err| {
+                warn!(%err, thread_id = %thread_uuid, "failed to read usage lineage telemetry");
+                internal_error("failed to read usage lineage telemetry")
+            })?;
+        let Some(telemetry) = telemetry else {
+            return Ok(empty_thread_usage_summary());
+        };
+
+        let mut totals = ThreadUsageSummaryTotals {
+            provider_call_count: 0,
+            unpriced_call_count: 0,
+            partial: false,
+            uncached_input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            provider_reported_credits: None,
+            estimated_total_credits: None,
+            priced_credits_total: None,
+            credit_coverage: "unavailable".to_string(),
+        };
+        let mut provider_reported_credits = 0.0;
+        let mut any_provider_reported_credits = false;
+        let mut priced_credits_total = 0.0;
+        let mut any_priced_credits = false;
+        let mut estimated_total_credits = 0.0;
+        let mut complete_credit_coverage = true;
+        let threads = telemetry
+            .threads
+            .into_iter()
+            .map(|thread| {
+                totals.provider_call_count += thread.provider_call_count;
+                totals.unpriced_call_count += thread.unpriced_call_count;
+                totals.uncached_input_tokens += thread.uncached_input_tokens;
+                totals.cached_input_tokens += thread.cached_input_tokens;
+                totals.cache_write_input_tokens += thread.cache_write_input_tokens;
+                totals.output_tokens += thread.output_tokens;
+                totals.total_tokens += thread.total_tokens;
+                if let Some(credits) = thread.provider_reported_credits {
+                    provider_reported_credits += credits;
+                    any_provider_reported_credits = true;
+                }
+                if let Some(credits) = thread.priced_credits_total {
+                    priced_credits_total += credits;
+                    any_priced_credits = true;
+                }
+                if thread.provider_call_count > 0 {
+                    match thread.estimated_total_credits {
+                        Some(credits) => estimated_total_credits += credits,
+                        None => complete_credit_coverage = false,
+                    }
+                }
+                ThreadUsageSummaryNode {
+                    thread_id: thread.thread_id,
+                    parent_thread_id: thread.parent_thread_id,
+                    root_thread_id: thread.root_thread_id,
+                    fork_parent_thread_id: thread.fork_parent_thread_id,
+                    spawn_request_id: thread.spawn_request_id,
+                    thread_source: thread
+                        .thread_source
+                        .as_deref()
+                        .and_then(parse_thread_source),
+                    lineage_edge_kind: thread.lineage_edge_kind,
+                    lineage_confidence: thread.lineage_confidence,
+                    agent_nickname: thread.agent_nickname,
+                    agent_role: thread.agent_role,
+                    created_at: thread.created_at,
+                    last_activity_at: thread.last_activity_at,
+                    models_used: thread.models_used,
+                    service_tiers_used: thread.service_tiers_used,
+                    provider_call_count: thread.provider_call_count,
+                    unpriced_call_count: thread.unpriced_call_count,
+                    partial: thread.partial,
+                    uncached_input_tokens: thread.uncached_input_tokens,
+                    cached_input_tokens: thread.cached_input_tokens,
+                    cache_write_input_tokens: thread.cache_write_input_tokens,
+                    output_tokens: thread.output_tokens,
+                    total_tokens: thread.total_tokens,
+                    provider_reported_credits: thread.provider_reported_credits,
+                    estimated_total_credits: thread.estimated_total_credits,
+                    priced_credits_total: thread.priced_credits_total,
+                }
+            })
+            .collect();
+        totals.partial = totals.unpriced_call_count > 0;
+        totals.provider_reported_credits =
+            any_provider_reported_credits.then_some(provider_reported_credits);
+        totals.priced_credits_total = any_priced_credits.then_some(priced_credits_total);
+        totals.estimated_total_credits = (totals.provider_call_count > 0
+            && complete_credit_coverage)
+            .then_some(estimated_total_credits);
+        totals.credit_coverage = if totals.provider_call_count == 0 {
+            "unavailable".to_string()
+        } else if totals.estimated_total_credits.is_some() {
+            "complete".to_string()
+        } else {
+            "partial".to_string()
+        };
+        Ok(ThreadUsageSummaryResponse {
+            root_thread_id: Some(telemetry.root_thread_id),
+            recommended_user_resume_thread_id: telemetry.recommended_user_resume_thread_id,
+            threads,
+            totals,
+        })
     }
 
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
@@ -4813,6 +4941,32 @@ impl ThreadRequestProcessor {
         }
 
         Ok((items, next_cursor))
+    }
+}
+
+fn parse_thread_source(source: &str) -> Option<ThreadSource> {
+    ThreadSource::try_from(source.to_string()).ok()
+}
+
+fn empty_thread_usage_summary() -> ThreadUsageSummaryResponse {
+    ThreadUsageSummaryResponse {
+        root_thread_id: None,
+        recommended_user_resume_thread_id: None,
+        threads: Vec::new(),
+        totals: ThreadUsageSummaryTotals {
+            provider_call_count: 0,
+            unpriced_call_count: 0,
+            partial: false,
+            uncached_input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            provider_reported_credits: None,
+            estimated_total_credits: None,
+            priced_credits_total: None,
+            credit_coverage: "unavailable".to_string(),
+        },
     }
 }
 
