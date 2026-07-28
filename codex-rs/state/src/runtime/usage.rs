@@ -803,6 +803,7 @@ ORDER BY COALESCE(last_activity_at, t.created_at) DESC, t.thread_id ASC
 "#,
         )
         .bind(&root_thread_id)
+        .bind(&root_thread_id)
         .fetch_all(pool.as_ref())
         .await?;
 
