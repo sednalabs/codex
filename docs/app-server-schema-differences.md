@@ -1,5 +1,13 @@
 # App-server parity and intentional downstream carry
 
+> `status: historical` · `authority: evidence`
+>
+> This page retains bundle-era parity review and provenance. The current
+> protocol snapshot is [`generated/app-server-protocol-delta.md`](generated/app-server-protocol-delta.md);
+> the normative user-facing computer-use contract is
+> [`native-computer-use.md`](native-computer-use.md). Re-run the generated
+> snapshot and inspect exact refs before making a current parity claim.
+
 This document is the human-readable companion to `docs/divergences/index.yaml` for the app-server stack.
 
 The old version of this file was stale: it treated remote-control and several protocol/runtime surfaces as still missing downstream. The current downstream realignment path restores those upstream surfaces first and then keeps only the fork-specific carries that are still intentional.

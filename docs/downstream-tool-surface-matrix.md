@@ -7,14 +7,19 @@ It intentionally excludes session-only developer wrappers such as
 `multi_tool_use.parallel`; those are runtime conveniences, not fork
 divergences.
 
-Last reviewed: `2026-07-23`.
+Last reviewed: `2026-07-28`.
 
 Review baseline:
 
-- `upstream/main`: `9d823343026e600dab694e41865ed60613da31b6`
+- `upstream/main`: `7cde2323f3712999e9ab98b16287e08b7735d52f`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `9d823343026e600dab694e41865ed60613da31b6`
-- downstream integration code tree: `8751e96182ff33392d381494a2dbebfb11cfac8f`
+  `3418498f01422f5f650ea645d4bd19e05c3a9616`
+- downstream integration code tree: `bff348fd68a99e1996d00dce1d46ba8ed9d37be3`
+
+The maintained mirror is 14 commits behind the live upstream ref at this
+review. See [`generated/upstream-status.md`](generated/upstream-status.md) for
+the exact comparison receipt; do not treat the mirror as exact until it is
+refreshed.
 
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic

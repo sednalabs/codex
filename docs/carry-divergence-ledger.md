@@ -6,19 +6,25 @@ This document records the current live divergences of the downstream branch
 It is an audit ledger, not a changelog. Ahead-count alone is not evidence of a
 live divergence.
 
-The snapshot below intentionally anchors to the audited code tree before the
-docs-only refresh commit that records this snapshot.
+The ledger remains manually curated. Its current counts and refs are delegated
+to the generated status receipt so this historical narrative cannot silently
+be mistaken for live state.
 
 ## Audit Baseline
 
-- Audited on: `2026-07-23`
-- downstream integration code tree: `8751e96182ff33392d381494a2dbebfb11cfac8f`
+- Audited on: `2026-07-28`
+- downstream integration code tree: `bff348fd68a99e1996d00dce1d46ba8ed9d37be3`
 - comparison basis: `upstream/main`
-- mirror branch `upstream-main` (`origin/upstream-main`): `9d823343026e600dab694e41865ed60613da31b6`
-- `upstream/main`: `9d823343026e600dab694e41865ed60613da31b6`
-- downstream branch vs `upstream/main`: `2037` downstream ahead, `0` upstream ahead
-- Mirror vs `upstream/main`: `0` ahead, `0` behind (`exact`)
-- Downstream-only non-merge commits at audit time: `1730` unique, `0` patch-equivalent
+- mirror branch `upstream-main` (`origin/upstream-main`): `3418498f01422f5f650ea645d4bd19e05c3a9616`
+- `upstream/main`: `7cde2323f3712999e9ab98b16287e08b7735d52f`
+- downstream branch vs `upstream/main`: `2131` downstream ahead, `60` upstream ahead
+- Mirror vs `upstream/main`: `0` ahead, `14` behind (`stale_ff_only`)
+- Downstream-only non-merge commits at audit time: `1800` unique, `0` patch-equivalent
+
+See [`generated/upstream-status.md`](generated/upstream-status.md) for the
+reproducible current-state receipt and
+[`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) for harvest
+decisions.
 
 ## Audit Rules
 
