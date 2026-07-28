@@ -1379,6 +1379,7 @@
         "scripts/test-remote-env.sh",
         "scripts/start-codex-exec.sh",
         "scripts/dispatch_sedna_release",
+        "scripts/pyproject.toml",
         "codex-rs/tui/src/app/tests.rs",
         "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/tui/src/test_support.rs",

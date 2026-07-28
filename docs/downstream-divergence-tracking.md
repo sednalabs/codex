@@ -8,8 +8,9 @@ runner plus the checked-in `docs/divergences/index.yaml` registry. The
 `codex.downstream-docs-check` validation lane runs PR-local docs and registry
 sanity, while the explicit `codex.downstream-divergence-audit` lane and
 `sedna-sync-upstream` run the full audit after mirror refreshes or deliberate
-baseline checkpoints. The later generation phases below remain the forward path
-for ledger and regression projection.
+baseline checkpoints. Current authority and freshness rules are in
+[`sedna-docs-governance.md`](sedna-docs-governance.md); the generated status,
+gap, and protocol receipts are the current projections.
 
 ## Why This Exists
 
@@ -33,10 +34,9 @@ Keep the existing docs, but narrow their responsibilities:
   - exact carry vs upstream tool-surface comparison for native coordination
     tools
 - `docs/carry-divergence-ledger.md`
-  - generated audit view of current live divergences plus upstream-equivalent
-    history
+  - manually curated audit narrative linked to generated current-state receipts
 - `docs/downstream-regression-matrix.md`
-  - generated guardrail view of divergence-to-test-lane mapping
+  - manually curated guardrail view of divergence-to-test-lane mapping
 
 Use the canonical registry:
 
@@ -213,11 +213,13 @@ Phase 2 (implemented):
 
 - `docs/divergences/index.yaml` is the canonical divergence registry
 
-Phase 3 (in progress):
+Phase 3 (partially implemented):
 
-- generate `docs/carry-divergence-ledger.md`
-- generate `docs/downstream-regression-matrix.md`
-- add CI drift checks
+- checked-in generated upstream status, gap, and app-server protocol receipts
+- dated upstream harvest/adoption snapshots
+- registry coverage for all currently reported downstream-only code paths
+- carry ledger and regression matrix generation still pending
 
 Manual docs remain the narrative layer; the registry plus audit runner are the
-authoritative live-state ledger.
+authoritative live-state ledger. The next implementation step is a typed
+registry v2 and generators for the carry ledger and regression matrix.

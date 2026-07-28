@@ -1,5 +1,14 @@
 # Memory Differences and Architectural Review: Sedna Fork vs OpenAI Upstream
 
+> `status: historical` · `authority: evidence` · last verified baseline:
+> `2026-05-24`
+>
+> This review is retained for provenance. Consult
+> [`generated/upstream-status.md`](generated/upstream-status.md) and
+> [`sedna-docs-governance.md`](sedna-docs-governance.md) for current refs and
+> authority rules; do not use the historical counts below as a current fork
+> baseline.
+
 This artifact compares the current Sedna downstream tree against the current
 OpenAI upstream tree for Codex memory functionality and memory handling.
 
