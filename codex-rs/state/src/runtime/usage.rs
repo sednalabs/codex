@@ -2147,7 +2147,10 @@ WHERE thread_id = ?
         )
         .await?;
         root_logger
-            .record_event(&token_count_event("turn-root", /*include_rate_limit*/ true))
+            .record_event(&token_count_event(
+                "turn-root",
+                /*include_rate_limit*/ true,
+            ))
             .await;
 
         let child_thread_id = ThreadId::new();
