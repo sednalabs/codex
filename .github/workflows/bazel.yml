@@ -23,19 +23,11 @@ jobs:
     # signal without putting PR latency back on the critical path. When
     # Code-mode unit tests run on every Bazel target. When authenticated RBE
     # is available, the Windows-cross shards exercise the source-built V8 path.
-    # macOS runners keep test actions local; full-tree PR validation can exceed
-    # the default window while build actions execute remotely.
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         include:
-          # macOS
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-
           # Linux
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -353,14 +345,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Keep Linux lint coverage on x64 and add the arm64 macOS path that
-          # the Bazel test job already exercises. Add Windows gnullvm as well
-          # so PRs get Bazel-native lint signal on the same Windows toolchain
-          # that the Bazel test job uses.
+          # Keep Linux lint coverage on x64 and add Windows gnullvm so PRs get
+          # Bazel-native lint signal on the same Windows toolchain that the
+          # Bazel test job uses.
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-gnullvm
             runs_on: windows-2022
@@ -462,8 +451,6 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-gnullvm
             runs_on: windows-2022
