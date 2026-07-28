@@ -1412,6 +1412,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
             completed_at: Some(20),
             duration_ms: Some(10_000),
             time_to_first_token_ms: None,
+            provider_usage: None,
         })),
     ] {
         append_rollout_item_to_path(source_path.as_path(), &item).await?;
@@ -1670,6 +1671,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
             completed_at: Some(20),
             duration_ms: Some(10_000),
             time_to_first_token_ms: None,
+            provider_usage: None,
         })),
     )
     .await?;
