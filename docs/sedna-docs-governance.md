@@ -8,13 +8,13 @@ while the fork is ahead of `upstream/main`.
 Every divergence document must make its authority and freshness visible near
 the top of the page:
 
-| Class | Meaning | Source of truth |
-| --- | --- | --- |
-| `current` | Maintained policy or contract | The document, with exact refs and `last_verified` metadata |
-| `generated` | A reproducible projection of live repository state | The registry, refs, and generator command; the rendered page is a checked-in receipt |
-| `historical` | A retained review, bundle, or decision record | The dated evidence named by the page; it must not be used as a current count |
-| `draft` | Proposed wording or design | The linked review or decision; not an operational contract |
-| `deprecated` | Retained only for migration or provenance | The superseding current or generated page |
+| Class        | Meaning                                            | Source of truth                                                                      |
+| ------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `current`    | Maintained policy or contract                      | The document, with exact refs and `last_verified` metadata                           |
+| `generated`  | A reproducible projection of live repository state | The registry, refs, and generator command; the rendered page is a checked-in receipt |
+| `historical` | A retained review, bundle, or decision record      | The dated evidence named by the page; it must not be used as a current count         |
+| `draft`      | Proposed wording or design                         | The linked review or decision; not an operational contract                           |
+| `deprecated` | Retained only for migration or provenance          | The superseding current or generated page                                            |
 
 Use `authority: normative` for behavior and policy, `authority: informative`
 for explanation, and `authority: evidence` for snapshots and receipts. A page

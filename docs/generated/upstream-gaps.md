@@ -13,14 +13,14 @@ commits ahead by the same comparison). The full commit set belongs in the
 machine-readable audit output; this page records only high-signal candidates
 for the next harvest.
 
-| Candidate | Current decision | Why |
-| --- | --- | --- |
-| `829f5b6b59` — separate app and exec RPC ownership | `track` | Protocol ownership may affect the downstream app-server carry; inspect with the next app-server code harvest before changing docs or schemas. |
-| `0a0d09ad21` — clarify docs-folder guidance in `AGENTS.md` | `port concept` | The governance rules in [`../sedna-docs-governance.md`](../sedna-docs-governance.md) capture the relevant authority/freshness distinction without importing upstream repository policy wholesale. |
-| `67849d950d` — remove local docs and specs | `ignore` | Downstream carry documentation is an intentional maintenance surface; removal would erase the evidence needed to operate the fork. |
-| Upstream PR #30866 — reconcile loaded thread history on resume | `track` | Resume identity and fork lineage are adjacent to the usage/session work, but this docs train does not change app-server behavior. |
-| Upstream PR #31487 — installed runtime snapshot API | `track` | Potentially useful for release-channel and runtime documentation; wait for a code-level harvest decision. |
-| Upstream PR #31515 — client-only web-search result metadata | `track` | App-server protocol surface may change; do not pre-adopt generated schema text. |
+| Candidate                                                      | Current decision | Why                                                                                                                                                                                               |
+| -------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `829f5b6b59` — separate app and exec RPC ownership             | `track`          | Protocol ownership may affect the downstream app-server carry; inspect with the next app-server code harvest before changing docs or schemas.                                                     |
+| `0a0d09ad21` — clarify docs-folder guidance in `AGENTS.md`     | `port concept`   | The governance rules in [`../sedna-docs-governance.md`](../sedna-docs-governance.md) capture the relevant authority/freshness distinction without importing upstream repository policy wholesale. |
+| `67849d950d` — remove local docs and specs                     | `ignore`         | Downstream carry documentation is an intentional maintenance surface; removal would erase the evidence needed to operate the fork.                                                                |
+| Upstream PR #30866 — reconcile loaded thread history on resume | `track`          | Resume identity and fork lineage are adjacent to the usage/session work, but this docs train does not change app-server behavior.                                                                 |
+| Upstream PR #31487 — installed runtime snapshot API            | `track`          | Potentially useful for release-channel and runtime documentation; wait for a code-level harvest decision.                                                                                         |
+| Upstream PR #31515 — client-only web-search result metadata    | `track`          | App-server protocol surface may change; do not pre-adopt generated schema text.                                                                                                                   |
 
 ## Separate priority-0 gap
 

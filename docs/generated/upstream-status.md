@@ -7,15 +7,15 @@
 
 ## Snapshot
 
-| Field | Value |
-| --- | --- |
-| Downstream ref | `origin/main` at `bff348fd68a99e1996d00dce1d46ba8ed9d37be3` |
-| Live upstream ref | `upstream/main` at `7cde2323f3712999e9ab98b16287e08b7735d52f` |
-| Maintained mirror ref | `origin/upstream-main` at `3418498f01422f5f650ea645d4bd19e05c3a9616` |
-| Merge base | `a4535884169be8da2f81b8a4debecbd4dc11aa97` |
-| Downstream vs live upstream | `2131` downstream-ahead, `60` upstream-ahead commits |
-| Downstream-only non-merge commits | `1800` unique, `0` patch-equivalent |
-| Mirror vs live upstream | `0` mirror-ahead, `14` upstream-ahead (`stale_ff_only`) |
+| Field                             | Value                                                                |
+| --------------------------------- | -------------------------------------------------------------------- |
+| Downstream ref                    | `origin/main` at `bff348fd68a99e1996d00dce1d46ba8ed9d37be3`          |
+| Live upstream ref                 | `upstream/main` at `7cde2323f3712999e9ab98b16287e08b7735d52f`        |
+| Maintained mirror ref             | `origin/upstream-main` at `3418498f01422f5f650ea645d4bd19e05c3a9616` |
+| Merge base                        | `a4535884169be8da2f81b8a4debecbd4dc11aa97`                           |
+| Downstream vs live upstream       | `2131` downstream-ahead, `60` upstream-ahead commits                 |
+| Downstream-only non-merge commits | `1800` unique, `0` patch-equivalent                                  |
+| Mirror vs live upstream           | `0` mirror-ahead, `14` upstream-ahead (`stale_ff_only`)              |
 
 The mirror is therefore not an exact comparison baseline today. The current
 projection uses the live upstream ref and records the mirror lag explicitly.
