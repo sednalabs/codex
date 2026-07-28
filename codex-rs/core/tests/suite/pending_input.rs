@@ -1188,6 +1188,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         Some(TokenUsage {
             input_tokens: 650,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 650,

@@ -413,6 +413,7 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         Some(TokenUsage {
             input_tokens: 9,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 9,
@@ -1010,6 +1011,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         Some(TokenUsage {
             input_tokens: 17,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 17,

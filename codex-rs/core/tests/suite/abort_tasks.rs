@@ -73,6 +73,7 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
         Some(TokenUsage {
             input_tokens: 23,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 23,

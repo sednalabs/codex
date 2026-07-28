@@ -171,6 +171,7 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
                 Some(TokenUsage {
                     input_tokens: 17,
                     cached_input_tokens: 0,
+                    cache_write_input_tokens: 0,
                     output_tokens: 0,
                     reasoning_output_tokens: 0,
                     total_tokens: 17,
@@ -274,6 +275,7 @@ async fn aborted_provider_usage_is_durable_isolated_and_legacy_compatible() -> R
         Some(TokenUsage {
             input_tokens: 19,
             cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 19,
