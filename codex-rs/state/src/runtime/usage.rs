@@ -798,7 +798,7 @@ FROM usage_threads AS t
 LEFT JOIN usage_thread_credit_summary AS c ON c.thread_id = t.thread_id
 LEFT JOIN provider_metadata AS m ON m.thread_id = t.thread_id
 LEFT JOIN tool_activity AS a ON a.thread_id = t.thread_id
-WHERE COALESCE(NULLIF(t.root_thread_id, ''), t.thread_id) = ?
+WHERE t.root_thread_id = ? OR t.thread_id = ?
 ORDER BY COALESCE(last_activity_at, t.created_at) DESC, t.thread_id ASC
 "#,
         )
