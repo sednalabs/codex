@@ -41,6 +41,23 @@ decisions.
 
 ## Current Downstream Guardrails
 
+### Agent-Tree Usage Lineage Telemetry
+
+- The extension-owned local `usage.sqlite` records explicit lineage edge kind
+  and concrete spawn-request identity when it is available. Older records are
+  reported with an explicit inferred-confidence marker rather than being
+  promoted to exact history.
+- Experimental app-server `thread/usageSummary` returns one persisted root
+  family with per-thread and aggregate tokens, provider-reported credits, and
+  pricing coverage. Its direct-user continuation candidate is advisory only;
+  neither this endpoint nor the shared usage ledger changes resume authority.
+- Shared-ledger extraction preserves the legacy runtime-source field and adds
+  a separate interaction-source field. It may report generic provenance and
+  source-derived subagent edges, but it must never be used as the authority for
+  `codex resume` selection.
+- Hosted validation must cover the migration, state reader, app-server schema
+  generation, and direct-user continuation guard before this carry is promoted.
+
 ### Core Compiler Query-Depth Guardrail
 
 - Upstream commit `d7e8f4c3dc` makes the interrupted-MCP startup path preserve
