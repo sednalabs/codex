@@ -1,5 +1,12 @@
 # Downstream Regression Matrix
 
+> `status: current` · `authority: informative` · manually curated
+>
+> Current refs, counts, and mirror health are maintained in
+> [`generated/upstream-status.md`](generated/upstream-status.md). This matrix
+> maps carries to guardrails but is not yet generated; update it deliberately
+> when registry entries or test lanes change.
+
 This matrix maps live downstream divergences to the smallest default test lane
 that should fail if the behavior regresses. Historical references to
 `carry/main` refer to the pre-cutover name for the maintained downstream

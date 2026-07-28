@@ -509,28 +509,31 @@ References to `carry/main` elsewhere in the repo are historical pre-cutover
 baselines and should be read as prior names for the maintained downstream
 branch.
 
-Current downstream audit baseline (validated on `2026-07-23`):
+Current downstream audit baseline (validated on `2026-07-28`):
 
 - downstream integration code tree:
-  `8751e96182ff33392d381494a2dbebfb11cfac8f`
+  `bff348fd68a99e1996d00dce1d46ba8ed9d37be3`
 - comparison basis: `upstream/main`
 - mirror branch `upstream-main` (`origin/upstream-main`):
-  `9d823343026e600dab694e41865ed60613da31b6`
+  `3418498f01422f5f650ea645d4bd19e05c3a9616`
 - `upstream/main`:
-  `9d823343026e600dab694e41865ed60613da31b6`
+  `7cde2323f3712999e9ab98b16287e08b7735d52f`
 - downstream divergence counts (`upstream/main...main`):
-  `0` upstream ahead, `2037` downstream ahead
-- downstream-only non-merge commits: `1730` unique, `0` patch-equivalent
-- mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `0`
-  behind (`exact`)
+  `60` upstream ahead, `2131` downstream ahead
+- downstream-only non-merge commits: `1800` unique, `0` patch-equivalent
+- mirror health (`upstream/main...origin/upstream-main`): `0` ahead / `14`
+  behind (`stale_ff_only`)
 
-These counts intentionally anchor to the audited code tree before the
-docs-only refresh commit that records this snapshot.
+The comparison uses the live `upstream/main` ref because the maintained mirror
+is stale. The generated receipt and dated harvest snapshot record the exact
+refs and regeneration command.
 
 Supporting docs:
 
 - [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md) captures the exact native tool-surface deltas that remain live on the downstream branch.
-- [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) sketches the next-step registry and generation model for keeping these notes current as the fork grows.
+- [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) documents the registry and generation workflow for keeping these notes current as the fork grows.
+- [`sedna-docs-governance.md`](sedna-docs-governance.md) defines authority, freshness, and the manual-versus-generated boundary.
+- [`generated/upstream-status.md`](generated/upstream-status.md) and [`generated/upstream-gaps.md`](generated/upstream-gaps.md) are the current-state receipts; [`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) records the bounded harvest decisions.
 - [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use adapter contract, including Android, browser, app-server, TUI, rollout, and validation boundaries.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
