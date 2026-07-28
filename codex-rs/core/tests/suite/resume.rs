@@ -102,7 +102,7 @@ async fn resume_includes_initial_messages_from_rollout_events() -> Result<()> {
     let initial_sse = sse(vec![
         ev_response_created("resp-initial"),
         ev_assistant_message("msg-1", "Completed first turn"),
-        ev_completed_with_tokens("resp-initial", 17),
+        ev_completed_with_tokens("resp-initial", /*total_tokens*/ 17),
     ]);
     mount_sse_once(&server, initial_sse).await;
 
@@ -235,7 +235,7 @@ async fn aborted_provider_usage_is_durable_isolated_and_legacy_compatible() -> R
             sse(vec![
                 ev_response_created("resp-aborted"),
                 ev_function_call("call-sleep", "shell_command", &args),
-                ev_completed_with_tokens("resp-aborted", 19),
+                ev_completed_with_tokens("resp-aborted", /*total_tokens*/ 19),
             ]),
             sse(vec![
                 ev_response_created("resp-after-resume"),

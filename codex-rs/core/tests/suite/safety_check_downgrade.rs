@@ -246,14 +246,20 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
             "shell_command",
             &serde_json::to_string(&tool_args)?,
         ),
-        ev_completed_with_usage("resp-1", 10, 4, 5, 1),
+        ev_completed_with_usage(
+            "resp-1", /*input_tokens*/ 10, /*cached_input_tokens*/ 4,
+            /*output_tokens*/ 5, /*reasoning_output_tokens*/ 1,
+        ),
     ]))
     .insert_header("OpenAI-Model", SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);
     let second_response = sse_response(sse(vec![
         ev_response_created("resp-2"),
         ev_assistant_message("msg-1", "done"),
-        ev_completed_with_usage("resp-2", 20, 7, 8, 2),
+        ev_completed_with_usage(
+            "resp-2", /*input_tokens*/ 20, /*cached_input_tokens*/ 7,
+            /*output_tokens*/ 8, /*reasoning_output_tokens*/ 2,
+        ),
     ]))
     .insert_header("OpenAI-Model", TERMINAL_SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", TERMINAL_MODEL_SNAPSHOT);
@@ -346,7 +352,10 @@ async fn nonterminal_response_identity_is_not_reported_when_follow_up_fails() ->
             "shell_command",
             &serde_json::to_string(&tool_args)?,
         ),
-        ev_completed_with_usage("resp-1", 12, 3, 4, 1),
+        ev_completed_with_usage(
+            "resp-1", /*input_tokens*/ 12, /*cached_input_tokens*/ 3,
+            /*output_tokens*/ 4, /*reasoning_output_tokens*/ 1,
+        ),
     ]))
     .insert_header("OpenAI-Model", SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);

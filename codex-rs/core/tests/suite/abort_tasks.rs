@@ -30,7 +30,7 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
     .to_string();
     let body = sse(vec![
         ev_function_call("call_sleep", "shell_command", &args),
-        ev_completed_with_tokens("done", 23),
+        ev_completed_with_tokens("done", /*total_tokens*/ 23),
     ]);
 
     let server = start_mock_server().await;

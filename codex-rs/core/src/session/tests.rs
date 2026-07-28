@@ -9797,7 +9797,8 @@ impl SessionTask for SelfAbortingTask {
         _input: Vec<TurnInput>,
         _cancellation_token: CancellationToken,
     ) -> crate::tasks::SessionTaskResult {
-        ctx.record_provider_usage(&provider_usage(11)).await;
+        ctx.record_provider_usage(&provider_usage(/*total_tokens*/ 11))
+            .await;
         Err(CodexErr::TurnAborted)
     }
 }
@@ -10177,14 +10178,18 @@ async fn self_aborted_task_preserves_provider_usage() {
         unreachable!("terminal event kind requires an aborted turn");
     };
     assert_eq!(aborted.reason, TurnAbortReason::Interrupted);
-    assert_eq!(aborted.provider_usage, Some(provider_usage(11)));
+    assert_eq!(
+        aborted.provider_usage,
+        Some(provider_usage(/*total_tokens*/ 11))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replaced_and_budget_limited_turns_preserve_provider_usage() {
     for reason in [TurnAbortReason::Replaced, TurnAbortReason::BudgetLimited] {
         let (sess, tc, rx) = make_session_and_context_with_rx().await;
-        tc.record_provider_usage(&provider_usage(13)).await;
+        tc.record_provider_usage(&provider_usage(/*total_tokens*/ 13))
+            .await;
         sess.spawn_task(
             Arc::clone(&tc),
             Vec::new(),
@@ -10201,7 +10206,10 @@ async fn replaced_and_budget_limited_turns_preserve_provider_usage() {
             unreachable!("terminal event kind requires an aborted turn");
         };
         assert_eq!(aborted.reason, reason);
-        assert_eq!(aborted.provider_usage, Some(provider_usage(13)));
+        assert_eq!(
+            aborted.provider_usage,
+            Some(provider_usage(/*total_tokens*/ 13))
+        );
     }
 }
 
