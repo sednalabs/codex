@@ -20480,6 +20480,227 @@
         ],
         "type": "string"
       },
+      "ThreadUsageSummaryNode": {
+        "properties": {
+          "agentNickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentRole": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cacheWriteInputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cachedInputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimatedTotalCredits": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "forkParentThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastActivityAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lineageConfidence": {
+            "description": "`persisted`, `inferred`, or `unknown`.",
+            "type": "string"
+          },
+          "lineageEdgeKind": {
+            "description": "`root`, `fork`, `agent_spawn`, or `unknown`.",
+            "type": "string"
+          },
+          "modelsUsed": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "parentThreadId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "pricedCreditsTotal": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "providerCallCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "providerReportedCredits": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "rootThreadId": {
+            "type": "string"
+          },
+          "serviceTiersUsed": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spawnRequestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "threadSource": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totalTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "uncachedInputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "unpricedCallCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "threadId",
+          "rootThreadId",
+          "lineageEdgeKind",
+          "lineageConfidence",
+          "providerCallCount",
+          "unpricedCallCount",
+          "partial",
+          "uncachedInputTokens",
+          "cachedInputTokens",
+          "cacheWriteInputTokens",
+          "outputTokens",
+          "totalTokens"
+        ],
+        "type": "object"
+      },
+      "ThreadUsageSummaryTotals": {
+        "properties": {
+          "cacheWriteInputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cachedInputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "creditCoverage": {
+            "description": "`complete`, `partial`, or `unavailable` for the full family.",
+            "type": "string"
+          },
+          "estimatedTotalCredits": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "pricedCreditsTotal": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "providerCallCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "providerReportedCredits": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "totalTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "uncachedInputTokens": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "unpricedCallCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "providerCallCount",
+          "unpricedCallCount",
+          "partial",
+          "uncachedInputTokens",
+          "cachedInputTokens",
+          "cacheWriteInputTokens",
+          "outputTokens",
+          "totalTokens",
+          "creditCoverage"
+        ],
+        "type": "object"
+      },
       "TokenUsageBreakdown": {
         "properties": {
           "cacheWriteInputTokens": {
