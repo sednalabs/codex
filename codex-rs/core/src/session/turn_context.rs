@@ -24,7 +24,6 @@ use codex_utils_path_uri::PathUri;
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::future::Shared;
-use std::ops::AddAssign;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use tracing::instrument;
@@ -223,7 +222,13 @@ impl TurnContext {
     pub(crate) async fn record_provider_usage(&self, usage: &TokenUsage) {
         let mut aggregate = self.provider_usage.lock().await;
         match aggregate.as_mut() {
-            Some(aggregate) => aggregate.add_assign(usage),
+            Some(aggregate) => {
+                aggregate.input_tokens += usage.input_tokens;
+                aggregate.cached_input_tokens += usage.cached_input_tokens;
+                aggregate.output_tokens += usage.output_tokens;
+                aggregate.reasoning_output_tokens += usage.reasoning_output_tokens;
+                aggregate.total_tokens += usage.total_tokens;
+            }
             None => *aggregate = Some(usage.clone()),
         }
     }
