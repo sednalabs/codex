@@ -2400,7 +2400,7 @@ impl ThreadRequestProcessor {
         let mut any_priced_credits = false;
         let mut estimated_total_credits = 0.0;
         let mut complete_credit_coverage = true;
-        let threads = telemetry
+        let threads: Vec<ThreadUsageSummaryNode> = telemetry
             .threads
             .into_iter()
             .map(|thread| {
