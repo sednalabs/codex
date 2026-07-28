@@ -2457,7 +2457,7 @@ impl ThreadRequestProcessor {
                 }
             })
             .collect();
-        totals.partial = totals.unpriced_call_count > 0;
+        totals.partial = totals.unpriced_call_count > 0 || threads.iter().any(|t| t.partial);
         totals.provider_reported_credits =
             any_provider_reported_credits.then_some(provider_reported_credits);
         totals.priced_credits_total = any_priced_credits.then_some(priced_credits_total);
