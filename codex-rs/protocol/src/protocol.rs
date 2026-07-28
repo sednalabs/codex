@@ -2010,6 +2010,11 @@ pub struct TurnCompleteEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model_snapshot: Option<String>,
+    /// Element-wise aggregate of usage reported by successful provider response completions in
+    /// this turn. This excludes estimates, configured identity, pricing, and call counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_usage: Option<TokenUsage>,
     /// Unix timestamp (in seconds) when the turn completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null", optional)]
@@ -6428,6 +6433,27 @@ mod tests {
             .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(128_000));
+    }
+
+    #[test]
+    fn turn_complete_without_provider_usage_remains_compatible() -> Result<()> {
+        let legacy = json!({
+            "turn_id": "turn-1",
+            "last_agent_message": "done",
+            "compaction_events_in_turn": 0,
+        });
+
+        let event: TurnCompleteEvent = serde_json::from_value(legacy)?;
+
+        assert_eq!(event.provider_usage, None);
+        assert_eq!(
+            serde_json::to_value(event)?
+                .as_object()
+                .expect("turn complete should serialize as an object")
+                .contains_key("provider_usage"),
+            false
+        );
+        Ok(())
     }
 
     #[test]

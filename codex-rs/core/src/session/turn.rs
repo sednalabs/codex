@@ -2450,6 +2450,9 @@ async fn try_run_sampling_request(
                     }),
                 )
                 .await;
+                if let Some(token_usage) = token_usage.as_ref() {
+                    turn_context.record_provider_usage(token_usage).await;
+                }
                 let budget_result = sess
                     .record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;

@@ -41,7 +41,7 @@ use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnEnvironment;
-use crate::session_prefix::format_inter_agent_completion_message;
+use crate::session_prefix::format_inter_agent_completion_message_with_receipt;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills_load_input_from_config;
 use crate::turn_metadata::TurnMetadataState;
@@ -389,6 +389,7 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
+use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnModerationMetadataEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -2024,6 +2025,11 @@ impl Session {
             *parent_thread_id,
             child_agent_path,
             status,
+            match msg {
+                EventMsg::TurnComplete(event) => Some(event),
+                EventMsg::TurnAborted(_) => None,
+                _ => unreachable!("terminal child notification requires a terminal event"),
+            },
         )
         .await;
     }
@@ -2035,6 +2041,7 @@ impl Session {
         parent_thread_id: ThreadId,
         child_agent_path: &codex_protocol::AgentPath,
         status: AgentStatus,
+        turn_complete: Option<&TurnCompleteEvent>,
     ) {
         let Some(parent_agent_path) = child_agent_path
             .as_str()
@@ -2044,10 +2051,11 @@ impl Session {
             return;
         };
 
-        let Some(message) = format_inter_agent_completion_message(
+        let Some(message) = format_inter_agent_completion_message_with_receipt(
             parent_agent_path.clone(),
             child_agent_path.clone(),
             &status,
+            turn_complete,
         ) else {
             return;
         };
