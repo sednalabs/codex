@@ -21,6 +21,19 @@ review. See [`generated/upstream-status.md`](generated/upstream-status.md) for
 the exact comparison receipt; do not treat the mirror as exact until it is
 refreshed.
 
+Browser comparison boundary:
+
+- The `upstream/main` column describes the stock open-source CLI/app-server,
+  not upstream product Browser Use (`@Browser`) or the official signed-in
+  Chrome integration (`@Chrome`). Those app-supplied surfaces are real product
+  capabilities, but they are not evidence of a local upstream CLI provider.
+- "Normal dynamic tool when supplied by a client/provider" means that an
+  external host supplies the tool schema and executes the call. It does not
+  mean a stock upstream CLI discovers, advertises, or drives a browser itself.
+- Downstream `backend: "chrome"` selects a configured Chrome-class provider;
+  it does not by itself select upstream `@Chrome`, the official extension, or
+  the user's regular signed-in profile.
+
 At this boundary, upstream still has no Codex-owned native browser, Android,
 or desktop tool handler. Bare provider-supplied names remain ordinary dynamic
 tools upstream; the upstream hook, connector-metadata, Windows native

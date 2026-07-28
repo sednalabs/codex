@@ -605,6 +605,13 @@ Why:
 - Let runtime providers supply Android, browser, or desktop capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, live TUI projection, and rollout-trace runtime boundaries. Computer-use events remain transient rather than thread-snapshot state.
 - Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
 
+Browser surface boundary:
+
+- Upstream product Browser Use (`@Browser`) and the official signed-in Chrome integration (`@Chrome`) are app-supplied browser surfaces. Their availability, and the presence of upstream `browser_use` feature controls, do not mean that the stock upstream CLI discovers or operates a local browser provider.
+- Upstream CLI/app-server can carry generic browser-like dynamic tools when an external host supplies their schemas and execution. Downstream additionally owns the bare `browser_observe` and `browser_step` schemas, local provider discovery, CLI/TUI advertisement, native computer-use transcript and image semantics, and thread lifecycle propagation.
+- In this carry, "native" describes the Codex-owned tool, transcript, image, and lifecycle contract; it does not require a browser engine implemented without Playwright. The built-in downstream provider may use Playwright while preserving the native Codex contract.
+- A downstream `backend: "chrome"` request selects a configured Chrome-class provider. It does not by itself select upstream `@Chrome`, the official extension, or the user's regular signed-in Chrome profile.
+
 User-visible behavior:
 
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
