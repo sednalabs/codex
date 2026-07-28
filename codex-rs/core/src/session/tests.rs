@@ -9806,6 +9806,7 @@ fn provider_usage(total_tokens: i64) -> TokenUsage {
     TokenUsage {
         input_tokens: total_tokens,
         cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 0,
         reasoning_output_tokens: 0,
         total_tokens,

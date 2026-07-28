@@ -305,6 +305,7 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
         Some(TokenUsage {
             input_tokens: 30,
             cached_input_tokens: 11,
+            cache_write_input_tokens: 0,
             output_tokens: 13,
             reasoning_output_tokens: 3,
             total_tokens: 43,
@@ -389,6 +390,7 @@ async fn nonterminal_response_identity_is_not_reported_when_follow_up_fails() ->
     let provider_usage = TokenUsage {
         input_tokens: 12,
         cached_input_tokens: 3,
+        cache_write_input_tokens: 0,
         output_tokens: 4,
         reasoning_output_tokens: 1,
         total_tokens: 16,
