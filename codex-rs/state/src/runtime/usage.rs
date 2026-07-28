@@ -751,17 +751,23 @@ WHERE thread_id = ?"#,
 
         let rows = sqlx::query(
             r#"
-WITH provider_metadata AS (
+WITH family_threads AS (
+    SELECT thread_id
+    FROM usage_threads
+    WHERE root_thread_id = ? OR thread_id = ?
+), provider_metadata AS (
     SELECT
         thread_id,
         group_concat(DISTINCT COALESCE(NULLIF(final_model, ''), NULLIF(actual_model_used, ''), NULLIF(requested_model, ''))) AS models_used,
         group_concat(DISTINCT NULLIF(actual_service_tier, '')) AS service_tiers_used,
         SUM(provider_reported_credits) AS provider_reported_credits
     FROM usage_provider_calls
+    WHERE thread_id IN (SELECT thread_id FROM family_threads)
     GROUP BY thread_id
 ), tool_activity AS (
     SELECT thread_id, MAX(COALESCE(completed_at, started_at)) AS last_tool_activity_at
     FROM usage_tool_calls
+    WHERE thread_id IN (SELECT thread_id FROM family_threads)
     GROUP BY thread_id
 )
 SELECT
@@ -798,7 +804,7 @@ FROM usage_threads AS t
 LEFT JOIN usage_thread_credit_summary AS c ON c.thread_id = t.thread_id
 LEFT JOIN provider_metadata AS m ON m.thread_id = t.thread_id
 LEFT JOIN tool_activity AS a ON a.thread_id = t.thread_id
-WHERE t.root_thread_id = ? OR t.thread_id = ?
+WHERE t.thread_id IN (SELECT thread_id FROM family_threads)
 ORDER BY COALESCE(last_activity_at, t.created_at) DESC, t.thread_id ASC
 "#,
         )
