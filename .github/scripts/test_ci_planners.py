@@ -692,7 +692,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(recipe.count("cargo nextest run"), 4)
         self.assertEqual(recipe.count("RUST_MIN_STACK="), 4)
-        self.assertEqual(recipe.count("--no-tests=fail"), 2)
+        self.assertEqual(recipe.count("--no-tests=fail"), 4)
         for test_name in (
             "agent::control::residency::tests::"
             "residency_slot_reservation_unloads_oldest_idle_v2_agent",
