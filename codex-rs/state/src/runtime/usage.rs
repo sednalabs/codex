@@ -2135,13 +2135,13 @@ WHERE thread_id = ?
             root_thread_id,
             SessionSource::Cli,
             Some(ThreadSource::User),
-            None,
-            None,
-            None,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
         root_logger
-            .record_event(&token_count_event("turn-root", true))
+            .record_event(&token_count_event("turn-root", /*include_rate_limit*/ true))
             .await;
 
         let child_thread_id = ThreadId::new();
@@ -2156,9 +2156,9 @@ WHERE thread_id = ?
                 agent_path: None,
             }),
             Some(ThreadSource::Subagent),
-            None,
-            Some("Child".to_string()),
-            Some("explorer".to_string()),
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ Some("Child".to_string()),
+            /*agent_role*/ Some("explorer".to_string()),
         )
         .await?;
 
@@ -2169,8 +2169,8 @@ WHERE thread_id = ?
             SessionSource::Cli,
             Some(ThreadSource::Side),
             Some(root_thread_id),
-            None,
-            None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
         )
         .await?;
 
