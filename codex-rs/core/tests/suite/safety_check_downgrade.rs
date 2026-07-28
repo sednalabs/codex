@@ -8,6 +8,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_function_call;
@@ -37,6 +38,28 @@ const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
 
 const CYBER_POLICY_MESSAGE: &str =
     "This request has been flagged for potentially high-risk cyber activity.";
+
+fn ev_completed_with_usage(
+    id: &str,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    reasoning_output_tokens: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": id,
+            "usage": {
+                "input_tokens": input_tokens,
+                "input_tokens_details": {"cached_tokens": cached_input_tokens},
+                "output_tokens": output_tokens,
+                "output_tokens_details": {"reasoning_tokens": reasoning_output_tokens},
+                "total_tokens": input_tokens + output_tokens
+            }
+        }
+    })
+}
 
 fn disabled_text_turn(test: &TestCodex, text: &str) -> Op {
     let (sandbox_policy, permission_profile) =
@@ -222,14 +245,14 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
             "shell_command",
             &serde_json::to_string(&tool_args)?,
         ),
-        core_test_support::responses::ev_completed("resp-1"),
+        ev_completed_with_usage("resp-1", 10, 4, 5, 1),
     ]))
     .insert_header("OpenAI-Model", SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);
     let second_response = sse_response(sse(vec![
         ev_response_created("resp-2"),
         ev_assistant_message("msg-1", "done"),
-        core_test_support::responses::ev_completed("resp-2"),
+        ev_completed_with_usage("resp-2", 20, 7, 8, 2),
     ]))
     .insert_header("OpenAI-Model", TERMINAL_SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", TERMINAL_MODEL_SNAPSHOT);
@@ -266,6 +289,16 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
     assert_eq!(
         turn_complete.model_snapshot.as_deref(),
         Some(TERMINAL_MODEL_SNAPSHOT)
+    );
+    assert_eq!(
+        turn_complete.provider_usage,
+        Some(TokenUsage {
+            input_tokens: 30,
+            cached_input_tokens: 11,
+            output_tokens: 13,
+            reasoning_output_tokens: 3,
+            total_tokens: 43,
+        })
     );
 
     Ok(())

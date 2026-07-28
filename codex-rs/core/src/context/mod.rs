@@ -55,6 +55,7 @@ pub(crate) use current_time_reminder::CurrentTimeReminder;
 pub(crate) use environments_instructions::EnvironmentsInstructions;
 pub(crate) use guardian_followup_review_reminder::GuardianFollowupReviewReminder;
 pub(crate) use hook_additional_context::HookAdditionalContext;
+pub(crate) use inter_agent_completion_message::CompletionProviderReceipt;
 pub(crate) use inter_agent_completion_message::InterAgentCompletionMessage;
 pub use internal_model_context::InternalContextSource;
 pub use internal_model_context::InternalModelContextFragment;

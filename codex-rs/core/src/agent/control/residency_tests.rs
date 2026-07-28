@@ -329,6 +329,7 @@ async fn mark_thread_status(thread: &CodexThread, status: AgentStatus) {
             last_agent_message,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,

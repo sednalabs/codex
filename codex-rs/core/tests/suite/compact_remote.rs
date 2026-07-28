@@ -35,6 +35,7 @@ use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::RealtimeOutputModality;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
 use core_test_support::apps_test_server::configure_search_capable_model;
@@ -952,7 +953,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                         "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY",
                     }
                 }),
-                responses::ev_completed("resp-compact"),
+                responses::ev_completed_with_tokens("resp-compact", /*total_tokens*/ 17),
             ]),
             responses::sse(vec![
                 responses::ev_assistant_message("m2", "AFTER_COMPACT_REPLY"),
@@ -977,7 +978,21 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
     wait_for_turn_complete(&codex).await;
 
     codex.submit(Op::Compact).await?;
-    wait_for_turn_complete(&codex).await;
+    let compact_turn_complete = wait_for_event_match(&codex, |event| match event {
+        EventMsg::TurnComplete(event) => Some(event.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        compact_turn_complete.provider_usage,
+        Some(TokenUsage {
+            input_tokens: 17,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 17,
+        })
+    );
 
     codex
         .submit(Op::UserInput {
