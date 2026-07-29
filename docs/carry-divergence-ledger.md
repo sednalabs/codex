@@ -1393,11 +1393,10 @@ decisions.
   - `codex-rs/app-server/tests/suite/v2/app_read.rs`
   - `justfile`
 
-### Python Code Quality Corrections
+### Python Static-Analysis Corrections
 
-- Downstream carries three upstreamable Python maintenance corrections so
-  GitHub Code Quality can verify the corresponding findings are closed on
-  `main`.
+- Downstream carries three upstreamable Python maintenance corrections found
+  during an earlier static-analysis pass.
 - The Windows timeout security smoke exceeds the harness deadline, records its
   expected `subprocess.TimeoutExpired`, and allows unexpected failures to
   surface before checking that outside writes remain denied.
@@ -1414,19 +1413,22 @@ decisions.
   - `scripts/just-shell.py`
   - `.codex/skills/codex-issue-digest/scripts/collect_issue_digest.py`
 
-### Coverage Upload Entitlement Compatibility
+### Coverage Upload Disablement
 
 - Upstream commit `dfdf9ff36b` added Code Coverage report uploads and assumes
   that the repository has GitHub Code Quality enabled.
-- This repository intentionally does not configure that product. The three
-  report-generation test steps remain required, but their upload actions set
-  `fail-on-error: false` so an unavailable endpoint reports a warning rather
-  than turning completed coverage tests into a false CI failure.
-- The actions still attempt each upload. If Code Quality is enabled later, the
-  same reports are submitted without another workflow change.
-- Preserve this operator-specific compatibility carry while the repository is
-  not configured for Code Quality. Reassess it if the repository is configured
-  or upstream makes unavailable uploads non-fatal by default.
+- This repository deliberately does not configure that product. The three
+  report-generation test steps remain required, but the workflow does not
+  request `code-quality: write` or call `actions/upload-code-coverage`.
+- This prevents the checked-in workflow from activating the Code Quality
+  integration or invoking `github-code-quality[bot]`, while preserving the
+  ordinary coverage-instrumented tests.
+- Preserve this operator-specific policy carry unless the repository owner
+  explicitly changes the Code Quality product policy. Upstream harvests must
+  not silently restore the upload action or its token permission.
+- Hosted guardrail:
+  `test_coverage_workflow_does_not_use_code_quality_product` in
+  `codex.workflow-ci-sanity`.
 - Primary file:
   - `.github/workflows/code-coverage.yml`
 

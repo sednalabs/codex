@@ -998,6 +998,19 @@ class RouteSelectionTests(unittest.TestCase):
             ["all", *expected_lane_ids],
         )
 
+    def test_coverage_workflow_does_not_use_code_quality_product(self) -> None:
+        workflow_path = REPO_ROOT / ".github/workflows/code-coverage.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        payload = load_workflow_payload(workflow_path)
+
+        self.assertEqual(payload.get("name"), "Coverage Tests")
+        self.assertNotIn("actions/upload-code-coverage@", workflow_text)
+        self.assertNotIn("code-quality:", workflow_text)
+        self.assertEqual(
+            set((payload.get("jobs") or {}).keys()),
+            {"python-tools", "python-sdk", "typescript-sdk"},
+        )
+
     def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
         lane = next(
             lane

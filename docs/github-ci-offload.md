@@ -47,9 +47,9 @@ artifacts.
     PRs and restore/store mode for protected branch or scheduled runs; keep
     manual Rust caches limited to Cargo registry/git data and do not cache
     toolchain executables in the security scanning workflow
-  - not covered: GitHub Code Quality's public-preview dynamic workflow is a
-    separate repository setting and may still consume Actions minutes unless it
-    is disabled or narrowed in GitHub's Code quality settings
+  - not covered: GitHub Code Quality is deliberately disabled; checked-in
+    workflows must not request `code-quality: write` or upload coverage reports
+    to that product
   - retention: ordinary workflow logs plus code-scanning results
 - `sedna-branch-build`
   - trigger: manual dispatch only
