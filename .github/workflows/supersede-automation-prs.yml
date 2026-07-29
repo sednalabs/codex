@@ -17,7 +17,7 @@ jobs:
   reconcile:
     permissions:
       contents: read
-      pull-requests: write
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -46,10 +46,10 @@ jobs:
                 issue_number: action.number,
                 body: action.message,
               });
-              await github.rest.pulls.update({
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: action.number,
+                issue_number: action.number,
                 state: 'closed',
               });
             }
@@ -75,10 +75,10 @@ jobs:
                 issue_number: action.number,
                 body: action.message,
               });
-              await github.rest.pulls.update({
+              await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: action.number,
+                issue_number: action.number,
                 state: 'closed',
               });
             }
