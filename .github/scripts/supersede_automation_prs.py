@@ -31,7 +31,15 @@ DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
 
 class GitHub:
     def __init__(self, repository: str, token: str) -> None:
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        owner, separator, name = repository.partition("/")
+        allowed_repository_chars = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+        if (
+            not separator
+            or not owner
+            or not name
+            or any(character not in allowed_repository_chars for character in owner)
+            or any(character not in allowed_repository_chars for character in name)
+        ):
             raise ValueError("repository must be an OWNER/REPOSITORY slug")
         self.base = "https://api.github.com/repos/" + urllib.parse.quote(repository, safe="/")
         self.request_headers = {
