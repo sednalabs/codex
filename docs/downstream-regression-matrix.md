@@ -363,7 +363,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
   diff-informed alert restriction when GitHub's compare API is truncated.
   `codex.workflow-ci-sanity` covers the parser and workflow ordering; the
   hosted CodeQL aggregate is the behavioral proof that unchanged base alerts
-  are not misclassified as new.
+  are not misclassified as new. The workflow also runs on `merge_group` for
+  `main`, so `CodeQL required gate` proves the exact synthetic queue candidate
+  rather than reusing a pull-request result.
 - `blocking-ci.yml` is the default PR and merge-queue fail-fast workflow.
   - It runs on `pull_request`, `merge_group`, and pushes to `main` and
     `upstream-main`, then calls the reusable leaf workflows that upstream keeps
