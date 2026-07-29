@@ -1686,11 +1686,13 @@ async fn auto_remote_compact_retries_server_overloaded() -> Result<()> {
 
     assert!(compacted);
     assert_eq!(compact_mock.requests().len(), 2);
-    assert!(responses_mock
-        .single_request()
-        .body_json()
-        .to_string()
-        .contains("REMOTE_COMPACTED_AFTER_CAPACITY"));
+    assert!(
+        responses_mock
+            .single_request()
+            .body_json()
+            .to_string()
+            .contains("REMOTE_COMPACTED_AFTER_CAPACITY")
+    );
 
     Ok(())
 }
