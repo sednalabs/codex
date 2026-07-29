@@ -428,6 +428,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     extracting ordinary package files beneath the staging root; the regression
     fixture proves a safe member preceding a `../` member is not written and
     the traversal member cannot escape.
+  - Python SDK contract generation keeps
+    `datamodel-code-generator==0.71.0` as a reviewed development-only pin; the
+    hosted Python SDK lane proves the generated-contract tool remains usable.
   - `v8-canary.yml` staging, macOS Bazel clippy, and macOS Bazel
     release-build verification keep hosted macOS Bazel client fanout below the
     runner process/thread ceiling while remote execution handles the heavy
