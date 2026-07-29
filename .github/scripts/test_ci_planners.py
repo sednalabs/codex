@@ -5001,7 +5001,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             step for step in check_steps if step.get("name") == "Determine comparison range"
         )
         run_script = range_step.get("run") or ""
-        self.assertIn('github.event_name" == "merge_group', run_script)
+        self.assertIn(
+            'if [[ "${{ github.event_name }}" == "merge_group" ]]; then',
+            run_script,
+        )
         self.assertIn("github.event.merge_group.base_sha", run_script)
         self.assertIn("head='${{ github.sha }}'", run_script)
 
