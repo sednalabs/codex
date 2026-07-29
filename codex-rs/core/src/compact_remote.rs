@@ -8,6 +8,7 @@ use crate::compact::InitialContextInjection;
 use crate::compact::build_compaction_initial_context;
 use crate::compact::compaction_status_from_result;
 use crate::compact::insert_initial_context_before_last_real_user_or_summary;
+use crate::compact_model_fallback::CapacityRetryDisposition;
 use crate::compact_model_fallback::record_model_fallback;
 use crate::compact_model_fallback::should_retry_with_current_model;
 use crate::context::world_state::WorldState;
@@ -55,6 +56,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     initial_context_injection: InitialContextInjection,
     reason: CompactionReason,
     phase: CompactionPhase,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Auto,
@@ -69,6 +71,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         Some(turn_state),
         initial_context_injection,
         compaction_metadata,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -77,10 +80,11 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
 pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     // Standalone compaction is its own request boundary, so it captures a fresh step.
     let step_context = sess
-        .capture_step_context(Arc::clone(&turn_context), &CancellationToken::new())
+        .capture_step_context(Arc::clone(&turn_context), cancellation_token)
         .await?;
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
@@ -104,6 +108,7 @@ pub(crate) async fn run_remote_compact_task(
         /*turn_state*/ None,
         InitialContextInjection::DoNotInject,
         compaction_metadata,
+        cancellation_token,
     )
     .await?;
     Ok(())
@@ -116,6 +121,7 @@ async fn run_remote_compact_task_inner(
     turn_state: Option<Arc<OnceLock<String>>>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let trigger = compaction_metadata.trigger();
@@ -159,6 +165,7 @@ async fn run_remote_compact_task_inner(
         initial_context_injection,
         compaction_metadata,
         &mut analytics_details,
+        cancellation_token,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -176,6 +183,12 @@ async fn run_remote_compact_task_inner(
         .track(sess.as_ref(), status, codex_error, analytics_details)
         .await;
     if let Err(err) = result {
+        if matches!(
+            err.details(),
+            codex_protocol::error::CodexErrorDetails::TurnAborted
+        ) {
+            return Err(err);
+        }
         sess.track_turn_codex_error(turn_context, &err);
         let event = EventMsg::Error(
             err.to_error_event(Some("Error running remote compact task".to_string())),
@@ -194,6 +207,7 @@ async fn run_remote_compact_task_inner_impl(
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let context_compaction_item = ContextCompactionItem::new();
@@ -216,6 +230,12 @@ async fn run_remote_compact_task_inner_impl(
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        cancellation_token,
+        if fallback_step_context.is_some() {
+            CapacityRetryDisposition::ReturnForModelFallback
+        } else {
+            CapacityRetryDisposition::RetrySelectedModel
+        },
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -242,6 +262,8 @@ async fn run_remote_compact_task_inner_impl(
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                cancellation_token,
+                CapacityRetryDisposition::RetrySelectedModel,
             )
             .await;
             record_model_fallback(
