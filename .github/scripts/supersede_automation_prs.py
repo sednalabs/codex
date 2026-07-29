@@ -27,6 +27,7 @@ class PullRequest:
 
 DEPENDABOT_TITLE = re.compile(r"^Bump (.+?) from .+? to .+?(?: in (/.+))?$", re.I)
 DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
+DEPENDABOT_VERSION = re.compile(r"dependency-version:\s*([0-9][0-9A-Za-z.+_-]*)", re.I)
 GITHUB_API_BASE = "https://api.github.com/repos/sednalabs/codex"
 
 
@@ -90,6 +91,19 @@ def dependabot_key(pr: PullRequest) -> str | None:
     return f"{dependency.lower()}::{directory.lower()}"
 
 
+def dependabot_version(pr: PullRequest) -> tuple[int, ...]:
+    match = DEPENDABOT_VERSION.search(pr.body)
+    if not match:
+        title_match = DEPENDABOT_TITLE.match(pr.title)
+        if not title_match:
+            return (0,)
+        version = title_match.group(0).rsplit(" to ", 1)[-1].split(" in ", 1)[0]
+    else:
+        version = match.group(1)
+    numbers = tuple(int(part) for part in re.findall(r"\d+", version))
+    return numbers or (0,)
+
+
 def models_key(pr: PullRequest) -> bool:
     return pr.head_ref.startswith("bot/sync-models-json-")
 
@@ -110,7 +124,7 @@ def supersession_plan(prs: list[PullRequest], mode: str) -> list[dict[str, objec
 
     plan: list[dict[str, object]] = []
     for key, candidates in groups.items():
-        ordered = sorted(candidates, key=lambda pr: (pr.created_at, pr.number), reverse=True)
+        ordered = sorted(candidates, key=lambda pr: (dependabot_version(pr), pr.created_at, pr.number), reverse=True)
         newest = ordered[0]
         for stale in ordered[1:]:
             message = (
