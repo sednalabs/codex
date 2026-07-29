@@ -1,0 +1,84 @@
+name: supersede-automation-prs
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Automation PR family to reconcile
+        required: true
+        type: choice
+        options:
+          - dependabot
+          - models-json
+  schedule:
+    - cron: "17 * * * *"
+
+jobs:
+  reconcile:
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          persist-credentials: false
+      - name: Reconcile Dependabot PRs
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'dependabot'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAN_FILE: ${{ runner.temp }}/dependabot-plan.json
+        run: python3 .github/scripts/supersede_automation_prs.py --mode dependabot > "$PLAN_FILE"
+      - name: Apply Dependabot supersession plan
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'dependabot'
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ runner.temp }}/dependabot-plan.json
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = JSON.parse(fs.readFileSync(process.env.PLAN_FILE, 'utf8'));
+            for (const action of plan.actions) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: action.number,
+                body: action.message,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: action.number,
+                state: 'closed',
+              });
+            }
+      - name: Reconcile models.json sync PRs
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'models-json'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAN_FILE: ${{ runner.temp }}/models-json-plan.json
+        run: python3 .github/scripts/supersede_automation_prs.py --mode models-json > "$PLAN_FILE"
+      - name: Apply models.json supersession plan
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'models-json'
+        uses: actions/github-script@v7
+        env:
+          PLAN_FILE: ${{ runner.temp }}/models-json-plan.json
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = JSON.parse(fs.readFileSync(process.env.PLAN_FILE, 'utf8'));
+            for (const action of plan.actions) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: action.number,
+                body: action.message,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: action.number,
+                state: 'closed',
+              });
+            }

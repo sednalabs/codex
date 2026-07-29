@@ -250,9 +250,12 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
   permissionName = "security-events" and
   jobUsesActionMatching(job, "(?i)^github/codeql-action/", _)
   or
-  permissionName = "actions" and
-  exists(string command |
-    jobRunCommand(job, command) and
-    command.regexpMatch("(?is).*\\bgh\\s+workflow\\s+run\\b.*")
-  )
+    permissionName = "actions" and
+    exists(string command |
+      jobRunCommand(job, command) and
+      command.regexpMatch("(?is).*\\bgh\\s+workflow\\s+run\\b.*")
+    )
+  or
+  permissionName = "issues" and
+  jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)
 }
