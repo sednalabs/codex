@@ -189,6 +189,24 @@ def parse_args():
         help="Poll until a non-idle action or strict stop appears, then emit one result and exit",
     )
     parser.add_argument(
+        "--watch-until-terminal",
+        "--wait-until-terminal",
+        dest="watch_until_terminal",
+        action="store_true",
+        help=(
+            "Poll until a non-idle action or strict stop appears, but keep waiting past "
+            "in-progress CI failures until PR checks are terminal."
+        ),
+    )
+    parser.add_argument(
+        "--require-terminal-checks",
+        action="store_true",
+        help=(
+            "(Only relevant with --watch-until-action) keep waiting until PR checks are "
+            "terminal before returning CI failure actions."
+        ),
+    )
+    parser.add_argument(
         "--retry-failed-now",
         action="store_true",
         help="Rerun failed jobs for current failed workflow runs when policy allows",
@@ -209,26 +227,43 @@ def parse_args():
         action="store_true",
         help="Emit machine-readable output (default behavior for --once and --retry-failed-now)",
     )
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help=(
+            "Emit one compact stderr progress line per internal wait cycle. Disabled by "
+            "default so blocking waits return only their final receipt."
+        ),
+    )
+    parser.add_argument(
+        "--verbose-details",
+        action="store_true",
+        help=(
+            "Return the full PR snapshot from a blocking wait. By default blocking waits "
+            "return a compact, action-complete receipt."
+        ),
+    )
     args = parser.parse_args()
 
     if args.poll_seconds <= 0:
         parser.error("--poll-seconds must be > 0")
     if args.max_flaky_retries < 0:
         parser.error("--max-flaky-retries must be >= 0")
+    watch_mode_enabled = args.watch_until_action or args.watch_until_terminal
     selected_modes = sum(
         1
-        for enabled in (
-            args.once,
-            args.watch,
-            args.watch_until_action,
-            args.retry_failed_now,
-        )
+        for enabled in (args.once, args.watch, watch_mode_enabled, args.retry_failed_now)
         if enabled
     )
     if selected_modes > 1:
         parser.error(
-            "choose only one of --once, --watch, --watch-until-action, or --retry-failed-now"
+            "choose only one of --once, --watch, --watch-until-action, "
+            "--watch-until-terminal, or --retry-failed-now"
         )
+    if watch_mode_enabled:
+        args.watch_until_action = True
+        if args.watch_until_terminal:
+            args.require_terminal_checks = True
     if (
         not args.once
         and not args.watch
@@ -1478,6 +1513,11 @@ def print_json(obj):
     sys.stdout.flush()
 
 
+def print_status(message):
+    sys.stderr.write(str(message).rstrip() + "\n")
+    sys.stderr.flush()
+
+
 def print_event(event, payload):
     print_json({"event": event, "payload": payload})
 
@@ -1538,6 +1578,86 @@ def has_non_idle_actions(snapshot):
     return any(action != "idle" for action in (snapshot.get("actions") or []))
 
 
+def _compact_review_item(item):
+    if not isinstance(item, dict):
+        return item
+    compact = {
+        key: item.get(key)
+        for key in (
+            "kind",
+            "id",
+            "author",
+            "path",
+            "line",
+            "url",
+            "created_at",
+            "is_resolved",
+            "is_outdated",
+        )
+        if item.get(key) not in (None, "", [], {})
+    }
+    body = str(item.get("body") or "")
+    if body:
+        compact["body"] = body if len(body) <= 1000 else body[:997] + "..."
+    return compact
+
+
+def compact_wait_snapshot(snapshot):
+    pr = snapshot.get("pr") or {}
+    compact_pr = {
+        key: pr.get(key)
+        for key in (
+            "repo",
+            "number",
+            "url",
+            "head_sha",
+            "base_sha",
+            "state",
+            "merged",
+            "closed",
+            "mergeable",
+            "merge_state_status",
+            "review_decision",
+        )
+        if pr.get(key) not in (None, "", [], {})
+    }
+    return {
+        "pr": compact_pr,
+        "watch_context": snapshot.get("watch_context"),
+        "checks": snapshot.get("checks"),
+        "checks_source": snapshot.get("checks_source"),
+        "check_details": snapshot.get("check_details"),
+        "failed_runs": snapshot.get("failed_runs"),
+        "ci_head_context": snapshot.get("ci_head_context"),
+        "ci_head_message": snapshot.get("ci_head_message"),
+        "actionable_review_items": [
+            _compact_review_item(item)
+            for item in (snapshot.get("actionable_review_items") or [])
+        ],
+        "review_state": snapshot.get("review_state"),
+        "merge_blockers": snapshot.get("merge_blockers"),
+        "actions": snapshot.get("actions"),
+        "retry_state": snapshot.get("retry_state"),
+    }
+
+
+def should_wait_for_terminal_checks(args, snapshot):
+    if not getattr(args, "require_terminal_checks", False):
+        return False
+    checks = snapshot.get("checks") or {}
+    if checks.get("all_terminal"):
+        return False
+    actions = set(snapshot.get("actions") or [])
+    ci_failure_actions = {
+        "diagnose_ci_failure",
+        "retry_failed_checks",
+        "stop_exhausted_retries",
+    }
+    return bool(actions & ci_failure_actions) and not bool(
+        actions - ci_failure_actions - {"idle"}
+    )
+
+
 def next_watch_poll_seconds(
     args, snapshot, last_change_key, poll_seconds, max_poll_seconds
 ):
@@ -1593,19 +1713,26 @@ def run_watch_until_action(args):
     while True:
         snapshot, state_path = collect_snapshot(args)
         polls_completed += 1
-        if has_non_idle_actions(snapshot):
+        if should_wait_for_terminal_checks(args, snapshot):
+            pass
+        elif has_non_idle_actions(snapshot):
             actions = snapshot.get("actions") or []
             exit_reason = "action_required"
             for action in actions:
                 if action in STOP_ACTIONS:
                     exit_reason = action
                     break
+            output_snapshot = (
+                snapshot
+                if getattr(args, "verbose_details", False)
+                else compact_wait_snapshot(snapshot)
+            )
             print_json(
                 {
                     "elapsed_seconds": int(max(time.time() - started_at, 0)),
                     "exit_reason": exit_reason,
                     "polls_completed": polls_completed,
-                    "snapshot": snapshot,
+                    "snapshot": output_snapshot,
                     "state_file": str(state_path),
                 }
             )
@@ -1618,6 +1745,13 @@ def run_watch_until_action(args):
             poll_seconds,
             WATCH_UNTIL_ACTION_MAX_POLL_SECONDS,
         )
+        if getattr(args, "progress", False):
+            print_status(
+                "gh_pr_watch.py waiting: "
+                f"poll={polls_completed} "
+                f"head={snapshot.get('pr', {}).get('head_sha', '')} "
+                f"next_poll_seconds={poll_seconds}"
+            )
         time.sleep(poll_seconds)
 
 

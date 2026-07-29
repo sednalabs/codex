@@ -16,9 +16,11 @@ Do not stop merely because a single snapshot returns `idle` while checks are sti
 
 ## Operating Model
 
-- Use `--watch-until-action` when the lane will block on a terminal wait and should only return on actionable or terminal PR state.
+- Use `--watch-until-terminal` for delegated wait seams when current-head checks must finish before handoff. Use `--watch-until-action` for a repair owner that should wake on review feedback or a failure that can be acted on immediately.
 - Use `--watch` only when the lane is actively consuming the live JSONL stream in the foreground.
 - Use `--once` for one-shot diagnosis or local debugging, not for a full babysitting handoff.
+- Blocking waits emit one final receipt and no per-poll progress by default. Use `--progress` only for deliberate interactive debugging; never enable it for a delegated wait whose output will be sent back to a model.
+- Blocking waits return a compact action-complete receipt by default. Use `--verbose-details` only for debugging when the compact receipt and saved state file are insufficient.
 - After any fix commit or flaky rerun, restart the same monitoring mode immediately and keep exactly one watcher session active for the PR.
 
 ## Inputs
@@ -30,19 +32,20 @@ Accept any of the following:
 
 ## Core Workflow
 
-1. When the user asks to "monitor"/"watch"/"babysit" a PR, prefer the bounded actionable wait mode (`--watch-until-action`) when the agent will block on a terminal wait or should only hand back on meaningful PR state changes. Use the continuous stream (`--watch`) only when you are actively consuming the live JSONL output in the foreground.
+1. When the user asks to "monitor"/"watch"/"babysit" a PR, invoke one blocking watcher. Prefer `--watch-until-terminal` for a delegated check wait and `--watch-until-action` for a repair owner that should wake on actionable review or CI state. Use the continuous stream (`--watch`) only for deliberate foreground debugging.
 2. Run the watcher script to snapshot PR/CI/review state (or consume each streamed snapshot from `--watch` / the final result from `--watch-until-action`).
 3. Inspect the `actions` list in the JSON response.
 4. If `diagnose_ci_failure` is present, inspect failed run logs and classify the failure.
 5. If the failure is likely caused by the current branch, patch code locally, commit, and push. Do not patch random flaky tests, CI infrastructure, dependency outages, runner issues, or other failures that are unrelated to the branch.
 6. If `process_review_comment` is present, inspect surfaced published review items and decide whether to address them.
 7. If a review item is actionable and correct, patch code locally, commit, push, and then resolve the associated review thread only when allowed by the GitHub state mutation policy below.
-8. Do not post replies to human-authored review comments/threads unless the user explicitly confirms the exact response. If a human review item is non-actionable, already addressed, or not valid, surface the item and recommended response to the user instead of replying on GitHub.
-9. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
-10. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
-11. On every loop, look for newly surfaced review feedback before acting on CI failures or mergeability state, then verify mergeability / merge-conflict status (for example via `gh pr view`) alongside CI.
-12. After any push or rerun action, immediately return to step 1 and continue polling on the updated SHA/state.
-13. If you had been using `--watch` or `--watch-until-action` before pausing to patch/commit/push, relaunch that same monitoring mode yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
+8. Every Gemini Code Assist thread on a PR touched by the lane must receive a substantive, evidence-backed threaded reply and be resolved before the lane can be called clean, ready, or complete. This includes outdated threads. If a thread is genuinely blocked, leave it open with an explicit blocker and do not report terminal readiness. Re-read the live thread ledger at the final exact head.
+9. Do not post replies to human-authored review comments/threads unless the user explicitly confirms the exact response. If a human review item is non-actionable, already addressed, or not valid, surface the item and recommended response to the user instead of replying on GitHub.
+10. If the failure is likely flaky/unrelated and `retry_failed_checks` is present, rerun failed jobs with `--retry-failed-now`.
+11. If both actionable review feedback and `retry_failed_checks` are present, prioritize review feedback first; a new commit will retrigger CI, so avoid rerunning flaky checks on the old SHA unless you intentionally defer the review change.
+12. On every loop, look for newly surfaced review feedback before acting on CI failures or mergeability state, then verify mergeability / merge-conflict status (for example via `gh pr view`) alongside CI.
+13. After any push or rerun action, immediately return to step 1 and continue polling on the updated SHA/state.
+14. If you had been using `--watch` or `--watch-until-action` before pausing to patch/commit/push, relaunch that same monitoring mode yourself in the same turn immediately after the push (do not wait for the user to re-invoke the skill).
 14. Repeat polling until the watcher reaches a terminal stop condition such as `stop_ready_to_merge`, `stop_pr_closed`, or a user-help-required blocker. A green + review-clean + mergeable PR is only a stopping point when the chosen watcher mode treats it as actionable.
 15. Maintain terminal/session ownership: while babysitting is active, keep consuming watcher output in the same turn; do not leave a detached watcher process running and then end the turn as if monitoring were complete. When the lane is using a blocking terminal wait, prefer `--watch-until-action` so the process exits on actionable or terminal state instead of streaming forever.
 
@@ -58,6 +61,12 @@ python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --once
 
 ```bash
 python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch-until-action
+```
+
+### Terminal wait for delegated CI lanes
+
+```bash
+python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch-until-terminal
 ```
 
 ### Ignore a known review thread while watching
@@ -192,7 +201,7 @@ Use this loop in a live Codex session:
 12. If blocked on a user-help-required issue (infra outage, exhausted flaky retries, unclear reviewer request, permissions), report the blocker and stop.
 13. Otherwise sleep according to the polling cadence below and repeat.
 
-When the user explicitly asks to monitor/watch/babysit a PR, prefer `--watch-until-action` for Codex babysitter lanes that will sleep on a blocking terminal wait and only need to hand back when something meaningful happens. Use `--watch` only when the agent is actively consuming a live JSONL stream in the foreground. Use repeated `--once` snapshots only for debugging, local testing, or when the user explicitly asks for a one-shot check.
+When the user explicitly asks to monitor/watch/babysit a PR, select one blocking helper mode and let it own its internal GitHub cadence. Repeated `--once` snapshots are only for debugging, local testing, or an explicitly requested one-shot check.
 Do not stop to ask the user whether to continue polling; continue autonomously until a strict stop condition is met or the user explicitly interrupts.
 Do not hand control back to the user after a review-fix push just because a new SHA was created; restarting the watcher and re-entering the poll loop is part of the same babysitting task.
 If a foreground `--watch` process is still running and no strict stop condition has been reached, the babysitting task is still in progress; keep streaming/consuming watcher output instead of ending the turn. If the lane is blocked on a terminal wait, use `--watch-until-action` so the watcher exits when there is a strict stop or actionable work to surface.
@@ -223,13 +232,11 @@ Keep polling when:
 - The PR is green but blocked on review approval (`REVIEW_REQUIRED` / similar); continue polling on the green-state cadence and surface any new review comments without asking for confirmation to keep watching.
 
 ## Output Expectations
-Provide concise progress updates while monitoring and a final summary that includes:
+Blocking waits produce no periodic model-visible heartbeat. The helper returns one final receipt; `--progress` is an explicit debugging-only exception. The final summary includes:
 
-- During long unchanged monitoring periods, avoid emitting a full update on every poll; summarize only status changes plus occasional heartbeat updates.
 - Treat push confirmations, intermediate CI snapshots, and review-action updates as progress updates only; do not emit the final summary or end the babysitting session unless a strict stop condition is met.
 - A user request to "monitor" is not satisfied by a couple of sample polls; remain in the loop until a strict stop condition or an explicit user interruption.
 - A review-fix commit + push is not a completion event; immediately resume monitoring in the same turn and continue reporting progress updates.
-- When CI first transitions to all green for the current SHA, emit a one-time celebratory progress update (do not repeat it on every green poll). Preferred style: `🚀 CI is all green! 33/33 passed. Still on watch for review approval.`
 - Do not send the final summary while a watcher terminal is still running unless the watcher has emitted/confirmed a strict stop condition; otherwise continue with progress updates. For blocking waits, prefer `--watch-until-action` so the process itself returns when a meaningful state change occurs.
 
 - Final PR SHA
