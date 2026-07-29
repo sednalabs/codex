@@ -3392,6 +3392,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "security-events": "write",
             },
         )
+
+    def test_blocking_ci_uses_documented_merge_group_trigger(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        self.assertEqual(
+            (payload.get("on") or {}).get("merge_group"),
+            {"types": ["checks_requested"]},
+        )
         self.assertEqual(
             ((analyze_job.get("strategy") or {}).get("matrix")),
             {
