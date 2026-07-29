@@ -340,6 +340,11 @@ def checks_fields():
 
 def resolve_pr(pr_spec, repo_override=None):
     parsed = parse_pr_spec(pr_spec)
+    if parsed["mode"] == "number" and not repo_override:
+        raise GhCommandError(
+            "Bare PR numbers are ambiguous outside their repository context. "
+            "Pass --repo OWNER/REPO or use the full PR URL."
+        )
     cmd = ["pr", "view"]
     if parsed["value"] is not None:
         cmd.append(parsed["value"])
@@ -358,6 +363,10 @@ def resolve_pr(pr_spec, repo_override=None):
     pr_url = str(data.get("url") or "")
     base_repo = extract_repo_from_pr_url(pr_url)
     head_repo = extract_repo_from_pr_view(data)
+    if repo_override and base_repo and not repos_match(repo_override, base_repo):
+        raise GhCommandError(
+            f"Resolved PR URL belongs to {base_repo}, not explicit --repo {repo_override}."
+        )
     repo = repo_override or base_repo or head_repo
     if not repo:
         raise GhCommandError("Unable to determine OWNER/REPO for the PR")
@@ -508,8 +517,8 @@ def build_watch_context(args, pr, local_git_context):
             pr["repo"], local_git_context.get("origin_repo")
         ),
         "resolution_note": (
-            "Bare PR numbers depend on the current gh repo context; prefer a full PR URL or --repo for fork PRs."
-            if parsed["mode"] in {"auto", "number"} and not args.repo
+            "Auto resolution is bound to the local origin; use a full PR URL or --repo for another repository."
+            if parsed["mode"] == "auto" and not args.repo
             else ""
         ),
     }
