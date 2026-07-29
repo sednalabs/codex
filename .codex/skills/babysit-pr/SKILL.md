@@ -27,8 +27,10 @@ Do not stop merely because a single snapshot returns `idle` while checks are sti
 Accept any of the following:
 
 - No PR argument: infer the PR from the current branch (`--pr auto`)
-- PR number
+- PR number together with explicit `--repo OWNER/REPO`
 - PR URL
+
+Bare PR numbers without `--repo` are rejected because repository-context inference can silently select an unrelated PR with the same number.
 
 ## Core Workflow
 
@@ -72,7 +74,7 @@ python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr auto --watch-until-
 ### Ignore a known review thread while watching
 
 ```bash
-python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <number-or-url> --watch-until-action --ignore-review-thread <thread-url-or-id>
+python3 .codex/skills/babysit-pr/scripts/gh_pr_watch.py --pr <number-or-url> --repo <owner/repo> --watch-until-action --ignore-review-thread <thread-url-or-id>
 ```
 
 ### Continuous watch (foreground JSONL)

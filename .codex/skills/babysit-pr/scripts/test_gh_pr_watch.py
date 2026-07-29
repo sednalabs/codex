@@ -39,6 +39,52 @@ def sample_checks(**overrides):
     return checks
 
 
+def test_resolve_pr_rejects_bare_number_without_repo(monkeypatch):
+    called = False
+
+    def unexpected_gh_json(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(gh_pr_watch, "gh_json", unexpected_gh_json)
+
+    with pytest.raises(
+        gh_pr_watch.GhCommandError,
+        match="Bare PR numbers are ambiguous",
+    ):
+        gh_pr_watch.resolve_pr("535")
+
+    assert called is False
+
+
+def test_resolve_pr_rejects_url_repo_override_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_json",
+        lambda *_args, **_kwargs: {
+            "number": 535,
+            "url": "https://github.com/sednalabs/codex/pull/535",
+            "state": "OPEN",
+            "headRefOid": "abc123",
+            "headRefName": "feature",
+            "headRepository": {"nameWithOwner": "sednalabs/codex"},
+            "baseRefName": "main",
+            "baseRefOid": "def456",
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+        },
+    )
+
+    with pytest.raises(
+        gh_pr_watch.GhCommandError,
+        match="belongs to sednalabs/codex, not explicit --repo sednalabs/agent-ops",
+    ):
+        gh_pr_watch.resolve_pr(
+            "https://github.com/sednalabs/codex/pull/535",
+            repo_override="sednalabs/agent-ops",
+        )
+
+
 def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     call_order = []
     pr = sample_pr()
