@@ -27,21 +27,12 @@ class PullRequest:
 
 DEPENDABOT_TITLE = re.compile(r"^Bump (.+?) from .+? to .+?(?: in (/.+))?$", re.I)
 DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
+GITHUB_API_BASE = "https://api.github.com/repos/sednalabs/codex"
 
 
 class GitHub:
-    def __init__(self, repository: str, token: str) -> None:
-        owner, separator, name = repository.partition("/")
-        allowed_repository_chars = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
-        if (
-            not separator
-            or not owner
-            or not name
-            or any(character not in allowed_repository_chars for character in owner)
-            or any(character not in allowed_repository_chars for character in name)
-        ):
-            raise ValueError("repository must be an OWNER/REPOSITORY slug")
-        self.base = "https://api.github.com/repos/" + urllib.parse.quote(repository, safe="/")
+    def __init__(self, token: str) -> None:
+        self.base = GITHUB_API_BASE
         self.request_headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -141,13 +132,12 @@ def reconcile(prs: list[PullRequest], mode: str, dry_run: bool, github: GitHub |
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("dependabot", "models-json"), required=True)
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if not args.repo or (not args.token and not args.dry_run):
-        parser.error("--repo and GITHUB_TOKEN are required unless --dry-run is used")
-    github = None if args.dry_run else GitHub(args.repo, args.token)
+    if not args.token and not args.dry_run:
+        parser.error("GITHUB_TOKEN is required unless --dry-run is used")
+    github = None if args.dry_run else GitHub(args.token)
     prs = [] if args.dry_run else github.open_pull_requests()
     closed = reconcile(prs, args.mode, args.dry_run, github)
     print(json.dumps({"mode": args.mode, "closed": closed, "count": len(closed)}))
