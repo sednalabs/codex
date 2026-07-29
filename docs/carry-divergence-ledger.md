@@ -997,6 +997,9 @@ decisions.
   by `blocking-ci.yml`. Downstream preserves that upstream topology and carries
   only the wrapper entrypoint expansion for `merge_group` and `upstream-main`
   pushes, instead of reintroducing direct triggers on every child workflow.
+- The protected queue requires `CI required` from `blocking-ci.yml` and
+  `CodeQL required gate` from `codeql.yml`; both workflows run against the
+  synthetic `merge_group` commit for `main`.
 - Hosted Rust archive builders reclaim common Linux runner disk headroom before
   `cargo nextest archive`, build the `ci-test` archive payload with debug info
   disabled and symbols stripped, stay archive-only, and leave test execution

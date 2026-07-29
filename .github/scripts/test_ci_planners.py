@@ -3363,6 +3363,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         steps = analyze_job.get("steps") or []
 
         self.assertIn("workflow_dispatch", trigger)
+        self.assertEqual(trigger.get("merge_group"), {"types": ["checks_requested"]})
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
         self.assertNotIn("concurrency", payload)
         self.assertNotIn("plan", jobs)
