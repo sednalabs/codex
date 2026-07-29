@@ -3616,6 +3616,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("jobHasPublishingSink", workflow_security)
         self.assertIn("jobEffectiveWritePermission", workflow_security)
         self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
+        self.assertIn(
+            'jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)',
+            workflow_security,
+        )
         self.assertFalse((REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").exists())
         rust_config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-rust.yml").read_text(encoding="utf-8"),

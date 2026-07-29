@@ -257,5 +257,5 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
     )
   or
   permissionName = "issues" and
-  jobUsesActionMatching(job, "(?i)^actions/github-script@", _)
+  jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)
 }
