@@ -31,7 +31,9 @@ DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
 
 class GitHub:
     def __init__(self, repository: str, token: str) -> None:
-        self.base = f"https://api.github.com/repos/{repository}"
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+            raise ValueError("repository must be an OWNER/REPOSITORY slug")
+        self.base = "https://api.github.com/repos/" + urllib.parse.quote(repository, safe="/")
         self.request_headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
