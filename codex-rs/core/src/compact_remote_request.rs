@@ -3,8 +3,10 @@ use std::sync::OnceLock;
 
 use super::trim_function_call_history_to_fit_context_window;
 use crate::Prompt;
+use crate::capacity_retry::notify_and_wait_for_capacity_retry;
 use crate::client::CompactConversationRequestSettings;
 use crate::compact::CompactionAnalyticsDetails;
+use crate::compact_model_fallback::CapacityRetryDisposition;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
@@ -13,6 +15,7 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_rollout_trace::CompactionTraceContext;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 pub(super) struct RemoteCompactAttempt {
@@ -27,6 +30,8 @@ pub(super) async fn run_remote_compact_attempt(
     compaction_trace: &CompactionTraceContext,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    cancellation_token: &CancellationToken,
+    capacity_retry_disposition: CapacityRetryDisposition,
 ) -> CodexResult<RemoteCompactAttempt> {
     let turn_context = &step_context.turn;
     let mut history = sess.clone_history().await;
@@ -74,27 +79,49 @@ pub(super) async fn run_remote_compact_attempt(
         window_id,
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
-    let new_history = sess
-        .services
-        .model_client
-        .compact_conversation_history(
-            &prompt,
-            &turn_context.model_info,
-            turn_state,
-            CompactConversationRequestSettings {
-                effort: turn_context.reasoning_effort.clone(),
-                summary: turn_context.reasoning_summary,
-                service_tier: if sess.services.auth_manager.auth_mode() == Some(AuthMode::ApiKey) {
-                    None
-                } else {
-                    turn_context.config.service_tier.clone()
+    let mut capacity_retries = 0;
+    let new_history = loop {
+        let result = sess
+            .services
+            .model_client
+            .compact_conversation_history(
+                &prompt,
+                &turn_context.model_info,
+                turn_state.clone(),
+                CompactConversationRequestSettings {
+                    effort: turn_context.reasoning_effort.clone(),
+                    summary: turn_context.reasoning_summary,
+                    service_tier: if sess.services.auth_manager.auth_mode()
+                        == Some(AuthMode::ApiKey)
+                    {
+                        None
+                    } else {
+                        turn_context.config.service_tier.clone()
+                    },
                 },
-            },
-            &turn_context.session_telemetry,
-            compaction_trace,
-            &responses_metadata,
-        )
-        .await?;
+                &turn_context.session_telemetry,
+                compaction_trace,
+                &responses_metadata,
+            )
+            .await;
+        match result {
+            Err(error @ codex_protocol::error::CodexErr::ServerOverloaded)
+                if capacity_retry_disposition == CapacityRetryDisposition::RetrySelectedModel =>
+            {
+                capacity_retries += 1;
+                notify_and_wait_for_capacity_retry(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    cancellation_token,
+                    capacity_retries,
+                    "remote compaction request",
+                    error,
+                )
+                .await?;
+            }
+            result => break result?,
+        }
+    };
     Ok(RemoteCompactAttempt {
         new_history,
         trace_input_history,
