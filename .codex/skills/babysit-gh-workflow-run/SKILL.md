@@ -18,13 +18,13 @@ This skill is for workflow-run monitoring, not PR review/comment shepherding. Us
 ## Operating Model
 
 - Use the bundled launcher, `scripts/gh_workflow_run_watch`, as the monitoring surface. It will locate a Python interpreter even when `python3` is not already on `PATH`.
-- The helper is intentionally stdlib-only at runtime: it still needs a Python interpreter, `gh`, and network access to GitHub/Gemini, but it does not require an extra Python package install.
+- The helper is intentionally stdlib-only at runtime: it still needs a Python interpreter, `gh`, and network access to GitHub, but it does not require an extra Python package install. Gemini network access is needed only for an explicitly requested diagnosis.
 - If the default interpreter search is not the one you want, set `GH_WORKFLOW_RUN_WATCH_PYTHON` to an explicit Python path.
-- If Gemini summaries are noisy or not currently useful, set `GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI=1` or pass `--no-gemini-diagnosis`; the watcher will still return the structured failure bundle without making a Gemini call.
+- Gemini diagnosis is off by default and cannot be enabled by ambient environment configuration. Use `--gemini-diagnosis` only when the operator deliberately wants one provider-backed failure summary for this exact invocation. Deterministic failure evidence remains available without it.
 - If there is a single blocking helper-backed wait and no better concurrent parent work, run the helper directly in the parent thread instead of spawning a babysitter lane.
 - If the seam is still a pure delegated wait after applying that parent-direct rule, prefer routing it to `awaiter` instead of `terminal-babysitter`.
 - If the seam is likely to become “watch -> tiny fix or rerun -> resume,” use this helper inside a cheap workflow shepherd lane rather than pretending the seam is a pure babysitter wait.
-- Prefer `--watch-until-action` when a sidecar should block until the run reaches a meaningful terminal or actionable state.
+- Prefer `--watch-until-terminal` for delegated workflow waits. Use `--watch-until-action` only when a repair owner should wake on an actionable failure before the whole run completes.
 - When you want to stay in a blocking wait until every watched run is terminal (even if a failure shows up while it is still in progress), use `--watch-until-terminal` (alias `--wait-until-terminal`, equivalent to `--watch-until-action --require-terminal-run`).
 - `--wait-for all_done` waits until all watched targets are non-idle, but it will keep polling if a surfaced `diagnose_run_failure` action still lacks retrievable logs.
 - `--watch-until-action` now includes a default appearance warm-up window for workflow/ref targets, so the helper waits for GitHub dispatch lag before reporting that no matching run appeared.
@@ -52,9 +52,8 @@ Accept any of the following:
 - no ref argument: infer the current branch when possible
 - when passing a logical workflow input like `ref=target-branch`, `--ref auto` resolves to the
   repository default branch for dispatch while `--head-sha` keeps guarding the logical input ref
-- optional Gemini model override with `--gemini-model` when a failure should be summarized
-- optional `--no-gemini-diagnosis` to skip Gemini while still returning the structured diagnostic bundle
-- optional `--gemini-diagnosis` to override `GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI=1` for one run
+- optional `--gemini-diagnosis` for one deliberately requested provider-backed summary
+- optional Gemini model override with `--gemini-model` only when diagnosis is explicitly enabled
 
 Multi-target mode:
 
@@ -83,7 +82,7 @@ Optional:
    - exact `run-id` targets if present
    - newest matching workflow run for each workflow/ref target
    - optional `min-run-id` filters older matching runs with the same commit when present
-2. Emit one normalized aggregate snapshot or enter the watch loop.
+2. Emit one normalized aggregate snapshot or enter one helper-owned blocking watch loop. Internal polls do not produce model-visible output.
 3. Inspect the top-level `targets` array and aggregate `actions` list.
 4. If one or more targets are still queued or in progress, keep waiting unless wait policy is already satisfied.
 5. If the watched target(s) succeed, report terminal success and stop per policy.
@@ -205,7 +204,7 @@ Return concise structured state that includes:
 - top-level `summary` counts across all targets
 - `ts` timestamp
 
-Gemini failure summaries are collected with the direct Gemini REST API using `gemini-3.1-flash-lite-preview` by default. The helper redacts obvious secrets, ranks failed jobs by likely causality, prefers focused excerpts from the primary failing job plus any useful meta-summary job, and tries to add local code snippets for likely file/line hits before it asks Gemini for a JSON diagnosis. When a `validation-summary` artifact exists, the watcher now derives a compact mode-aware summary from it instead of dumping the whole artifact into the prompt, so `targeted`, `frontier`, and checkpoint-like runs can steer the parent with less token spend. When the call succeeds, the watcher also returns a per-target `gemini_telemetry` block with request latency and the API's usage metadata so the parent can see token usage without scraping logs.
+The normal watcher path makes no Gemini or other model-provider call. If and only if the caller passes `--gemini-diagnosis`, the helper may make one bounded Gemini REST diagnosis for the exact failure. The deterministic evidence collector remains the primary path and is returned whether or not the optional diagnosis is requested.
 
 ## Guardrails
 
