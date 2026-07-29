@@ -78,11 +78,6 @@ class GitHub:
                 break
         return result
 
-    def comment_and_close(self, pr: PullRequest, message: str) -> None:
-        self.request("POST", f"/issues/{pr.number}/comments", {"body": message})
-        self.request("PATCH", f"/pulls/{pr.number}", {"state": "closed"})
-
-
 def dependabot_key(pr: PullRequest) -> str | None:
     if pr.author.lower() not in {"dependabot[bot]", "dependabot"}:
         return None
@@ -99,7 +94,7 @@ def models_key(pr: PullRequest) -> bool:
     return pr.head_ref.startswith("bot/sync-models-json-")
 
 
-def reconcile(prs: list[PullRequest], mode: str, dry_run: bool, github: GitHub | None) -> list[int]:
+def supersession_plan(prs: list[PullRequest], mode: str) -> list[dict[str, object]]:
     groups: dict[str, list[PullRequest]] = {}
     if mode == "dependabot":
         for pr in prs:
@@ -113,7 +108,7 @@ def reconcile(prs: list[PullRequest], mode: str, dry_run: bool, github: GitHub |
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
-    closed: list[int] = []
+    plan: list[dict[str, object]] = []
     for key, candidates in groups.items():
         ordered = sorted(candidates, key=lambda pr: (pr.created_at, pr.number), reverse=True)
         newest = ordered[0]
@@ -122,25 +117,20 @@ def reconcile(prs: list[PullRequest], mode: str, dry_run: bool, github: GitHub |
                 f"Closing this superseded automation PR. The newer PR #{newest.number} "
                 f"is the current {key.split('::', 1)[0]} update: {newest.html_url}."
             )
-            if not dry_run:
-                assert github is not None
-                github.comment_and_close(stale, message)
-            closed.append(stale.number)
-    return closed
+            plan.append({"number": stale.number, "message": message})
+    return plan
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("dependabot", "models-json"), required=True)
     parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"))
-    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if not args.token and not args.dry_run:
-        parser.error("GITHUB_TOKEN is required unless --dry-run is used")
-    github = None if args.dry_run else GitHub(args.token)
-    prs = [] if args.dry_run else github.open_pull_requests()
-    closed = reconcile(prs, args.mode, args.dry_run, github)
-    print(json.dumps({"mode": args.mode, "closed": closed, "count": len(closed)}))
+    if not args.token:
+        parser.error("GITHUB_TOKEN is required")
+    github = GitHub(args.token)
+    plan = supersession_plan(github.open_pull_requests(), args.mode)
+    print(json.dumps({"mode": args.mode, "actions": plan}, separators=(",", ":")))
     return 0
 
 
