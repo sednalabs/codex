@@ -4994,6 +4994,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
             {"types": ["checks_requested"]},
         )
 
+    def test_blob_size_policy_uses_queue_base_for_merge_groups(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blob-size-policy.yml")
+        check_steps = ((payload.get("jobs") or {}).get("check") or {}).get("steps") or []
+        range_step = next(
+            step for step in check_steps if step.get("name") == "Determine comparison range"
+        )
+        run_script = range_step.get("run") or ""
+        self.assertIn('github.event_name" == "merge_group', run_script)
+        self.assertIn("github.event.merge_group.base_sha", run_script)
+        self.assertIn("head='${{ github.sha }}'", run_script)
+
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
