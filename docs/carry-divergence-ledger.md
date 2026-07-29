@@ -1109,6 +1109,10 @@ decisions.
   Python SDK runtime-package staging rejects archive traversal, links, and
   special entries before writing ordinary package files beneath the staging
   root, without an unfiltered compatibility fallback on older Python runtimes.
+  The Python SDK schema-generation development tool is pinned to
+  `datamodel-code-generator==0.71.0`; retain that dependency-only carry until
+  upstream adopts an equivalent or newer compatible pin, and prove changes
+  through the hosted Python SDK and downstream-divergence lanes.
   Hosted frontier argument-comment lint uses the prebuilt linter package so
   cold validation-lab runs do not spend the lane compiling V8/ICU before
   linting ordinary Rust call sites; V8 proof-of-concept buildability remains
