@@ -1,0 +1,37 @@
+name: supersede-automation-prs
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Automation PR family to reconcile
+        required: true
+        type: choice
+        options:
+          - dependabot
+          - models-json
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.ref }}
+          persist-credentials: false
+      - name: Reconcile Dependabot PRs
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'dependabot'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/supersede_automation_prs.py --mode dependabot
+      - name: Reconcile models.json sync PRs
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'models-json'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/supersede_automation_prs.py --mode models-json
