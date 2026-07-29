@@ -487,6 +487,9 @@ metadata, and step-scoped extension data remain composed around it.
 - use remote validation as the default measurement surface for substantive work
 - `validation-lab` `profile=smoke`, `targeted`, and `frontier` are the default non-PR remote validation ladder
 - PR and merge-group workflows are promotion surfaces rather than the default inner-loop validator
+- `main` uses a serialized merge queue; `CI required` and
+  `CodeQL required gate` must both pass on the synthetic merge-group commit
+  before promotion
 - helper-backed local runs are optional convenience infrastructure when available, not the tracked repository default
 - heavy Rust tests, release-mode builds, and preview binaries should be offloaded to GitHub Actions after commit and push
 - when validating exact local state that is not yet on a clean remote branch, prefer the disposable snapshot-ref dispatch path (`validation/snapshot-*` + `validation-lab` input `ref`) documented in `docs/github-ci-offload.md`
