@@ -380,8 +380,9 @@ async fn run_remote_compaction_request_v2(
 
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
-            Err(error @ CodexErr::ServerOverloaded)
-                if capacity_retry_disposition == CapacityRetryDisposition::RetrySelectedModel =>
+            Err(error)
+                if capacity_retry_disposition == CapacityRetryDisposition::RetrySelectedModel
+                    && matches!(error.details(), CodexErrorDetails::ServerOverloaded) =>
             {
                 capacity_retries += 1;
                 notify_and_wait_for_capacity_retry(

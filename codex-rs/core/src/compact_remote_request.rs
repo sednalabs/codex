@@ -105,8 +105,12 @@ pub(super) async fn run_remote_compact_attempt(
             )
             .await;
         match result {
-            Err(error @ codex_protocol::error::CodexErr::ServerOverloaded)
-                if capacity_retry_disposition == CapacityRetryDisposition::RetrySelectedModel =>
+            Err(error)
+                if capacity_retry_disposition == CapacityRetryDisposition::RetrySelectedModel
+                    && matches!(
+                        error.details(),
+                        codex_protocol::error::CodexErrorDetails::ServerOverloaded
+                    ) =>
             {
                 capacity_retries += 1;
                 notify_and_wait_for_capacity_retry(
