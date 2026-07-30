@@ -5,6 +5,12 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use tracing::warn;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CapacityRetryDisposition {
+    RetrySelectedModel,
+    ReturnForModelFallback,
+}
+
 /// Retries failures that may be model-specific and succeed with a different model.
 pub(crate) fn should_retry_with_current_model(error: &CodexErr) -> bool {
     matches!(
