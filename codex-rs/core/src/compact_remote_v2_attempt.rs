@@ -29,6 +29,7 @@ pub(super) struct RemoteCompactV2Attempt {
     pub(super) owned_client_session: Option<ModelClientSession>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_remote_compact_v2_attempt(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,

@@ -48,6 +48,7 @@ use request::run_remote_compact_attempt;
 const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -199,6 +200,7 @@ async fn run_remote_compact_task_inner(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,
