@@ -1127,10 +1127,8 @@ impl App {
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
         );
-        self.agent_navigation.set_agent_path(
-            thread_id,
-            source_agent_path(&notification.thread.source),
-        );
+        self.agent_navigation
+            .set_agent_path(thread_id, source_agent_path(&notification.thread.source));
         self.agent_navigation.update_identity(
             thread_id,
             notification

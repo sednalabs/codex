@@ -987,10 +987,7 @@ impl ChatWidget {
         thread_id: ThreadId,
         metadata: AgentMetadata,
     ) {
-        self.collab_agent_metadata.insert(
-            thread_id,
-            metadata,
-        );
+        self.collab_agent_metadata.insert(thread_id, metadata);
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.

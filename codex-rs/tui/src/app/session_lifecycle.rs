@@ -10,8 +10,8 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
-use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use codex_config::types::ResumeCwdMode;
+use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -166,7 +166,8 @@ impl App {
             } else {
                 "closed stale inactive finished"
             };
-            let search_value = format!("{name} {description} {selected_description} {status_terms}");
+            let search_value =
+                format!("{name} {description} {selected_description} {status_terms}");
             items.push(SelectionItem {
                 name,
                 name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
@@ -368,8 +369,11 @@ impl App {
                     Some(thread.model_provider.clone()),
                     thread.name.clone(),
                 );
-                self.agent_navigation
-                    .set_timestamps(thread_id, Some(thread.created_at), Some(thread.updated_at));
+                self.agent_navigation.set_timestamps(
+                    thread_id,
+                    Some(thread.created_at),
+                    Some(thread.updated_at),
+                );
                 self.sync_agent_picker_identity(thread_id);
                 if is_running {
                     self.agent_navigation.mark_running(thread_id);
