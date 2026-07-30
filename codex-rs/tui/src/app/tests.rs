@@ -1780,17 +1780,24 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 
         Box::pin(app.open_agent_picker(&mut app_server)).await;
 
+        let entry = app
+            .agent_navigation
+            .get(&thread_id)
+            .expect("loaded thread should be present in agent navigation");
+        assert_eq!(entry.agent_nickname, None);
+        assert_eq!(entry.agent_role, None);
+        assert_eq!(entry.agent_path, None);
+        assert_eq!(entry.model.as_deref(), app.config.model.as_deref());
+        assert_eq!(entry.reasoning_effort, None);
         assert_eq!(
-            app.agent_navigation.get(&thread_id),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: None,
-                agent_role: None,
-                agent_path: None,
-                is_running: false,
-                is_closed: false,
-                ..AgentPickerThreadEntry::default()
-            })
+            entry.model_provider.as_deref(),
+            Some(app.config.model_provider_id.as_str())
         );
+        assert_eq!(entry.task_name, None);
+        assert!(!entry.is_running);
+        assert!(!entry.is_closed);
+        assert!(entry.created_at.is_some());
+        assert!(entry.updated_at.is_some());
         Ok(())
     })
 }
