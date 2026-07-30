@@ -1530,6 +1530,38 @@ decisions.
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
 
+### Provider Inference-Attempt Observation Contract
+
+- Downstream defines a payload-free `inference_call` protocol event for one
+  concrete client-side provider attempt. The contract contains no prompts,
+  outputs, headers, error bodies, or other request payloads.
+- The local call identifier and thread, turn, and optional spawn-request
+  correlation remain exact. Oversized correlation identifiers reject the
+  event instead of producing a misleading shortened identity.
+- Configured provider, requested model and tier, and provider-observed
+  provider, model, snapshot, and tier are separate evidence fields. Missing
+  provider evidence remains `null`; completion usage is exact for one response
+  or `null`, never accumulated or estimated.
+- Started, completed, failed, and cancelled observations have bounded lifecycle
+  shapes. Required configured/requested strings use UTF-8-safe truncation,
+  optional evidence is omitted when it cannot be preserved exactly, and the
+  event records both decisions under a 4096-byte serialized cap.
+- Readers accept unknown future event types as an ignored `Unknown` event so a
+  newer rollout producer does not make an older event consumer fail.
+- This stage defines the protocol and guardrail only. Runtime transport
+  emission, terminal arbitration, persistence and query projection, pricing,
+  and identity reconciliation remain separate delivery stages.
+- Preserve this carry until upstream offers equivalent payload exclusion,
+  exact correlation, requested-versus-observed evidence separation, bounds
+  provenance, and unknown-event compatibility. Drop the event, consumer match
+  arms, focused lane, and this record together once that equivalence exists.
+- Primary files:
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/protocol/src/protocol/inference_observation.rs`
+  - `codex-rs/protocol/src/protocol/inference_observation_tests.rs`
+  - `.github/validation-lanes.json`
+  - `justfile`
+
 ### Side Chat Persistence And Usage Ledger Tracking
 
 - `/side` conversations are persisted as side-tagged fork threads instead of
