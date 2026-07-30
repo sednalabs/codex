@@ -4,7 +4,8 @@ name: blocking-ci
 # after pushes to main/upstream-main so the same check family stays grouped in
 # the Actions UI.
 on:
-  merge_group: {}
+  merge_group:
+    types: [checks_requested]
   pull_request: {}
   push:
     branches: [main, upstream-main]

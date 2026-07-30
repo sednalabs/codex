@@ -1,4 +1,4 @@
-name: Code Coverage
+name: Coverage Tests
 
 on:
   push:
@@ -38,7 +38,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      code-quality: write
       pull-requests: read
     steps:
       - name: Checkout repository
@@ -65,21 +64,11 @@ jobs:
           done
           coverage xml -o coverage-python-tools.xml
 
-      - name: Upload Python tool coverage
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-code-coverage@v1
-        with:
-          file: coverage-python-tools.xml
-          language: Python
-          label: code-coverage/python-tools
-          fail-on-error: false
-
   python-sdk:
     name: Python SDK coverage
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      code-quality: write
       pull-requests: read
     steps:
       - name: Checkout repository
@@ -111,21 +100,11 @@ jobs:
               --cov=src/openai_codex \
               --cov-report=xml:coverage.xml
 
-      - name: Upload Python SDK coverage
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-code-coverage@v1
-        with:
-          file: sdk/python/coverage.xml
-          language: Python
-          label: code-coverage/python-sdk
-          fail-on-error: false
-
   typescript-sdk:
     name: TypeScript SDK coverage
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      code-quality: write
       pull-requests: read
     steps:
       - name: Checkout repository
@@ -156,12 +135,3 @@ jobs:
             --coverage \
             --coverageReporters=cobertura \
             --coverageDirectory=coverage
-
-      - name: Upload TypeScript SDK coverage
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/upload-code-coverage@v1
-        with:
-          file: sdk/typescript/coverage/cobertura-coverage.xml
-          language: TypeScript
-          label: code-coverage/typescript-sdk
-          fail-on-error: false

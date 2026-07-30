@@ -107,12 +107,11 @@ contract today.
   duplicate after this advanced workflow is green. Running both creates
   confusing check surfaces and can hide which CodeQL configuration is actually
   producing alerts.
-- GitHub Code Quality is a separate public-preview product that may appear as
-  a dynamic `CodeQL` / `Code Quality` workflow at
-  `dynamic/github-code-scanning/codeql`. That workflow is controlled from the
-  repository's Code quality settings, not by this checked-in workflow. Disable
-  or narrow it there if it duplicates the maintained advanced CodeQL setup or
-  spends runner minutes unexpectedly.
+- GitHub Code Quality is deliberately disabled for this repository. The
+  checked-in coverage-test workflow generates coverage reports as a test
+  guardrail, but it does not grant `code-quality: write` or upload those
+  reports to the product. Keep that boundary separate from the maintained
+  CodeQL security workflow and its required gate.
 
 ## Rule Of Thumb
 

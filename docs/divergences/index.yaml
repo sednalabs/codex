@@ -2361,6 +2361,7 @@
         "scripts/install/install.ps1",
         "scripts/install/test_install_sh.py",
         "scripts/stage_npm_packages.py",
+        "sdk/python/pyproject.toml",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
         "codex-rs/app-server-daemon/src/backend/pid_tests.rs",
@@ -2414,6 +2415,7 @@
         "verify_bazel_clippy_lints.py",
         "verify_cargo_workspace_manifests.py",
         "py_compile of stage_npm_packages.py and policy verifier scripts",
+        "sdk / python-sdk",
         "codex.sdk-python-targeted",
         "test_stage_runtime_release_rejects_archive_path_traversal",
         "test_stage_runtime_release_rejects_archive_links",
@@ -2849,8 +2851,8 @@
       "extraction_target": "upstream CodeQL action support for complete large-PR diff ranges"
     },
     {
-      "id": "python-code-quality-corrections",
-      "title": "Python Code Quality corrections",
+      "id": "python-static-analysis-corrections",
+      "title": "Python static-analysis corrections",
       "status": "live",
       "category": "build-validation",
       "surface_type": "operator-facing",
@@ -2870,9 +2872,8 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "GitHub Code Quality main evaluation; codex.downstream-divergence-audit",
+      "guardrail_lane": "codex.downstream-divergence-audit",
       "tests": [
-        "GitHub Code Quality findings C277, C287, and C288 close after main evaluation",
         "codex.downstream-divergence-audit"
       ],
       "owner": "downstream",
@@ -2886,33 +2887,34 @@
     },
     {
       "id": "coverage-upload-entitlement-compatibility",
-      "title": "Coverage upload entitlement compatibility",
+      "title": "Coverage upload disablement",
       "status": "live",
       "category": "build-validation",
       "surface_type": "operator-facing",
       "surface": [
-        "Python tool coverage upload",
-        "Python SDK coverage upload",
-        "TypeScript SDK coverage upload"
+        "Python tool coverage tests",
+        "Python SDK coverage tests",
+        "TypeScript SDK coverage tests"
       ],
       "files": [
         ".github/workflows/code-coverage.yml",
         "docs/carry-divergence-ledger.md"
       ],
-      "behavior": "Coverage commands and XML report generation remain required. When this repository is not configured for GitHub Code Quality, the three report uploads still run but report an unavailable endpoint as a warning rather than failing completed coverage-test jobs.",
+      "behavior": "Coverage commands and XML report generation remain required, but this repository deliberately does not configure GitHub Code Quality. The workflow neither requests code-quality: write nor calls actions/upload-code-coverage, preventing checked-in CI from activating the product or invoking github-code-quality[bot].",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
         "upstream_commit": "dfdf9ff36b144df1c1c68f2e19b6a955c07e1113"
       },
-      "guardrail_lane": "GitHub Code Coverage workflow; codex.downstream-divergence-audit",
+      "guardrail_lane": "Coverage Tests workflow; codex.workflow-ci-sanity; codex.downstream-divergence-audit",
       "tests": [
         "Python tool coverage produces coverage-python-tools.xml",
         "Python SDK coverage produces sdk/python/coverage.xml",
-        "TypeScript SDK coverage produces sdk/typescript/coverage/cobertura-coverage.xml"
+        "TypeScript SDK coverage produces sdk/typescript/coverage/cobertura-coverage.xml",
+        "test_coverage_workflow_does_not_use_code_quality_product"
       ],
       "owner": "downstream",
-      "notes": "Preserve while this repository is not configured for GitHub Code Quality. Reassess if the repository is configured or upstream makes unavailable uploads non-fatal by default; do not treat this as authorization to change repository product configuration.",
+      "notes": "Preserve unless the repository owner explicitly changes the GitHub Code Quality product policy. Upstream harvests must not silently restore the upload action or its token permission.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "hosted-validation-entitlement",
       "hotspot_files": [
