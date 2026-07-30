@@ -1562,6 +1562,33 @@ decisions.
   - `.github/validation-lanes.json`
   - `justfile`
 
+### Provider-Observed Turn Usage
+
+- `TurnCompleteEvent.provider_usage` is optional for rollout compatibility and
+  contains only the element-wise aggregate of exact provider-reported usage
+  from successful response completions in that turn. Missing provider evidence
+  stays absent; configured identity, session-total deltas, estimates, pricing,
+  and call counts are not substitutes.
+- Normal sampling, local compaction, and remote-v2 compaction contribute to the
+  same turn-scoped aggregate. The terminal `final_model` and `model_snapshot`
+  continue to describe only the terminal successful sampling response rather
+  than every response included in the usage aggregate. Each ordinary or
+  compaction task starts with an empty aggregate, and sampling re-entry after
+  steering or local compaction retains earlier usage in the same logical turn.
+  Usage from a successful response remains attributable to that turn even if a
+  later follow-up fails.
+- `TurnAbortedEvent.provider_usage` carries the same optional exact aggregate
+  through interrupted, replaced, and budget-limited terminal paths. Legacy
+  rollout events without the field resume as absent, and a persisted receipt
+  never seeds the next turn after resume.
+- Primary files:
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/core/src/session/turn_context.rs`
+  - `codex-rs/core/src/session/turn.rs`
+  - `codex-rs/core/src/compact.rs`
+  - `codex-rs/core/src/compact_remote_v2.rs`
+  - `codex-rs/core/src/tasks/mod.rs`
+
 ### Side Chat Persistence And Usage Ledger Tracking
 
 - `/side` conversations are persisted as side-tagged fork threads instead of

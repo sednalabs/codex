@@ -1891,6 +1891,7 @@ fn turn_completed(turn_id: &str) -> RolloutItem {
         compaction_events_in_turn: 0,
         final_model: None,
         model_snapshot: None,
+        provider_usage: None,
         completed_at: Some(20),
         duration_ms: Some(10_000),
         time_to_first_token_ms: None,

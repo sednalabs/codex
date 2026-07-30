@@ -554,6 +554,7 @@ async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted
     let EventMsg::TurnAborted(TurnAbortedEvent {
         turn_id,
         reason,
+        provider_usage,
         started_at,
         completed_at,
         duration_ms,
@@ -563,6 +564,7 @@ async fn interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted
     };
     assert_eq!(turn_id, Some(tc.sub_id.clone()));
     assert_eq!(reason, TurnAbortReason::Interrupted);
+    assert_eq!(provider_usage, None);
     assert!(started_at.is_some());
     assert!(completed_at.is_some());
     assert!(duration_ms.is_some());
@@ -3378,6 +3380,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
                 compaction_events_in_turn: 0,
                 final_model: None,
                 model_snapshot: None,
+                provider_usage: None,
                 error: None,
                 started_at: None,
                 completed_at: None,
@@ -3588,6 +3591,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3622,6 +3626,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3716,6 +3721,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3745,6 +3751,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3782,6 +3789,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3860,6 +3868,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3892,6 +3901,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -3924,6 +3934,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -9767,6 +9778,42 @@ impl SessionTask for CompletingTask {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SelfAbortingTask;
+
+impl SessionTask for SelfAbortingTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.self_aborting"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<SessionTaskContext>,
+        ctx: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> crate::tasks::SessionTaskResult {
+        ctx.record_provider_usage(&provider_usage(/*total_tokens*/ 11))
+            .await;
+        Err(CodexErr::TurnAborted)
+    }
+}
+
+fn provider_usage(total_tokens: i64) -> TokenUsage {
+    TokenUsage {
+        input_tokens: total_tokens,
+        cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
+        output_tokens: 0,
+        reasoning_output_tokens: 0,
+        total_tokens,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalEventKind {
     TurnComplete,
@@ -10118,6 +10165,52 @@ async fn turn_aborted_flushes_terminal_event_after_delivery() {
     // 3. Terminal-event flush after TurnAborted is appended.
     let calls = wait_for_flush_count(&store, /*expected_flushes*/ 3).await;
     assert_eq!(3, calls.flush_thread);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn self_aborted_task_preserves_provider_usage() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(Arc::clone(&tc), Vec::new(), SelfAbortingTask)
+        .await;
+
+    let event = recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
+    let EventMsg::TurnAborted(aborted) = event.msg else {
+        unreachable!("terminal event kind requires an aborted turn");
+    };
+    assert_eq!(aborted.reason, TurnAbortReason::Interrupted);
+    assert_eq!(
+        aborted.provider_usage,
+        Some(provider_usage(/*total_tokens*/ 11))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replaced_and_budget_limited_turns_preserve_provider_usage() {
+    for reason in [TurnAbortReason::Replaced, TurnAbortReason::BudgetLimited] {
+        let (sess, tc, rx) = make_session_and_context_with_rx().await;
+        tc.record_provider_usage(&provider_usage(/*total_tokens*/ 13))
+            .await;
+        sess.spawn_task(
+            Arc::clone(&tc),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+
+        sess.abort_all_tasks(reason.clone()).await;
+        let event = recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
+        let EventMsg::TurnAborted(aborted) = event.msg else {
+            unreachable!("terminal event kind requires an aborted turn");
+        };
+        assert_eq!(aborted.reason, reason);
+        assert_eq!(
+            aborted.provider_usage,
+            Some(provider_usage(/*total_tokens*/ 13))
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
