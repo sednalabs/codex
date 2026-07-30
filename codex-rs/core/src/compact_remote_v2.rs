@@ -60,6 +60,7 @@ const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
 // retry budget smaller than the general Responses stream retry budget.
 const MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES: u64 = 2;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
@@ -206,6 +207,7 @@ async fn run_remote_compact_task_inner(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,

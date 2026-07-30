@@ -23,6 +23,7 @@ pub(super) struct RemoteCompactAttempt {
     pub(super) trace_input_history: Option<Vec<ResponseItem>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_remote_compact_attempt(
     sess: &Arc<Session>,
     step_context: &Arc<StepContext>,
