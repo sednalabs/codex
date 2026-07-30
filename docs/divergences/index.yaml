@@ -179,6 +179,53 @@
       "extraction_target": "extension-owned usage event and spawn metadata storage"
     },
     {
+      "id": "turn-completion-provider-usage",
+      "title": "Provider-observed terminal turn usage",
+      "status": "live",
+      "category": "core-protocol",
+      "surface": ["terminal turn provider usage"],
+      "files": [
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/core/src/session/turn_context.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/compact.rs",
+        "codex-rs/core/src/compact_remote_v2.rs",
+        "codex-rs/core/src/tasks/mod.rs"
+      ],
+      "behavior": "Turn completion persists the element-wise aggregate of exact provider-reported usage from successful response completions.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": "1c9f890c051dbd091f1827ecd0149d0f43001b5f"
+      },
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
+      "tests": [
+        "turn_complete_without_provider_usage_remains_compatible",
+        "openai_model_header_mismatch_only_emits_one_warning_per_turn",
+        "nonterminal_response_identity_is_not_reported_when_follow_up_fails",
+        "remote_compact_replaces_history_for_followups",
+        "remote_compact_v2_reuses_compaction_trigger_for_followups",
+        "steered_user_input_follows_compact_when_only_the_steer_needs_follow_up",
+        "turn_aborted_without_provider_usage_remains_compatible",
+        "interrupt_long_running_tool_emits_turn_aborted",
+        "self_aborted_task_preserves_provider_usage",
+        "replaced_and_budget_limited_turns_preserve_provider_usage",
+        "summarize_context_three_requests_and_instructions",
+        "manual_compaction_keeps_the_creation_time_global_instructions",
+        "resume_includes_initial_messages_from_rollout_events",
+        "aborted_provider_usage_is_durable_isolated_and_legacy_compatible"
+      ],
+      "owner": "downstream",
+      "notes": "Adapts upstream exact response-completion usage capture to a persisted terminal-turn aggregate. Terminal model and snapshot identify only the terminal successful sampling response; provider_usage aggregates every successful response completion in the logical turn, including sampling re-entry after steering or local compaction, resets once per ordinary or compaction task, survives completed, interrupted, replaced, and budget-limited terminal paths, and is never inferred from configured identity, token estimates, or session-total deltas. The optional field remains compatible with legacy rollouts and never seeds a resumed turn. App-server projection remains a separate follow-up surface.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "turn-completion-provider-usage",
+      "hotspot_files": [
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/mod.rs"
+      ],
+      "extraction_target": "upstream-native turn completion provider usage"
+    },
+    {
       "id": "phase2-memory-attestation-and-fingerprinting",
       "title": "Phase-2 memory attestation and prepared-input fingerprinting",
       "status": "live",

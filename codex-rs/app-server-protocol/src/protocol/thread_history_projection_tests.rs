@@ -39,6 +39,7 @@ fn projects_turn_lifecycle_without_prior_builder_state() {
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             started_at: Some(10),
             completed_at: Some(20),
             duration_ms: Some(10_000),
@@ -81,6 +82,7 @@ fn projects_failed_turn_completion_as_snapshot() {
             compaction_events_in_turn: 0,
             final_model: None,
             model_snapshot: None,
+            provider_usage: None,
             started_at: Some(10),
             completed_at: Some(20),
             duration_ms: Some(10_000),
@@ -153,6 +155,7 @@ fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
         TurnAbortedEvent {
             turn_id: None,
             reason: TurnAbortReason::Interrupted,
+            provider_usage: None,
             started_at: None,
             completed_at: None,
             duration_ms: None,
@@ -177,6 +180,7 @@ fn projects_identified_turn_aborts() {
         TurnAbortedEvent {
             turn_id: Some("turn-1".to_string()),
             reason: TurnAbortReason::Interrupted,
+            provider_usage: None,
             started_at: Some(10),
             completed_at: Some(20),
             duration_ms: Some(10_000),

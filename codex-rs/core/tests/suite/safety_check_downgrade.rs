@@ -8,6 +8,8 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_function_call;
@@ -37,6 +39,28 @@ const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
 
 const CYBER_POLICY_MESSAGE: &str =
     "This request has been flagged for potentially high-risk cyber activity.";
+
+fn ev_completed_with_usage(
+    id: &str,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    reasoning_output_tokens: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": id,
+            "usage": {
+                "input_tokens": input_tokens,
+                "input_tokens_details": {"cached_tokens": cached_input_tokens},
+                "output_tokens": output_tokens,
+                "output_tokens_details": {"reasoning_tokens": reasoning_output_tokens},
+                "total_tokens": input_tokens + output_tokens
+            }
+        }
+    })
+}
 
 fn disabled_text_turn(test: &TestCodex, text: &str) -> Op {
     let (sandbox_policy, permission_profile) =
@@ -222,18 +246,33 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
             "shell_command",
             &serde_json::to_string(&tool_args)?,
         ),
-        core_test_support::responses::ev_completed("resp-1"),
+        ev_completed_with_usage(
+            "resp-1", /*input_tokens*/ 10, /*cached_input_tokens*/ 4,
+            /*output_tokens*/ 5, /*reasoning_output_tokens*/ 1,
+        ),
     ]))
     .insert_header("OpenAI-Model", SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);
     let second_response = sse_response(sse(vec![
         ev_response_created("resp-2"),
         ev_assistant_message("msg-1", "done"),
-        core_test_support::responses::ev_completed("resp-2"),
+        ev_completed_with_usage(
+            "resp-2", /*input_tokens*/ 20, /*cached_input_tokens*/ 7,
+            /*output_tokens*/ 8, /*reasoning_output_tokens*/ 2,
+        ),
     ]))
     .insert_header("OpenAI-Model", TERMINAL_SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", TERMINAL_MODEL_SNAPSHOT);
-    let _mock = mount_response_sequence(&server, vec![first_response, second_response]).await;
+    let third_response = sse_response(sse(vec![
+        ev_response_created("resp-3"),
+        ev_assistant_message("msg-2", "done again"),
+        core_test_support::responses::ev_completed("resp-3"),
+    ]));
+    let _mock = mount_response_sequence(
+        &server,
+        vec![first_response, second_response, third_response],
+    )
+    .await;
 
     let mut builder = test_codex().with_model(REQUESTED_MODEL);
     let test = builder.build(&server).await?;
@@ -267,6 +306,32 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
         turn_complete.model_snapshot.as_deref(),
         Some(TERMINAL_MODEL_SNAPSHOT)
     );
+    assert_eq!(
+        turn_complete.provider_usage,
+        Some(TokenUsage {
+            input_tokens: 30,
+            cached_input_tokens: 11,
+            cache_write_input_tokens: 0,
+            output_tokens: 13,
+            reasoning_output_tokens: 3,
+            total_tokens: 43,
+        })
+    );
+
+    test.codex
+        .submit(disabled_text_turn(&test, "second ordinary turn"))
+        .await?;
+    let second_turn_complete = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let EventMsg::TurnComplete(second_turn_complete) = second_turn_complete else {
+        panic!("expected second turn complete event");
+    };
+    assert_eq!(
+        second_turn_complete.provider_usage,
+        Some(TokenUsage::default())
+    );
 
     Ok(())
 }
@@ -287,7 +352,10 @@ async fn nonterminal_response_identity_is_not_reported_when_follow_up_fails() ->
             "shell_command",
             &serde_json::to_string(&tool_args)?,
         ),
-        core_test_support::responses::ev_completed("resp-1"),
+        ev_completed_with_usage(
+            "resp-1", /*input_tokens*/ 12, /*cached_input_tokens*/ 3,
+            /*output_tokens*/ 4, /*reasoning_output_tokens*/ 1,
+        ),
     ]))
     .insert_header("OpenAI-Model", SERVER_MODEL)
     .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);
@@ -308,6 +376,10 @@ async fn nonterminal_response_identity_is_not_reported_when_follow_up_fails() ->
         .submit(disabled_text_turn(&test, "trigger failed follow-up"))
         .await?;
 
+    let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    let EventMsg::Error(error) = error else {
+        panic!("expected error event");
+    };
     let turn_complete = wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -316,8 +388,51 @@ async fn nonterminal_response_identity_is_not_reported_when_follow_up_fails() ->
         panic!("expected turn complete event");
     };
 
-    assert_eq!(turn_complete.final_model, None);
-    assert_eq!(turn_complete.model_snapshot, None);
+    let started_at = turn_complete.started_at.expect("turn start timestamp");
+    let completed_at = turn_complete
+        .completed_at
+        .expect("turn completion timestamp");
+    let duration_ms = turn_complete.duration_ms.expect("turn duration");
+    let time_to_first_token_ms = turn_complete
+        .time_to_first_token_ms
+        .expect("time to first token");
+    let provider_usage = TokenUsage {
+        input_tokens: 12,
+        cached_input_tokens: 3,
+        cache_write_input_tokens: 0,
+        output_tokens: 4,
+        reasoning_output_tokens: 1,
+        total_tokens: 16,
+    };
+    let expected = TurnCompleteEvent {
+        turn_id: turn_complete.turn_id.clone(),
+        last_agent_message: None,
+        error: Some(error.clone()),
+        started_at: Some(started_at),
+        compaction_events_in_turn: 0,
+        final_model: None,
+        model_snapshot: None,
+        provider_usage: Some(provider_usage.clone()),
+        completed_at: Some(completed_at),
+        duration_ms: Some(duration_ms),
+        time_to_first_token_ms: Some(time_to_first_token_ms),
+    };
+
+    assert_eq!(turn_complete, expected);
+    assert_eq!(
+        serde_json::to_value(turn_complete)?,
+        serde_json::json!({
+            "turn_id": expected.turn_id,
+            "last_agent_message": null,
+            "error": error,
+            "started_at": started_at,
+            "compaction_events_in_turn": 0,
+            "provider_usage": provider_usage,
+            "completed_at": completed_at,
+            "duration_ms": duration_ms,
+            "time_to_first_token_ms": time_to_first_token_ms,
+        })
+    );
 
     Ok(())
 }
