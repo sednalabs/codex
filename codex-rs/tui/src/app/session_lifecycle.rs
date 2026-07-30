@@ -224,7 +224,8 @@ impl App {
                 usage.sandbox_policy = session
                     .permission_profile
                     .to_legacy_sandbox_policy(session.cwd.as_path())
-                    .ok();
+                    .ok()
+                    .map(Into::into);
             }
         }
 

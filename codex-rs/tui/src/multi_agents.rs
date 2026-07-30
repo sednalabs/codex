@@ -474,6 +474,7 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
         agent_path,
         model,
         reasoning_effort,
+        ..
     } = item
     else {
         return None;
