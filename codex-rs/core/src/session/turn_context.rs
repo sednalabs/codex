@@ -225,6 +225,7 @@ impl TurnContext {
             Some(aggregate) => {
                 aggregate.input_tokens += usage.input_tokens;
                 aggregate.cached_input_tokens += usage.cached_input_tokens;
+                aggregate.cache_write_input_tokens += usage.cache_write_input_tokens;
                 aggregate.output_tokens += usage.output_tokens;
                 aggregate.reasoning_output_tokens += usage.reasoning_output_tokens;
                 aggregate.total_tokens += usage.total_tokens;

@@ -335,7 +335,7 @@ core-multi-agent-orchestration-targeted:
 core-provider-usage-aborted-targeted:
     cargo nextest run -p codex-protocol --lib --no-tests=fail -- protocol::tests::turn_aborted_without_provider_usage_remains_compatible --exact
     RUST_MIN_STACK=8388608 cargo nextest run -p codex-core --lib --no-tests=fail -- session::tests::self_aborted_task_preserves_provider_usage session::tests::replaced_and_budget_limited_turns_preserve_provider_usage --exact
-    RUST_MIN_STACK=8388608 CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all --no-tests=fail -- suite::abort_tasks::interrupt_long_running_tool_emits_turn_aborted suite::resume::resume_accepts_persisted_turn_complete_without_provider_usage --exact
+    RUST_MIN_STACK=8388608 CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all --no-tests=fail -- suite::abort_tasks::interrupt_long_running_tool_emits_turn_aborted suite::resume::aborted_provider_usage_is_durable_isolated_and_legacy_compatible --exact
 
 # Focused blocking-wait slices split by compile surface so hosted validation
 
