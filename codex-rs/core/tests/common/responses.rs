@@ -708,6 +708,14 @@ pub fn ev_completed(id: &str) -> Value {
     })
 }
 
+/// Convenience: SSE completion that contains no provider usage evidence.
+pub fn ev_completed_without_usage(id: &str) -> Value {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": { "id": id }
+    })
+}
+
 /// Convenience: SSE event for a created response with a specific id.
 pub fn ev_response_created(id: &str) -> Value {
     serde_json::json!({
