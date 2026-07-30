@@ -430,8 +430,8 @@ class GeminiWatcherTests(unittest.TestCase):
                 self.assertEqual(keys, ["alpha", "beta"])
                 self.assertEqual(os.environ["GEMINI_API_KEY"], "alpha")
 
-    def test_parse_args_respects_disable_env_but_flag_can_override(self):
-        with patch.dict(os.environ, {"GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI": "1"}, clear=True):
+    def test_parse_args_requires_explicit_gemini_opt_in(self):
+        with patch.dict(os.environ, {"GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI": "0"}, clear=True):
             with patch.object(sys, "argv", ["gh_workflow_run_watch.py", "--once"]):
                 args = MODULE.parse_args()
             self.assertTrue(args.no_gemini_diagnosis)
@@ -439,6 +439,60 @@ class GeminiWatcherTests(unittest.TestCase):
             with patch.object(sys, "argv", ["gh_workflow_run_watch.py", "--once", "--gemini-diagnosis"]):
                 args = MODULE.parse_args()
             self.assertFalse(args.no_gemini_diagnosis)
+
+    def test_view_run_falls_back_when_workflow_metadata_endpoint_is_unavailable(self):
+        api_run = {
+            "id": 30440173012,
+            "display_title": "Required Agent Ops",
+            "event": "pull_request",
+            "head_branch": "fix/project-ledger-rls-enforcement",
+            "head_sha": "a43e65e09e82773cc69647698dfcda3c963eb0bf",
+            "name": "required-agent-ops",
+            "run_number": 912,
+            "status": "in_progress",
+            "conclusion": None,
+            "html_url": "https://example.invalid/actions/runs/30440173012",
+            "created_at": "2026-07-29T09:00:00Z",
+            "updated_at": "2026-07-29T09:05:00Z",
+        }
+        api_jobs = {
+            "jobs": [
+                {
+                    "id": 99,
+                    "name": "Required Agent Ops",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "html_url": "https://example.invalid/jobs/99",
+                    "steps": [
+                        {
+                            "number": 1,
+                            "name": "Run",
+                            "status": "in_progress",
+                            "conclusion": None,
+                        }
+                    ],
+                }
+            ]
+        }
+        with patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=[
+                MODULE.GhCommandError(
+                    "HTTP 404: repos/owner/repo/actions/workflows/322643164"
+                ),
+                api_run,
+                api_jobs,
+            ],
+        ):
+            result = MODULE.view_run("owner/repo", 30440173012)
+
+        self.assertEqual(result["databaseId"], 30440173012)
+        self.assertEqual(result["workflowName"], "required-agent-ops")
+        self.assertEqual(result["headSha"], api_run["head_sha"])
+        self.assertEqual(result["jobs"][0]["databaseId"], 99)
+        self.assertEqual(result["jobs"][0]["steps"][0]["name"], "Run")
+        self.assertEqual(result["retrievedVia"], "actions_api_fallback")
 
     def test_parse_args_collects_ack_action(self):
         with patch.object(

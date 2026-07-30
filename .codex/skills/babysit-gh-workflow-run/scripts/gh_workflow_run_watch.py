@@ -305,16 +305,13 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--no-gemini-diagnosis",
-        dest="no_gemini_diagnosis",
-        action="store_true",
-        help="Skip the Gemini diagnosis step and only return raw workflow state.",
-    )
-    parser.add_argument(
         "--gemini-diagnosis",
         dest="no_gemini_diagnosis",
         action="store_false",
-        help="Force-enable Gemini diagnosis even when disable env is set.",
+        help=(
+            "Deliberately opt in to one Gemini failure-diagnosis call. Gemini is never "
+            "invoked unless this flag is present."
+        ),
     )
     parser.add_argument(
         "--ack-action",
@@ -325,7 +322,7 @@ def parse_args():
             "next actionable state."
         ),
     )
-    parser.set_defaults(no_gemini_diagnosis=None)
+    parser.set_defaults(no_gemini_diagnosis=True)
     args = parser.parse_args()
 
     if args.poll_seconds <= 0:
@@ -350,16 +347,7 @@ def parse_args():
             args.require_terminal_run = True
     if args.appearance_timeout_seconds is None:
         args.appearance_timeout_seconds = 300 if args.watch_until_action else 0
-    if args.no_gemini_diagnosis is None:
-        args.no_gemini_diagnosis = _env_flag_is_true("GH_WORKFLOW_RUN_WATCH_DISABLE_GEMINI")
     return args
-
-
-def _env_flag_is_true(name):
-    value = str(os.environ.get(name, "")).strip().lower()
-    if not value:
-        return False
-    return value in {"1", "true", "yes", "on"}
 
 
 def parse_target_arg(spec):
@@ -1241,10 +1229,81 @@ def _host_mismatch_recheck_interval_seconds(poll_seconds):
 
 def view_run(repo, run_id):
     fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
-    data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
+    try:
+        data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
+    except GhCommandError as primary_error:
+        try:
+            return _view_run_via_actions_api(repo, run_id)
+        except GhCommandError as fallback_error:
+            raise GhCommandError(
+                "Unable to read exact workflow run through either GitHub CLI run view "
+                f"or the direct Actions API.\nPrimary error: {primary_error}\n"
+                f"Fallback error: {fallback_error}"
+            ) from fallback_error
     if not isinstance(data, dict):
         raise GhCommandError("Unexpected payload from `gh run view`")
     return data
+
+
+def _normalize_actions_api_step(step):
+    return {
+        "name": step.get("name"),
+        "number": step.get("number"),
+        "status": step.get("status"),
+        "conclusion": step.get("conclusion"),
+        "startedAt": step.get("started_at"),
+        "completedAt": step.get("completed_at"),
+    }
+
+
+def _normalize_actions_api_job(job):
+    return {
+        "databaseId": job.get("id"),
+        "name": job.get("name"),
+        "status": job.get("status"),
+        "conclusion": job.get("conclusion"),
+        "startedAt": job.get("started_at"),
+        "completedAt": job.get("completed_at"),
+        "url": job.get("html_url"),
+        "steps": [
+            _normalize_actions_api_step(step)
+            for step in (job.get("steps") or [])
+            if isinstance(step, dict)
+        ],
+    }
+
+
+def _view_run_via_actions_api(repo, run_id):
+    run = gh_json(["api", f"repos/{repo}/actions/runs/{run_id}"])
+    jobs_payload = gh_json(
+        ["api", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100"]
+    )
+    if not isinstance(run, dict):
+        raise GhCommandError("Unexpected run payload from the direct Actions API")
+    if not isinstance(jobs_payload, dict) or not isinstance(jobs_payload.get("jobs"), list):
+        raise GhCommandError("Unexpected jobs payload from the direct Actions API")
+    workflow_name = run.get("name") or ""
+    return {
+        "databaseId": run.get("id"),
+        "displayTitle": run.get("display_title"),
+        "event": run.get("event"),
+        "headBranch": run.get("head_branch"),
+        "headSha": run.get("head_sha"),
+        "name": workflow_name,
+        "number": run.get("run_number"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "url": run.get("html_url"),
+        "workflowName": workflow_name,
+        "createdAt": run.get("created_at"),
+        "updatedAt": run.get("updated_at"),
+        "jobs": [
+            _normalize_actions_api_job(job)
+            for job in jobs_payload["jobs"]
+            if isinstance(job, dict)
+        ],
+        "retrievedVia": "actions_api_fallback",
+    }
 
 
 def load_validation_summary(repo, run_id):

@@ -39,6 +39,52 @@ def sample_checks(**overrides):
     return checks
 
 
+def test_resolve_pr_rejects_bare_number_without_repo(monkeypatch):
+    called = False
+
+    def unexpected_gh_json(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(gh_pr_watch, "gh_json", unexpected_gh_json)
+
+    with pytest.raises(
+        gh_pr_watch.GhCommandError,
+        match="Bare PR numbers are ambiguous",
+    ):
+        gh_pr_watch.resolve_pr("535")
+
+    assert called is False
+
+
+def test_resolve_pr_rejects_url_repo_override_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        gh_pr_watch,
+        "gh_json",
+        lambda *_args, **_kwargs: {
+            "number": 535,
+            "url": "https://github.com/sednalabs/codex/pull/535",
+            "state": "OPEN",
+            "headRefOid": "abc123",
+            "headRefName": "feature",
+            "headRepository": {"nameWithOwner": "sednalabs/codex"},
+            "baseRefName": "main",
+            "baseRefOid": "def456",
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+        },
+    )
+
+    with pytest.raises(
+        gh_pr_watch.GhCommandError,
+        match="belongs to sednalabs/codex, not explicit --repo sednalabs/agent-ops",
+    ):
+        gh_pr_watch.resolve_pr(
+            "https://github.com/sednalabs/codex/pull/535",
+            repo_override="sednalabs/agent-ops",
+        )
+
+
 def test_collect_snapshot_fetches_review_items_before_ci(monkeypatch, tmp_path):
     call_order = []
     pr = sample_pr()
@@ -313,3 +359,138 @@ def test_failed_jobs_include_direct_logs_endpoint(monkeypatch):
             "logs_endpoint": "repos/openai/codex/actions/jobs/555/logs",
         }
     ]
+
+
+def test_parse_args_watch_until_terminal_implies_terminal_checks(monkeypatch):
+    monkeypatch.setattr(
+        gh_pr_watch.sys,
+        "argv",
+        ["gh_pr_watch.py", "--watch-until-terminal"],
+    )
+
+    args = gh_pr_watch.parse_args()
+
+    assert args.watch_until_terminal is True
+    assert args.watch_until_action is True
+    assert args.require_terminal_checks is True
+    assert args.once is False
+
+
+def test_compact_wait_snapshot_caps_review_body():
+    snapshot = {
+        "pr": {
+            "repo": "openai/codex",
+            "number": 123,
+            "head_sha": "abc123",
+            "state": "OPEN",
+            "large_unneeded_field": "x" * 5000,
+        },
+        "checks": {"all_terminal": True},
+        "actionable_review_items": [
+            {
+                "kind": "thread",
+                "id": "thread-1",
+                "body": "y" * 2000,
+                "large_unneeded_field": "z" * 5000,
+            }
+        ],
+        "actions": ["address_review_feedback"],
+    }
+
+    compact = gh_pr_watch.compact_wait_snapshot(snapshot)
+
+    assert "large_unneeded_field" not in compact["pr"]
+    assert "large_unneeded_field" not in compact["actionable_review_items"][0]
+    assert len(compact["actionable_review_items"][0]["body"]) == 1000
+
+
+def test_watch_until_action_is_silent_by_default(monkeypatch, tmp_path, capsys):
+    idle_snapshot = {
+        "pr": {"head_sha": "abc123"},
+        "checks": {
+            "all_terminal": False,
+            "failed_count": 0,
+            "pending_count": 1,
+            "passed_count": 0,
+        },
+        "review_state": {"active_unresolved_thread_count": 0},
+        "actionable_review_items": [],
+        "actions": ["idle"],
+    }
+    action_snapshot = {
+        "pr": {"head_sha": "abc123"},
+        "checks": {
+            "all_terminal": True,
+            "failed_count": 1,
+            "pending_count": 0,
+            "passed_count": 0,
+        },
+        "review_state": {"active_unresolved_thread_count": 0},
+        "actionable_review_items": [],
+        "actions": ["diagnose_ci_failure"],
+    }
+    snapshots = iter(
+        [
+            (idle_snapshot, tmp_path / "state.json"),
+            (action_snapshot, tmp_path / "state.json"),
+        ]
+    )
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: next(snapshots))
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda _seconds: None)
+    args = argparse.Namespace(
+        poll_seconds=30,
+        require_terminal_checks=False,
+        progress=False,
+        verbose_details=False,
+    )
+
+    assert gh_pr_watch.run_watch_until_action(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    receipt = json.loads(captured.out)
+    assert receipt["polls_completed"] == 2
+    assert receipt["snapshot"]["actions"] == ["diagnose_ci_failure"]
+
+
+def test_watch_until_action_waits_for_terminal_ci_failure(
+    monkeypatch, tmp_path, capsys
+):
+    in_progress_failure = {
+        "pr": {"head_sha": "abc123"},
+        "checks": {
+            "all_terminal": False,
+            "failed_count": 1,
+            "pending_count": 1,
+            "passed_count": 0,
+        },
+        "actions": ["diagnose_ci_failure"],
+    }
+    terminal_failure = {
+        "pr": {"head_sha": "abc123"},
+        "checks": {
+            "all_terminal": True,
+            "failed_count": 1,
+            "pending_count": 0,
+            "passed_count": 0,
+        },
+        "actions": ["diagnose_ci_failure"],
+    }
+    snapshots = iter(
+        [
+            (in_progress_failure, tmp_path / "state.json"),
+            (terminal_failure, tmp_path / "state.json"),
+        ]
+    )
+    monkeypatch.setattr(gh_pr_watch, "collect_snapshot", lambda args: next(snapshots))
+    monkeypatch.setattr(gh_pr_watch.time, "sleep", lambda _seconds: None)
+    args = argparse.Namespace(
+        poll_seconds=30,
+        require_terminal_checks=True,
+        progress=False,
+        verbose_details=False,
+    )
+
+    assert gh_pr_watch.run_watch_until_action(args) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["polls_completed"] == 2
+    assert receipt["snapshot"]["checks"]["all_terminal"] is True
