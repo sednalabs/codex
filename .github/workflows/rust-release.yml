@@ -1333,7 +1333,7 @@ jobs:
           fi
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@a8198c4bff370c8506180b035930dea56dbd5288 # v5
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
         with:
           run_install: false
 
