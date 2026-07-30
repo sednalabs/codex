@@ -58,6 +58,49 @@ pub struct UsageThreadRecord {
     pub thread_source: Option<String>,
 }
 
+/// A compact per-thread usage record intended for an orchestrator's tree view.
+///
+/// This is deliberately read-only telemetry: it describes persisted lineage and
+/// provider observations, and never authorizes a thread resume.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageLineageThread {
+    pub thread_id: String,
+    pub parent_thread_id: Option<String>,
+    pub root_thread_id: String,
+    pub fork_parent_thread_id: Option<String>,
+    pub spawn_request_id: Option<String>,
+    pub thread_source: Option<String>,
+    pub lineage_edge_kind: String,
+    pub lineage_confidence: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub created_at: Option<String>,
+    pub last_activity_at: Option<String>,
+    pub models_used: Option<String>,
+    pub service_tiers_used: Option<String>,
+    pub provider_call_count: i64,
+    pub unpriced_call_count: i64,
+    pub partial: bool,
+    pub uncached_input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub provider_reported_credits: Option<f64>,
+    pub estimated_total_credits: Option<f64>,
+    pub priced_credits_total: Option<f64>,
+}
+
+/// A bounded snapshot of a persisted session family. `recommended_user_resume_thread_id`
+/// is advisory only and is intentionally limited to direct user threads; subagents and
+/// side threads are never selected as a primary continuation by this API.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UsageLineageTelemetry {
+    pub root_thread_id: String,
+    pub recommended_user_resume_thread_id: Option<String>,
+    pub threads: Vec<UsageLineageThread>,
+}
+
 /// Tracks usage for one thread plus the lineage anchors that tie it back to the
 /// downstream usage ledger.
 ///
@@ -130,10 +173,19 @@ impl UsageLogger {
         let created_at = Utc::now();
         let source_str = source.to_string();
         let thread_source_str = thread_source.as_ref().map(ThreadSource::as_str);
+        // The parent may have persisted the spawn completion before this child logger
+        // starts. Capture that concrete request id at creation time, rather than making
+        // every downstream reader reverse-join the spawn request table.
+        let spawn_request_id = sqlx::query_scalar::<_, String>(
+            "SELECT spawn_request_id FROM usage_spawn_requests WHERE child_thread_id = ? ORDER BY rowid DESC LIMIT 1",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(pool.as_ref())
+        .await?;
         sqlx::query(
             r#"
-INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, thread_source, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO usage_threads (thread_id, parent_thread_id, root_thread_id, fork_parent_thread_id, agent_nickname, agent_role, source, thread_source, lineage_edge_kind, spawn_request_id, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     parent_thread_id = COALESCE(excluded.parent_thread_id, usage_threads.parent_thread_id),
     root_thread_id = COALESCE(excluded.root_thread_id, usage_threads.root_thread_id),
@@ -141,7 +193,9 @@ ON CONFLICT(thread_id) DO UPDATE SET
     agent_nickname = COALESCE(excluded.agent_nickname, usage_threads.agent_nickname),
     agent_role = COALESCE(excluded.agent_role, usage_threads.agent_role),
     source = excluded.source,
-    thread_source = COALESCE(excluded.thread_source, usage_threads.thread_source)
+    thread_source = COALESCE(excluded.thread_source, usage_threads.thread_source),
+    lineage_edge_kind = COALESCE(excluded.lineage_edge_kind, usage_threads.lineage_edge_kind),
+    spawn_request_id = COALESCE(excluded.spawn_request_id, usage_threads.spawn_request_id)
                 "#,
         )
         .bind(thread_id.to_string())
@@ -152,6 +206,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(agent_role.as_deref())
         .bind(source_str)
         .bind(thread_source_str)
+        .bind(Self::lineage_edge_kind(&source, thread_source.as_ref(), forked_from_id.as_ref()))
+        .bind(spawn_request_id)
         .bind(created_at.to_rfc3339())
         .execute(pool.as_ref())
         .await
@@ -178,6 +234,24 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 ..
             }) => Some(*parent_thread_id),
             _ => None,
+        }
+    }
+
+    fn lineage_edge_kind(
+        source: &SessionSource,
+        thread_source: Option<&ThreadSource>,
+        forked_from_id: Option<&ThreadId>,
+    ) -> Option<&'static str> {
+        if Self::parent_thread_from_source(source).is_some()
+            || matches!(thread_source, Some(ThreadSource::Subagent))
+        {
+            Some("agent_spawn")
+        } else if forked_from_id.is_some() {
+            Some("fork")
+        } else if matches!(thread_source, Some(ThreadSource::User | ThreadSource::Side)) {
+            Some("root")
+        } else {
+            None
         }
     }
 
@@ -590,6 +664,19 @@ WHERE provider_call_id = ?
             .execute(self.pool.as_ref())
             .await?;
             if let Some(child) = end.new_thread_id {
+                // The child logger can start before or after this event. Stamp the
+                // concrete request id either way so lineage does not rely on an
+                // eventually-consistent reverse lookup in usage_spawn_requests.
+                sqlx::query(
+                    r#"UPDATE usage_threads
+SET spawn_request_id = ?,
+    lineage_edge_kind = COALESCE(lineage_edge_kind, 'agent_spawn')
+WHERE thread_id = ?"#,
+                )
+                .bind(end.call_id.clone())
+                .bind(child.to_string())
+                .execute(self.pool.as_ref())
+                .await?;
                 self.insert_fork_snapshot(child, request, status).await?;
             }
         }
@@ -641,6 +728,154 @@ WHERE provider_call_id = ?
 }
 
 impl StateRuntime {
+    /// Read a complete persisted lineage family with direct usage and credit coverage.
+    ///
+    /// The result is bounded to one `root_thread_id`; callers must explicitly query a
+    /// different root rather than accidentally receiving unrelated local sessions.
+    pub async fn get_usage_lineage_telemetry(
+        &self,
+        thread_id: &str,
+    ) -> anyhow::Result<Option<UsageLineageTelemetry>> {
+        let pool = self.usage_ledger_pool();
+        let root_thread_id = sqlx::query_scalar::<_, String>(
+            r#"SELECT COALESCE(NULLIF(root_thread_id, ''), thread_id)
+FROM usage_threads
+WHERE thread_id = ?"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(pool.as_ref())
+        .await?;
+        let Some(root_thread_id) = root_thread_id else {
+            return Ok(None);
+        };
+
+        let rows = sqlx::query(
+            r#"
+WITH family_threads AS (
+    SELECT thread_id
+    FROM usage_threads
+    WHERE root_thread_id = ? OR thread_id = ?
+), provider_metadata AS (
+    SELECT
+        thread_id,
+        group_concat(DISTINCT COALESCE(NULLIF(final_model, ''), NULLIF(actual_model_used, ''), NULLIF(requested_model, ''))) AS models_used,
+        group_concat(DISTINCT NULLIF(actual_service_tier, '')) AS service_tiers_used,
+        SUM(provider_reported_credits) AS provider_reported_credits
+    FROM usage_provider_calls
+    WHERE thread_id IN (SELECT thread_id FROM family_threads)
+    GROUP BY thread_id
+), tool_activity AS (
+    SELECT thread_id, MAX(COALESCE(completed_at, started_at)) AS last_tool_activity_at
+    FROM usage_tool_calls
+    WHERE thread_id IN (SELECT thread_id FROM family_threads)
+    GROUP BY thread_id
+)
+SELECT
+    t.thread_id,
+    t.parent_thread_id,
+    COALESCE(NULLIF(t.root_thread_id, ''), t.thread_id) AS root_thread_id,
+    t.fork_parent_thread_id,
+    t.spawn_request_id,
+    t.thread_source,
+    t.lineage_edge_kind,
+    t.agent_nickname,
+    t.agent_role,
+    t.created_at,
+    CASE
+        WHEN c.last_call_at IS NULL THEN a.last_tool_activity_at
+        WHEN a.last_tool_activity_at IS NULL THEN c.last_call_at
+        WHEN c.last_call_at >= a.last_tool_activity_at THEN c.last_call_at
+        ELSE a.last_tool_activity_at
+    END AS last_activity_at,
+    COALESCE(m.models_used, c.models_used) AS models_used,
+    COALESCE(m.service_tiers_used, c.service_tiers_used) AS service_tiers_used,
+    COALESCE(c.provider_call_count, 0) AS provider_call_count,
+    COALESCE(c.unpriced_call_count, 0) AS unpriced_call_count,
+    COALESCE(c.partial, 0) AS partial,
+    COALESCE(c.uncached_input_tokens, 0) AS uncached_input_tokens,
+    COALESCE(c.cached_input_tokens, 0) AS cached_input_tokens,
+    COALESCE(c.cache_write_input_tokens, 0) AS cache_write_input_tokens,
+    COALESCE(c.output_tokens, 0) AS output_tokens,
+    COALESCE(c.total_tokens, 0) AS total_tokens,
+    m.provider_reported_credits,
+    c.estimated_total_credits,
+    c.priced_credits_total
+FROM usage_threads AS t
+LEFT JOIN usage_thread_credit_summary AS c ON c.thread_id = t.thread_id
+LEFT JOIN provider_metadata AS m ON m.thread_id = t.thread_id
+LEFT JOIN tool_activity AS a ON a.thread_id = t.thread_id
+WHERE t.thread_id IN (SELECT thread_id FROM family_threads)
+ORDER BY COALESCE(last_activity_at, t.created_at) DESC, t.thread_id ASC
+"#,
+        )
+        .bind(&root_thread_id)
+        .bind(&root_thread_id)
+        .fetch_all(pool.as_ref())
+        .await?;
+
+        let mut threads = Vec::with_capacity(rows.len());
+        for row in rows {
+            let row_thread_id = row.get::<String, _>("thread_id");
+            let parent_thread_id = row.get::<Option<String>, _>("parent_thread_id");
+            let fork_parent_thread_id = row.get::<Option<String>, _>("fork_parent_thread_id");
+            let thread_source = row.get::<Option<String>, _>("thread_source");
+            let persisted_kind = row.get::<Option<String>, _>("lineage_edge_kind");
+            let (lineage_edge_kind, lineage_confidence) = match persisted_kind {
+                Some(kind) => (kind, "persisted".to_string()),
+                None if parent_thread_id.is_some()
+                    || thread_source.as_deref() == Some("subagent") =>
+                {
+                    ("agent_spawn".to_string(), "inferred".to_string())
+                }
+                None if fork_parent_thread_id.is_some() => {
+                    ("fork".to_string(), "inferred".to_string())
+                }
+                None if row_thread_id == root_thread_id => {
+                    ("root".to_string(), "inferred".to_string())
+                }
+                None => ("unknown".to_string(), "unknown".to_string()),
+            };
+            threads.push(UsageLineageThread {
+                thread_id: row_thread_id,
+                parent_thread_id,
+                root_thread_id: row.get::<String, _>("root_thread_id"),
+                fork_parent_thread_id,
+                spawn_request_id: row.get::<Option<String>, _>("spawn_request_id"),
+                thread_source,
+                lineage_edge_kind,
+                lineage_confidence,
+                agent_nickname: row.get::<Option<String>, _>("agent_nickname"),
+                agent_role: row.get::<Option<String>, _>("agent_role"),
+                created_at: row.get::<Option<String>, _>("created_at"),
+                last_activity_at: row.get::<Option<String>, _>("last_activity_at"),
+                models_used: row.get::<Option<String>, _>("models_used"),
+                service_tiers_used: row.get::<Option<String>, _>("service_tiers_used"),
+                provider_call_count: row.get::<i64, _>("provider_call_count"),
+                unpriced_call_count: row.get::<i64, _>("unpriced_call_count"),
+                partial: row.get::<i64, _>("partial") != 0,
+                uncached_input_tokens: row.get::<i64, _>("uncached_input_tokens"),
+                cached_input_tokens: row.get::<i64, _>("cached_input_tokens"),
+                cache_write_input_tokens: row.get::<i64, _>("cache_write_input_tokens"),
+                output_tokens: row.get::<i64, _>("output_tokens"),
+                total_tokens: row.get::<i64, _>("total_tokens"),
+                provider_reported_credits: row.get::<Option<f64>, _>("provider_reported_credits"),
+                estimated_total_credits: row.get::<Option<f64>, _>("estimated_total_credits"),
+                priced_credits_total: row.get::<Option<f64>, _>("priced_credits_total"),
+            });
+        }
+        let recommended_user_resume_thread_id = threads
+            .iter()
+            .find(|thread| {
+                thread.thread_source.as_deref() == Some("user") && thread.parent_thread_id.is_none()
+            })
+            .map(|thread| thread.thread_id.clone());
+        Ok(Some(UsageLineageTelemetry {
+            root_thread_id,
+            recommended_user_resume_thread_id,
+            threads,
+        }))
+    }
+
     pub async fn get_usage_thread_record(
         &self,
         thread_id: &str,
@@ -1898,6 +2133,87 @@ WHERE thread_id = ?
     }
 
     #[tokio::test]
+    async fn usage_lineage_telemetry_keeps_subagents_out_of_resume_recommendations() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let root_thread_id = ThreadId::new();
+        let mut root_logger = UsageLogger::try_new_with_thread_source(
+            runtime.clone(),
+            root_thread_id,
+            SessionSource::Cli,
+            Some(ThreadSource::User),
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        root_logger
+            .record_event(&token_count_event(
+                "turn-root",
+                /*include_rate_limit*/ true,
+            ))
+            .await;
+
+        let child_thread_id = ThreadId::new();
+        let _child_logger = UsageLogger::try_new_with_thread_source(
+            runtime.clone(),
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread_id,
+                depth: 1,
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("explorer".to_string()),
+                agent_path: None,
+            }),
+            Some(ThreadSource::Subagent),
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ Some("Child".to_string()),
+            /*agent_role*/ Some("explorer".to_string()),
+        )
+        .await?;
+
+        let side_thread_id = ThreadId::new();
+        let _side_logger = UsageLogger::try_new_with_thread_source(
+            runtime.clone(),
+            side_thread_id,
+            SessionSource::Cli,
+            Some(ThreadSource::Side),
+            Some(root_thread_id),
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let telemetry = runtime
+            .get_usage_lineage_telemetry(&root_thread_id.to_string())
+            .await?
+            .expect("the root usage thread should exist");
+        assert_eq!(telemetry.root_thread_id, root_thread_id.to_string());
+        assert_eq!(telemetry.threads.len(), 3);
+        assert_eq!(
+            telemetry.recommended_user_resume_thread_id,
+            Some(root_thread_id.to_string()),
+            "only direct user threads are eligible for the advisory continuation"
+        );
+        let child = telemetry
+            .threads
+            .iter()
+            .find(|thread| thread.thread_id == child_thread_id.to_string())
+            .expect("child should be included in the root family");
+        assert_eq!(child.lineage_edge_kind, "agent_spawn");
+        assert_eq!(child.lineage_confidence, "persisted");
+        assert_eq!(child.agent_role.as_deref(), Some("explorer"));
+        let root = telemetry
+            .threads
+            .iter()
+            .find(|thread| thread.thread_id == root_thread_id.to_string())
+            .expect("root should be included in the root family");
+        assert_eq!(root.provider_call_count, 1);
+        assert_eq!(root.total_tokens, 16);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn usage_logger_clears_turn_snapshot_after_turn_complete() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
@@ -2795,6 +3111,23 @@ WHERE spawn_request_id = ?
             spawn_row.child_thread_id,
             Some(child_thread_id.to_string()),
             "usage spawn request should keep the same child as the persisted edge"
+        );
+
+        let lineage_row: (Option<String>, Option<String>) = sqlx::query_as(
+            r#"SELECT spawn_request_id, lineage_edge_kind
+FROM usage_threads
+WHERE thread_id = ?"#,
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(
+            lineage_row,
+            (
+                Some(spawn_call.to_string()),
+                Some("agent_spawn".to_string())
+            ),
+            "the child logger should retain the concrete spawn request without a reverse lookup"
         );
 
         let child_row: ThreadRow = sqlx::query_as(
