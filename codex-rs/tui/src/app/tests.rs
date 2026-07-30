@@ -1480,6 +1480,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             is_closed: true,
             created_at: None,
             updated_at: None,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1500,6 +1501,8 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1556,6 +1559,8 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1594,6 +1599,8 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
     assert!(!app.agent_navigation.is_parent_owned(thread_id));
@@ -1610,6 +1617,7 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
             is_closed: false,
             created_at: None,
             updated_at: None,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1631,6 +1639,8 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/worker".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1670,6 +1680,8 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1864,6 +1876,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             .record_sub_agent_activity(SubAgentActivityDisplay {
                 thread_id: child_thread_ids[0],
                 agent_path: "/root/child-0".to_string(),
+                model: None,
+                reasoning_effort: None,
                 is_running_hint: true,
             });
         app.thread_event_channels.remove(&child_thread_ids[1]);
@@ -1883,6 +1897,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 is_closed: false,
                 created_at: None,
                 updated_at: None,
+                ..AgentPickerThreadEntry::default()
             })
         );
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));

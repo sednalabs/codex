@@ -2,10 +2,10 @@
 source: tui/src/multi_agents.rs
 expression: snapshot
 ---
-• Waiting · primitive: wait_agent · 2 agents
+• Waiting on · primitive: wait_agent · Robie [explorer], Bob [worker]
   └ Robie [explorer]
     Bob [worker]
 
 • Mailbox update received
   └ Robie [explorer]: Completed - 39916800
-    Still pending: 00000000-0000-0000-0000-000000000003
+    Still pending: Bob [worker]

@@ -48,6 +48,14 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_role: Option<String>,
     /// Canonical v2 agent path, when the thread was observed through v2 activity.
     pub(crate) agent_path: Option<String>,
+    /// Effective model selected for this child thread, when known.
+    pub(crate) model: Option<String>,
+    /// Effective reasoning effort selected for this child thread, when known.
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    /// Provider selected for this child thread, when known.
+    pub(crate) model_provider: Option<String>,
+    /// Canonical task/path preview used by picker search, when known.
+    pub(crate) task_name: Option<String>,
     /// Whether the latest liveness refresh says the agent thread is actively working.
     pub(crate) is_running: bool,
     /// Whether the thread has emitted a close event and should render dimmed.
@@ -62,6 +70,8 @@ pub(crate) struct AgentPickerThreadEntry {
 pub(crate) struct SubAgentActivityDisplay {
     pub(crate) thread_id: ThreadId,
     pub(crate) agent_path: String,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) is_running_hint: bool,
 }
 
@@ -71,6 +81,12 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Canonical v2 agent path used when no nickname is available.
+    pub(crate) agent_path: Option<String>,
+    /// Effective model selected for this child, when known.
+    pub(crate) model: Option<String>,
+    /// Effective reasoning effort selected for this child, when known.
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Clone, Copy)]
@@ -78,6 +94,7 @@ struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
+    path: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +170,7 @@ fn format_agent_picker_item_description_at(
     let model = usage
         .model
         .as_deref()
+        .or(entry.model.as_deref())
         .map(str::trim)
         .filter(|model| !model.is_empty());
     if model.is_some() || usage.reasoning_effort.is_some() {
@@ -169,6 +187,7 @@ fn format_agent_picker_item_description_at(
     if let Some(task_name) = usage
         .task_name
         .as_deref()
+        .or(entry.task_name.as_deref())
         .map(str::trim)
         .filter(|task_name| !task_name.is_empty())
     {
@@ -179,6 +198,19 @@ fn format_agent_picker_item_description_at(
     }
 
     parts.push(uuid);
+    if let Some(path) = entry
+        .agent_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        parts.push(format!("path: {path}"));
+    }
+    if entry.is_running {
+        parts.push("live active open".to_string());
+    } else {
+        parts.push("closed stale inactive finished".to_string());
+    }
     if usage.token_usage.total_tokens > 0 {
         parts.push(format!(
             "{} used",
@@ -440,7 +472,8 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
         kind,
         agent_thread_id,
         agent_path,
-        ..
+        model,
+        reasoning_effort,
     } = item
     else {
         return None;
@@ -453,19 +486,25 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     Some(SubAgentActivityDisplay {
         thread_id: parse_thread_id(agent_thread_id)?,
         agent_path: agent_path.clone(),
+        model: model.clone(),
+        reasoning_effort: reasoning_effort.clone(),
         is_running_hint,
     })
 }
 
 pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     let ThreadItem::SubAgentActivity {
-        kind, agent_path, ..
+        kind,
+        agent_path,
+        model,
+        reasoning_effort,
+        ..
     } = item
     else {
         return None;
     };
     Some(collab_event(
-        sub_agent_activity_title(*kind, agent_path),
+        sub_agent_activity_title(*kind, agent_path, model.as_deref(), reasoning_effort.as_ref()),
         Vec::new(),
     ))
 }
@@ -478,16 +517,23 @@ pub(crate) fn sub_agent_activity_summary(kind: SubAgentActivityKind, agent_path:
     }
 }
 
-fn sub_agent_activity_title(kind: SubAgentActivityKind, agent_path: &str) -> Line<'static> {
+fn sub_agent_activity_title(
+    kind: SubAgentActivityKind,
+    agent_path: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Line<'static> {
     let (prefix, path) = match kind {
         SubAgentActivityKind::Started => ("Started ", agent_path),
         SubAgentActivityKind::Interacted => ("Interacted with ", agent_path),
         SubAgentActivityKind::Interrupted => ("Interrupted ", agent_path),
     };
-    title_spans_line(vec![
+    let mut spans = vec![
         Span::from(prefix).bold(),
         Span::from(format!("`{path}`")).cyan(),
-    ])
+    ];
+    spans.extend(model_reasoning_spans(model, reasoning_effort));
+    title_spans_line(spans)
 }
 
 fn spawn_begin(prompt: &str, spawn_request: Option<&SpawnRequestSummary>) -> PlainHistoryCell {
@@ -558,11 +604,12 @@ fn waiting_begin(
         .collect::<Vec<_>>();
 
     let title = match receiver_agents.as_slice() {
-        [(thread_id, metadata)] => title_with_primitive(
-            "Waiting",
+        [(thread_id, metadata)] => title_with_primitive_agent_details(
+            "Waiting on",
             "wait_agent",
-            Some(agent_label(*thread_id, metadata)),
-            /*spawn_request*/ None,
+            agent_label(*thread_id, metadata),
+            metadata.model.as_deref(),
+            metadata.reasoning_effort.as_ref(),
         ),
         [] => title_with_primitive(
             "Waiting",
@@ -571,9 +618,9 @@ fn waiting_begin(
             /*spawn_request*/ None,
         ),
         _ => title_with_primitive_text(
-            "Waiting",
+            "Waiting on",
             "wait_agent",
-            Some(format!("{} agents", receiver_agents.len())),
+            Some(format_agent_names(&receiver_agents)),
             /*spawn_request*/ None,
         ),
     };
@@ -581,7 +628,14 @@ fn waiting_begin(
     let details = if receiver_agents.len() > 1 {
         receiver_agents
             .iter()
-            .map(|(thread_id, metadata)| agent_label_line(agent_label(*thread_id, metadata)))
+            .map(|(thread_id, metadata)| {
+                let mut spans = agent_label_spans(agent_label(*thread_id, metadata));
+                spans.extend(model_reasoning_spans(
+                    metadata.model.as_deref(),
+                    metadata.reasoning_effort.as_ref(),
+                ));
+                spans.into()
+            })
             .collect()
     } else {
         Vec::new()
@@ -657,6 +711,7 @@ pub(crate) fn subagent_notification(agent_id: &str, status: &AgentStatus) -> Pla
             thread_id: Some(thread_id),
             nickname: None,
             role: None,
+            path: None,
         }));
     } else {
         spans.push(Span::from(agent_id.to_string()).cyan());
@@ -706,6 +761,20 @@ fn title_with_primitive(
     title_spans_line(spans)
 }
 
+fn title_with_primitive_agent_details(
+    action: &str,
+    primitive: &str,
+    agent: AgentLabel<'_>,
+    model: Option<&str>,
+    reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Line<'static> {
+    let mut spans = primitive_title_prefix(action, primitive);
+    spans.push(Span::from(" · ").dim());
+    spans.extend(agent_label_spans(agent));
+    spans.extend(model_reasoning_spans(model, reasoning_effort));
+    title_spans_line(spans)
+}
+
 fn title_with_primitive_text(
     action: &str,
     primitive: &str,
@@ -745,6 +814,7 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
         thread_id: Some(thread_id),
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
+        path: metadata.agent_path.as_deref(),
     }
 }
 
@@ -762,8 +832,15 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 
     if let Some(nickname) = nickname {
         spans.push(Span::from(nickname.to_string()).cyan().bold());
+    } else if let Some(path) = agent
+        .path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        spans.push(Span::from(path.to_string()).cyan());
     } else if let Some(thread_id) = agent.thread_id {
-        spans.push(Span::from(thread_id.to_string()).cyan());
+        let short_id = thread_id.to_string().chars().take(8).collect::<String>();
+        spans.push(Span::from(short_id).cyan());
     } else {
         spans.push(Span::from("agent").cyan());
     }
@@ -774,6 +851,64 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     }
 
     spans
+}
+
+fn format_agent_names(agents: &[(ThreadId, AgentMetadata)]) -> String {
+    agents
+        .iter()
+        .map(|(thread_id, metadata)| friendly_agent_name(*thread_id, metadata))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn friendly_agent_name(thread_id: ThreadId, metadata: &AgentMetadata) -> String {
+    let name = metadata
+        .agent_nickname
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            metadata
+                .agent_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+        })
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| thread_id.to_string().chars().take(8).collect());
+    match metadata
+        .agent_role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+    {
+        Some(role) => format!("{name} [{role}]"),
+        None => name,
+    }
+}
+
+fn model_reasoning_spans(
+    model: Option<&str>,
+    reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Vec<Span<'static>> {
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    if model.is_none() && reasoning_effort.is_none() {
+        return Vec::new();
+    }
+
+    let has_model = model.is_some();
+    let mut details = String::from(" (");
+    if let Some(model) = model {
+        details.push_str(model);
+    }
+    if let Some(reasoning_effort) = reasoning_effort {
+        if has_model {
+            details.push(' ');
+        }
+        details.push_str(&reasoning_effort.to_string());
+    }
+    details.push(')');
+    vec![Span::from(details).magenta()]
 }
 
 fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<'static>> {
@@ -850,10 +985,16 @@ fn wait_complete_lines(
     };
 
     if !pending_thread_ids.is_empty() {
-        lines.push(Line::from(format!(
-            "Still pending: {}",
-            pending_thread_ids.join(", ")
-        )));
+        let pending = pending_thread_ids
+            .iter()
+            .map(|thread_id| {
+                parse_thread_id(thread_id)
+                    .map(|thread_id| friendly_agent_name(thread_id, &agent_metadata(thread_id)))
+                    .unwrap_or_else(|| thread_id.clone())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(format!("Still pending: {pending}")));
     }
 
     lines
@@ -1000,7 +1141,7 @@ mod tests {
                 &AgentPickerThreadEntry::default(),
                 &AgentPickerThreadUsage::default(),
             ),
-            "00000000-0000-0000-0000-000000000111"
+            "00000000-0000-0000-0000-000000000111 • closed stale inactive finished"
         );
     }
 
@@ -1024,7 +1165,7 @@ mod tests {
                     ..AgentPickerThreadUsage::default()
                 },
             ),
-            "00000000-0000-0000-0000-000000000112 • 12.3K used"
+            "00000000-0000-0000-0000-000000000112 • closed stale inactive finished • 12.3K used"
         );
     }
 
@@ -1048,7 +1189,7 @@ mod tests {
                 },
                 /*now_ts*/ 1_000,
             ),
-            "00000000-0000-0000-0000-000000000113 • 12.3K used • 98% left"
+            "00000000-0000-0000-0000-000000000113 • closed stale inactive finished • 12.3K used • 98% left"
         );
     }
 
@@ -1124,7 +1265,7 @@ mod tests {
                     ..AgentPickerThreadUsage::default()
                 },
             ),
-            "gpt-5.4-mini medium • task: Investigate /agent picker metadata display • 00000000-0000-0000-0000-000000000114 • 120 used"
+            "gpt-5.4-mini medium • task: Investigate /agent picker metadata display • 00000000-0000-0000-0000-000000000114 • closed stale inactive finished • 120 used"
         );
     }
 
@@ -1143,7 +1284,7 @@ mod tests {
                     ..AgentPickerThreadUsage::default()
                 },
             ),
-            "00000000-0000-0000-0000-000000000115"
+            "00000000-0000-0000-0000-000000000115 • closed stale inactive finished"
         );
     }
 
@@ -1184,9 +1325,29 @@ mod tests {
             kind: SubAgentActivityKind::Interacted,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
         };
 
         assert_eq!(sub_agent_activity_display(&item), None);
+    }
+
+    #[test]
+    fn sub_agent_activity_history_includes_effective_identity() {
+        let item = ThreadItem::SubAgentActivity {
+            id: "activity-identity".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: ThreadId::new().to_string(),
+            agent_path: "/root/reviewer".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+        };
+
+        let rendered = cell_to_text(
+            &sub_agent_activity_history_cell(&item).expect("activity cell"),
+        );
+        assert!(rendered.contains("/root/reviewer"));
+        assert!(rendered.contains("gpt-5.4 high"));
     }
 
     #[test]
@@ -1344,6 +1505,7 @@ mod tests {
                 AgentMetadata {
                     agent_nickname: Some("Robie".to_string()),
                     agent_role: Some("explorer".to_string()),
+                    ..AgentMetadata::default()
                 }
             } else {
                 AgentMetadata::default()
@@ -1498,11 +1660,13 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                ..AgentMetadata::default()
             }
         } else if thread_id == bob_id {
             AgentMetadata {
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
+                ..AgentMetadata::default()
             }
         } else {
             AgentMetadata::default()

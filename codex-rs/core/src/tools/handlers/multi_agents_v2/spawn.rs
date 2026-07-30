@@ -160,6 +160,8 @@ async fn handle_spawn_agent(
             id: call_id,
             agent_thread_id: new_thread_id,
             agent_path: new_agent_path.clone(),
+            model: Some(effective_model.clone()),
+            reasoning_effort: effective_reasoning_effort.clone(),
             kind: SubAgentActivityKind::Started,
         },
     )
