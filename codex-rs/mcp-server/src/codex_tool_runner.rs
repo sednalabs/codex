@@ -367,6 +367,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::ViewImageToolCall(_)
                     | EventMsg::RawResponseItem(_)
                     | EventMsg::RawResponseCompleted(_)
+                    | EventMsg::InferenceCall(_)
                     | EventMsg::EnteredReviewMode(_)
                     | EventMsg::ItemStarted(_)
                     | EventMsg::ItemCompleted(_)
@@ -400,7 +401,8 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::RealtimeConversationSdp(_)
                     | EventMsg::RealtimeConversationRealtime(_)
                     | EventMsg::RealtimeConversationClosed(_)
-                    | EventMsg::DeprecationNotice(_) => {
+                    | EventMsg::DeprecationNotice(_)
+                    | EventMsg::Unknown => {
                         // For now, we do not do anything extra for these
                         // events. Note that
                         // send(codex_event_to_notification(&event)) above has

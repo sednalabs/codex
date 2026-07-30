@@ -1187,6 +1187,30 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.inference-observation-contract-targeted",
+      "groups": [
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "ui-protocol"
+      ],
+      "setup_class": "rust_minimal",
+      "summary_family": "inference-observation-contract",
+      "cost_class": "low",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "inference-observation-contract-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.app-server-protocol-test",
       "groups": [
         "ui_protocol"
