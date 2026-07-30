@@ -145,6 +145,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::InferenceCall(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::EnvironmentConnected(_)
         | EventMsg::EnvironmentDisconnected(_)
@@ -180,6 +181,7 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_) => false,
+        | EventMsg::CollabResumeBegin(_)
+        | EventMsg::Unknown => false,
     }
 }

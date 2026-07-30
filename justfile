@@ -169,6 +169,10 @@ core-subagent-notification-visibility-targeted:
     cargo test -p codex-protocol parse_subagent_notification_response_item_ --lib -- --test-threads=1
     cargo test -p codex-tui raw_response_subagent_notification_renders_history -- --exact --test-threads=1
 
+# Focused payload-free inference-attempt protocol and privacy-bounds contract.
+inference-observation-contract-targeted:
+    cargo test --locked -p codex-protocol protocol::inference_observation::tests --lib -- --test-threads=1
+
 # Focused TUI thread-session approval persistence slice.
 tui-thread-session-policy-targeted:
     cargo test -p codex-tui app::tests::store_active_thread_receiver_persists_per_thread_policy_overrides --lib -- --exact --test-threads=1
