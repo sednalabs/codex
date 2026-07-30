@@ -1392,6 +1392,80 @@ pub struct ThreadReadResponse {
     pub thread: Thread,
 }
 
+/// Read-only lineage and usage telemetry for one persisted thread family.
+///
+/// This endpoint never decides which thread Codex resumes. The optional
+/// recommendation is deliberately restricted to direct user threads so a
+/// short-lived subagent cannot be mistaken for the operator's continuation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadUsageSummaryParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadUsageSummaryNode {
+    pub thread_id: String,
+    pub parent_thread_id: Option<String>,
+    pub root_thread_id: String,
+    pub fork_parent_thread_id: Option<String>,
+    pub spawn_request_id: Option<String>,
+    pub thread_source: Option<ThreadSource>,
+    /// `root`, `fork`, `agent_spawn`, or `unknown`.
+    pub lineage_edge_kind: String,
+    /// `persisted`, `inferred`, or `unknown`.
+    pub lineage_confidence: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub created_at: Option<String>,
+    pub last_activity_at: Option<String>,
+    pub models_used: Option<String>,
+    pub service_tiers_used: Option<String>,
+    pub provider_call_count: i64,
+    pub unpriced_call_count: i64,
+    pub partial: bool,
+    pub uncached_input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub provider_reported_credits: Option<f64>,
+    pub estimated_total_credits: Option<f64>,
+    pub priced_credits_total: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadUsageSummaryTotals {
+    pub provider_call_count: i64,
+    pub unpriced_call_count: i64,
+    pub partial: bool,
+    pub uncached_input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+    pub provider_reported_credits: Option<f64>,
+    pub estimated_total_credits: Option<f64>,
+    pub priced_credits_total: Option<f64>,
+    /// `complete`, `partial`, or `unavailable` for the full family.
+    pub credit_coverage: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadUsageSummaryResponse {
+    pub root_thread_id: Option<String>,
+    pub recommended_user_resume_thread_id: Option<String>,
+    pub threads: Vec<ThreadUsageSummaryNode>,
+    pub totals: ThreadUsageSummaryTotals,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
