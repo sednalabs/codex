@@ -56,6 +56,7 @@ fn turn_complete(turn_id: &str) -> RolloutItem {
         compaction_events_in_turn: 0,
         final_model: None,
         model_snapshot: None,
+        provider_usage: None,
         error: None,
         completed_at: None,
         duration_ms: None,
@@ -68,6 +69,7 @@ fn turn_aborted(turn_id: &str) -> RolloutItem {
         turn_id: Some(turn_id.to_string()),
         started_at: None,
         reason: TurnAbortReason::Interrupted,
+        provider_usage: None,
         completed_at: None,
         duration_ms: None,
     }))

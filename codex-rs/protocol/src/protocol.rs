@@ -1988,7 +1988,7 @@ pub struct SafetyBufferingEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct TurnCompleteEvent {
     pub turn_id: String,
     pub last_agent_message: Option<String>,
@@ -2010,6 +2010,11 @@ pub struct TurnCompleteEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model_snapshot: Option<String>,
+    /// Element-wise aggregate of usage reported by successful provider response completions in
+    /// this turn. This excludes estimates, configured identity, pricing, and call counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_usage: Option<TokenUsage>,
     /// Unix timestamp (in seconds) when the turn completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null", optional)]
@@ -4312,10 +4317,14 @@ pub struct Chunk {
     pub inserted_lines: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
 pub struct TurnAbortedEvent {
     pub turn_id: Option<String>,
     pub reason: TurnAbortReason,
+    /// Exact provider-reported usage observed before the turn was aborted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_usage: Option<TokenUsage>,
     /// Unix timestamp (in seconds) when the turn started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null", optional)]
@@ -6428,6 +6437,52 @@ mod tests {
             .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(128_000));
+    }
+
+    #[test]
+    fn turn_complete_without_provider_usage_remains_compatible() -> Result<()> {
+        let legacy = json!({
+            "turn_id": "turn-1",
+            "last_agent_message": "done",
+            "compaction_events_in_turn": 0,
+        });
+
+        let event: TurnCompleteEvent = serde_json::from_value(legacy.clone())?;
+
+        assert_eq!(
+            event,
+            TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: Some("done".to_string()),
+                error: None,
+                started_at: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }
+        );
+        assert_eq!(serde_json::to_value(event)?, legacy);
+        Ok(())
+    }
+
+    #[test]
+    fn turn_aborted_without_provider_usage_remains_compatible() -> Result<()> {
+        let legacy = json!({
+            "turn_id": "turn-1",
+            "reason": "interrupted",
+        });
+
+        let event: TurnAbortedEvent = serde_json::from_value(legacy.clone())?;
+
+        assert_eq!(event.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(event.reason, TurnAbortReason::Interrupted);
+        assert_eq!(event.provider_usage, None);
+        assert_eq!(serde_json::to_value(event)?, legacy);
+        Ok(())
     }
 
     #[test]
