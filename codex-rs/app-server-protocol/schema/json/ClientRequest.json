@@ -5906,6 +5906,18 @@
       ],
       "type": "object"
     },
+    "ThreadUsageSummaryParams": {
+      "description": "Read-only lineage and usage telemetry for one persisted thread family.\n\nThis endpoint never decides which thread Codex resumes. The optional\nrecommendation is deliberately restricted to direct user threads so a\nshort-lived subagent cannot be mistaken for the operator's continuation.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "TurnEnvironmentParams": {
       "properties": {
         "cwd": {
