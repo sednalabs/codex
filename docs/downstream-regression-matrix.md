@@ -118,6 +118,7 @@ Wine-backed executor note:
 
 Focused lane used for protocol/event-history seams:
 
+- `codex.inference-observation-contract-targeted`
 - `codex.app-server-protocol-test`
 - `codex.app-server-computer-use-targeted`
 - `codex.tui-native-computer-use-targeted`

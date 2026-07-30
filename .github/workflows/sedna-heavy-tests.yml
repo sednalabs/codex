@@ -63,6 +63,7 @@ on:
           - codex.state-spawn-lineage-contract-targeted
           - codex.state-migration-repair-targeted
           - codex.code-mode-declaration-targeted
+          - codex.inference-observation-contract-targeted
           - codex.app-server-protocol-test
           - codex.app-server-computer-use-targeted
           - codex.tui-native-computer-use-targeted
