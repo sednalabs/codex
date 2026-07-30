@@ -998,6 +998,19 @@ class RouteSelectionTests(unittest.TestCase):
             ["all", *expected_lane_ids],
         )
 
+    def test_coverage_workflow_does_not_use_code_quality_product(self) -> None:
+        workflow_path = REPO_ROOT / ".github/workflows/code-coverage.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        payload = load_workflow_payload(workflow_path)
+
+        self.assertEqual(payload.get("name"), "Coverage Tests")
+        self.assertNotIn("actions/upload-code-coverage@", workflow_text)
+        self.assertNotIn("code-quality:", workflow_text)
+        self.assertEqual(
+            set((payload.get("jobs") or {}).keys()),
+            {"python-tools", "python-sdk", "typescript-sdk"},
+        )
+
     def test_workflow_ci_sanity_lane_uses_direct_script_contract(self) -> None:
         lane = next(
             lane
@@ -3379,6 +3392,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "security-events": "write",
             },
         )
+
         self.assertEqual(
             ((analyze_job.get("strategy") or {}).get("matrix")),
             {
@@ -4972,6 +4986,28 @@ class ValidationPlanScriptTests(unittest.TestCase):
             '--rust-integration-result "${rust_integration_result}"',
             report_step.get("run") or "",
         )
+
+    def test_blocking_ci_uses_documented_merge_group_trigger(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blocking-ci.yml")
+        self.assertEqual(
+            (payload.get("on") or {}).get("merge_group"),
+            {"types": ["checks_requested"]},
+        )
+
+    def test_blob_size_policy_uses_queue_base_for_merge_groups(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blob-size-policy.yml")
+        check_steps = ((payload.get("jobs") or {}).get("check") or {}).get("steps") or []
+        range_step = next(
+            step for step in check_steps if step.get("name") == "Determine comparison range"
+        )
+        run_script = range_step.get("run") or ""
+        self.assertIn(
+            'if [[ "${{ github.event_name }}" == "merge_group" ]]; then',
+            run_script,
+        )
+        self.assertIn("github.event.merge_group.base_sha", run_script)
+        self.assertIn("head='${{ github.sha }}'", run_script)
+
 
 class RustCiModeScriptTests(unittest.TestCase):
     maxDiff = None
