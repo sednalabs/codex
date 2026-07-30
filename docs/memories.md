@@ -76,12 +76,15 @@ The settings live under `[memories]` in `config.toml`.
 - `generate_memories` controls whether new threads are stored in memory mode.
 - `use_memories` controls whether memory usage instructions are injected into prompts.
 - `no_memories_if_mcp_or_web_search` marks threads as polluted when web search or MCP tool use is detected.
-- `extract_model` overrides the phase-1 summarization model. When unset, Codex uses `gpt-5.1-codex-mini` with `Low` reasoning effort.
-- `consolidation_model` overrides the phase-2 consolidation model. When unset, Codex uses `gpt-5.3-codex` with `Medium` reasoning effort.
+- `extract_model` optionally overrides the phase-1 summarization model.
+- `consolidation_model` optionally overrides the phase-2 consolidation model.
 
-The built-in memory pipeline defaults are:
+The standard provider preferences inherited from upstream OpenAI Codex are:
 
-- Phase 1 extraction: `gpt-5.1-codex-mini`
-- Phase 2 consolidation: `gpt-5.3-codex`
+- Phase 1 extraction: `gpt-5.6-luna` with `Low` reasoning effort.
+- Phase 2 consolidation: `gpt-5.6-terra` with `Medium` reasoning effort.
 
-If you want the system to stay compact, keep the defaults. If you want to tune recall or reduce startup work, adjust the retention caps carefully and re-check the resulting memory workspace.
+Providers that require backend-specific model IDs may use different
+preferences. Leave the model overrides unset to follow the active provider's
+preferences. If you want to tune recall or reduce startup work, adjust the
+retention caps carefully and re-check the resulting memory workspace.
