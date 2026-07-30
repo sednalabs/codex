@@ -253,6 +253,8 @@ async fn handle_message_submission_inner(
             id: call_id,
             agent_thread_id: receiver_thread_id,
             agent_path: receiver_agent_path.clone(),
+            model: None,
+            reasoning_effort: None,
             kind: SubAgentActivityKind::Interacted,
         },
     )

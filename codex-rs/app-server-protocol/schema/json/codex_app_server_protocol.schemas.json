@@ -18913,6 +18913,24 @@
               "kind": {
                 "$ref": "#/definitions/v2/SubAgentActivityKind"
               },
+              "model": {
+                "description": "Effective model selected for the affected child, when known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reasoningEffort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Effective reasoning effort selected for the affected child, when known."
+              },
               "type": {
                 "const": "subAgentActivity",
                 "title": "SubAgentActivityThreadItemType",

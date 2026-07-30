@@ -980,6 +980,8 @@ impl ThreadHistoryBuilder {
             kind: payload.kind.into(),
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
+            model: payload.model.clone(),
+            reasoning_effort: payload.reasoning_effort.clone(),
         });
     }
 

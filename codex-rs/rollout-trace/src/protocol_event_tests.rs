@@ -23,6 +23,8 @@ fn sub_agent_activity_is_a_terminal_tool_runtime_event() -> anyhow::Result<()> {
         occurred_at_ms: 1234,
         agent_thread_id,
         agent_path: AgentPath::try_from("/root/reviewer").map_err(anyhow::Error::msg)?,
+        model: None,
+        reasoning_effort: None,
         kind: SubAgentActivityKind::Started,
     });
 

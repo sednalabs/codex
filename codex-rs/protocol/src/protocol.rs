@@ -4463,6 +4463,14 @@ pub struct SubAgentActivityEvent {
     pub agent_thread_id: ThreadId,
     /// Canonical v2 path of the affected sub-agent.
     pub agent_path: AgentPath,
+    /// Effective model selected for the affected child, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// Effective reasoning effort selected for the affected child, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
     pub kind: SubAgentActivityKind,
 }
 
