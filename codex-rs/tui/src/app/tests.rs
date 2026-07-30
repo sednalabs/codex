@@ -2770,6 +2770,10 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -3533,9 +3537,14 @@ fn inactive_thread_started_notification_initializes_replay_session() -> Result<(
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 agent_path: None,
+                model: Some("gpt-agent".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                model_provider: Some("agent-provider".to_string()),
+                task_name: Some("agent thread".to_string()),
                 is_running: false,
                 is_closed: false,
-                ..AgentPickerThreadEntry::default()
+                created_at: Some(1),
+                updated_at: Some(2),
             })
         );
 
