@@ -133,21 +133,23 @@ impl AgentNavigationState {
             AgentPickerThreadEntry {
                 agent_path: entry
                     .agent_path
-                    .or(existing.as_ref().and_then(|entry| entry.agent_path.clone())),
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.agent_path.clone())),
                 model: entry
                     .model
-                    .or(existing.as_ref().and_then(|entry| entry.model.clone())),
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.model.clone())),
                 reasoning_effort: entry.reasoning_effort.or_else(|| {
                     existing
                         .as_ref()
                         .and_then(|entry| entry.reasoning_effort.clone())
                 }),
-                model_provider: entry.model_provider.or(existing
-                    .as_ref()
-                    .and_then(|entry| entry.model_provider.clone())),
+                model_provider: entry.model_provider.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.model_provider.clone())
+                }),
                 task_name: entry
                     .task_name
-                    .or(existing.as_ref().and_then(|entry| entry.task_name.clone())),
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.task_name.clone())),
                 created_at: entry
                     .created_at
                     .or(existing.as_ref().and_then(|entry| entry.created_at)),

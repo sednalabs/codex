@@ -841,7 +841,8 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     } else if let Some(path) = agent.path.map(str::trim).filter(|path| !path.is_empty()) {
         spans.push(Span::from(path.to_string()).cyan());
     } else if let Some(thread_id) = agent.thread_id {
-        let short_id = thread_id.to_string().chars().take(8).collect::<String>();
+        let rendered = thread_id.to_string();
+        let short_id = rendered.get(..8).unwrap_or(&rendered).to_string();
         spans.push(Span::from(short_id).cyan());
     } else {
         spans.push(Span::from("agent").cyan());
@@ -877,7 +878,10 @@ fn friendly_agent_name(thread_id: ThreadId, metadata: &AgentMetadata) -> String 
                 .filter(|path| !path.is_empty())
         })
         .map(ToOwned::to_owned)
-        .unwrap_or_else(|| thread_id.to_string().chars().take(8).collect());
+        .unwrap_or_else(|| {
+            let rendered = thread_id.to_string();
+            rendered.get(..8).unwrap_or(&rendered).to_string()
+        });
     match metadata
         .agent_role
         .as_deref()
