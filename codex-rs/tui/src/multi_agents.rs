@@ -504,7 +504,12 @@ pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<Plain
         return None;
     };
     Some(collab_event(
-        sub_agent_activity_title(*kind, agent_path, model.as_deref(), reasoning_effort.as_ref()),
+        sub_agent_activity_title(
+            *kind,
+            agent_path,
+            model.as_deref(),
+            reasoning_effort.as_ref(),
+        ),
         Vec::new(),
     ))
 }
@@ -832,11 +837,7 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 
     if let Some(nickname) = nickname {
         spans.push(Span::from(nickname.to_string()).cyan().bold());
-    } else if let Some(path) = agent
-        .path
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
+    } else if let Some(path) = agent.path.map(str::trim).filter(|path| !path.is_empty()) {
         spans.push(Span::from(path.to_string()).cyan());
     } else if let Some(thread_id) = agent.thread_id {
         let short_id = thread_id.to_string().chars().take(8).collect::<String>();
@@ -1343,9 +1344,8 @@ mod tests {
             reasoning_effort: Some(ReasoningEffortConfig::High),
         };
 
-        let rendered = cell_to_text(
-            &sub_agent_activity_history_cell(&item).expect("activity cell"),
-        );
+        let rendered =
+            cell_to_text(&sub_agent_activity_history_cell(&item).expect("activity cell"));
         assert!(rendered.contains("/root/reviewer"));
         assert!(rendered.contains("gpt-5.4 high"));
     }
