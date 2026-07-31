@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -133,6 +134,116 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
     );
     wait_for_process_exit(&superseded_pid).await?;
     assert!(process_is_alive(&replacement_pid)?);
+
+    fixture.codex.shutdown_and_wait().await?;
+    wait_for_process_exit(&replacement_pid).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_turn_replaces_closed_mcp_server_before_provider_catalogue() -> anyhow::Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let temp_dir = tempfile::tempdir()?;
+    let pid_file = temp_dir.path().join("mcp.pid");
+    let pid_file_for_config = pid_file.clone();
+    let command = stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_config(move |config| {
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                "ordinary_liveness".to_string(),
+                McpServerConfig {
+                    auth: Default::default(),
+                    transport: McpServerTransportConfig::Stdio {
+                        command,
+                        args: Vec::new(),
+                        env: Some(HashMap::from([
+                            (
+                                "MCP_TEST_DYNAMIC_SERVER_METADATA".to_string(),
+                                "1".to_string(),
+                            ),
+                            (
+                                "MCP_TEST_PID_FILE".to_string(),
+                                pid_file_for_config.to_string_lossy().into_owned(),
+                            ),
+                        ])),
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+                    enabled: true,
+                    required: false,
+                    supports_parallel_tool_calls: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: Some(Duration::from_secs(10)),
+                    tool_timeout_sec: None,
+                    default_tools_approval_mode: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    enable_elicitation: false,
+                    read_only: false,
+                    strict_tool_classification: false,
+                    require_approval_for_mutating: false,
+                    scopes: None,
+                    oauth: None,
+                    oauth_resource: None,
+                    tools: HashMap::new(),
+                },
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test MCP servers should accept any configuration");
+        })
+        .build(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, "ordinary_liveness").await?;
+
+    let first_pid = wait_for_pid_file(&pid_file).await?;
+    assert!(process_is_alive(&first_pid)?);
+    let first_response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("ordinary-first"),
+            responses::ev_assistant_message("ordinary-first-message", "done"),
+            responses::ev_completed("ordinary-first"),
+        ]),
+    )
+    .await;
+    fixture.submit_turn("ordinary first turn").await?;
+    assert!(
+        first_response
+            .single_request()
+            .body_contains_text(&format!("Echo from rmcp-test-process-{first_pid}."))
+    );
+
+    let status = Command::new("kill").args(["-9", &first_pid]).status()?;
+    anyhow::ensure!(status.success(), "failed to kill MCP process {first_pid}");
+    wait_for_process_exit(&first_pid).await?;
+    fs::remove_file(&pid_file)?;
+
+    let replacement_response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("ordinary-replacement"),
+            responses::ev_assistant_message("ordinary-replacement-message", "done"),
+            responses::ev_completed("ordinary-replacement"),
+        ]),
+    )
+    .await;
+    fixture.submit_turn("ordinary replacement turn").await?;
+
+    let replacement_pid = wait_for_pid_file(&pid_file).await?;
+    assert_ne!(replacement_pid, first_pid);
+    assert!(process_is_alive(&replacement_pid)?);
+    assert!(
+        replacement_response
+            .single_request()
+            .body_contains_text(&format!("Echo from rmcp-test-process-{replacement_pid}."))
+    );
 
     fixture.codex.shutdown_and_wait().await?;
     wait_for_process_exit(&replacement_pid).await
