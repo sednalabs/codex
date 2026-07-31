@@ -213,9 +213,9 @@ async fn ordinary_turn_replaces_closed_mcp_server_before_provider_catalogue() ->
     )
     .await;
     fixture.submit_turn("ordinary first turn").await?;
-    assert!(first_response.body_contains_text(&format!(
-        "Echo from rmcp-test-process-{first_pid}."
-    )));
+    assert!(
+        first_response.body_contains_text(&format!("Echo from rmcp-test-process-{first_pid}."))
+    );
 
     let status = Command::new("kill").args(["-9", &first_pid]).status()?;
     anyhow::ensure!(status.success(), "failed to kill MCP process {first_pid}");
@@ -236,9 +236,10 @@ async fn ordinary_turn_replaces_closed_mcp_server_before_provider_catalogue() ->
     let replacement_pid = wait_for_pid_file(&pid_file).await?;
     assert_ne!(replacement_pid, first_pid);
     assert!(process_is_alive(&replacement_pid)?);
-    assert!(replacement_response.body_contains_text(&format!(
-        "Echo from rmcp-test-process-{replacement_pid}."
-    )));
+    assert!(
+        replacement_response
+            .body_contains_text(&format!("Echo from rmcp-test-process-{replacement_pid}."))
+    );
 
     fixture.codex.shutdown_and_wait().await?;
     wait_for_process_exit(&replacement_pid).await
