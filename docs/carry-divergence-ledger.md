@@ -1517,6 +1517,14 @@ decisions.
   views expose raw tokens, provenance, component estimates, partial coverage,
   and explicit uncertainty. Provider-reported credits take precedence without
   overwriting the independently calculated rate-card estimate.
+- Migration `0007_usage_codex_credit_rate_update.sql` records the official
+  2026-07-30 rate revision without rewriting history: it closes only the four
+  incumbent GPT-5.6 Luna/Terra Standard/Fast rows at the UTC boundary and
+  inserts four new rows there with their source provenance. Luna Standard and
+  Terra Standard are 5 / 0.5 / 30 and 50 / 5 / 300 credits per 1M
+  uncached input / cached input / output; their explicit Fast rows remain the
+  2.5x card at 12.5 / 1.25 / 75 and 125 / 12.5 / 750. Sol Standard and Fast
+  intervals remain open, gap-free, and unchanged.
 - Completed thread/list/read and TUI status surfaces prefer thread-local
   provider identity evidence from turn completion or the usage ledger before
   falling back to configured session metadata; active/running threads keep the
@@ -1543,6 +1551,7 @@ decisions.
   - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
   - `codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql`
   - `codex-rs/state/usage_migrations/0005_usage_codex_credits.sql`
+  - `codex-rs/state/usage_migrations/0007_usage_codex_credit_rate_update.sql`
   - `codex-rs/tui/src/chatwidget/status_surfaces.rs`
   - `codex-rs/tui/src/session_resume.rs`
   - `codex-rs/state/Cargo.toml`
