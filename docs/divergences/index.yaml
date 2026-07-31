@@ -147,6 +147,7 @@
         "codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql",
         "codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql",
         "codex-rs/state/usage_migrations/0005_usage_codex_credits.sql",
+        "codex-rs/state/usage_migrations/0007_usage_codex_credit_rate_update.sql",
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
@@ -168,7 +169,7 @@
         "configured_resume_cwd_skips_prompt"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
+      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals, updates only GPT-5.6 Luna/Terra Standard/Fast rows, and leaves Sol Standard/Fast unchanged. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [

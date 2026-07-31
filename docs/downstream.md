@@ -701,6 +701,11 @@ User-visible behavior:
 - Fast rows follow the model-specific card: GPT-5.6 and GPT-5.5 are 2.5x
   their Standard rates; GPT-5.4 is 2x its Standard rate. These are explicit
   versioned rows, not a multiplier hidden in the view.
+- The 2026-07-30 rate-card revision preserves the half-open history: GPT-5.6
+  Luna Standard is 5 / 0.5 / 30 credits per 1M uncached input / cached input /
+  output, Terra Standard is 50 / 5 / 300, and their explicit Fast rows are
+  12.5 / 1.25 / 75 and 125 / 12.5 / 750 respectively. Sol Standard and Fast
+  remain gap-free and unchanged at 125 / 12.5 / 750 and 312.5 / 31.25 / 1875.
 - Cache-write input remains diagnostic. A non-zero value produces
   `token_breakdown_incomplete` until its relationship to uncached input is
   contractually established, preventing double-counting.
