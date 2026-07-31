@@ -116,13 +116,13 @@ jobs:
         shell: bash
         run: echo "job_started_at_ms=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: ${{ inputs.checkout_fetch_depth }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
 
       - name: Check out workflow helpers
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
