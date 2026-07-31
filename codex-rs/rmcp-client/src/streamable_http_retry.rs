@@ -17,6 +17,7 @@ use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::oauth::OAuthPersistor;
 
+use super::ClientOperationError;
 use super::PendingTransport;
 use super::RmcpClient;
 
@@ -178,7 +179,10 @@ impl RmcpClient {
                     let Some(retry_delay_ms) = retry_delay_ms else {
                         return Err(error);
                     };
-                    let delay = Duration::from_millis(retry_delay_ms);
+                    let delay = Self::retry_delay_for_initialize_error(
+                        &error,
+                        Duration::from_millis(retry_delay_ms),
+                    );
                     warn!(
                         attempt = attempt + 1,
                         max_attempts = STREAMABLE_HTTP_RETRY_DELAYS_MS.len() + 1,
@@ -263,6 +267,10 @@ impl RmcpClient {
         error: &StreamableHttpError<StreamableHttpClientAdapterError>,
     ) -> bool {
         match error {
+            StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
+                status,
+                ..
+            }) => StatusCode::from_u16(*status).is_ok_and(is_retryable_http_status),
             StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpRequest(
                 ExecServerError::HttpRequest(_),
             )) => true,
@@ -289,10 +297,75 @@ impl RmcpClient {
         }
     }
 
+    pub(super) fn retry_delay(error: &ClientOperationError, fallback: Duration) -> Duration {
+        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
+            error
+        else {
+            return fallback;
+        };
+        let Some(StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
+            status,
+            retry_after: Some(delay),
+            ..
+        })) = error
+            .error
+            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+        else {
+            return fallback;
+        };
+        if StatusCode::from_u16(*status).is_ok_and(|status| {
+            matches!(
+                status,
+                StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+            )
+        }) {
+            *delay
+        } else {
+            fallback
+        }
+    }
+
+    fn retry_delay_for_initialize_error(error: &anyhow::Error, fallback: Duration) -> Duration {
+        for source in error.chain() {
+            let initialize_error = source
+                .downcast_ref::<HandshakeError>()
+                .map(|error| &error.source)
+                .or_else(|| source.downcast_ref::<rmcp::service::ClientInitializeError>());
+            let Some(rmcp::service::ClientInitializeError::TransportError { error, .. }) =
+                initialize_error
+            else {
+                continue;
+            };
+            let Some(StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
+                status,
+                retry_after: Some(delay),
+                ..
+            })) = error
+                .error
+                .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+            else {
+                continue;
+            };
+            if StatusCode::from_u16(*status).is_ok_and(|status| {
+                matches!(
+                    status,
+                    StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+                )
+            }) {
+                return *delay;
+            }
+        }
+        fallback
+    }
+
     pub(super) fn is_unauthorized_streamable_http_error(
         error: &StreamableHttpError<StreamableHttpClientAdapterError>,
     ) -> bool {
         match error {
+            StreamableHttpError::Client(StreamableHttpClientAdapterError::HttpStatus {
+                status: 401,
+                ..
+            }) => true,
             StreamableHttpError::AuthRequired(_)
             | StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
             StreamableHttpError::UnexpectedServerResponse(message) => {

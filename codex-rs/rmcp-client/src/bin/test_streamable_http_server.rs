@@ -20,6 +20,7 @@ use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::header::HOST;
+use axum::http::header::RETRY_AFTER;
 use axum::http::header::WWW_AUTHENTICATE;
 use axum::middleware;
 use axum::middleware::Next;
@@ -91,6 +92,7 @@ struct ArmedFailure {
     remaining: usize,
     /// Raw `WWW-Authenticate` challenge header field values returned with the failure.
     www_authenticate_headers: Vec<HeaderValue>,
+    retry_after: Option<HeaderValue>,
     content_type: Option<HeaderValue>,
     body: Option<String>,
 }
@@ -102,6 +104,7 @@ struct ArmSessionPostFailureRequest {
     /// Raw `WWW-Authenticate` challenge header field values to add to the failure.
     #[serde(default)]
     www_authenticate_headers: Vec<String>,
+    retry_after: Option<String>,
     content_type: Option<String>,
     body: Option<String>,
 }
@@ -534,6 +537,10 @@ async fn arm_post_failure(
         .content_type
         .map(|value| HeaderValue::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST))
         .transpose()?;
+    let retry_after = request
+        .retry_after
+        .map(|value| HeaderValue::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST))
+        .transpose()?;
     let armed_failure = if request.remaining == 0 {
         None
     } else {
@@ -542,6 +549,7 @@ async fn arm_post_failure(
             status,
             remaining: request.remaining,
             www_authenticate_headers,
+            retry_after,
             content_type,
             body: request.body,
         })
@@ -587,6 +595,7 @@ async fn fail_mcp_post_when_armed(
             failure.remaining -= 1;
             let status = failure.status;
             let www_authenticate_headers = failure.www_authenticate_headers.clone();
+            let retry_after = failure.retry_after.clone();
             let content_type = failure.content_type.clone();
             let body = failure
                 .body
@@ -604,6 +613,9 @@ async fn fail_mcp_post_when_armed(
                 response
                     .headers_mut()
                     .append(WWW_AUTHENTICATE, www_authenticate_header);
+            }
+            if let Some(retry_after) = retry_after {
+                response.headers_mut().insert(RETRY_AFTER, retry_after);
             }
             return response;
         }
