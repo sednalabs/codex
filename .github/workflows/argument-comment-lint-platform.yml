@@ -1,0 +1,58 @@
+name: Argument comment lint platform coverage
+
+on:
+  pull_request:
+    branches: [main, upstream-main]
+    paths:
+      - codex-rs/**
+      - tools/argument-comment-lint/**
+      - Cargo.lock
+      - Cargo.toml
+      - "**/Cargo.toml"
+      - rust-toolchain.toml
+      - MODULE.bazel
+      - MODULE.bazel.lock
+      - .github/**
+      - justfile
+      - scripts/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    concurrency-group::${{ github.workflow }}::pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Argument comment lint - ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on || matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            runner: macos-15
+            timeout_minutes: 30
+          - name: Windows
+            runner: windows-x64
+            runs_on: windows-2022
+            timeout_minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run argument comment lint on codex-rs
+        uses: ./.github/actions/run-argument-comment-lint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          target: ${{ runner.os }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree

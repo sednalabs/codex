@@ -17,10 +17,26 @@ outputs:
   repository-cache-hit:
     description: Whether the Bazel repository cache restore found an exact key match.
     value: ${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}
+  repository-cache-write-enabled:
+    description: Whether this event is trusted to publish a repository cache entry.
+    value: ${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}
 
 runs:
   using: composite
   steps:
+    - name: Determine Bazel repository cache write eligibility
+      id: repository_cache_write_policy
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+      run: |
+        enabled=false
+        if [[ "${EVENT_NAME}" == "push" && ("${REF}" == "refs/heads/main" || "${REF}" == "refs/heads/upstream-main") ]]; then
+          enabled=true
+        fi
+        echo "repository-cache-write-enabled=${enabled}" >> "${GITHUB_OUTPUT}"
+
     - name: Set up Bazel CI
       id: setup_bazel
       uses: ./.github/actions/setup-bazel-ci

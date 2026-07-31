@@ -38,6 +38,9 @@ RESOLVE_VALIDATION_PLAN = load_module(
 RESOLVE_RUST_CI_MODE = load_module(
     "resolve_rust_ci_mode_module", SCRIPTS_DIR / "resolve_rust_ci_mode.py"
 )
+RESOLVE_BAZEL_CI_MODE = load_module(
+    "resolve_bazel_ci_mode_module", SCRIPTS_DIR / "resolve_bazel_ci_mode.py"
+)
 AGGREGATE_VALIDATION_SUMMARY = load_module(
     "aggregate_validation_summary_module", SCRIPTS_DIR / "aggregate_validation_summary.py"
 )
@@ -1084,6 +1087,154 @@ class RouteSelectionTests(unittest.TestCase):
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
         )
+
+    def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        jobs = payload.get("jobs") or {}
+        plan_job = jobs.get("plan") or {}
+        self.assertEqual(
+            plan_job.get("outputs"),
+            {
+                "mode": "${{ steps.resolve.outputs.mode }}",
+                "run_bazel": "${{ steps.resolve.outputs.run_bazel }}",
+            },
+        )
+        plan_steps = plan_job.get("steps") or []
+        compare_step = next(
+            step for step in plan_steps if step.get("name") == "Compare exact changed files"
+        )
+        self.assertEqual(compare_step.get("uses"), "actions/github-script@v9.0.0")
+        self.assertEqual(
+            compare_step.get("if"),
+            "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}",
+        )
+        compare_script = (compare_step.get("with") or {}).get("script") or ""
+        self.assertIn("github.rest.repos.compareCommitsWithBasehead", compare_script)
+        self.assertIn("context.payload.pull_request?.base?.sha", compare_script)
+        self.assertIn("context.payload.pull_request?.head?.sha", compare_script)
+        self.assertIn("context.payload.merge_group?.base_sha", compare_script)
+        self.assertIn("context.sha", compare_script)
+        self.assertIn("data.files", compare_script)
+        self.assertIn("files.length >= 300", compare_script)
+        self.assertIn("file.previous_filename", compare_script)
+        self.assertIn("comparison_complete", compare_script)
+
+        resolve_step = next(
+            step for step in plan_steps if step.get("name") == "Resolve Bazel CI mode"
+        )
+        self.assertIn(
+            "resolve_bazel_ci_mode.py",
+            resolve_step.get("run") or "",
+        )
+        self.assertIn("--github-output", resolve_step.get("run") or "")
+
+        docs_job = jobs.get("docs-only") or {}
+        self.assertEqual(docs_job.get("needs"), "plan")
+        self.assertEqual(docs_job.get("if"), "${{ needs.plan.outputs.mode == 'docs_only' }}")
+        docs_step = next(
+            step
+            for step in docs_job.get("steps") or []
+            if step.get("name") == "Check markdown links"
+        )
+        self.assertEqual(docs_step.get("run"), "python3 .github/scripts/check_markdown_links.py")
+
+        for job_name in ["test", "test-windows-shard", "clippy", "verify-release-build"]:
+            with self.subTest(job=job_name):
+                job = jobs.get(job_name) or {}
+                self.assertEqual(job.get("needs"), "plan")
+                self.assertEqual(job.get("if"), "${{ needs.plan.outputs.run_bazel == 'true' }}")
+
+        windows_gate = jobs.get("test-windows") or {}
+        self.assertEqual(windows_gate.get("needs"), ["plan", "test-windows-shard"])
+        self.assertEqual(
+            windows_gate.get("if"),
+            "${{ always() && needs.plan.outputs.run_bazel == 'true' }}",
+        )
+        native_job = jobs.get("test-windows-native-main") or {}
+        self.assertEqual(native_job.get("needs"), "plan")
+        self.assertIn("needs.plan.outputs.run_bazel == 'true'", native_job.get("if") or "")
+
+        results_job = jobs.get("results") or {}
+        self.assertEqual(results_job.get("name"), "Bazel required gate")
+        self.assertEqual(
+            results_job.get("needs"),
+            [
+                "plan",
+                "docs-only",
+                "test",
+                "test-windows-shard",
+                "test-windows",
+                "test-windows-native-main",
+                "clippy",
+                "verify-release-build",
+            ],
+        )
+        results_run = (
+            next(
+                step
+                for step in results_job.get("steps") or []
+                if step.get("name") == "Require the selected Bazel CI mode"
+            ).get("run")
+            or ""
+        )
+        self.assertIn('if mode == "docs_only"', results_run)
+        self.assertIn('elif mode == "full"', results_run)
+        self.assertIn('require("docs-only", "success")', results_run)
+        self.assertIn('require(job, "skipped")', results_run)
+        self.assertIn('require(job, "success")', results_run)
+
+    def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
+        setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")
+        setup_bazel_step = next(
+            step
+            for step in ((setup_action.get("runs") or {}).get("steps") or [])
+            if step.get("name") == "Set up Bazel"
+        )
+        self.assertEqual(
+            (setup_bazel_step.get("with") or {}).get("bazelisk-cache"),
+            "true",
+        )
+        self.assertEqual(
+            (setup_bazel_step.get("with") or {}).get("disk-cache"),
+            "${{ github.workflow }}",
+        )
+        self.assertEqual(
+            (setup_bazel_step.get("with") or {}).get("cache-save"),
+            "${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}",
+        )
+
+        prepare_action = load_workflow_payload(REPO_ROOT / ".github/actions/prepare-bazel-ci/action.yml")
+        self.assertEqual(
+            (prepare_action.get("outputs") or {}).get("repository-cache-write-enabled", {}).get(
+                "value"
+            ),
+            "${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}",
+        )
+        policy_step = next(
+            step
+            for step in ((prepare_action.get("runs") or {}).get("steps") or [])
+            if step.get("name") == "Determine Bazel repository cache write eligibility"
+        )
+        policy_run = policy_step.get("run") or ""
+        self.assertIn('"${EVENT_NAME}" == "push"', policy_run)
+        self.assertIn("refs/heads/main", policy_run)
+        self.assertIn("refs/heads/upstream-main", policy_run)
+
+        bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        cache_save_steps = [
+            step
+            for job in (bazel.get("jobs") or {}).values()
+            for step in (job.get("steps") or [])
+            if step.get("name") == "Save bazel repository cache"
+        ]
+        self.assertEqual(len(cache_save_steps), 4)
+        for save_step in cache_save_steps:
+            with self.subTest(cache_key=(save_step.get("with") or {}).get("key")):
+                self.assertEqual(save_step.get("continue-on-error"), "true")
+                self.assertIn(
+                    "steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'",
+                    save_step.get("if") or "",
+                )
 
     def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
         script = (REPO_ROOT / ".github/scripts/run-bazel-ci.sh").read_text()
@@ -3379,7 +3530,17 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("workflow_dispatch", trigger)
         self.assertEqual(trigger.get("merge_group"), {"types": ["checks_requested"]})
         self.assertEqual(payload.get("permissions"), {"contents": "read"})
-        self.assertNotIn("concurrency", payload)
+        concurrency = payload.get("concurrency") or {}
+        concurrency_group = str(concurrency.get("group") or "")
+        self.assertIn("concurrency-group::${{ github.workflow }}::", concurrency_group)
+        self.assertIn("format('merge-group-{0}', github.sha)", concurrency_group)
+        self.assertIn("format('pr-{0}', github.event.pull_request.number)", concurrency_group)
+        self.assertIn("format('push-{0}', github.sha)", concurrency_group)
+        self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", concurrency_group)
+        self.assertEqual(
+            concurrency.get("cancel-in-progress"),
+            "${{ github.event_name == 'pull_request' }}",
+        )
         self.assertNotIn("plan", jobs)
         self.assertNotIn("needs", analyze_job)
         self.assertNotIn("if", analyze_job)
@@ -3939,7 +4100,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             )
             or ""
         )
-        self.assertIn('"timeout_minutes": 240', plan_run)
+        self.assertIn('"timeout_minutes": 30', plan_run)
 
         rust_ci_full_job = (rust_ci_full.get("jobs") or {}).get(
             "argument_comment_lint_prebuilt"
@@ -5000,22 +5161,34 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
 
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
-        for workflow_name in (
-            "blocking-ci.yml",
-            "runner-label-policy.yml",
-            "shell-tool-mcp-ci.yml",
-        ):
+        merge_group_workflows = []
+        for workflow_path in sorted((REPO_ROOT / ".github/workflows").glob("*.y*ml")):
+            payload = load_workflow_payload(workflow_path)
+            if "merge_group" not in (payload.get("on") or {}):
+                continue
+            merge_group_workflows.append(workflow_path.name)
+            workflow_name = workflow_path.name
             with self.subTest(workflow=workflow_name):
-                payload = load_workflow_payload(REPO_ROOT / ".github/workflows" / workflow_name)
                 concurrency = payload.get("concurrency") or {}
                 group = str(concurrency.get("group") or "")
+                self.assertIn("concurrency-group::${{ github.workflow }}::", group)
                 self.assertIn("github.event_name == 'merge_group'", group)
                 self.assertIn("format('merge-group-{0}', github.sha)", group)
+                self.assertIn("format('pr-{0}', github.event.pull_request.number)", group)
+                self.assertIn("format('push-{0}', github.sha)", group)
+                self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", group)
                 cancel = str(concurrency.get("cancel-in-progress") or "")
-                if workflow_name == "blocking-ci.yml":
-                    self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
-                else:
-                    self.assertIn("github.event_name != 'merge_group'", cancel)
+                self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
+
+        self.assertEqual(
+            merge_group_workflows,
+            [
+                "blocking-ci.yml",
+                "codeql.yml",
+                "osv-scanner.yml",
+                "runner-label-policy.yml",
+            ],
+        )
 
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         self.assertNotIn(
@@ -5037,6 +5210,74 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         self.assertIn("github.event.merge_group.base_sha", run_script)
         self.assertIn("head='${{ github.sha }}'", run_script)
+
+
+class BazelCiModeScriptTests(unittest.TestCase):
+    def test_docs_only_mode_requires_a_complete_nonempty_docs_file_list(self) -> None:
+        self.assertEqual(
+            RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
+                comparison_complete=True,
+                files=["README.md", "docs/guide.md", "docs/reference/config.md"],
+            ),
+            {"mode": "docs_only", "run_bazel": "false"},
+        )
+
+        for comparison_complete, files in [
+            (False, ["README.md"]),
+            (True, []),
+            (True, ["README.md", "codex-rs/core/src/lib.rs"]),
+            (True, [".github/workflows/bazel.yml"]),
+            (True, ["docs/guide.md", 42]),
+            (True, {"filename": "docs/guide.md"}),
+        ]:
+            with self.subTest(
+                comparison_complete=comparison_complete,
+                files=files,
+            ):
+                self.assertEqual(
+                    RESOLVE_BAZEL_CI_MODE.resolve_bazel_ci_mode(
+                        comparison_complete=comparison_complete,
+                        files=files,
+                    ),
+                    {"mode": "full", "run_bazel": "true"},
+                )
+
+    def test_command_line_mode_resolver_fails_closed_on_bad_json(self) -> None:
+        outputs = run_script(
+            SCRIPTS_DIR / "resolve_bazel_ci_mode.py",
+            "--comparison-complete",
+            "true",
+            "--files-json",
+            "not-json",
+        )
+        self.assertEqual(outputs, {"mode": "full", "run_bazel": "true"})
+
+    def test_command_line_mode_resolver_writes_github_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "github-output"
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(SCRIPTS_DIR / "resolve_bazel_ci_mode.py"),
+                    "--comparison-complete",
+                    "true",
+                    "--files-json",
+                    '["README.md", "docs/guide.md"]',
+                    "--github-output",
+                    str(output_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                json.loads(proc.stdout),
+                {"mode": "docs_only", "run_bazel": "false"},
+            )
+            self.assertEqual(
+                parse_github_output_file(output_path),
+                {"mode": "docs_only", "run_bazel": "false"},
+            )
 
 
 class RustCiModeScriptTests(unittest.TestCase):
@@ -5204,9 +5445,21 @@ class RustCiModeScriptTests(unittest.TestCase):
             ).get("run")
             or ""
         )
-        self.assertIn('"timeout_minutes": 240', matrix_plan_run)
+        self.assertIn('"timeout_minutes": 30', matrix_plan_run)
 
-        arglint_steps = (jobs.get("argument_comment_lint_prebuilt") or {}).get("steps") or []
+        arglint_job = jobs.get("argument_comment_lint_prebuilt") or {}
+        self.assertEqual(arglint_job.get("needs"), ["changed", "matrix_plan"])
+        self.assertEqual(
+            arglint_job.get("if"),
+            "${{ needs.changed.outputs.run_argument_comment_lint_prebuilt == 'true' }}",
+        )
+        self.assertEqual(
+            (arglint_job.get("strategy") or {}).get("matrix"),
+            "${{ fromJSON(needs.matrix_plan.outputs.argument_comment_lint_matrix) }}",
+        )
+        self.assertNotIn("environment", arglint_job)
+
+        arglint_steps = arglint_job.get("steps") or []
         lint_steps = [
             step
             for step in arglint_steps
@@ -5215,6 +5468,66 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(len(lint_steps), 1)
         self.assertEqual(lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint")
         self.assertNotIn("buildbuddy-api-key", lint_steps[0].get("with") or {})
+
+    def test_argument_comment_lint_platform_workflow_is_pr_only_advisory_coverage(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/argument-comment-lint-platform.yml"
+        )
+        trigger = payload.get("on") or {}
+        pull_request = trigger.get("pull_request") or {}
+        self.assertEqual(set(trigger), {"pull_request"})
+        self.assertEqual(pull_request.get("branches"), ["main", "upstream-main"])
+        self.assertEqual(
+            pull_request.get("paths"),
+            [
+                "codex-rs/**",
+                "tools/argument-comment-lint/**",
+                "Cargo.lock",
+                "Cargo.toml",
+                "**/Cargo.toml",
+                "rust-toolchain.toml",
+                "MODULE.bazel",
+                "MODULE.bazel.lock",
+                ".github/**",
+                "justfile",
+                "scripts/**",
+            ],
+        )
+        self.assertEqual(payload.get("permissions"), {"contents": "read"})
+        self.assertEqual(
+            payload.get("concurrency"),
+            {
+                "group": "concurrency-group::${{ github.workflow }}::pr-${{ github.event.pull_request.number }}",
+                "cancel-in-progress": "true",
+            },
+        )
+
+        lint_job = (payload.get("jobs") or {}).get("lint") or {}
+        self.assertNotIn("environment", lint_job)
+        self.assertEqual(
+            (lint_job.get("strategy") or {}).get("matrix"),
+            {
+                "include": [
+                    {"name": "macOS", "runner": "macos-15", "timeout_minutes": "30"},
+                    {
+                        "name": "Windows",
+                        "runner": "windows-x64",
+                        "runs_on": "windows-2022",
+                        "timeout_minutes": "30",
+                    },
+                ]
+            },
+        )
+        steps = lint_job.get("steps") or []
+        checkout = steps[0]
+        self.assertEqual(
+            checkout.get("uses"), "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+        )
+        self.assertEqual((checkout.get("with") or {}).get("persist-credentials"), "false")
+        lint_step = next(
+            step for step in steps if step.get("name") == "Run argument comment lint on codex-rs"
+        )
+        self.assertEqual(lint_step.get("uses"), "./.github/actions/run-argument-comment-lint")
 
     def test_explicit_primary_diff_inputs_route_without_git_history(self) -> None:
         outputs = run_script(
