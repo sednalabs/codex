@@ -1,6 +1,10 @@
 name: prepare-bazel-ci
 description: Prepare a Bazel CI job with shared setup, repository cache restore, and execution logs.
 inputs:
+  disk-cache:
+    description: Whether setup-bazel may restore and save Bazel action outputs for this job.
+    required: false
+    default: "true"
   target:
     description: Target triple used for setup and cache namespacing.
     required: true
@@ -41,6 +45,7 @@ runs:
       id: setup_bazel
       uses: ./.github/actions/setup-bazel-ci
       with:
+        disk-cache: ${{ inputs.disk-cache }}
         target: ${{ inputs.target }}
 
     - name: Compute bazel repository cache key
