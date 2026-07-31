@@ -111,6 +111,10 @@ impl AgentNavigationState {
                 agent_nickname,
                 agent_role,
                 agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
                 is_running: previous_is_running && !is_closed,
                 is_closed,
                 created_at,
@@ -129,7 +133,23 @@ impl AgentNavigationState {
             AgentPickerThreadEntry {
                 agent_path: entry
                     .agent_path
-                    .or(existing.as_ref().and_then(|entry| entry.agent_path.clone())),
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.agent_path.clone())),
+                model: entry
+                    .model
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.model.clone())),
+                reasoning_effort: entry.reasoning_effort.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.reasoning_effort.clone())
+                }),
+                model_provider: entry.model_provider.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.model_provider.clone())
+                }),
+                task_name: entry
+                    .task_name
+                    .or_else(|| existing.as_ref().and_then(|entry| entry.task_name.clone())),
                 created_at: entry
                     .created_at
                     .or(existing.as_ref().and_then(|entry| entry.created_at)),
@@ -152,12 +172,22 @@ impl AgentNavigationState {
                     agent_nickname: None,
                     agent_role: None,
                     agent_path: None,
+                    model: None,
+                    reasoning_effort: None,
+                    model_provider: None,
+                    task_name: None,
                     is_running: false,
                     is_closed: false,
                     created_at: None,
                     updated_at: None,
                 });
         entry.agent_path = Some(activity.agent_path);
+        if activity.model.is_some() {
+            entry.model = activity.model;
+        }
+        if activity.reasoning_effort.is_some() {
+            entry.reasoning_effort = activity.reasoning_effort;
+        }
         if activity.is_running_hint
             && !entry.is_closed
             && !self.stopped_threads.contains(&activity.thread_id)
@@ -166,6 +196,31 @@ impl AgentNavigationState {
         } else {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
+        }
+    }
+
+    pub(crate) fn update_identity(
+        &mut self,
+        thread_id: ThreadId,
+        model: Option<String>,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+        model_provider: Option<String>,
+        task_name: Option<String>,
+    ) {
+        let Some(entry) = self.threads.get_mut(&thread_id) else {
+            return;
+        };
+        if model.is_some() {
+            entry.model = model;
+        }
+        if reasoning_effort.is_some() {
+            entry.reasoning_effort = reasoning_effort;
+        }
+        if model_provider.is_some() {
+            entry.model_provider = model_provider;
+        }
+        if task_name.is_some() {
+            entry.task_name = task_name;
         }
     }
 
@@ -197,6 +252,18 @@ impl AgentNavigationState {
             && let Some(entry) = self.threads.get_mut(&thread_id)
         {
             entry.agent_path = Some(agent_path);
+        }
+    }
+
+    pub(crate) fn set_timestamps(
+        &mut self,
+        thread_id: ThreadId,
+        created_at: Option<i64>,
+        updated_at: Option<i64>,
+    ) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.created_at = created_at.or(entry.created_at);
+            entry.updated_at = updated_at.or(entry.updated_at);
         }
     }
 
@@ -626,6 +693,10 @@ mod tests {
                 agent_nickname: Some("Scout renamed".to_string()),
                 agent_role: Some("worker".to_string()),
                 agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
                 is_running: true,
                 is_closed: false,
                 created_at: Some(1),
@@ -647,6 +718,10 @@ mod tests {
                 agent_nickname: Some("Scout renamed".to_string()),
                 agent_role: Some("worker".to_string()),
                 agent_path: None,
+                model: None,
+                reasoning_effort: None,
+                model_provider: None,
+                task_name: None,
                 is_running: false,
                 is_closed: true,
                 created_at: Some(1),

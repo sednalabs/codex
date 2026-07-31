@@ -138,6 +138,8 @@ pub(crate) struct SelectionItem {
     pub description: Option<String>,
     pub selected_description: Option<String>,
     pub is_current: bool,
+    /// Hide this row while a searchable list has an empty query, but retain it for explicit search.
+    pub hidden_when_unfiltered: bool,
     pub is_default: bool,
     pub is_disabled: bool,
     pub actions: Vec<SelectionAction>,
@@ -504,7 +506,14 @@ impl ListSelectionView {
                 })
                 .collect();
         } else {
-            self.filtered_indices = (0..self.active_items().len()).collect();
+            self.filtered_indices = self
+                .active_items()
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, item)| {
+                    (!self.is_searchable || !item.hidden_when_unfiltered).then_some(idx)
+                })
+                .collect();
         }
 
         let len = self.filtered_indices.len();
@@ -1740,6 +1749,36 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert_snapshot!("list_selection_empty_searchable", rendered);
+    }
+
+    #[test]
+    fn searchable_hidden_rows_return_when_query_matches() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut view = new_view(
+            SelectionViewParams {
+                items: vec![
+                    SelectionItem {
+                        name: "Live worker".to_string(),
+                        search_value: Some("live worker open".to_string()),
+                        ..Default::default()
+                    },
+                    SelectionItem {
+                        name: "Closed worker".to_string(),
+                        search_value: Some("closed worker stale".to_string()),
+                        hidden_when_unfiltered: true,
+                        ..Default::default()
+                    },
+                ],
+                is_searchable: true,
+                ..Default::default()
+            },
+            tx,
+        );
+
+        assert_eq!(view.filtered_indices, vec![0]);
+        view.set_search_query("closed".to_string());
+        assert_eq!(view.filtered_indices, vec![1]);
     }
 
     #[test]

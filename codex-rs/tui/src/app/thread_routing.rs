@@ -6,6 +6,7 @@
 
 use super::session_lifecycle::ThreadAttachPresentation;
 use super::*;
+use crate::app_server_session::source_agent_path;
 use crate::chatwidget::ThreadInputStateRestoreMode;
 use crate::session_resume::SessionModelSettings;
 use crate::session_resume::read_session_model_settings;
@@ -1046,7 +1047,9 @@ impl App {
         if let Some(activity) =
             sub_agent_activity_item(notification).and_then(sub_agent_activity_display)
         {
+            let thread_id = activity.thread_id;
             self.agent_navigation.record_sub_agent_activity(activity);
+            self.sync_agent_picker_identity(thread_id);
             self.sync_active_agent_label();
             return;
         }
@@ -1124,6 +1127,29 @@ impl App {
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
         );
+        self.agent_navigation
+            .set_agent_path(thread_id, source_agent_path(&notification.thread.source));
+        self.agent_navigation.update_identity(
+            thread_id,
+            notification
+                .thread
+                .model
+                .clone()
+                .or_else(|| (!session.model.trim().is_empty()).then(|| session.model.clone())),
+            notification
+                .thread
+                .reasoning_effort
+                .clone()
+                .or_else(|| session.reasoning_effort.clone()),
+            Some(session.model_provider_id.clone()),
+            session.thread_name.clone(),
+        );
+        self.agent_navigation.set_timestamps(
+            thread_id,
+            Some(notification.thread.created_at),
+            Some(notification.thread.updated_at),
+        );
+        self.sync_agent_picker_identity(thread_id);
         Some(session)
     }
 

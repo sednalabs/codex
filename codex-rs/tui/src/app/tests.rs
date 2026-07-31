@@ -1480,6 +1480,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             is_closed: true,
             created_at: None,
             updated_at: None,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1500,6 +1501,8 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1556,6 +1559,8 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1594,6 +1599,8 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
     assert!(!app.agent_navigation.is_parent_owned(thread_id));
@@ -1610,6 +1617,7 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
             is_closed: false,
             created_at: None,
             updated_at: None,
+            ..AgentPickerThreadEntry::default()
         })
     );
     Ok(())
@@ -1631,6 +1639,8 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/worker".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1670,6 +1680,8 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
         .record_sub_agent_activity(SubAgentActivityDisplay {
             thread_id,
             agent_path: "/root/child".to_string(),
+            model: None,
+            reasoning_effort: None,
             is_running_hint: true,
         });
 
@@ -1768,17 +1780,24 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 
         Box::pin(app.open_agent_picker(&mut app_server)).await;
 
+        let entry = app
+            .agent_navigation
+            .get(&thread_id)
+            .expect("loaded thread should be present in agent navigation");
+        assert_eq!(entry.agent_nickname, None);
+        assert_eq!(entry.agent_role, None);
+        assert_eq!(entry.agent_path, None);
+        assert_eq!(entry.model.as_deref(), app.config.model.as_deref());
+        assert_eq!(entry.reasoning_effort, None);
         assert_eq!(
-            app.agent_navigation.get(&thread_id),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: None,
-                agent_role: None,
-                agent_path: None,
-                is_running: false,
-                is_closed: false,
-                ..AgentPickerThreadEntry::default()
-            })
+            entry.model_provider.as_deref(),
+            Some(app.config.model_provider_id.as_str())
         );
+        assert_eq!(entry.task_name, None);
+        assert!(!entry.is_running);
+        assert!(!entry.is_closed);
+        assert!(entry.created_at.is_some());
+        assert!(entry.updated_at.is_some());
         Ok(())
     })
 }
@@ -1864,6 +1883,8 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             .record_sub_agent_activity(SubAgentActivityDisplay {
                 thread_id: child_thread_ids[0],
                 agent_path: "/root/child-0".to_string(),
+                model: None,
+                reasoning_effort: None,
                 is_running_hint: true,
             });
         app.thread_event_channels.remove(&child_thread_ids[1]);
@@ -1883,6 +1904,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 is_closed: false,
                 created_at: None,
                 updated_at: None,
+                ..AgentPickerThreadEntry::default()
             })
         );
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
@@ -2748,6 +2770,10 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
     Box::pin(app.open_agent_picker(&mut app_server)).await;
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -3511,9 +3537,14 @@ fn inactive_thread_started_notification_initializes_replay_session() -> Result<(
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 agent_path: None,
+                model: Some("gpt-agent".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                model_provider: Some("agent-provider".to_string()),
+                task_name: Some("agent thread".to_string()),
                 is_running: false,
                 is_closed: false,
-                ..AgentPickerThreadEntry::default()
+                created_at: Some(1),
+                updated_at: Some(2),
             })
         );
 

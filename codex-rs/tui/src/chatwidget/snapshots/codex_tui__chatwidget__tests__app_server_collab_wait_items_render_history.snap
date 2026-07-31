@@ -2,7 +2,7 @@
 source: tui/src/chatwidget/tests/app_server.rs
 expression: combined
 ---
-• Waiting · primitive: wait_agent · 2 agents
+• Waiting on · primitive: wait_agent · Robie [explorer], Ada [reviewer]
   └ Robie [explorer]
     Ada [reviewer]
 
@@ -10,4 +10,4 @@ expression: combined
 • Mailbox update received
   └ Robie [explorer]: Completed - Done
     Ada [reviewer]: Running
-    Still pending: 019cff70-2599-75e2-af72-b96db334332d
+    Still pending: Ada [reviewer]

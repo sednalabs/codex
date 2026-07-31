@@ -2003,6 +2003,7 @@ decisions.
   cold identity that persisted-history reload cannot restore.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.6-luna` with low reasoning for bounded monitored-wait seams.
 - Live `inspect_agent_tree` rows expose the effective model and reasoning effort from each loaded thread's configuration snapshot. Stale rows leave both fields null because persisted agent metadata does not prove a runtime configuration; these values are configuration evidence, not provider-usage proof.
+- The TUI carries the same identity boundary into its activity and picker surfaces: V2 start activity includes the effective child model and reasoning effort, `/agent` and `/subagents` retain friendly names and canonical paths, and waiting rows say who they are waiting on with the known model/effort. Searchable picker rows hide inactive or stale sidecars by default while keeping them available through a `closed` search; the existing slash aliases remain unchanged.
 - Queue-only `send_message` returns a structured receipt containing the canonical target plus effective model, provider, reasoning effort, and service tier when its runtime is already loaded. Those configuration fields are null for a cold or evicted target so the receipt preserves non-activating delivery. `handoff_state: queued` means the runtime accepted the handoff; it is deliberately not an agent acknowledgement or completion signal.
 - Upstream harvest decision, refreshed 2026-07-22:
 
@@ -2037,6 +2038,14 @@ decisions.
   - `codex-rs/core/src/session/mod.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs`
+  - `codex-rs/protocol/src/items.rs`
+  - `codex-rs/protocol/src/protocol.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+  - `codex-rs/tui/src/multi_agents.rs`
+  - `codex-rs/tui/src/app/agent_navigation.rs`
+  - `codex-rs/tui/src/app/session_lifecycle.rs`
+  - `codex-rs/tui/src/app/thread_routing.rs`
+  - `codex-rs/tui/src/bottom_pane/list_selection_view.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents/wait.rs`

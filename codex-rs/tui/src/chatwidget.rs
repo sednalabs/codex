@@ -972,13 +972,22 @@ impl ChatWidget {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) {
-        self.collab_agent_metadata.insert(
+        self.set_collab_agent_identity(
             thread_id,
             AgentMetadata {
                 agent_nickname,
                 agent_role,
+                ..AgentMetadata::default()
             },
         );
+    }
+
+    pub(crate) fn set_collab_agent_identity(
+        &mut self,
+        thread_id: ThreadId,
+        metadata: AgentMetadata,
+    ) {
+        self.collab_agent_metadata.insert(thread_id, metadata);
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
