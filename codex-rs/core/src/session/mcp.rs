@@ -271,6 +271,14 @@ impl Session {
         {
             self.mark_mcp_runtime_dirty();
         }
+        if self.mcp_refresh.should_probe_liveness(&turn_context.sub_id) {
+            let has_closed_connections = self.services.mcp_runtime.has_closed_connections().await;
+            self.mcp_refresh
+                .record_liveness_result(has_closed_connections);
+            if has_closed_connections {
+                self.mark_mcp_runtime_dirty();
+            }
+        }
         self.refresh_mcp_if_dirty().await;
         if let Some(binding) = self.services.mcp_runtime.current_binding().await {
             return binding;

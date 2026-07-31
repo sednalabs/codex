@@ -100,6 +100,16 @@ impl McpServerConnection {
         self.client.client().await
     }
 
+    async fn is_closed(&self) -> bool {
+        if !self.client.startup_complete.load(Ordering::Acquire) {
+            return false;
+        }
+        let Ok(client) = self.client.client().await else {
+            return false;
+        };
+        client.client.is_closed().await
+    }
+
     async fn shutdown(&self) {
         self.client.shutdown().await;
     }
@@ -543,6 +553,19 @@ impl McpConnectionSet {
 
     pub fn has_servers(&self) -> bool {
         !self.servers.is_empty()
+    }
+
+    /// Returns whether any initialized MCP connection has lost its transport.
+    ///
+    /// Connections that are still starting are ignored so checking liveness does
+    /// not turn an ordinary turn into a startup wait.
+    pub(crate) async fn has_closed_connections(&self) -> bool {
+        for view in self.servers.values() {
+            if view.connection.is_closed().await {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn contains_server(&self, server_name: &str) -> bool {

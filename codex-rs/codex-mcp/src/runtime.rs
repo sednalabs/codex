@@ -249,6 +249,11 @@ impl McpRuntime {
         self.current.load().ready_selected_capability_roots.clone()
     }
 
+    /// Returns whether any initialized MCP connection has lost its transport.
+    pub async fn has_closed_connections(&self) -> bool {
+        self.latest_connections().has_closed_connections().await
+    }
+
     pub fn elicitations_auto_deny(&self) -> bool {
         self.elicitation_router.auto_deny()
     }
