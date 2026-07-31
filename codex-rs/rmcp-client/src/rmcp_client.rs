@@ -1238,7 +1238,7 @@ impl RmcpClient {
                     let Some(retry_delay_ms) = retry_delay_ms else {
                         return Err(error);
                     };
-                    let delay = Duration::from_millis(retry_delay_ms);
+                    let delay = Self::retry_delay(&error, Duration::from_millis(retry_delay_ms));
                     warn!(
                         attempt = attempt + 1,
                         max_attempts = STREAMABLE_HTTP_RETRY_DELAYS_MS.len() + 1,

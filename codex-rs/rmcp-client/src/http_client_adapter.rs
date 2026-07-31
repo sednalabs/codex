@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use codex_api::SharedAuthProvider;
@@ -22,6 +23,7 @@ use codex_exec_server::HttpResponseBodyStream;
 use futures::StreamExt;
 use futures::stream;
 use futures::stream::BoxStream;
+use httpdate::parse_http_date;
 use reqwest::StatusCode;
 use reqwest::header::ACCEPT;
 use reqwest::header::AUTHORIZATION;
@@ -29,6 +31,7 @@ use reqwest::header::CONTENT_TYPE;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderName;
 use reqwest::header::HeaderValue;
+use reqwest::header::RETRY_AFTER;
 use rmcp::model::ClientJsonRpcMessage;
 use rmcp::model::ClientNotification;
 use rmcp::model::ConstString;
@@ -66,6 +69,12 @@ pub(crate) enum StreamableHttpClientAdapterError {
     HttpRequest(#[from] ExecServerError),
     #[error("invalid HTTP header: {0}")]
     Header(String),
+    #[error("HTTP {status}: {body}")]
+    HttpStatus {
+        status: u16,
+        body: String,
+        retry_after: Option<Duration>,
+    },
 }
 
 impl StreamableHttpClientAdapter {
@@ -200,13 +209,14 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             {
                 return Ok(StreamableHttpPostResponse::Json(message, session_id));
             }
-            return Err(StreamableHttpError::UnexpectedServerResponse(
-                format!(
-                    "HTTP {}: {}",
-                    response.status,
-                    body_preview(String::from_utf8_lossy(&body).to_string())
-                )
-                .into(),
+            return Err(StreamableHttpError::Client(
+                StreamableHttpClientAdapterError::HttpStatus {
+                    status: response.status,
+                    body: body_preview(String::from_utf8_lossy(&body).to_string()),
+                    retry_after: response_header(&response.headers, RETRY_AFTER)
+                        .as_deref()
+                        .and_then(parse_retry_after),
+                },
             ));
         }
         match content_type.as_deref() {
@@ -502,6 +512,17 @@ fn response_header(headers: &[HttpHeader], name: impl AsRef<str>) -> Option<Stri
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case(name))
         .map(|header| header.value.clone())
+}
+
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    parse_http_date(value)
+        .ok()?
+        .duration_since(std::time::SystemTime::now())
+        .ok()
 }
 
 fn status_is_success(status: u16) -> bool {
