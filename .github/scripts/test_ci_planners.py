@@ -3500,7 +3500,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn(".codeql-runtime/codeql-actions.yml", actions_config_run)
 
         init_step = next(step for step in steps if step.get("name") == "Initialize CodeQL")
-        self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4")
+        self.assertEqual(init_step.get("uses"), "github/codeql-action/init@v4.37.3")
         self.assertEqual(
             init_step.get("with") or {},
             {
