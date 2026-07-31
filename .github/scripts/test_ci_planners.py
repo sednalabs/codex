@@ -4863,6 +4863,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ["opened", "synchronize", "reopened", "ready_for_review", "labeled"],
         )
 
+    def test_sedna_heavy_is_advisory_and_does_not_run_in_merge_queue(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
+        self.assertNotIn("merge_group", payload.get("on") or {})
+
     def test_sedna_heavy_metadata_skips_draft_pr_churn_without_ci_heavy(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml")
         metadata_if = ((payload.get("jobs") or {}).get("metadata") or {}).get("if") or ""
@@ -4994,6 +4998,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             (payload.get("on") or {}).get("merge_group"),
             {"types": ["checks_requested"]},
         )
+
+    def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
+        for workflow_name in (
+            "blocking-ci.yml",
+            "bazel.yml",
+            "runner-label-policy.yml",
+            "shell-tool-mcp-ci.yml",
+        ):
+            with self.subTest(workflow=workflow_name):
+                payload = load_workflow_payload(REPO_ROOT / ".github/workflows" / workflow_name)
+                concurrency = payload.get("concurrency") or {}
+                group = str(concurrency.get("group") or "")
+                self.assertIn("github.event_name == 'merge_group'", group)
+                self.assertIn("format('merge-group-{0}', github.sha)", group)
+                cancel = str(concurrency.get("cancel-in-progress") or "")
+                if workflow_name == "blocking-ci.yml":
+                    self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
+                else:
+                    self.assertIn("github.event_name != 'merge_group'", cancel)
 
     def test_blob_size_policy_uses_queue_base_for_merge_groups(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blob-size-policy.yml")

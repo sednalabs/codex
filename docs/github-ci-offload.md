@@ -91,7 +91,8 @@ artifacts.
     routing where safe, then fall back to git diff when metadata is unavailable
     or ambiguous
 - `sedna-heavy-tests`
-  - trigger: manual dispatch, `ci:heavy` PR label, and merge-group checkpoints
+  - trigger: manual dispatch and the `ci:heavy` PR label; it is advisory and
+    intentionally excluded from merge-group checkpoints
   - purpose: expensive Linux-heavy Rust validation without using the local development machine as the
     build factory
   - fanout: smoke and selected lanes now split by `setup_class` so light workflow/docs shards do
@@ -149,8 +150,9 @@ artifacts.
    release-build dependency or lockfile readiness under `--locked`.
    - `sedna.release-linux-smoke` is a plain locked release build preflight: it keeps
      Linux build deps and `sccache`, but not DotSlash or release-publish steps.
-9. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation, merge-group
-   heavy validation, or a named heavy lane.
+9. Use `sedna-heavy-tests` only when the change needs labeled PR heavy validation
+   or a named heavy lane. It is intentionally outside the merge queue so its
+   advisory matrix cannot cancel or delay the required queue checks.
 10. Use `rust-ci-full` only for scheduled/manual broad Cargo-native checkpoints,
     not as a routine post-merge rerun. Its scheduled path follows the scheduled
     `rust-ci` run and starts only if that upstream gate passed on `main`. Both
@@ -439,8 +441,9 @@ It records:
   `main`.
 - During rollout, use an existing manual-dispatch workflow such as `sedna-heavy-tests.yml` as the
   bootstrap validator for the branch that introduces the new workflow.
-- Be aware that `sedna-heavy-tests.yml` still uses a coarse concurrency group keyed only by
-  workflow plus ref, so same-ref manual lanes serialize or cancel rather than running truly in
-  parallel.
+- `sedna-heavy-tests.yml` keys manual lanes by their logical ref and lane, so
+  separate named lanes do not collide. Merge-group concurrency is separately
+  keyed by immutable queue SHA in the required workflows, and merge-group
+  attempts are never cancelled by a later queue attempt.
 - The finer-grained `validation-lab` concurrency key (`ref + profile + lane set + explicit lanes`)
   is what unlocks parallel scratch/integration validation once that workflow exists on `main`.
