@@ -633,8 +633,11 @@ class DispatchAndWatchTests(unittest.TestCase):
             ]
         )
 
+        captured = {}
+
         class FakePopen:
             def __init__(self, *args, **kwargs):
+                captured["command"] = args[0]
                 self.stdout = output_lines
                 self.returncode = 0
 
@@ -647,7 +650,7 @@ class DispatchAndWatchTests(unittest.TestCase):
             def wait(self):
                 return 0
 
-        with patch.object(MODULE.subprocess, "Popen", return_value=FakePopen()), patch(
+        with patch.object(MODULE.subprocess, "Popen", side_effect=FakePopen), patch(
             "sys.stdout", io.StringIO()
         ):
             rc = MODULE._run_watcher(
@@ -660,6 +663,9 @@ class DispatchAndWatchTests(unittest.TestCase):
             )
 
         self.assertEqual(rc, 1)
+        self.assertIn("--watch-until-terminal", captured["command"])
+        self.assertNotIn("--watch-until-action", captured["command"])
+        self.assertIn("--retry-settle-seconds", captured["command"])
 
     def test_effective_minimum_run_id_applies_override(self):
         self.assertEqual(MODULE._effective_minimum_run_id(100, None), 101)
