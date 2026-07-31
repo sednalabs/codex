@@ -416,7 +416,6 @@ impl FeedbackSnapshot {
     /// Upload feedback to Sentry with optional attachments.
     pub fn upload_feedback(&self, options: FeedbackUploadOptions<'_>) -> Result<()> {
         use std::str::FromStr;
-        use std::sync::Arc;
 
         use sentry::Client;
         use sentry::ClientOptions;
@@ -428,11 +427,12 @@ impl FeedbackSnapshot {
         use sentry::types::Dsn;
 
         // Build Sentry client
-        let client = Client::from_config(ClientOptions {
-            dsn: Some(Dsn::from_str(SENTRY_DSN).map_err(|e| anyhow!("invalid DSN: {e}"))?),
-            transport: Some(Arc::new(DefaultTransportFactory {})),
-            ..Default::default()
-        });
+        let _dsn = Dsn::from_str(SENTRY_DSN).map_err(|e| anyhow!("invalid DSN: {e}"))?;
+        let client = Client::from_config(
+            ClientOptions::new()
+                .dsn(SENTRY_DSN)
+                .transport(DefaultTransportFactory {}),
+        );
 
         let tags = self.upload_tags(
             options.classification,
@@ -469,7 +469,7 @@ impl FeedbackSnapshot {
                 ..Default::default()
             }]);
         }
-        envelope.add_item(EnvelopeItem::Event(event));
+        envelope.add_item(EnvelopeItem::Event(Box::new(event)));
 
         for attachment in self.feedback_attachments(
             options.include_logs,
