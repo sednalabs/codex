@@ -162,6 +162,7 @@ TARGET_KIND_WORKFLOW = "workflow"
 FOLLOWED_RUN_RELIST_MULTIPLIER = 5
 FOLLOWED_RUN_RELIST_MIN_SECONDS = 60
 HOST_MISMATCH_RECHECK_MIN_SECONDS = 60
+DEFAULT_RETRY_SETTLE_SECONDS = 90
 
 _GH_ENV = None
 
@@ -281,6 +282,16 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--retry-settle-seconds",
+        type=int,
+        default=DEFAULT_RETRY_SETTLE_SECONDS,
+        help=(
+            "After a terminal failure, keep a terminal wait open for this long so an automatic "
+            "GitHub rerun can advance the same run id before the failure is handed back. Set to "
+            "0 to disable the retry grace period."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable output (default behavior for --once and --watch modes)",
@@ -329,6 +340,8 @@ def parse_args():
         parser.error("--poll-seconds must be > 0")
     if args.appearance_timeout_seconds is not None and args.appearance_timeout_seconds < 0:
         parser.error("--appearance-timeout-seconds must be >= 0")
+    if args.retry_settle_seconds < 0:
+        parser.error("--retry-settle-seconds must be >= 0")
     if args.gemini_timeout_seconds is not None and args.gemini_timeout_seconds <= 0:
         parser.error("--gemini-timeout-seconds must be > 0")
     if args.min_run_id is not None and args.min_run_id <= 0:
@@ -1187,7 +1200,7 @@ def _matches_head_sha_prefix(run_head_sha, expected_head_sha):
 
 
 def list_workflow_runs(repo, workflow, ref, expected_head_sha=None, minimum_run_id=None, host_ref=None):
-    fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt"
+    fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt"
     cmd = ["run", "list", "--workflow", workflow, "--limit", "30", "--json", fields]
     branch_filter = host_ref if host_ref is not None else ref
     if branch_filter and not is_sha_like(branch_filter):
@@ -1228,7 +1241,7 @@ def _host_mismatch_recheck_interval_seconds(poll_seconds):
 
 
 def view_run(repo, run_id):
-    fields = "databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
+    fields = "attempt,databaseId,displayTitle,event,headBranch,headSha,name,number,status,conclusion,url,workflowName,createdAt,updatedAt,jobs"
     try:
         data = gh_json(["run", "view", str(run_id), "--json", fields], repo=repo)
     except GhCommandError as primary_error:
@@ -1285,6 +1298,7 @@ def _view_run_via_actions_api(repo, run_id):
     workflow_name = run.get("name") or ""
     return {
         "databaseId": run.get("id"),
+        "attempt": run.get("run_attempt"),
         "displayTitle": run.get("display_title"),
         "event": run.get("event"),
         "headBranch": run.get("head_branch"),
@@ -2812,6 +2826,7 @@ def normalize_snapshot(
         "resolved_ref": resolved_ref,
         "run": {
             "id": run_view.get("databaseId"),
+            "attempt": run_view.get("attempt"),
             "number": run_view.get("number"),
             "name": str(run_view.get("displayTitle") or run_view.get("name") or ""),
             "workflow_name": str(run_view.get("workflowName") or target.get("workflow", "")),
@@ -2934,6 +2949,7 @@ def _compact_run_payload(run_payload):
         return run_payload
     compact = {
         "id": run.get("id"),
+        "attempt": run.get("attempt"),
         "number": run.get("number"),
         "workflow_name": run.get("workflow_name"),
         "url": run.get("url"),
@@ -3320,6 +3336,59 @@ def _payload_has_unready_failure_logs(payload):
     return False
 
 
+def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
+    """Keep terminal waits open briefly for a rerun of the same Actions run.
+
+    GitHub can start a new attempt after an initial attempt has already reached
+    ``completed``. The run id is unchanged, so a watcher that returns on the
+    first failure can race the rerun and prompt a duplicate dispatch. Track the
+    run id plus attempt number and require one quiet settle window before
+    surfacing a terminal failure. A status change to queued/in-progress clears
+    the window and is then handled by the ordinary terminal-wait logic.
+    """
+    if int(settle_seconds or 0) <= 0:
+        return False
+
+    now = time.monotonic()
+    observed = retry_state.setdefault("terminal_failures", {})
+    active_keys = set()
+    pending = False
+    for target in _list_or_empty(payload.get("targets")):
+        if not isinstance(target, dict):
+            continue
+        run = _dict_or_empty(target.get("run"))
+        status = str(run.get("status") or "").lower()
+        conclusion = str(run.get("conclusion") or "").lower()
+        if status != "completed" or conclusion not in FAILED_CONCLUSIONS:
+            continue
+
+        try:
+            target_key = target_to_display_key(target)
+        except Exception:  # noqa: BLE001 - malformed remote payloads must not stop the watcher.
+            target_key = f"run-id:{run.get('id') or 'unknown'}"
+        active_keys.add(target_key)
+        try:
+            run_id = int(run.get("id") or 0)
+        except (TypeError, ValueError):
+            run_id = 0
+        signature = (
+            run_id,
+            str(run.get("attempt") or "").strip(),
+        )
+        record = observed.get(target_key)
+        if not isinstance(record, dict) or record.get("signature") != signature:
+            observed[target_key] = {"signature": signature, "started_at": now}
+            pending = True
+            continue
+        if now - float(record.get("started_at") or now) < int(settle_seconds):
+            pending = True
+
+    for target_key in list(observed):
+        if target_key not in active_keys:
+            observed.pop(target_key, None)
+    return pending
+
+
 def emit(payload):
     sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     sys.stdout.flush()
@@ -3328,8 +3397,16 @@ def emit(payload):
 def watch_until_action(args, repo):
     targets = build_targets(args)
     remembered = {}
+    retry_state = {}
     while True:
         payload = resolve_snapshot(args, repo, targets, remembered)
+        if args.require_terminal_run and _payload_has_pending_retry_settle(
+            payload,
+            retry_state,
+            getattr(args, "retry_settle_seconds", 0),
+        ):
+            time.sleep(args.poll_seconds)
+            continue
         if args.require_terminal_run and _payload_has_in_progress_failure(payload):
             time.sleep(args.poll_seconds)
             continue

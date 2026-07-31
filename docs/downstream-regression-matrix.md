@@ -467,7 +467,10 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     representative workflow-validation lane set instead of promoting the PR to
     the full heavy matrix.
   - Applying the `ci:heavy` label promotes the PR to the full heavy matrix.
-  - `merge_group` and `workflow_dispatch lane=all` run the full heavy matrix.
+  - The heavy workflow is advisory and does not run in the merge queue. Use
+    `workflow_dispatch lane=all` (or the `ci:heavy` PR label) when the full
+    downstream matrix is needed; the queue keeps only the required blocking
+    suite and CodeQL on its critical path.
   - `workflow_dispatch lane=<named-lane>` runs that shard directly when a single
     heavy lane is the right debugging tool, instead of forcing the full smoke
     gate ahead of the explicit manual request.

@@ -3,7 +3,6 @@ run-name: >-
   sedna-heavy-tests
   ${{ github.event_name == 'workflow_dispatch' && ' [manual]' ||
       github.event_name == 'pull_request' && format(' [pr={0}]', github.event.pull_request.number) ||
-      github.event_name == 'merge_group' && ' [merge-group]' ||
       ' [branch]' }}
 
 on:
@@ -104,7 +103,6 @@ on:
       - reopened
       - ready_for_review
       - labeled
-  merge_group: {}
 #  schedule:
 #    - cron: "15 16 * * *"
 concurrency:

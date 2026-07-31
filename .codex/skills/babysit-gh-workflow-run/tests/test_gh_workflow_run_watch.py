@@ -443,6 +443,7 @@ class GeminiWatcherTests(unittest.TestCase):
     def test_view_run_falls_back_when_workflow_metadata_endpoint_is_unavailable(self):
         api_run = {
             "id": 30440173012,
+            "run_attempt": 2,
             "display_title": "Required Agent Ops",
             "event": "pull_request",
             "head_branch": "fix/project-ledger-rls-enforcement",
@@ -488,6 +489,7 @@ class GeminiWatcherTests(unittest.TestCase):
             result = MODULE.view_run("owner/repo", 30440173012)
 
         self.assertEqual(result["databaseId"], 30440173012)
+        self.assertEqual(result["attempt"], 2)
         self.assertEqual(result["workflowName"], "required-agent-ops")
         self.assertEqual(result["headSha"], api_run["head_sha"])
         self.assertEqual(result["jobs"][0]["databaseId"], 99)
@@ -520,6 +522,15 @@ class GeminiWatcherTests(unittest.TestCase):
         self.assertTrue(args.watch_until_terminal)
         self.assertTrue(args.watch_until_action)
         self.assertTrue(args.require_terminal_run)
+        self.assertEqual(args.retry_settle_seconds, MODULE.DEFAULT_RETRY_SETTLE_SECONDS)
+
+    def test_parse_args_rejects_negative_retry_settle_seconds(self):
+        with patch.object(
+            sys,
+            "argv",
+            ["gh_workflow_run_watch.py", "--retry-settle-seconds", "-1"],
+        ), self.assertRaises(SystemExit):
+            MODULE.parse_args()
 
     def test_parse_args_wait_until_terminal_alias(self):
         with patch.object(
@@ -625,6 +636,92 @@ class GeminiWatcherTests(unittest.TestCase):
         }
 
         self.assertTrue(MODULE._payload_has_in_progress_failure(payload))
+
+    def test_retry_settle_tracks_run_attempt_and_clears_when_retry_starts(self):
+        target = {
+            "kind": MODULE.TARGET_KIND_RUN_ID,
+            "run_id": 42,
+        }
+        first_failure = {
+            "targets": [
+                {
+                    "target": target,
+                    "run": {
+                        "id": 42,
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        retry_in_progress = {
+            "targets": [
+                {
+                    "target": target,
+                    "run": {
+                        "id": 42,
+                        "attempt": 2,
+                        "status": "in_progress",
+                        "conclusion": "",
+                    },
+                }
+            ]
+        }
+        state = {}
+        with patch.object(MODULE.time, "monotonic", return_value=100.0):
+            self.assertTrue(
+                MODULE._payload_has_pending_retry_settle(first_failure, state, 90)
+            )
+        self.assertIn("terminal_failures", state)
+        self.assertFalse(
+            MODULE._payload_has_pending_retry_settle(retry_in_progress, state, 90)
+        )
+        self.assertEqual(state["terminal_failures"], {})
+
+    def test_retry_settle_expires_after_a_quiet_failure_window(self):
+        payload = {
+            "targets": [
+                {
+                    "target": {
+                        "kind": MODULE.TARGET_KIND_RUN_ID,
+                        "run_id": 42,
+                    },
+                    "run": {
+                        "id": 42,
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        state = {}
+        with patch.object(MODULE.time, "monotonic", side_effect=[100.0, 191.0]):
+            self.assertTrue(
+                MODULE._payload_has_pending_retry_settle(payload, state, 90)
+            )
+            self.assertFalse(
+                MODULE._payload_has_pending_retry_settle(payload, state, 90)
+            )
+
+    def test_retry_settle_falls_back_for_malformed_remote_run_identity(self):
+        payload = {
+            "targets": [
+                {
+                    "target": {"kind": "unexpected"},
+                    "run": {
+                        "id": "not-a-number",
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        self.assertTrue(
+            MODULE._payload_has_pending_retry_settle(payload, {}, 90)
+        )
 
     def test_watch_until_action_waits_for_terminal_failures_per_target(self):
         args = types.SimpleNamespace(
@@ -818,6 +915,8 @@ class GeminiWatcherTests(unittest.TestCase):
                 "all_done",
                 "--poll-seconds",
                 "1",
+                "--retry-settle-seconds",
+                "0",
             ],
         ):
             args = MODULE.parse_args()
@@ -858,6 +957,62 @@ class GeminiWatcherTests(unittest.TestCase):
 
         emit.assert_called_once_with(terminal_payload)
         sleep.assert_called_once_with(1)
+
+    def test_watch_until_terminal_waits_for_a_retry_of_the_same_run(self):
+        args = types.SimpleNamespace(
+            require_terminal_run=True,
+            retry_settle_seconds=90,
+            wait_for="first_action",
+            poll_seconds=1,
+            ack_action=[],
+            verbose_details=False,
+        )
+        target = {"kind": MODULE.TARGET_KIND_RUN_ID, "run_id": 42}
+        failed_attempt = {
+            "actions": ["diagnose_run_failure"],
+            "summary": {"targets_idle": 0},
+            "targets": [
+                {
+                    "target": target,
+                    "actions": ["diagnose_run_failure"],
+                    "run": {"id": 42, "attempt": 1, "status": "completed", "conclusion": "failure"},
+                }
+            ],
+        }
+        retry_running = {
+            "actions": ["diagnose_run_failure"],
+            "summary": {"targets_idle": 0},
+            "targets": [
+                {
+                    "target": target,
+                    "actions": ["diagnose_run_failure"],
+                    "run": {"id": 42, "attempt": 2, "status": "in_progress", "conclusion": ""},
+                }
+            ],
+        }
+        retry_success = {
+            "actions": ["stop_run_succeeded"],
+            "summary": {"targets_idle": 0},
+            "targets": [
+                {
+                    "target": target,
+                    "actions": ["stop_run_succeeded"],
+                    "run": {"id": 42, "attempt": 2, "status": "completed", "conclusion": "success"},
+                }
+            ],
+        }
+
+        with patch.object(MODULE, "build_targets", return_value=[target]), patch.object(
+            MODULE,
+            "resolve_snapshot",
+            side_effect=[failed_attempt, retry_running, retry_success],
+        ), patch.object(MODULE, "emit") as emit, patch.object(
+            MODULE.time, "monotonic", return_value=100.0
+        ), patch.object(MODULE.time, "sleep", return_value=None) as sleep:
+            MODULE.watch_until_action(args, "sednalabs/codex")
+
+        emit.assert_called_once_with(retry_success)
+        self.assertEqual(sleep.call_count, 2)
 
 
     def test_redaction_and_runner_path_mapping(self):
