@@ -14,6 +14,21 @@ on:
 permissions:
   contents: read
 
+# Queue attempts, post-merge pushes, scheduled scans, and manual dispatches
+# must not share a key. Only a superseded PR head is safe to cancel.
+concurrency:
+  group: >-
+    concurrency-group::${{ github.workflow }}::${{
+      github.event_name == 'merge_group' &&
+      format('merge-group-{0}', github.sha) ||
+      github.event_name == 'pull_request' &&
+      format('pr-{0}', github.event.pull_request.number) ||
+      github.event_name == 'push' &&
+      format('push-{0}', github.sha) ||
+      format('{0}-{1}', github.event_name, github.run_id)
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})

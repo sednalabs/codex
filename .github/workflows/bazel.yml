@@ -11,6 +11,129 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Plan Bazel CI mode
+    runs-on: ubuntu-24.04
+    outputs:
+      mode: ${{ steps.resolve.outputs.mode }}
+      run_bazel: ${{ steps.resolve.outputs.run_bazel }}
+    steps:
+      # Use GitHub's exact comparison API rather than a checkout-based diff.
+      # The response supplies at most 300 files, so any result that might be
+      # truncated is deliberately treated as incomplete and runs full CI.
+      - name: Compare exact changed files
+        id: compare
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const full = (reason) => {
+              core.warning(`Bazel CI will run in full mode: ${reason}`);
+              core.setOutput("comparison_complete", "false");
+              core.setOutput("files_json", "[]");
+            };
+
+            const isPullRequest = context.eventName === "pull_request";
+            const base = isPullRequest
+              ? context.payload.pull_request?.base?.sha
+              : context.payload.merge_group?.base_sha;
+            const expectedHead = isPullRequest
+              ? context.payload.pull_request?.head?.sha
+              : context.sha;
+            if (!base || !expectedHead) {
+              full("the event did not provide exact base and head SHAs");
+              return;
+            }
+
+            try {
+              const { data } = await github.rest.repos.compareCommitsWithBasehead({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                basehead: `${base}...${expectedHead}`,
+                per_page: 100,
+              });
+              const commits = Array.isArray(data.commits) ? data.commits : [];
+              const completeCommitList =
+                Number(data.ahead_by) === commits.length &&
+                Number(data.total_commits) === commits.length;
+              const returnedHead = commits.at(-1)?.sha;
+              if (
+                !completeCommitList ||
+                !returnedHead ||
+                returnedHead.toLowerCase() !== expectedHead.toLowerCase()
+              ) {
+                full("the comparison response did not prove the expected complete head");
+                return;
+              }
+
+              const files = data.files;
+              if (!Array.isArray(files) || files.length === 0 || files.length >= 300) {
+                full("the changed-file response was empty or may have been truncated");
+                return;
+              }
+
+              const names = [];
+              for (const file of files) {
+                if (!file || typeof file.filename !== "string") {
+                  full("the changed-file response contained a malformed filename");
+                  return;
+                }
+                names.push(file.filename);
+                if (file.previous_filename !== undefined) {
+                  if (typeof file.previous_filename !== "string") {
+                    full("the changed-file response contained a malformed previous filename");
+                    return;
+                  }
+                  names.push(file.previous_filename);
+                }
+              }
+
+              core.setOutput("comparison_complete", "true");
+              core.setOutput("files_json", JSON.stringify(names));
+            } catch (error) {
+              full(`the compare API failed: ${error.message}`);
+            }
+
+      - name: Default non-comparison events to full Bazel CI
+        id: default_to_full
+        if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
+        shell: bash
+        run: |
+          echo "comparison_complete=false" >> "${GITHUB_OUTPUT}"
+          echo "files_json=[]" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve Bazel CI mode
+        id: resolve
+        shell: bash
+        env:
+          COMPARISON_COMPLETE: ${{ steps.compare.outputs.comparison_complete || steps.default_to_full.outputs.comparison_complete }}
+          FILES_JSON: ${{ steps.compare.outputs.files_json || steps.default_to_full.outputs.files_json }}
+        run: |
+          python3 .github/scripts/resolve_bazel_ci_mode.py \
+            --comparison-complete "${COMPARISON_COMPLETE}" \
+            --files-json "${FILES_JSON}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+  docs-only:
+    name: Check docs-only changes
+    needs: plan
+    if: ${{ needs.plan.outputs.mode == 'docs_only' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Check markdown links
+        shell: bash
+        run: python3 .github/scripts/check_markdown_links.py
+
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
     # pushes to main also run the native Windows test job for broader Windows
@@ -19,6 +142,8 @@ jobs:
     # is available, the Windows-cross shards exercise the source-built V8 path.
     # macOS runners keep test actions local; full-tree PR validation can exceed
     # the default window while build actions execute remotely.
+    needs: plan
+    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -118,7 +243,7 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -133,6 +258,8 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
+    needs: plan
+    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -242,8 +369,8 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always()
-    needs: test-windows-shard
+    if: ${{ always() && needs.plan.outputs.run_bazel == 'true' }}
+    needs: [plan, test-windows-shard]
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
 
@@ -260,9 +387,11 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this for post-merge commits to main or an
     # explicit hosted-validation dispatch, and give it a larger timeout.
+    needs: plan
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      ${{ needs.plan.outputs.run_bazel == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
     timeout-minutes: 40
     runs-on: windows-2022
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native main)
@@ -330,7 +459,7 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -342,6 +471,8 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
+    needs: plan
+    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -437,7 +568,7 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -449,6 +580,8 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
+    needs: plan
+    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -557,7 +690,7 @@ jobs:
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
       # upload non-fatal so cache service issues never fail the job itself.
       - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -567,3 +700,70 @@ jobs:
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
+
+  results:
+    name: Bazel required gate
+    needs:
+      - plan
+      - docs-only
+      - test
+      - test-windows-shard
+      - test-windows
+      - test-windows-native-main
+      - clippy
+      - verify-release-build
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the selected Bazel CI mode
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS_JSON"])
+
+          def require(name, expected):
+              actual = (needs.get(name) or {}).get("result")
+              if actual != expected:
+                  print(f"{name} finished as {actual!r}; expected {expected!r}", file=sys.stderr)
+                  raise SystemExit(1)
+
+          require("plan", "success")
+          mode = (needs.get("plan") or {}).get("outputs", {}).get("mode")
+          normal_jobs = [
+              "test",
+              "test-windows-shard",
+              "test-windows",
+              "test-windows-native-main",
+              "clippy",
+              "verify-release-build",
+          ]
+          if mode == "docs_only":
+              require("docs-only", "success")
+              for job in normal_jobs:
+                  require(job, "skipped")
+          elif mode == "full":
+              require("docs-only", "skipped")
+              for job in [
+                  "test",
+                  "test-windows-shard",
+                  "test-windows",
+                  "clippy",
+                  "verify-release-build",
+              ]:
+                  require(job, "success")
+              native_is_expected = os.environ["EVENT_NAME"] == "workflow_dispatch" or (
+                  os.environ["EVENT_NAME"] == "push" and os.environ["REF"] == "refs/heads/main"
+              )
+              require("test-windows-native-main", "success" if native_is_expected else "skipped")
+          else:
+              print(f"unsupported Bazel CI mode: {mode!r}", file=sys.stderr)
+              raise SystemExit(1)
+          PY

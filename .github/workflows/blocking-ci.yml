@@ -20,7 +20,9 @@ concurrency:
       format('merge-group-{0}', github.sha) ||
       github.event_name == 'pull_request' &&
       format('pr-{0}', github.event.pull_request.number) ||
-      github.ref_name
+      github.event_name == 'push' &&
+      format('push-{0}', github.sha) ||
+      format('{0}-{1}', github.event_name, github.run_id)
     }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
