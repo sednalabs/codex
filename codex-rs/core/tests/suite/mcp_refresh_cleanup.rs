@@ -150,6 +150,7 @@ async fn ordinary_turn_replaces_closed_mcp_server_before_provider_catalogue() ->
     let pid_file_for_config = pid_file.clone();
     let command = stdio_server_bin()?;
     let fixture = test_codex()
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
         .with_config(move |config| {
             let mut servers = config.mcp_servers.get().clone();
             servers.insert(
