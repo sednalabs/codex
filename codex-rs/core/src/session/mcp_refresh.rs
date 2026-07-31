@@ -125,13 +125,16 @@ mod tests {
 
         assert!(refresh.should_probe_liveness_at("turn-1", started_at));
         assert!(!refresh.should_probe_liveness_at("turn-1", started_at));
-        refresh.record_liveness_result_at(true, started_at);
+        refresh.record_liveness_result_at(/*has_closed_connections*/ true, started_at);
 
         assert!(
             !refresh.should_probe_liveness_at("turn-2", started_at + Duration::from_millis(999))
         );
         assert!(refresh.should_probe_liveness_at("turn-3", started_at + Duration::from_secs(1)));
-        refresh.record_liveness_result_at(true, started_at + Duration::from_secs(1));
+        refresh.record_liveness_result_at(
+            /*has_closed_connections*/ true,
+            started_at + Duration::from_secs(1),
+        );
 
         assert!(
             !refresh.should_probe_liveness_at("turn-4", started_at + Duration::from_millis(2999))
@@ -145,8 +148,11 @@ mod tests {
         let started_at = Instant::now();
 
         assert!(refresh.should_probe_liveness_at("turn-1", started_at));
-        refresh.record_liveness_result_at(true, started_at);
-        refresh.record_liveness_result_at(false, started_at + Duration::from_millis(1));
+        refresh.record_liveness_result_at(/*has_closed_connections*/ true, started_at);
+        refresh.record_liveness_result_at(
+            /*has_closed_connections*/ false,
+            started_at + Duration::from_millis(1),
+        );
 
         assert!(refresh.should_probe_liveness_at("turn-2", started_at + Duration::from_millis(2)));
     }
@@ -154,10 +160,13 @@ mod tests {
     #[test]
     fn liveness_retry_backoff_is_capped() {
         assert_eq!(
-            mcp_liveness_retry_backoff(1),
+            mcp_liveness_retry_backoff(/*consecutive_closed_results*/ 1),
             MCP_LIVENESS_RETRY_INITIAL_BACKOFF
         );
-        assert_eq!(mcp_liveness_retry_backoff(2), Duration::from_secs(2));
+        assert_eq!(
+            mcp_liveness_retry_backoff(/*consecutive_closed_results*/ 2),
+            Duration::from_secs(2)
+        );
         assert_eq!(
             mcp_liveness_retry_backoff(u32::MAX),
             MCP_LIVENESS_RETRY_MAX_BACKOFF

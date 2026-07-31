@@ -214,7 +214,9 @@ async fn ordinary_turn_replaces_closed_mcp_server_before_provider_catalogue() ->
     .await;
     fixture.submit_turn("ordinary first turn").await?;
     assert!(
-        first_response.body_contains_text(&format!("Echo from rmcp-test-process-{first_pid}."))
+        first_response
+            .single_request()
+            .body_contains_text(&format!("Echo from rmcp-test-process-{first_pid}."))
     );
 
     let status = Command::new("kill").args(["-9", &first_pid]).status()?;
@@ -238,6 +240,7 @@ async fn ordinary_turn_replaces_closed_mcp_server_before_provider_catalogue() ->
     assert!(process_is_alive(&replacement_pid)?);
     assert!(
         replacement_response
+            .single_request()
             .body_contains_text(&format!("Echo from rmcp-test-process-{replacement_pid}."))
     );
 
