@@ -24,6 +24,12 @@ runs:
         # setup-bazel writes an explicit output_base, which otherwise overrides
         # BAZEL_OUTPUT_USER_ROOT and leaves Bazel's I/O-heavy trees on C:.
         output-base: ${{ steps.setup_ci.outputs.bazel-output-base }}
+        # Keep setup-bazel's action cache scoped to this workflow. Cache writes
+        # come only from trusted post-merge pushes, so untrusted PRs can never
+        # publish a cache entry consumed by later trusted runs.
+        bazelisk-cache: true
+        disk-cache: ${{ github.workflow }}
+        cache-save: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
 
     - name: Configure Bazel repository cache
       id: configure_bazel_repository_cache
