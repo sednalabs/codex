@@ -133,6 +133,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--retry-settle-seconds",
+        type=int,
+        default=90,
+        help=(
+            "Pass-through terminal retry grace period for the watcher. GitHub can rerun a failed "
+            "attempt under the same run id (default: 90s)."
+        ),
+    )
+    parser.add_argument(
         "--supersession-mode",
         choices=("auto", "compare", "milestone", "retain"),
         default="auto",
@@ -494,20 +503,30 @@ def _dispatch_workflow(
         watcher.gh_text(build_args(include_supersession=False), repo=repo)
 
 
-def _run_watcher(watcher, run_id, repo, wait_for, poll_seconds, appearance_timeout):
+def _run_watcher(
+    watcher,
+    run_id,
+    repo,
+    wait_for,
+    poll_seconds,
+    appearance_timeout,
+    retry_settle_seconds=90,
+):
     command = [
         str(WATCHER_LAUNCHER_PATH),
         "--run-id",
         str(int(run_id)),
         "--repo",
         str(repo),
-        "--watch-until-action",
+        "--watch-until-terminal",
         "--wait-for",
         wait_for,
         "--poll-seconds",
         str(poll_seconds),
         "--appearance-timeout-seconds",
         str(appearance_timeout),
+        "--retry-settle-seconds",
+        str(retry_settle_seconds),
     ]
 
     last_payload = None
@@ -545,6 +564,8 @@ def main():
         return _emit_error("--max-retries must be >= 0")
     if args.appearance_timeout_seconds < 0:
         return _emit_error("--appearance-timeout-seconds must be >= 0")
+    if args.retry_settle_seconds < 0:
+        return _emit_error("--retry-settle-seconds must be >= 0")
     if args.stale_head_retries < 0:
         return _emit_error("--stale-head-retries must be >= 0")
     if args.min_run_id is not None and args.min_run_id <= 0:
@@ -792,6 +813,7 @@ def main():
         wait_for=args.wait_for,
         poll_seconds=args.poll_seconds,
         appearance_timeout=args.appearance_timeout_seconds,
+        retry_settle_seconds=args.retry_settle_seconds,
     )
 
 

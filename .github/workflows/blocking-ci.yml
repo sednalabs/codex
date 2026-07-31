@@ -10,6 +10,20 @@ on:
   push:
     branches: [main, upstream-main]
 
+# Merge-queue attempts share a generated branch name, so the immutable queue
+# SHA must be part of the concurrency key. A retry of one attempt must not
+# cancel a newer attempt that happens to use the same generated ref.
+concurrency:
+  group: >-
+    concurrency-group::${{ github.workflow }}::${{
+      github.event_name == 'merge_group' &&
+      format('merge-group-{0}', github.sha) ||
+      github.event_name == 'pull_request' &&
+      format('pr-{0}', github.event.pull_request.number) ||
+      github.ref_name
+    }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Keep reusable workflow calls alphabetized. The `required` job below is the
   # version-controlled list that the main-branch ruleset should require.

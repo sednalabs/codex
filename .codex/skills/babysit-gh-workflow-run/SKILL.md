@@ -26,6 +26,7 @@ This skill is for workflow-run monitoring, not PR review/comment shepherding. Us
 - If the seam is likely to become “watch -> tiny fix or rerun -> resume,” use this helper inside a cheap workflow shepherd lane rather than pretending the seam is a pure babysitter wait.
 - Prefer `--watch-until-terminal` for delegated workflow waits. Use `--watch-until-action` only when a repair owner should wake on an actionable failure before the whole run completes.
 - When you want to stay in a blocking wait until every watched run is terminal (even if a failure shows up while it is still in progress), use `--watch-until-terminal` (alias `--wait-until-terminal`, equivalent to `--watch-until-action --require-terminal-run`).
+- Terminal waits keep a short retry-settle window after a failed attempt. GitHub can rerun the same workflow run id after it reports `completed`, so the helper waits for the attempt number to remain quiet before surfacing a final failure; use `--retry-settle-seconds 0` only when that grace period is not wanted.
 - `--wait-for all_done` waits until all watched targets are non-idle, but it will keep polling if a surfaced `diagnose_run_failure` action still lacks retrievable logs.
 - `--watch-until-action` now includes a default appearance warm-up window for workflow/ref targets, so the helper waits for GitHub dispatch lag before reporting that no matching run appeared.
 - The watcher now treats an already-failed job inside an in-progress run as actionable by default; you no longer need to wait for the whole workflow run to turn terminal before handing the failure to a worker.
@@ -75,6 +76,7 @@ Optional:
 - terminal-wait semantics in one flag: `--watch-until-terminal` (alias `--wait-until-terminal`) implies both `--watch-until-action` and `--require-terminal-run`
 - repeated dispatch input passthrough with `--input key=value` when using `gh_dispatch_and_watch`
 - bounded stale-head redispatch with `--stale-head-retries` when branch propagation races produce runs on an older head SHA
+- retry-aware terminal settling with `--retry-settle-seconds` when GitHub may rerun a failed attempt
 
 ## Core Workflow
 

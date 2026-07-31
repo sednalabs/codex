@@ -23,6 +23,13 @@ contract today.
 
 ## `main` And Checkpoints
 
+- Merge-queue attempts use the immutable `github.sha` in the blocking workflow
+  concurrency key and do not cancel one another. GitHub gives queue
+  attempts a shared generated branch name, so ref-only keys can let an older
+  retry cancel a newer candidate. Pull-request updates retain cancellation of
+  superseded work, while the advisory `sedna-heavy-tests.yml` matrix stays out
+  of merge-group admission entirely.
+
 - `bazel.yml` also runs on pushes to `main`.
   This re-verifies the merged Bazel path and helps keep the BuildBuddy caches warm.
 - `rust-ci-full.yml` is the full Cargo-native verification workflow.
