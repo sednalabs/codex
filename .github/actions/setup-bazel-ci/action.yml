@@ -1,10 +1,6 @@
 name: setup-bazel-ci
 description: Prepare a Bazel CI runner with shared caches.
 inputs:
-  disk-cache:
-    description: Whether this job may restore and save Bazel action outputs through setup-bazel.
-    required: false
-    default: "true"
   target:
     description: Target triple used for cache namespacing.
     required: true
@@ -30,11 +26,9 @@ runs:
         output-base: ${{ steps.setup_ci.outputs.bazel-output-base }}
         # Keep setup-bazel's action cache scoped to this workflow. Cache writes
         # come only from trusted post-merge pushes, so untrusted PRs can never
-        # publish a cache entry consumed by later trusted runs. The native
-        # Windows post-merge lane opts out because cached proc-macro outputs
-        # have repeatedly failed to materialize on changing hosted images.
+        # publish a cache entry consumed by later trusted runs.
         bazelisk-cache: true
-        disk-cache: ${{ inputs.disk-cache == 'true' && github.workflow || 'false' }}
+        disk-cache: ${{ github.workflow }}
         cache-save: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
 
     - name: Configure Bazel repository cache

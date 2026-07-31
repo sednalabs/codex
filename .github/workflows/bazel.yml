@@ -411,11 +411,6 @@ jobs:
         with:
           target: x86_64-pc-windows-gnullvm
           cache-scope: bazel-${{ github.job }}
-          # This post-merge-only lane rebuilds on the hosted Windows image
-          # rather than restoring Bazel action outputs. Its external
-          # repository cache remains available; only compiled action outputs
-          # are deliberately isolated.
-          disk-cache: false
 
       - name: bazel test //...
         env:
@@ -433,12 +428,13 @@ jobs:
 
           bazel_test_args=(
             test
-            # Hosted Windows image changes have repeatedly made cached
-            # proc-macro outputs unusable. Do not read or publish remote action
-            # results in this post-merge-only lane, so every compiled output
-            # comes from the current hosted image.
-            --noremote_accept_cached
-            --noremote_upload_local_results
+            # Hosted Windows runners compile this native test lane locally.
+            # Keep the scheduler at the existing local-fallback cap: higher
+            # fanout has repeatedly left Rust proc-macro DLL dependencies
+            # unavailable to their consumers. Retain remote-cache isolation
+            # for Rust actions while allowing healthy cache reuse elsewhere.
+            --jobs=8
+            --modify_execution_info=Rustc=+no-remote-cache
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
