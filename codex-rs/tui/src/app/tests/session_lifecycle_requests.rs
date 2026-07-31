@@ -335,6 +335,7 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         is_closed: false,
                         created_at: None,
                         updated_at: None,
+                        ..AgentPickerThreadEntry::default()
                     })
                 );
 

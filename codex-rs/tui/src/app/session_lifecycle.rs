@@ -7,7 +7,11 @@
 use super::*;
 use crate::app_server_session::source_agent_path;
 use crate::app_server_session::thread_blocks_direct_input;
+use crate::multi_agents::AgentPickerThreadUsage;
+use crate::multi_agents::format_agent_picker_item_description;
+use crate::multi_agents::format_agent_picker_item_selected_description;
 use codex_config::types::ResumeCwdMode;
+use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
@@ -128,54 +132,116 @@ impl App {
         }
 
         let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = self
+        let mut items = Vec::new();
+        for (idx, (thread_id, entry)) in self
             .agent_navigation
             .ordered_threads()
             .into_iter()
             .enumerate()
-            .map(|(idx, (thread_id, entry))| {
-                if self.active_thread_id == Some(thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = thread_id;
-                let is_primary = self.primary_thread_id == Some(thread_id);
-                let name = entry
-                    .agent_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|agent_path| !is_primary && !agent_path.is_empty())
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| {
-                        format_agent_picker_item_name(
-                            entry.agent_nickname.as_deref(),
-                            entry.agent_role.as_deref(),
-                            is_primary,
-                        )
-                    });
-                let uuid = thread_id.to_string();
-                SelectionItem {
-                    name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
-                    description: Some(uuid.clone()),
-                    is_current: self.active_thread_id == Some(thread_id),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::SelectAgentThread(id));
-                    })],
-                    dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
-                    ..Default::default()
-                }
-            })
-            .collect();
+        {
+            if self.active_thread_id == Some(thread_id) {
+                initial_selected_idx = Some(idx);
+            }
+            let id = thread_id;
+            let is_primary = self.primary_thread_id == Some(thread_id);
+            let name = entry
+                .agent_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|agent_path| !is_primary && !agent_path.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| {
+                    format_agent_picker_item_name(
+                        entry.agent_nickname.as_deref(),
+                        entry.agent_role.as_deref(),
+                        is_primary,
+                    )
+                });
+            let usage = self.agent_picker_thread_usage(thread_id, entry).await;
+            let description = format_agent_picker_item_description(thread_id, entry, &usage);
+            let selected_description =
+                format_agent_picker_item_selected_description(thread_id, entry, &usage);
+            let status_terms = if entry.is_running {
+                "live active open"
+            } else {
+                "closed stale inactive finished"
+            };
+            let search_value =
+                format!("{name} {description} {selected_description} {status_terms}");
+            items.push(SelectionItem {
+                name,
+                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                description: Some(description),
+                selected_description: Some(selected_description),
+                is_current: self.active_thread_id == Some(thread_id),
+                hidden_when_unfiltered: !is_primary
+                    && self.active_thread_id != Some(thread_id)
+                    && !entry.is_running,
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SelectAgentThread(id));
+                })],
+                dismiss_on_select: true,
+                search_value: Some(search_value),
+                ..Default::default()
+            });
+        }
 
         self.chat_widget.show_selection_view(SelectionViewParams {
             title: Some("Subagents".to_string()),
             subtitle: Some(AgentNavigationState::picker_subtitle()),
             footer_hint: Some(standard_popup_hint_line()),
+            is_searchable: true,
+            search_placeholder: Some("Search agents or type 'closed'".to_string()),
             items,
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    async fn agent_picker_thread_usage(
+        &self,
+        thread_id: ThreadId,
+        entry: &crate::multi_agents::AgentPickerThreadEntry,
+    ) -> AgentPickerThreadUsage {
+        let mut usage = AgentPickerThreadUsage {
+            model: entry.model.clone(),
+            reasoning_effort: entry.reasoning_effort.clone(),
+            task_name: entry.task_name.clone().or_else(|| entry.agent_path.clone()),
+            ..Default::default()
+        };
+
+        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            let store = channel.store.lock().await;
+            if let Some(session) = &store.session {
+                if usage.model.is_none() && !session.model.trim().is_empty() {
+                    usage.model = Some(session.model.clone());
+                }
+                if usage.reasoning_effort.is_none() {
+                    usage.reasoning_effort = session.reasoning_effort.clone();
+                }
+                usage.approval_policy = Some(session.approval_policy);
+                usage.approvals_reviewer = Some(session.approvals_reviewer);
+                usage.sandbox_policy = session
+                    .permission_profile
+                    .to_legacy_sandbox_policy(session.cwd.as_path())
+                    .ok()
+                    .map(Into::into);
+            }
+        }
+
+        if self.active_thread_id == Some(thread_id) {
+            let token_usage = self.chat_widget.token_usage();
+            usage.token_usage = ProtocolTokenUsage {
+                input_tokens: token_usage.input_tokens,
+                cached_input_tokens: token_usage.cached_input_tokens,
+                cache_write_input_tokens: token_usage.cache_write_input_tokens,
+                output_tokens: token_usage.output_tokens,
+                reasoning_output_tokens: token_usage.reasoning_output_tokens,
+                total_tokens: token_usage.total_tokens,
+            };
+        }
+
+        usage
     }
 
     pub(super) fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
@@ -222,7 +288,24 @@ impl App {
             /*created_at*/ None,
             /*updated_at*/ None,
         );
+        self.sync_agent_picker_identity(thread_id);
         self.sync_active_agent_label();
+    }
+
+    pub(super) fn sync_agent_picker_identity(&mut self, thread_id: ThreadId) {
+        let Some(entry) = self.agent_navigation.get(&thread_id).cloned() else {
+            return;
+        };
+        self.chat_widget.set_collab_agent_identity(
+            thread_id,
+            crate::multi_agents::AgentMetadata {
+                agent_nickname: entry.agent_nickname,
+                agent_role: entry.agent_role,
+                agent_path: entry.agent_path,
+                model: entry.model,
+                reasoning_effort: entry.reasoning_effort,
+            },
+        );
     }
 
     /// Persists the app-server's authoritative ownership flag and updates the active composer.
@@ -280,6 +363,19 @@ impl App {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
                 self.agent_navigation.set_agent_path(thread_id, agent_path);
+                self.agent_navigation.update_identity(
+                    thread_id,
+                    thread.model.clone(),
+                    thread.reasoning_effort.clone(),
+                    Some(thread.model_provider.clone()),
+                    thread.name.clone(),
+                );
+                self.agent_navigation.set_timestamps(
+                    thread_id,
+                    Some(thread.created_at),
+                    Some(thread.updated_at),
+                );
+                self.sync_agent_picker_identity(thread_id);
                 if is_running {
                     self.agent_navigation.mark_running(thread_id);
                 } else {
@@ -404,10 +500,15 @@ impl App {
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
-            chat_widget.set_collab_agent_metadata(
+            chat_widget.set_collab_agent_identity(
                 thread_id,
-                entry.agent_nickname.clone(),
-                entry.agent_role.clone(),
+                crate::multi_agents::AgentMetadata {
+                    agent_nickname: entry.agent_nickname.clone(),
+                    agent_role: entry.agent_role.clone(),
+                    agent_path: entry.agent_path.clone(),
+                    model: entry.model.clone(),
+                    reasoning_effort: entry.reasoning_effort.clone(),
+                },
             );
         }
         self.chat_widget = chat_widget;

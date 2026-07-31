@@ -389,6 +389,14 @@ pub enum ThreadItem {
         kind: SubAgentActivityKind,
         agent_thread_id: String,
         agent_path: String,
+        /// Effective model selected for the affected child, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        model: Option<String>,
+        /// Effective reasoning effort selected for the affected child, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reasoning_effort: Option<ReasoningEffort>,
     },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
@@ -969,6 +977,8 @@ impl From<CoreTurnItem> for ThreadItem {
                 kind: activity.kind.into(),
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
+                model: activity.model,
+                reasoning_effort: activity.reasoning_effort,
             },
             CoreTurnItem::WebSearch(search) => ThreadItem::WebSearch(WebSearchItem {
                 id: search.id,
