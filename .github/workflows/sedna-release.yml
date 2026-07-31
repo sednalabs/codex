@@ -390,7 +390,7 @@ jobs:
           key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
-        uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2
+        uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2
         with:
           tool: sccache
 

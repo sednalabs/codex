@@ -413,7 +413,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - uses: taiki-e/install-action@8b3c737da4b541bf0fb5a3e0488ff20535badac9 # v2.82.1
+      - uses: taiki-e/install-action@18b1216eba7f8039b0f8d131d5473787f0edce68 # v2.85.3
         with:
           tool: cargo-shear@1.11.2
       - name: cargo shear
