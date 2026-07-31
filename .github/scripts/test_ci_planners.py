@@ -1069,7 +1069,7 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
-    def test_bazel_windows_native_main_isolates_all_action_caches(self) -> None:
+    def test_bazel_windows_native_main_limits_local_action_fanout(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
         native_condition = native_job.get("if") or ""
@@ -1083,14 +1083,11 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
         native_test_run = native_step.get("run") or ""
-        self.assertIn("--noremote_accept_cached", native_test_run)
-        self.assertIn("--noremote_upload_local_results", native_test_run)
-        prepare_step = next(
-            (step for step in native_steps if step.get("name") == "Prepare Bazel CI"),
-            None,
+        self.assertIn("--jobs=8", native_test_run)
+        self.assertIn(
+            "--modify_execution_info=Rustc=+no-remote-cache",
+            native_test_run,
         )
-        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
-        self.assertEqual((prepare_step.get("with") or {}).get("disk-cache"), "false")
 
     def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
@@ -1200,7 +1197,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(
             (setup_bazel_step.get("with") or {}).get("disk-cache"),
-            "${{ inputs.disk-cache == 'true' && github.workflow || 'false' }}",
+            "${{ github.workflow }}",
         )
         self.assertEqual(
             (setup_bazel_step.get("with") or {}).get("cache-save"),
@@ -1208,16 +1205,6 @@ class RouteSelectionTests(unittest.TestCase):
         )
 
         prepare_action = load_workflow_payload(REPO_ROOT / ".github/actions/prepare-bazel-ci/action.yml")
-        self.assertEqual(
-            (prepare_action.get("inputs") or {}).get("disk-cache", {}).get("default"),
-            "true",
-        )
-        setup_step = next(
-            step
-            for step in ((prepare_action.get("runs") or {}).get("steps") or [])
-            if step.get("name") == "Set up Bazel CI"
-        )
-        self.assertEqual((setup_step.get("with") or {}).get("disk-cache"), "${{ inputs.disk-cache }}")
         self.assertEqual(
             (prepare_action.get("outputs") or {}).get("repository-cache-write-enabled", {}).get(
                 "value"
