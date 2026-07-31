@@ -20,6 +20,7 @@ use streamable_http_test_support::arm_initialize_post_failure;
 use streamable_http_test_support::arm_initialize_post_json_rpc_failure;
 use streamable_http_test_support::arm_initialized_notification_post_json_rpc_failure;
 use streamable_http_test_support::arm_session_post_failure;
+use streamable_http_test_support::arm_session_post_failure_with_retry_after;
 use streamable_http_test_support::arm_session_post_json_rpc_failure;
 use streamable_http_test_support::call_echo_tool;
 use streamable_http_test_support::create_client;
@@ -195,6 +196,78 @@ async fn streamable_http_tools_list_retries_transient_http_status() -> anyhow::R
         .await?;
 
     assert_eq!(result, expected);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_tools_list_honors_retry_after_and_restores_catalogue() -> anyhow::Result<()>
+{
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let client = create_client(&base_url).await?;
+
+    let expected = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
+    let retry_after =
+        httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(2));
+    arm_session_post_failure_with_retry_after(
+        &base_url,
+        /*status*/ 429,
+        /*remaining*/ 1,
+        /*www_authenticate_headers*/ &[],
+        Some(&retry_after),
+    )
+    .await?;
+
+    let retry_started = std::time::Instant::now();
+    let refreshed = client
+        .list_tools(
+            /*params*/ None,
+            /*timeout*/ Some(Duration::from_secs(5)),
+        )
+        .await?;
+
+    assert!(
+        retry_started.elapsed() >= Duration::from_millis(900),
+        "Retry-After should delay the idempotent catalogue retry"
+    );
+    assert_eq!(refreshed, expected);
+    assert_eq!(
+        call_echo_tool(&client, "after-catalogue-recovery").await?,
+        expected_echo_result("after-catalogue-recovery")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn streamable_http_tool_call_does_not_retry_rate_limit_response() -> anyhow::Result<()> {
+    let (_server, base_url) = spawn_streamable_http_server().await?;
+    let client = create_client(&base_url).await?;
+
+    arm_session_post_failure_with_retry_after(
+        &base_url,
+        /*status*/ 429,
+        /*remaining*/ 2,
+        /*www_authenticate_headers*/ &[],
+        Some("1"),
+    )
+    .await?;
+
+    let error = call_echo_tool(&client, "rate-limited").await.unwrap_err();
+    assert!(error.to_string().contains("429"));
+    let second_error = call_echo_tool(&client, "still-rate-limited")
+        .await
+        .unwrap_err();
+    assert!(second_error.to_string().contains("429"));
+    assert_eq!(
+        call_echo_tool(&client, "after-rate-limit").await?,
+        expected_echo_result("after-rate-limit")
+    );
 
     Ok(())
 }

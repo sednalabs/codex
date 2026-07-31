@@ -4060,6 +4060,7 @@ dependencies = [
  "codex-utils-path-uri",
  "codex-utils-pty",
  "futures",
+ "httpdate",
  "keyring",
  "memchr",
  "oauth2",
