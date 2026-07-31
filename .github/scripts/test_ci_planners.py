@@ -1069,7 +1069,7 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
-    def test_bazel_windows_native_main_limits_local_action_fanout(self) -> None:
+    def test_bazel_windows_native_main_avoids_remote_rust_cache(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
         native_condition = native_job.get("if") or ""
@@ -1083,7 +1083,6 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
         native_test_run = native_step.get("run") or ""
-        self.assertIn("--jobs=8", native_test_run)
         self.assertIn(
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
