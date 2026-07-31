@@ -3364,11 +3364,15 @@ def _payload_has_pending_retry_settle(payload, retry_state, settle_seconds):
 
         try:
             target_key = target_to_display_key(target)
-        except (KeyError, TypeError):
+        except Exception:  # noqa: BLE001 - malformed remote payloads must not stop the watcher.
             target_key = f"run-id:{run.get('id') or 'unknown'}"
         active_keys.add(target_key)
+        try:
+            run_id = int(run.get("id") or 0)
+        except (TypeError, ValueError):
+            run_id = 0
         signature = (
-            int(run.get("id") or 0),
+            run_id,
             str(run.get("attempt") or "").strip(),
         )
         record = observed.get(target_key)
@@ -3396,7 +3400,7 @@ def watch_until_action(args, repo):
     retry_state = {}
     while True:
         payload = resolve_snapshot(args, repo, targets, remembered)
-        if getattr(args, "require_terminal_run", False) and _payload_has_pending_retry_settle(
+        if args.require_terminal_run and _payload_has_pending_retry_settle(
             payload,
             retry_state,
             getattr(args, "retry_settle_seconds", 0),

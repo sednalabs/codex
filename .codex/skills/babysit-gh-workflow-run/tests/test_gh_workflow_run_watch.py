@@ -705,6 +705,24 @@ class GeminiWatcherTests(unittest.TestCase):
                 MODULE._payload_has_pending_retry_settle(payload, state, 90)
             )
 
+    def test_retry_settle_falls_back_for_malformed_remote_run_identity(self):
+        payload = {
+            "targets": [
+                {
+                    "target": {"kind": "unexpected"},
+                    "run": {
+                        "id": "not-a-number",
+                        "attempt": 1,
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
+                }
+            ]
+        }
+        self.assertTrue(
+            MODULE._payload_has_pending_retry_settle(payload, {}, 90)
+        )
+
     def test_watch_until_action_waits_for_terminal_failures_per_target(self):
         args = types.SimpleNamespace(
             require_terminal_run=True,
