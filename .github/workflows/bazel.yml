@@ -10,20 +10,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # Merge-queue attempts share a generated branch name, so key them by the
-  # immutable queue SHA and never cancel one attempt from another. PR updates
-  # still cancel stale work to keep the normal feedback loop responsive.
-  group: >-
-    concurrency-group::${{ github.workflow }}::${{
-      github.event_name == 'merge_group' &&
-      format('merge-group-{0}', github.sha) ||
-      github.event_name == 'pull_request' &&
-      format('pr-{0}', github.event.pull_request.number) ||
-      github.ref_name
-    }}
-  cancel-in-progress: ${{ github.event_name != 'merge_group' && github.ref_name != 'main' }}
-
 jobs:
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge

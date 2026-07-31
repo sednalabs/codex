@@ -5002,7 +5002,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
     def test_merge_group_concurrency_is_sha_scoped_and_not_cancelled(self) -> None:
         for workflow_name in (
             "blocking-ci.yml",
-            "bazel.yml",
             "runner-label-policy.yml",
             "shell-tool-mcp-ci.yml",
         ):
@@ -5017,6 +5016,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
                 else:
                     self.assertIn("github.event_name != 'merge_group'", cancel)
+
+        bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        self.assertNotIn(
+            "concurrency",
+            bazel,
+            "Bazel is always admitted through blocking-ci, whose caller-level key owns queue isolation.",
+        )
 
     def test_blob_size_policy_uses_queue_base_for_merge_groups(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/blob-size-policy.yml")
