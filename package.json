@@ -8,7 +8,7 @@
     "write-hooks-schema": "cargo run --manifest-path ./codex-rs/Cargo.toml -p codex-hooks --bin write_hooks_schema_fixtures"
   },
   "devDependencies": {
-    "prettier": "^3.5.3"
+    "prettier": "^3.9.6"
   },
   "resolutions": {
     "@modelcontextprotocol/sdk": "1.26.0",
