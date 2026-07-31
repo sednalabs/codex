@@ -271,6 +271,9 @@ impl Session {
         {
             self.mark_mcp_runtime_dirty();
         }
+        if self.services.mcp_runtime.has_closed_connections().await {
+            self.mark_mcp_runtime_dirty();
+        }
         self.refresh_mcp_if_dirty().await;
         if let Some(binding) = self.services.mcp_runtime.current_binding().await {
             return binding;
