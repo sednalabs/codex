@@ -25,7 +25,7 @@ export function selectLinuxBash(
     }
     const matchesVersion = Boolean(
       versionId &&
-        variant.versions.some((prefix) => versionId.startsWith(prefix)),
+      variant.versions.some((prefix) => versionId.startsWith(prefix)),
     );
     candidates.push({ variant, matchesVersion });
   }
