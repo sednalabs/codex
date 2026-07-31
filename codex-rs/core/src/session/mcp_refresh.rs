@@ -66,10 +66,14 @@ impl McpRefresh {
         if state.last_turn_id.as_deref() == Some(turn_id) {
             return false;
         }
-        state.last_turn_id = Some(turn_id.to_string());
-        !state
+        if state
             .retry_not_before
             .is_some_and(|retry_not_before| now < retry_not_before)
+        {
+            return false;
+        }
+        state.last_turn_id = Some(turn_id.to_string());
+        true
     }
 
     /// Records one liveness result and bounds repeated crash/restart attempts.
@@ -130,7 +134,8 @@ mod tests {
         assert!(
             !refresh.should_probe_liveness_at("turn-2", started_at + Duration::from_millis(999))
         );
-        assert!(refresh.should_probe_liveness_at("turn-3", started_at + Duration::from_secs(1)));
+        assert!(refresh.should_probe_liveness_at("turn-2", started_at + Duration::from_secs(1)));
+        assert!(!refresh.should_probe_liveness_at("turn-2", started_at + Duration::from_secs(1)));
         refresh.record_liveness_result_at(
             /*has_closed_connections*/ true,
             started_at + Duration::from_secs(1),
