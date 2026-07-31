@@ -689,9 +689,10 @@ async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
         codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary");
     let proxy_dir = tempfile::tempdir().expect("create host proxy directory");
     let proxy_program = proxy_dir.path().join("host-proxy.sh");
+    let proxy_program_staging = proxy_dir.path().join("host-proxy.sh.tmp");
     let pid_path = proxy_dir.path().join("host.pid");
     std::fs::write(
-        &proxy_program,
+        &proxy_program_staging,
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$$\" > '{}'\nexec '{}'\n",
             pid_path.display(),
@@ -699,11 +700,16 @@ async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
         ),
     )
     .expect("write host proxy");
-    let mut permissions = std::fs::metadata(&proxy_program)
+    let mut permissions = std::fs::metadata(&proxy_program_staging)
         .expect("host proxy metadata")
         .permissions();
     permissions.set_mode(/*mode*/ 0o700);
-    std::fs::set_permissions(&proxy_program, permissions).expect("make host proxy executable");
+    std::fs::set_permissions(&proxy_program_staging, permissions)
+        .expect("make host proxy executable");
+    // Publish the executable atomically. Writing or chmod-ing the final path
+    // immediately before spawning it can return ETXTBSY on hosted Linux
+    // runners while the file is still being updated.
+    std::fs::rename(&proxy_program_staging, &proxy_program).expect("publish host proxy atomically");
 
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(proxy_program);
     let (delegate_a, mut events_a) = CancellationDelegate::new();
