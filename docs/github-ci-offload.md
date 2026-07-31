@@ -443,7 +443,7 @@ It records:
   bootstrap validator for the branch that introduces the new workflow.
 - `sedna-heavy-tests.yml` keys manual lanes by their logical ref and lane, so
   separate named lanes do not collide. Merge-group concurrency is separately
-  keyed by immutable queue SHA in the required workflows, and merge-group
+  keyed by immutable queue SHA in the blocking workflow, and merge-group
   attempts are never cancelled by a later queue attempt.
 - The finer-grained `validation-lab` concurrency key (`ref + profile + lane set + explicit lanes`)
   is what unlocks parallel scratch/integration validation once that workflow exists on `main`.

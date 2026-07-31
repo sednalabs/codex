@@ -23,8 +23,8 @@ contract today.
 
 ## `main` And Checkpoints
 
-- Merge-queue attempts use the immutable `github.sha` in every required
-  workflow concurrency key and do not cancel one another. GitHub gives queue
+- Merge-queue attempts use the immutable `github.sha` in the blocking workflow
+  concurrency key and do not cancel one another. GitHub gives queue
   attempts a shared generated branch name, so ref-only keys can let an older
   retry cancel a newer candidate. Pull-request updates retain cancellation of
   superseded work, while the advisory `sedna-heavy-tests.yml` matrix stays out
