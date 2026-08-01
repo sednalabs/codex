@@ -2786,8 +2786,8 @@ WHERE tool_call_id = ?
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: String::new(),
-                model: "spawn-model".to_string(),
-                reasoning_effort: ReasoningEffortConfig::default(),
+                model: Some("spawn-model".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::default()),
                 status: AgentStatus::Completed(None),
                 completed_at_ms: 0,
             }),
@@ -2867,6 +2867,92 @@ WHERE child_thread_id = ?
             }
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_completes_failed_spawn_without_child_or_effective_identity() -> Result<()>
+    {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let spawn_call = "failed-spawn-call";
+        logger
+            .record_event(&Event {
+                id: "turn-failed-spawn".to_string(),
+                msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                    call_id: spawn_call.to_string(),
+                    sender_thread_id: thread_id,
+                    prompt: "inspect the repository".to_string(),
+                    model: Some("gpt-requested".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::High),
+                    started_at_ms: 0,
+                }),
+            })
+            .await;
+        logger
+            .record_event(&Event {
+                id: "turn-failed-spawn".to_string(),
+                msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                    call_id: spawn_call.to_string(),
+                    sender_thread_id: thread_id,
+                    new_thread_id: None,
+                    new_agent_nickname: None,
+                    new_agent_role: None,
+                    prompt: "inspect the repository".to_string(),
+                    model: None,
+                    reasoning_effort: None,
+                    status: AgentStatus::NotFound,
+                    completed_at_ms: 1,
+                }),
+            })
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let mut spawn_row: SpawnRequestRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  child_thread_id,
+  requested_model,
+  requested_role,
+  requested_reasoning_effort,
+  status,
+  completed_at
+FROM usage_spawn_requests
+WHERE spawn_request_id = ?
+"#,
+        )
+        .bind(spawn_call)
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            spawn_row.completed_at.is_some(),
+            "failed spawn should complete the pending usage row"
+        );
+        spawn_row.completed_at = Some("<timestamp>".to_string());
+        assert_eq!(
+            spawn_row,
+            SpawnRequestRow {
+                parent_thread_id: thread_id.to_string(),
+                child_thread_id: None,
+                requested_model: Some("gpt-requested".to_string()),
+                requested_role: None,
+                requested_reasoning_effort: Some("high".to_string()),
+                status: Some(format!("{:?}", AgentStatus::NotFound)),
+                completed_at: Some("<timestamp>".to_string()),
+            }
+        );
         Ok(())
     }
 
@@ -2974,8 +3060,8 @@ WHERE child_thread_id = ?
                     new_agent_nickname: Some("child".to_string()),
                     new_agent_role: Some("explorer".to_string()),
                     prompt: String::new(),
-                    model: "spawn-model".to_string(),
-                    reasoning_effort: ReasoningEffortConfig::default(),
+                    model: Some("spawn-model".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::default()),
                     status: AgentStatus::Completed(None),
                     completed_at_ms: 0,
                 }),
@@ -3353,8 +3439,8 @@ WHERE thread_id = ?
                 new_agent_nickname: Some("Copernicus".to_string()),
                 new_agent_role: Some("explorer".to_string()),
                 prompt: String::new(),
-                model: "spawn-model".to_string(),
-                reasoning_effort: ReasoningEffortConfig::default(),
+                model: Some("spawn-model".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::default()),
                 status: AgentStatus::Completed(None),
                 completed_at_ms: 0,
             }),

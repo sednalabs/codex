@@ -655,7 +655,12 @@ fn spawn_end(
                 spawn_request,
             )
         }
-        None => title_text("Agent spawn failed"),
+        None => title_with_primitive_text(
+            "Agent spawn failed",
+            "spawn_agent",
+            /*detail*/ None,
+            spawn_request,
+        ),
     };
 
     let mut details = Vec::new();
