@@ -129,8 +129,8 @@ pub fn item_event_to_server_notification(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: Some(end_event.prompt),
-                model: Some(end_event.model),
-                reasoning_effort: Some(end_event.reasoning_effort),
+                model: end_event.model,
+                reasoning_effort: end_event.reasoning_effort,
                 requested_model: None,
                 requested_reasoning_effort: None,
                 agents_states,
@@ -507,6 +507,7 @@ mod tests {
     use crate::protocol::v2::TerminalWaitPrimitive;
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
+    use codex_protocol::protocol::CollabAgentSpawnEndEvent;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -598,6 +599,49 @@ mod tests {
                     model: Some("gpt-caller".to_string()),
                     reasoning_effort: None,
                     requested_model: Some("gpt-caller".to_string()),
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn collab_spawn_end_preserves_absent_effective_identity() {
+        let event = CollabAgentSpawnEndEvent {
+            call_id: "call-spawn".to_string(),
+            completed_at_ms: 456,
+            sender_thread_id: ThreadId::new(),
+            new_thread_id: None,
+            new_agent_nickname: None,
+            new_agent_role: None,
+            prompt: "inspect the repository".to_string(),
+            model: None,
+            reasoning_effort: None,
+            status: codex_protocol::protocol::AgentStatus::NotFound,
+        };
+
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabAgentSpawnEnd(event.clone()),
+            "thread-1",
+            "turn-1",
+        );
+        assert_item_completed_server_notification(
+            notification,
+            ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: event.completed_at_ms,
+                item: ThreadItem::CollabAgentToolCall {
+                    id: event.call_id,
+                    tool: CollabAgentTool::SpawnAgent,
+                    status: CollabAgentToolCallStatus::Failed,
+                    sender_thread_id: event.sender_thread_id.to_string(),
+                    receiver_thread_ids: Vec::new(),
+                    prompt: Some(event.prompt),
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
                     requested_reasoning_effort: None,
                     agents_states: HashMap::new(),
                 },
