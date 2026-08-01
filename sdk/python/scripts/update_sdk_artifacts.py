@@ -644,6 +644,7 @@ def generate_v2_all(schema_dir: Path) -> None:
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
     _preserve_subagent_activity_kind_enum(out_path)
+    _preserve_current_protocol_fields(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
 
@@ -781,6 +782,139 @@ def _preserve_subagent_activity_kind_enum(out_path: Path) -> None:
         1,
     )
     out_path.write_text(source[:class_start] + class_source + source[class_end:])
+
+
+def _preserve_current_protocol_fields(out_path: Path) -> None:
+    """Keep protocol fields added after the pinned runtime's generated SDK shape."""
+    source = out_path.read_text()
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentToolCallThreadItem",
+        "description=\"Model requested for the spawned agent, when applicable.\"",
+        "description=\"Effective model selected for the spawned agent, when available.\"",
+    )
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentToolCallThreadItem",
+        "description=\"Reasoning effort requested for the spawned agent, when applicable.\"",
+        "description=\"Effective reasoning effort selected for the spawned agent, when available.\"",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "CollabAgentToolCallThreadItem",
+        "    receiver_thread_ids: Annotated[",
+        "requested_model",
+        """    requested_model: Annotated[
+        str | None,
+        Field(
+            alias="requestedModel",
+            description="Caller-provided model override for a spawned agent, when one was supplied.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "CollabAgentToolCallThreadItem",
+        "    receiver_thread_ids: Annotated[",
+        "requested_reasoning_effort",
+        """    requested_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="requestedReasoningEffort",
+            description="Caller-provided reasoning-effort override for a spawned agent, when one was supplied.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadLoadedListParams",
+        "    cursor: Annotated[",
+        "ancestor_thread_id",
+        """    ancestor_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="ancestorThreadId",
+            description="Optional loaded thread-spawn ancestor. When set, returns only currently loaded descendants of that thread.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadLoadedListResponse",
+        "    data: Annotated[",
+        "ancestor_filter_applied",
+        """    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadListResponse",
+        "    backwards_cursor: Annotated[",
+        "ancestor_filter_applied",
+        """    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
+""",
+    )
+    out_path.write_text(source)
+
+
+def _insert_generated_class_fields_before(
+    source: str,
+    class_name: str,
+    marker: str,
+    field_name: str,
+    fields: str,
+) -> str:
+    """Insert one current protocol field block into a known generated model class."""
+    class_start = source.find(f"class {class_name}(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError(f"Generated SDK is missing {class_name}")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    if f"    {field_name}:" in class_source:
+        return source
+    if marker not in class_source:
+        raise RuntimeError(f"Generated {class_name} is missing expected insertion marker")
+    class_source = class_source.replace(marker, f"{fields}{marker}", 1)
+    return source[:class_start] + class_source + source[class_end:]
+
+
+def _replace_generated_class_text(
+    source: str,
+    class_name: str,
+    outdated: str,
+    current: str,
+) -> str:
+    """Replace a pinned-runtime description when the schema gives that field newer semantics."""
+    class_start = source.find(f"class {class_name}(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError(f"Generated SDK is missing {class_name}")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    if current in class_source or outdated not in class_source:
+        return source
+    class_source = class_source.replace(outdated, current, 1)
+    return source[:class_start] + class_source + source[class_end:]
 
 
 def _notification_specs(schema_dir: Path) -> list[tuple[str, str]]:

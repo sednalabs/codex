@@ -4345,6 +4345,13 @@ class ThreadLoadedListParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    ancestor_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="ancestorThreadId",
+            description="Optional loaded thread-spawn ancestor. When set, returns only currently loaded descendants of that thread.",
+        ),
+    ] = None
     cursor: Annotated[
         str | None, Field(description="Opaque pagination cursor returned by a previous call.")
     ] = None
@@ -4357,6 +4364,13 @@ class ThreadLoadedListResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
     data: Annotated[
         list[str], Field(description="Thread ids for sessions currently loaded in memory.")
     ]
@@ -7213,7 +7227,8 @@ class CollabAgentToolCallThreadItem(BaseModel):
     ]
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
     model: Annotated[
-        str | None, Field(description="Model requested for the spawned agent, when applicable.")
+        str | None,
+        Field(description="Effective model selected for the spawned agent, when available."),
     ] = None
     prompt: Annotated[
         str | None,
@@ -7223,7 +7238,21 @@ class CollabAgentToolCallThreadItem(BaseModel):
         ReasoningEffort | None,
         Field(
             alias="reasoningEffort",
-            description="Reasoning effort requested for the spawned agent, when applicable.",
+            description="Effective reasoning effort selected for the spawned agent, when available.",
+        ),
+    ] = None
+    requested_model: Annotated[
+        str | None,
+        Field(
+            alias="requestedModel",
+            description="Caller-provided model override for a spawned agent, when one was supplied.",
+        ),
+    ] = None
+    requested_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="requestedReasoningEffort",
+            description="Caller-provided reasoning-effort override for a spawned agent, when one was supplied.",
         ),
     ] = None
     receiver_thread_ids: Annotated[
@@ -8910,6 +8939,13 @@ class ThreadListResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
     backwards_cursor: Annotated[
         str | None,
         Field(

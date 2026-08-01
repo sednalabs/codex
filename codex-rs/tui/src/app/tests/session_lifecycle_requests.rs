@@ -13,6 +13,7 @@ use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_protocol::AgentPath;
@@ -74,6 +75,10 @@ enum PickerBackfillTestBehavior {
     PersistedDescendantList,
     LegacyScan,
     ThreadReadAndHideFromThreadList { thread_id: String },
+    StaleThreadReadStatus {
+        thread_id: String,
+        status: ThreadStatus,
+    },
     PreAcknowledgementAncestorCompatibility {
         denied_thread_read_id: String,
         denied_thread_reads: Arc<Mutex<Vec<String>>>,
@@ -180,6 +185,16 @@ impl PickerBackfillTestBehavior {
             _ => false,
         }
     }
+
+    fn stale_thread_read_status(&self, request: &ClientRequest) -> Option<ThreadStatus> {
+        match (self, request) {
+            (
+                Self::StaleThreadReadStatus { thread_id, status },
+                ClientRequest::ThreadRead { params, .. },
+            ) if params.thread_id.as_str() == thread_id => Some(status.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// Starts an embedded app server behind a loopback WebSocket proxy that records JSON-RPC methods.
@@ -262,6 +277,9 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                     let rejected_thread_read = test_behavior
                         .as_ref()
                         .is_some_and(|behavior| behavior.rejects_thread_read(&request));
+                    let stale_thread_read_status = test_behavior
+                        .as_ref()
+                        .and_then(|behavior| behavior.stale_thread_read_status(&request));
                     let transient_compatibility_relation_failure = test_behavior
                         .as_ref()
                         .is_some_and(|behavior| {
@@ -312,6 +330,14 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                         }
                         match embedded.request(request).await? {
                             Ok(result) => {
+                                let result = if let Some(status) = stale_thread_read_status {
+                                    let mut response =
+                                        serde_json::from_value::<ThreadReadResponse>(result)?;
+                                    response.thread.status = status;
+                                    serde_json::to_value(response)?
+                                } else {
+                                    result
+                                };
                                 let result = if let Some(thread_id) = hidden_thread_id {
                                     let mut response =
                                         serde_json::from_value::<ThreadListResponse>(result)?;
@@ -1895,6 +1921,155 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
         })?
         .join()
         .expect("loaded descendant priority test thread")
+}
+
+#[test]
+fn agent_picker_keeps_errored_activity_failed_across_stale_loaded_descendant_backfill() -> Result<()>
+{
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-stale-loaded-status".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                for (index, (status_name, stale_status)) in [
+                    ("idle", ThreadStatus::Idle),
+                    (
+                        "active",
+                        ThreadStatus::Active {
+                            active_flags: Vec::new(),
+                        },
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let mut app = make_test_app().await;
+                    let codex_home = tempdir()?;
+                    app.config.codex_home = codex_home.path().to_path_buf().abs();
+                    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                    let timestamp = format!("2026-01-10T00-00-{index:02}");
+                    let created_at = format!("2026-01-10T00:00:{index:02}Z");
+                    let root_thread_id = ThreadId::from_string(
+                        &create_fake_rollout(
+                            codex_home.path(),
+                            &timestamp,
+                            &created_at,
+                            "Saved root message",
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                        )
+                        .expect("create root rollout"),
+                    )?;
+                    let agent_path = format!("/root/stale-status-{status_name}");
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
+                            codex_home.path(),
+                            &format!("2026-01-10T00-00-{:02}", index + 10),
+                            &format!("2026-01-10T00:00:{:02}Z", index + 10),
+                            "Saved child message",
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: root_thread_id,
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from(agent_path.as_str())
+                                        .expect("valid child agent path"),
+                                ),
+                                agent_nickname: Some(format!("stale-status-{status_name}")),
+                                agent_role: Some("worker".to_string()),
+                            }),
+                            root_thread_id.into(),
+                            root_thread_id,
+                        )
+                        .expect("create child rollout"),
+                    )?;
+
+                    let (mut app_server, _requests, proxy) =
+                        start_recording_app_server_with_picker_backfill_test_behavior(
+                            &app.config,
+                            Some(PickerBackfillTestBehavior::StaleThreadReadStatus {
+                                thread_id: child_thread_id.to_string(),
+                                status: stale_status,
+                            }),
+                        )
+                        .await?;
+                    // Populate the durable relationship index, then load the child so the
+                    // ancestor-filtered priority query must refresh it through `thread/read`.
+                    let _ = app_server
+                        .thread_list(ThreadListParams {
+                            cursor: None,
+                            limit: Some(50),
+                            sort_key: Some(ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    let root = app_server
+                        .resume_thread(
+                            app.config.clone(),
+                            root_thread_id,
+                            app.resume_model_settings(),
+                        )
+                        .await?;
+                    let _child = app_server
+                        .resume_thread(
+                            app.config.clone(),
+                            child_thread_id,
+                            app.resume_model_settings(),
+                        )
+                        .await?;
+                    app.enqueue_primary_thread_session(root.session, root.turns)
+                        .await?;
+                    app.agent_navigation
+                        .record_sub_agent_activity(SubAgentActivityDisplay {
+                            thread_id: child_thread_id,
+                            agent_path: agent_path.clone(),
+                            model: None,
+                            reasoning_effort: None,
+                            has_system_error: true,
+                            is_running_hint: false,
+                        });
+
+                    let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                    assert!(backfill.completed);
+                    assert!(backfill.refreshed_thread_ids.contains(&child_thread_id));
+                    assert!(
+                        app.agent_navigation
+                            .get(&child_thread_id)
+                            .is_some_and(|entry| {
+                                entry.has_system_error && !entry.is_running && !entry.is_closed
+                            }),
+                        "a stale {status_name} metadata read must not recover an errored activity"
+                    );
+
+                    Box::pin(app.render_agent_picker()).await;
+                    let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
+                    assert!(rendered.contains(&agent_path));
+                    assert!(rendered.contains("system error failed inspect saved transcript"));
+
+                    app_server.shutdown().await?;
+                    proxy.await??;
+                }
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("stale loaded descendant backfill test thread")
 }
 
 #[test]

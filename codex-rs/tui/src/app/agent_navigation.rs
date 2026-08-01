@@ -105,10 +105,9 @@ impl AgentNavigationState {
         created_at: Option<i64>,
         updated_at: Option<i64>,
     ) {
-        let previous_is_running = self
-            .threads
-            .get(&thread_id)
-            .is_some_and(|entry| entry.is_running);
+        let previous_entry = self.threads.get(&thread_id);
+        let previous_is_running = previous_entry.is_some_and(|entry| entry.is_running);
+        let previous_has_system_error = previous_entry.is_some_and(|entry| entry.has_system_error);
         self.upsert_with_path(
             thread_id,
             AgentPickerThreadEntry {
@@ -121,7 +120,9 @@ impl AgentNavigationState {
                 task_name: None,
                 is_running: previous_is_running && !is_closed,
                 is_closed,
-                has_system_error: false,
+                // A backend metadata refresh can lag the child status watch. Keep an activity-
+                // derived error until a direct recovery event or terminal closure supersedes it.
+                has_system_error: previous_has_system_error && !is_closed,
                 created_at,
                 updated_at,
             },
@@ -188,7 +189,9 @@ impl AgentNavigationState {
                     updated_at: None,
                 });
         entry.agent_path = Some(activity.agent_path);
-        entry.has_system_error = activity.has_system_error;
+        // A delayed non-error activity must not make a terminal `Errored` activity look like a
+        // recovery. Only a direct status transition or closure may clear this state.
+        entry.has_system_error |= activity.has_system_error;
         if activity.model.is_some() {
             entry.model = activity.model;
         }
@@ -774,6 +777,52 @@ mod tests {
                 created_at: Some(1),
                 updated_at: Some(4),
             })
+        );
+    }
+
+    #[test]
+    fn errored_activity_stays_failed_across_stale_upserts_until_recovery_or_closure() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+        // A delayed backend upsert only carries metadata and must not overwrite failure liveness.
+        state.upsert(
+            thread_id,
+            Some("Failed child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+
+        // A newer active status is an explicit recovery signal.
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+
+        state.set_system_error(thread_id, true);
+        state.mark_closed(thread_id);
+        assert!(
+            state.get(&thread_id).is_some_and(|entry| entry.is_closed
+                && !entry.has_system_error
+                && !entry.is_running)
         );
     }
 
