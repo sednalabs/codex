@@ -1851,6 +1851,89 @@ async fn thread_status_revisions_gate_error_recovery_picker_liveness() -> Result
 }
 
 #[tokio::test]
+async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-then-reopen".to_string(),
+            thread_id,
+            agent_path: "/root/close-then-reopen".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // A persisted child can first arrive as unavailable, which retains its row for transcript
+    // review. The terminal revision must become the causal floor for a later recovery.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::NotLoaded,
+            status_revision: Some(7),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
+    // The terminal watermark rejects an older nonterminal status even though closing the visible
+    // row cleared its ordinary per-row revision cache.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(6),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
+    // The next status is newer, so it may reopen the existing row and establish fresh liveness.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(8),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+
+    // The original terminal status remains stale after recovery and cannot close the row again.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::NotLoaded,
+            status_revision: Some(7),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(

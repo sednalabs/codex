@@ -2572,6 +2572,9 @@ impl App {
                 .add_error_message("A thread must start before it can be archived.".to_string());
             return AppRunControl::Continue;
         };
+        if self.reject_replay_only_thread_write(thread_id) {
+            return AppRunControl::Continue;
+        }
         if self.side_threads.contains_key(&thread_id) {
             self.chat_widget.add_error_message(
                 "'/archive' is unavailable in side conversations. Press Ctrl+C to return to the main thread first."
@@ -2599,6 +2602,9 @@ impl App {
                 .add_error_message("A thread must start before it can be deleted.".to_string());
             return AppRunControl::Continue;
         };
+        if self.reject_replay_only_thread_write(thread_id) {
+            return AppRunControl::Continue;
+        }
         if self.side_threads.contains_key(&thread_id) {
             self.chat_widget.add_error_message(
                 "'/delete' is unavailable in side conversations. Press Ctrl+C to return to the main thread first."
