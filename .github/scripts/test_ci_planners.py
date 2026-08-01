@@ -1070,23 +1070,60 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
     def test_bazel_windows_native_main_avoids_remote_rust_cache(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
+
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
+        )
+        self.assertEqual(payload.get("name"), "Native Windows Bazel health")
+        triggers = payload.get("on") or {}
+        self.assertEqual((triggers.get("push") or {}).get("branches"), ["main"])
+        dispatch_inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
+        self.assertEqual(
+            (dispatch_inputs.get("collect_diagnostics") or {}).get("type"),
+            "boolean",
+        )
+        self.assertEqual(
+            payload.get("concurrency"),
+            {
+                "group": "native-windows-bazel-health-${{ github.ref }}",
+                "cancel-in-progress": "false",
+                "queue": "max",
+            },
+        )
+
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
-        native_condition = native_job.get("if") or ""
-        self.assertIn("workflow_dispatch", native_condition)
-        self.assertIn("push", native_condition)
-        self.assertIn("refs/heads/main", native_condition)
         native_steps = native_job.get("steps") or []
         native_step = next(
             (step for step in native_steps if step.get("name") == "bazel test //..."),
             None,
         )
         self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
+        self.assertNotIn("continue-on-error", native_step)
         native_test_run = native_step.get("run") or ""
         self.assertIn(
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
         )
+
+        diagnostics_step = next(
+            step
+            for step in native_steps
+            if step.get("name") == "Collect native Windows Bazel diagnostics"
+        )
+        self.assertIn("failure()", diagnostics_step.get("if") or "")
+        self.assertIn("inputs.collect_diagnostics", diagnostics_step.get("if") or "")
+        self.assertIn(
+            "collect-native-windows-bazel-diagnostics.ps1",
+            diagnostics_step.get("run") or "",
+        )
+        diagnostics_upload = next(
+            step
+            for step in native_steps
+            if step.get("name") == "Upload native Windows Bazel diagnostics"
+        )
+        self.assertEqual((diagnostics_upload.get("with") or {}).get("retention-days"), "3")
 
     def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
@@ -1150,10 +1187,6 @@ class RouteSelectionTests(unittest.TestCase):
             windows_gate.get("if"),
             "${{ always() && needs.plan.outputs.run_bazel == 'true' }}",
         )
-        native_job = jobs.get("test-windows-native-main") or {}
-        self.assertEqual(native_job.get("needs"), "plan")
-        self.assertIn("needs.plan.outputs.run_bazel == 'true'", native_job.get("if") or "")
-
         results_job = jobs.get("results") or {}
         self.assertEqual(results_job.get("name"), "Bazel required gate")
         self.assertEqual(
@@ -1164,7 +1197,6 @@ class RouteSelectionTests(unittest.TestCase):
                 "test",
                 "test-windows-shard",
                 "test-windows",
-                "test-windows-native-main",
                 "clippy",
                 "verify-release-build",
             ],
@@ -1182,6 +1214,32 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn('require("docs-only", "success")', results_run)
         self.assertIn('require(job, "skipped")', results_run)
         self.assertIn('require(job, "success")', results_run)
+
+        heredoc_start = "python3 - <<'PY'\n"
+        self.assertIn(heredoc_start, results_run)
+        gate_script = results_run.split(heredoc_start, 1)[1].rsplit("\nPY", 1)[0]
+        for mode, docs_result, normal_result in [
+            ("docs_only", "success", "skipped"),
+            ("full", "skipped", "success"),
+        ]:
+            with self.subTest(mode=mode):
+                needs = {
+                    "plan": {"result": "success", "outputs": {"mode": mode}},
+                    "docs-only": {"result": docs_result},
+                    "test": {"result": normal_result},
+                    "test-windows-shard": {"result": normal_result},
+                    "test-windows": {"result": normal_result},
+                    "clippy": {"result": normal_result},
+                    "verify-release-build": {"result": normal_result},
+                }
+                proc = subprocess.run(
+                    ["python3", "-c", gate_script],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "NEEDS_JSON": json.dumps(needs)},
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
         setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")
@@ -1220,6 +1278,42 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("refs/heads/main", policy_run)
         self.assertIn("refs/heads/upstream-main", policy_run)
 
+        cache_key_step = next(
+            step
+            for step in ((prepare_action.get("runs") or {}).get("steps") or [])
+            if step.get("name") == "Compute bazel repository cache key"
+        )
+        self.assertIn(
+            "bazel-cache-${CACHE_SCOPE}-${TARGET}-${CACHE_HASH}",
+            cache_key_step.get("run") or "",
+        )
+        cache_summary_step = next(
+            step
+            for step in ((prepare_action.get("runs") or {}).get("steps") or [])
+            if step.get("name") == "Summarize Bazel repository cache"
+        )
+        cache_summary_env = cache_summary_step.get("env") or {}
+        self.assertEqual(
+            cache_summary_env.get("CACHE_KEY"),
+            "${{ steps.cache_bazel_repository_key.outputs.repository-cache-key }}",
+        )
+        self.assertEqual(
+            cache_summary_env.get("CACHE_HIT"),
+            "${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}",
+        )
+        self.assertEqual(
+            cache_summary_env.get("WRITE_ENABLED"),
+            "${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}",
+        )
+        self.assertEqual(
+            cache_summary_env.get("SETUP_BAZEL_DISK_CACHE_SCOPE"),
+            "${{ github.workflow }}",
+        )
+        cache_summary_run = cache_summary_step.get("run") or ""
+        self.assertIn("setup-bazel Bazelisk download cache", cache_summary_run)
+        self.assertIn("setup-bazel disk-cache scope", cache_summary_run)
+        self.assertIn("Repository cache primary key", cache_summary_run)
+
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         cache_save_steps = [
             step
@@ -1227,7 +1321,7 @@ class RouteSelectionTests(unittest.TestCase):
             for step in (job.get("steps") or [])
             if step.get("name") == "Save bazel repository cache"
         ]
-        self.assertEqual(len(cache_save_steps), 4)
+        self.assertEqual(len(cache_save_steps), 3)
         for save_step in cache_save_steps:
             with self.subTest(cache_key=(save_step.get("with") or {}).get("key")):
                 self.assertEqual(save_step.get("continue-on-error"), "true")
@@ -1235,6 +1329,24 @@ class RouteSelectionTests(unittest.TestCase):
                     "steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'",
                     save_step.get("if") or "",
                 )
+
+        native_health = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
+        )
+        native_steps = (
+            ((native_health.get("jobs") or {}).get("test-windows-native-main") or {}).get(
+                "steps"
+            )
+            or []
+        )
+        native_cache_save = next(
+            step for step in native_steps if step.get("name") == "Save bazel repository cache"
+        )
+        self.assertEqual(native_cache_save.get("continue-on-error"), "true")
+        self.assertIn(
+            "steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'",
+            native_cache_save.get("if") or "",
+        )
 
     def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
         script = (REPO_ROOT / ".github/scripts/run-bazel-ci.sh").read_text()
