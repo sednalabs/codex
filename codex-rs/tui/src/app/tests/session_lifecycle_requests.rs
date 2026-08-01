@@ -427,6 +427,31 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                 let root_thread_id = root.session.thread_id;
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+
+                // A current live attachment must still accept a branch result from its async
+                // lookup. This anchors the stale-result assertion below to lifecycle validity,
+                // rather than disabling metadata synchronization entirely.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                let control = app
+                    .handle_event(
+                        &mut tui,
+                        &mut app_server,
+                        AppEvent::SyncThreadGitBranch {
+                            thread_id: root_thread_id,
+                            branch: "live-branch".to_string(),
+                        },
+                    )
+                    .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                assert!(
+                    requests
+                        .lock()
+                        .expect("request recorder lock")
+                        .iter()
+                        .any(|method| method == "thread/metadata/update"),
+                    "a branch result for a live attached thread must reach the app server"
+                );
                 let unrelated = app_server.start_thread(&app.config).await?;
                 let unrelated_thread_id = unrelated.session.thread_id;
                 let closed_side_thread_id = ThreadId::new();
@@ -461,7 +486,6 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                     "the inactive ThreadClosed notification must record terminal liveness"
                 );
 
-                let mut tui = crate::tui::test_support::make_test_tui()?;
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 app.select_agent_thread_and_discard_side(
                     &mut tui,
@@ -482,6 +506,30 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                 assert!(!app.side_threads.contains_key(&closed_side_thread_id));
                 assert!(!app.thread_event_channels.contains_key(&closed_side_thread_id));
                 assert_eq!(app.agent_navigation.get(&closed_side_thread_id), None);
+
+                // This event represents the result of a branch lookup begun while the side
+                // channel was live. The side was discarded before the result reached the event
+                // loop, so it must not revive the removed lifecycle with an app-server write.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                let control = app
+                    .handle_event(
+                        &mut tui,
+                        &mut app_server,
+                        AppEvent::SyncThreadGitBranch {
+                            thread_id: closed_side_thread_id,
+                            branch: "discarded-side-branch".to_string(),
+                        },
+                    )
+                    .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                let delayed_branch_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    !delayed_branch_requests
+                        .iter()
+                        .any(|method| method == "thread/metadata/update"),
+                    "a branch result delivered after side discard must not issue metadata RPC: {delayed_branch_requests:?}"
+                );
 
                 app_server.shutdown().await?;
                 proxy.await??;
