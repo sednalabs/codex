@@ -1003,6 +1003,7 @@ impl App {
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
         let thread_status_change = match &notification {
             ServerNotification::ThreadStatusChanged(notification) => Some(notification.clone()),
             _ => None,
@@ -1042,7 +1043,15 @@ impl App {
         if let Some(notification) = thread_status_change {
             self.apply_agent_picker_thread_status_change(thread_id, &notification);
         }
-        if is_turn_started {
+        if is_thread_closed
+            && self.primary_thread_id != Some(thread_id)
+            && self.agent_navigation.get(&thread_id).is_some()
+        {
+            // Inactive child channels buffer this notification and never reach the active-thread
+            // shutdown handler. `ThreadClosed` is still terminal liveness, regardless of whether
+            // the retained channel is live or the transcript is replayed later.
+            self.mark_agent_picker_thread_closed(thread_id);
+        } else if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);

@@ -1930,6 +1930,20 @@ async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<
             .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
     );
 
+    // The recovered rev-8 status remains authoritative over an unrevisioned stale `thread/read`
+    // that still reports the rev-7 terminal snapshot.
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("stale not-loaded metadata".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+
     // The original terminal status remains stale after recovery and cannot close the row again.
     app.apply_agent_picker_thread_status_change(
         thread_id,
@@ -2065,6 +2079,57 @@ async fn open_agent_picker_hides_closed_sidecars_until_closed_filter_is_entered(
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
     assert!(rendered.contains("/root/finished"));
     assert!(rendered.contains("closed stale finished"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_live_child_thread_closed_marks_picker_closed_and_hides_default_filter()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::Live),
+        "the regression requires an inactive retained live channel"
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-inactive-live-child".to_string(),
+            thread_id,
+            agent_path: "/root/inactive-live-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running && !entry.has_system_error),
+        "an inactive child must become terminal before its buffered ThreadClosed replay"
+    );
+
+    app.render_agent_picker().await;
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/inactive-live-child"),
+        "the default picker filter must hide the terminal child"
+    );
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/inactive-live-child"),
+        "the closed filter must retain the terminal child for transcript inspection"
+    );
     Ok(())
 }
 

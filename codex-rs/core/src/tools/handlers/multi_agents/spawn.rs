@@ -67,11 +67,6 @@ async fn handle_spawn_agent(
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let max_depth = turn.config.agent_max_depth;
-    if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
-        return Err(FunctionCallError::RespondToModel(
-            "Agent depth limit reached. Solve the task yourself.".to_string(),
-        ));
-    }
     session
         .emit_turn_item_started(
             &turn,
@@ -94,6 +89,20 @@ async fn handle_spawn_agent(
             }),
         )
         .await;
+    if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
+        emit_failed_spawn_agent_lifecycle(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            &prompt,
+            &requested_model,
+            &requested_reasoning_effort,
+        )
+        .await;
+        return Err(FunctionCallError::RespondToModel(
+            "Agent depth limit reached. Solve the task yourself.".to_string(),
+        ));
+    }
     let mut config =
         match build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref()) {
             Ok(config) => config,
