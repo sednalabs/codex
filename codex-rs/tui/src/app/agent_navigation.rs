@@ -33,6 +33,9 @@ use std::collections::VecDeque;
 /// Retain only recent close notifications that had no corresponding picker row. The picker still
 /// preserves tracked closed rows separately; this cap only bounds unmatched notification state.
 const CLOSED_THREAD_TOMBSTONE_LIMIT: usize = 256;
+/// Terminal lifecycle evidence also protects rows after cache removal. It has a larger, separate
+/// bound so tracked close notifications cannot evict an unrelated unmatched-close tombstone.
+const TERMINAL_LIFECYCLE_WATERMARK_LIMIT: usize = 1024;
 
 /// Small state container for multi-agent picker ordering and labeling.
 ///
@@ -65,6 +68,13 @@ pub(crate) struct AgentNavigationState {
     closed_thread_tombstones: HashMap<ThreadId, ClosedThreadTombstone>,
     /// FIFO eviction order for [`Self::closed_thread_tombstones`].
     closed_thread_tombstone_order: VecDeque<ThreadId>,
+    /// Bounded terminal lifecycle evidence retained across picker-row removal. It distinguishes a
+    /// stale terminal activity from a new child lifecycle after a status-only recovery.
+    terminal_lifecycle_watermarks: HashMap<ThreadId, TerminalLifecycleWatermark>,
+    /// FIFO eviction order for [`Self::terminal_lifecycle_watermarks`].
+    terminal_lifecycle_watermark_order: VecDeque<ThreadId>,
+    /// Latest activity item id observed for each currently known child lifecycle.
+    last_activity_ids: HashMap<ThreadId, String>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
     /// Opaque continuation for the next bounded persisted-subagent page.
@@ -96,6 +106,41 @@ struct AcceptedThreadStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ClosedThreadTombstone {
     status_revision: Option<u64>,
+}
+
+/// Terminal evidence that survives removal of the corresponding picker row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TerminalLifecycleWatermark {
+    Closed {
+        status_revision: Option<u64>,
+        activity_id: Option<String>,
+    },
+    Recovered {
+        status_revision: u64,
+        prior_activity_id: Option<String>,
+    },
+}
+
+impl TerminalLifecycleWatermark {
+    fn status_revision(&self) -> Option<u64> {
+        match self {
+            Self::Closed {
+                status_revision, ..
+            } => *status_revision,
+            Self::Recovered {
+                status_revision, ..
+            } => Some(*status_revision),
+        }
+    }
+
+    fn activity_id(&self) -> Option<&str> {
+        match self {
+            Self::Closed { activity_id, .. } => activity_id.as_deref(),
+            Self::Recovered {
+                prior_activity_id, ..
+            } => prior_activity_id.as_deref(),
+        }
+    }
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -150,6 +195,7 @@ impl AgentNavigationState {
         updated_at: Option<i64>,
     ) {
         if is_closed {
+            self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
             self.system_error_epochs.remove(&thread_id);
             self.last_status_revisions.remove(&thread_id);
             self.last_accepted_statuses.remove(&thread_id);
@@ -219,10 +265,10 @@ impl AgentNavigationState {
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
         let thread_id = activity.thread_id;
         if !self.threads.contains_key(&thread_id)
-            && self.closed_thread_tombstones.contains_key(&thread_id)
+            && !self.activity_can_create_missing_row(&activity)
         {
-            // The child closed before it ever produced picker metadata. Do not turn a delayed
-            // parent activity into a new open row; a newer revisioned status must recover first.
+            // A child close/recovery lifecycle remains authoritative after its picker row was
+            // removed. Only a distinct `Started` activity can positively establish a new one.
             return;
         }
         let is_errored_activity = activity.has_system_error;
@@ -286,6 +332,8 @@ impl AgentNavigationState {
                 .entry(thread_id)
                 .or_insert(error_epoch);
         }
+        self.last_activity_ids
+            .insert(thread_id, activity.activity_id);
     }
 
     pub(crate) fn update_identity(
@@ -397,21 +445,35 @@ impl AgentNavigationState {
         is_closed: bool,
     ) -> bool {
         if let Some(status_revision) = status_revision
-            && self
-                .last_status_revisions
-                .get(&thread_id)
-                .is_some_and(|latest| status_revision <= *latest)
+            && let Some(latest_revision) = self.last_status_revisions.get(&thread_id).copied()
+            && status_revision <= latest_revision
         {
+            if is_closed
+                && status_revision == latest_revision
+                && !self.threads.contains_key(&thread_id)
+                && self
+                    .closed_thread_tombstones
+                    .get(&thread_id)
+                    .is_some_and(|tombstone| tombstone.status_revision == Some(status_revision))
+            {
+                // A duplicate close notification carries no newer lifecycle information, but it
+                // does prove this unknown row remains recently relevant for FIFO retention.
+                self.record_closed_tombstone(thread_id, Some(status_revision));
+            }
             return false;
         }
 
         if is_closed {
+            let is_unmatched_close = !self.threads.contains_key(&thread_id);
             self.record_accepted_status(
                 thread_id,
                 /*has_system_error*/ false,
                 status_revision,
             );
-            self.record_closed_tombstone(thread_id, status_revision);
+            self.record_terminal_lifecycle_closed(thread_id, status_revision);
+            if is_unmatched_close {
+                self.record_closed_tombstone(thread_id, status_revision);
+            }
             return true;
         }
 
@@ -459,7 +521,7 @@ impl AgentNavigationState {
 
         if accepts {
             self.record_accepted_status(thread_id, has_system_error, status_revision);
-            self.clear_closed_tombstone_for_newer_status(thread_id, status_revision);
+            self.advance_terminal_lifecycle_for_newer_status(thread_id, status_revision);
         }
         accepts
     }
@@ -484,9 +546,9 @@ impl AgentNavigationState {
     }
 
     fn record_closed_tombstone(&mut self, thread_id: ThreadId, status_revision: Option<u64>) {
-        if !self.closed_thread_tombstones.contains_key(&thread_id) {
-            self.closed_thread_tombstone_order.push_back(thread_id);
-        }
+        self.closed_thread_tombstone_order
+            .retain(|candidate| *candidate != thread_id);
+        self.closed_thread_tombstone_order.push_back(thread_id);
         self.closed_thread_tombstones
             .insert(thread_id, ClosedThreadTombstone { status_revision });
         while self.closed_thread_tombstones.len() > CLOSED_THREAD_TOMBSTONE_LIMIT {
@@ -498,27 +560,113 @@ impl AgentNavigationState {
         }
     }
 
-    fn clear_closed_tombstone_for_newer_status(
+    fn advance_terminal_lifecycle_for_newer_status(
         &mut self,
         thread_id: ThreadId,
         status_revision: Option<u64>,
     ) {
-        let has_newer_status =
-            self.closed_thread_tombstones
-                .get(&thread_id)
-                .is_some_and(|tombstone| {
-                    match (tombstone.status_revision, status_revision) {
-                        (Some(closed_revision), Some(status_revision)) => {
-                            status_revision > closed_revision
-                        }
-                        // A revisioned status received after a revisionless close notification is
-                        // the strongest recovery evidence available from an older app server.
-                        (None, Some(_)) => true,
-                        _ => false,
-                    }
-                });
-        if has_newer_status {
+        let Some(status_revision) = status_revision else {
+            return;
+        };
+        let Some(watermark) = self.terminal_lifecycle_watermarks.get(&thread_id).cloned() else {
+            return;
+        };
+        if watermark
+            .status_revision()
+            .is_some_and(|terminal_revision| status_revision <= terminal_revision)
+        {
+            return;
+        }
+
+        self.record_terminal_lifecycle_watermark(
+            thread_id,
+            TerminalLifecycleWatermark::Recovered {
+                status_revision,
+                prior_activity_id: watermark.activity_id().map(str::to_string),
+            },
+        );
+        // A direct revisioned status has recovered the unmatched close, but retain the lifecycle
+        // watermark so an old parent activity cannot recreate the row after this point.
+        if self.closed_thread_tombstones.contains_key(&thread_id) {
             self.clear_closed_tombstone(thread_id);
+        }
+    }
+
+    fn record_terminal_lifecycle_closed(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) {
+        let existing = self.terminal_lifecycle_watermarks.get(&thread_id).cloned();
+        let activity_id = self.last_activity_ids.get(&thread_id).cloned().or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|watermark| watermark.activity_id().map(str::to_string))
+        });
+        let status_revision = match (
+            existing
+                .as_ref()
+                .and_then(TerminalLifecycleWatermark::status_revision),
+            status_revision,
+        ) {
+            (Some(existing_revision), Some(status_revision)) => {
+                Some(existing_revision.max(status_revision))
+            }
+            (Some(existing_revision), None) => Some(existing_revision),
+            (None, status_revision) => status_revision,
+        };
+        self.record_terminal_lifecycle_watermark(
+            thread_id,
+            TerminalLifecycleWatermark::Closed {
+                status_revision,
+                activity_id,
+            },
+        );
+    }
+
+    fn record_terminal_lifecycle_watermark(
+        &mut self,
+        thread_id: ThreadId,
+        watermark: TerminalLifecycleWatermark,
+    ) {
+        self.terminal_lifecycle_watermark_order
+            .retain(|candidate| *candidate != thread_id);
+        self.terminal_lifecycle_watermark_order.push_back(thread_id);
+        self.terminal_lifecycle_watermarks
+            .insert(thread_id, watermark);
+        while self.terminal_lifecycle_watermarks.len() > TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            let expired_thread_id = self
+                .terminal_lifecycle_watermark_order
+                .pop_front()
+                .expect("terminal lifecycle watermark order must contain every watermark");
+            self.terminal_lifecycle_watermarks
+                .remove(&expired_thread_id);
+        }
+    }
+
+    fn activity_can_create_missing_row(&mut self, activity: &SubAgentActivityDisplay) -> bool {
+        let Some(watermark) = self
+            .terminal_lifecycle_watermarks
+            .get(&activity.thread_id)
+            .cloned()
+        else {
+            return true;
+        };
+
+        match watermark {
+            TerminalLifecycleWatermark::Closed { .. } => false,
+            TerminalLifecycleWatermark::Recovered {
+                prior_activity_id, ..
+            } if activity.is_running_hint
+                && prior_activity_id.as_deref() != Some(activity.activity_id.as_str()) =>
+            {
+                self.terminal_lifecycle_watermarks
+                    .remove(&activity.thread_id);
+                self.terminal_lifecycle_watermark_order
+                    .retain(|candidate| *candidate != activity.thread_id);
+                true
+            }
+            TerminalLifecycleWatermark::Recovered { .. } => false,
         }
     }
 
@@ -556,6 +704,7 @@ impl AgentNavigationState {
     /// this up" by deleting the entry instead, wraparound navigation will silently change shape
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
+        self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
         self.system_error_epochs.remove(&thread_id);
         self.last_status_revisions.remove(&thread_id);
         self.last_accepted_statuses.remove(&thread_id);
@@ -584,6 +733,9 @@ impl AgentNavigationState {
         self.last_accepted_statuses.clear();
         self.closed_thread_tombstones.clear();
         self.closed_thread_tombstone_order.clear();
+        self.terminal_lifecycle_watermarks.clear();
+        self.terminal_lifecycle_watermark_order.clear();
+        self.last_activity_ids.clear();
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.legacy_relation_fallback_checked = false;
@@ -627,6 +779,9 @@ impl AgentNavigationState {
         self.last_status_revisions.remove(&thread_id);
         self.last_accepted_statuses.remove(&thread_id);
         self.clear_closed_tombstone(thread_id);
+        // Keep the terminal lifecycle watermark: delayed parent activity can still arrive after
+        // this opportunistic cache removal, while `clear` bounds it to the current session.
+        self.last_activity_ids.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
     }
 
@@ -1056,6 +1211,7 @@ mod tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
         state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-105".to_string(),
             thread_id,
             agent_path: "/root/failed-child".to_string(),
             model: None,
@@ -1139,6 +1295,7 @@ mod tests {
         ));
         state.set_system_error(thread_id, true);
         state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-106".to_string(),
             thread_id,
             agent_path: "/root/status-first-failed-child".to_string(),
             model: None,
@@ -1169,6 +1326,7 @@ mod tests {
             ThreadId::from_string("00000000-0000-0000-0000-000000000107").expect("valid thread");
 
         state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-107".to_string(),
             thread_id,
             agent_path: "/root/hydrated-failed-child".to_string(),
             model: None,
@@ -1217,6 +1375,7 @@ mod tests {
         // The parent can receive terminal activity after the child has already closed. Keep the
         // picker empty rather than resurrecting an open, failed row.
         state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-108".to_string(),
             thread_id,
             agent_path: "/root/closed-before-activity".to_string(),
             model: None,
@@ -1243,6 +1402,7 @@ mod tests {
         assert!(!state.closed_thread_tombstones.contains_key(&thread_id));
 
         state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-109".to_string(),
             thread_id,
             agent_path: "/root/recovered-child".to_string(),
             model: None,
@@ -1254,6 +1414,232 @@ mod tests {
             state.get(&thread_id).is_some_and(|entry| !entry.is_closed
                 && !entry.has_system_error
                 && entry.is_running)
+        );
+    }
+
+    #[test]
+    fn recovered_lifecycle_suppresses_stale_errored_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000110").expect("valid thread");
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        assert!(!state.closed_thread_tombstones.contains_key(&thread_id));
+
+        // Parent activity is independently delivered and may still describe the closed rev-3
+        // lifecycle. The rev-4 recovery removes the public tombstone but keeps this causal guard.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-110-stale-error".to_string(),
+            thread_id,
+            agent_path: "/root/recovered-then-stale-error".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn remove_retains_closed_lifecycle_guard_against_late_errored_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Finished child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        state.mark_closed(thread_id);
+        state.remove(thread_id);
+        assert!(state.is_empty());
+        assert!(state.terminal_lifecycle_watermarks.contains_key(&thread_id));
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-111-late-error".to_string(),
+            thread_id,
+            agent_path: "/root/removed-then-stale-error".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn recovered_lifecycle_allows_distinct_fresh_started_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-112-old".to_string(),
+            thread_id,
+            agent_path: "/root/previous-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        state.mark_closed(thread_id);
+        state.remove(thread_id);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+
+        // Replaying the previous lifecycle's Started item is not fresh evidence, even though the
+        // close has since been superseded by a newer status revision.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-112-old".to_string(),
+            thread_id,
+            agent_path: "/root/previous-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.is_empty());
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-112-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+        assert!(
+            state.get(&thread_id).is_some_and(|entry| entry.is_running
+                && !entry.is_closed
+                && !entry.has_system_error)
+        );
+        assert!(!state.terminal_lifecycle_watermarks.contains_key(&thread_id));
+    }
+
+    #[test]
+    fn known_closures_do_not_evict_unmatched_close_tombstones() {
+        let mut state = AgentNavigationState::default();
+        let unmatched_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            unmatched_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+
+        for _ in 0..(CLOSED_THREAD_TOMBSTONE_LIMIT + 1) {
+            let known_thread_id = ThreadId::new();
+            state.upsert(
+                known_thread_id,
+                None,
+                None,
+                /*is_closed*/ false,
+                /*created_at*/ None,
+                /*updated_at*/ None,
+            );
+            assert!(state.accepts_thread_status_change(
+                known_thread_id,
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ true,
+            ));
+        }
+
+        assert!(
+            state
+                .closed_thread_tombstones
+                .contains_key(&unmatched_thread_id)
+        );
+        assert_eq!(state.closed_thread_tombstones.len(), 1);
+    }
+
+    #[test]
+    fn refreshed_unmatched_close_tombstone_moves_to_fifo_back() {
+        let mut state = AgentNavigationState::default();
+        let refreshed_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            refreshed_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+        let first_other_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            first_other_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+        for _ in 0..(CLOSED_THREAD_TOMBSTONE_LIMIT - 2) {
+            assert!(state.accepts_thread_status_change(
+                ThreadId::new(),
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ true,
+            ));
+        }
+        assert_eq!(
+            state.closed_thread_tombstones.len(),
+            CLOSED_THREAD_TOMBSTONE_LIMIT
+        );
+
+        // A duplicate close notification is recent again even when it carries no newer revision.
+        // The next unrelated close must evict the oldest other tombstone instead.
+        assert!(!state.accepts_thread_status_change(
+            refreshed_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+        assert!(state.accepts_thread_status_change(
+            ThreadId::new(),
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+
+        assert!(
+            state
+                .closed_thread_tombstones
+                .contains_key(&refreshed_thread_id)
+        );
+        assert!(
+            !state
+                .closed_thread_tombstones
+                .contains_key(&first_other_thread_id)
         );
     }
 
