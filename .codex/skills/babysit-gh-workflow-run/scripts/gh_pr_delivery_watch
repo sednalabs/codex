@@ -20,7 +20,13 @@ resolve_python() {
     /usr/local/bin/python3 \
     /opt/homebrew/bin/python3 \
     /usr/bin/python3 \
-    /bin/python3
+    /bin/python3 \
+    /usr/local/bin/python \
+    /opt/homebrew/bin/python \
+    /usr/bin/python \
+    /bin/python \
+    "$HOME/.pyenv/shims/python3" \
+    "$HOME/.pyenv/shims/python"
   do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"

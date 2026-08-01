@@ -53,10 +53,11 @@ def is_full_sha(value):
 
 
 def normalize_workflow_name(value):
-    normalized = str(value or "").strip().lower()
+    normalized = str(value or "").strip().lower().replace("\\", "/")
+    normalized = normalized.rsplit("/", 1)[-1]
     normalized = normalized.removesuffix(".yaml")
     normalized = normalized.removesuffix(".yml")
-    return normalized
+    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
 
 
 def workflow_matches(observed, expected):
@@ -101,13 +102,14 @@ def compact_failed_job(failed_jobs):
     } or None
 
 
-def run_process(command):
+def run_process(command, *, env=None):
     try:
         return subprocess.run(
             command,
             capture_output=True,
             text=True,
             check=False,
+            env=env,
         )
     except OSError as err:
         executable = str(command[0]) if command else "required command"
@@ -307,7 +309,11 @@ def run_blocking_watcher(repo, target, args):
         "--retry-settle-seconds",
         str(args.retry_settle_seconds),
     ]
-    result = run_process(command)
+    watcher_env = os.environ.copy()
+    selected_python = watcher_env.get("GH_PR_DELIVERY_WATCH_PYTHON")
+    if selected_python:
+        watcher_env["GH_WORKFLOW_RUN_WATCH_PYTHON"] = selected_python
+    result = run_process(command, env=watcher_env)
     payload = parse_watcher_payload(result.stdout)
     if result.returncode != 0:
         raise GhCommandError("The blocking workflow watcher exited unsuccessfully.")
@@ -461,6 +467,29 @@ def verify_candidate_association(repo, candidate_sha, pr, args):
     }
 
 
+def verify_selected_candidate_merged(repo, candidate_sha, merge_commit_sha):
+    try:
+        candidate_reaches_merge_commit = is_commit_ancestor(
+            repo, candidate_sha, merge_commit_sha
+        )
+    except GhCommandError as err:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            "GitHub could not correlate the selected merge-group candidate to the merge commit.",
+        ) from err
+    if not candidate_reaches_merge_commit:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_not_merged",
+            f"Selected merge-group candidate {candidate_sha} is not an ancestor of "
+            f"merge commit {merge_commit_sha}.",
+        )
+    return {
+        "candidate_sha": candidate_sha,
+        "merge_commit_sha": merge_commit_sha,
+        "candidate_reaches_merge_commit": True,
+    }
+
+
 def is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
     return is_commit_ancestor(repo, merge_commit_sha, main_head_sha)
 
@@ -560,6 +589,13 @@ def execute_delivery(args):
             "observed_main_head_sha": main_head_sha,
             "reachable_from_main": True,
         }
+        receipt["merge_group"]["merge_correlation"] = {
+            "candidate_sha": candidate_sha,
+            "merge_commit_sha": merge_commit_sha,
+        }
+        receipt["merge_group"]["merge_correlation"].update(
+            verify_selected_candidate_merged(repo, candidate_sha, merge_commit_sha)
+        )
 
         post_merge_payload = run_blocking_watcher(
             repo,

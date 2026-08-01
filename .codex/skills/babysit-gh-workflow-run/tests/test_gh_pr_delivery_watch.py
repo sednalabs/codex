@@ -79,6 +79,18 @@ def candidate_association():
     )
 
 
+def candidate_merge_correlation():
+    return patch.object(
+        MODULE,
+        "verify_selected_candidate_merged",
+        return_value={
+            "candidate_sha": CANDIDATE_SHA,
+            "merge_commit_sha": MERGE_COMMIT_SHA,
+            "candidate_reaches_merge_commit": True,
+        },
+    )
+
+
 def make_candidate(*, run_id=901, candidate_sha=CANDIDATE_SHA):
     return {
         "id": run_id,
@@ -174,6 +186,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             ) as watcher,
             patch.object(MODULE, "fetch_ref_sha", return_value=MERGE_COMMIT_SHA),
             patch.object(MODULE, "is_commit_reachable_from_main", return_value=True),
+            candidate_merge_correlation(),
         ):
             receipt, status = MODULE.execute_delivery(args)
 
@@ -181,6 +194,11 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["actions"], ["stop_pr_delivery_proven"])
         self.assertEqual(receipt["pr"]["expected_head_sha"], EXPECTED_HEAD_SHA)
         self.assertEqual(receipt["merge_group"]["candidate_sha"], CANDIDATE_SHA)
+        self.assertTrue(
+            receipt["merge_group"]["merge_correlation"][
+                "candidate_reaches_merge_commit"
+            ]
+        )
         self.assertEqual(receipt["merge_group"]["run"]["id"], 901)
         self.assertEqual(receipt["merge_commit"]["sha"], MERGE_COMMIT_SHA)
         self.assertEqual(receipt["post_merge"]["run"]["id"], 902)
@@ -290,6 +308,37 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
                 )
             )
 
+    def test_workflow_matching_accepts_file_paths_and_display_names(self):
+        self.assertTrue(
+            MODULE.workflow_matches(".github/workflows/blocking-ci.yml", "Blocking CI")
+        )
+        self.assertTrue(MODULE.workflow_matches("postmerge-ci.yaml", "Postmerge CI"))
+
+    def test_candidate_and_watched_run_accept_workflow_file_and_display_name(self):
+        candidate = make_candidate()
+        candidate["workflow"] = "Blocking CI"
+        args = make_args(merge_group_workflow=".github/workflows/blocking-ci.yml")
+        self.assertEqual(
+            MODULE.verify_merge_group_candidate(candidate, args), candidate
+        )
+
+        receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="Postmerge CI",
+            event="push",
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+        watched = MODULE.verify_watched_run(
+            receipt,
+            stage="post_merge",
+            expected_sha=MERGE_COMMIT_SHA,
+            expected_event="push",
+            expected_branch="main",
+            expected_workflow=".github/workflows/postmerge-ci.yml",
+        )
+        self.assertEqual(watched["outcome"], "success")
+
     def test_queue_entry_disappearing_without_merge_is_a_distinct_stop(self):
         args = make_args()
         candidate = make_candidate()
@@ -350,6 +399,50 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(receipt["actions"], ["stop_merge_commit_uncorrelatable"])
 
+    def test_superseded_candidate_cannot_claim_a_later_merge(self):
+        args = make_args()
+        candidate = make_candidate()
+        candidate_receipt = make_watcher_receipt(
+            run_id=901,
+            workflow="blocking-ci",
+            event="merge_group",
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+        with (
+            patch.object(
+                MODULE,
+                "fetch_pr",
+                side_effect=[
+                    make_pr(),
+                    make_pr(
+                        merged=True,
+                        queue_entry_id=None,
+                        merge_commit_sha=MERGE_COMMIT_SHA,
+                    ),
+                ],
+            ),
+            patch.object(
+                MODULE, "resolve_merge_group_candidate", return_value=candidate
+            ),
+            candidate_association(),
+            patch.object(
+                MODULE, "run_blocking_watcher", return_value=candidate_receipt
+            ) as watcher,
+            patch.object(MODULE, "fetch_ref_sha", return_value=MERGE_COMMIT_SHA),
+            patch.object(MODULE, "is_commit_reachable_from_main", return_value=True),
+            patch.object(MODULE, "is_commit_ancestor", return_value=False),
+        ):
+            receipt, status = MODULE.execute_delivery(args)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_merge_group_candidate_not_merged"])
+        self.assertEqual(
+            receipt["merge_group"]["merge_correlation"],
+            {"candidate_sha": CANDIDATE_SHA, "merge_commit_sha": MERGE_COMMIT_SHA},
+        )
+        self.assertEqual(watcher.call_count, 1)
+
     def test_post_merge_run_sha_mismatch_is_rejected_even_after_merge(self):
         args = make_args()
         candidate = make_candidate()
@@ -391,6 +484,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             ),
             patch.object(MODULE, "fetch_ref_sha", return_value=MERGE_COMMIT_SHA),
             patch.object(MODULE, "is_commit_reachable_from_main", return_value=True),
+            candidate_merge_correlation(),
         ):
             receipt, status = MODULE.execute_delivery(args)
 
@@ -486,6 +580,26 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertIn("--watch-until-terminal", command)
         self.assertIn(f"run-id=901,head-sha={CANDIDATE_SHA}", command)
 
+    def test_blocking_watcher_forwards_the_delivery_python_override(self):
+        args = make_args()
+        completed = types.SimpleNamespace(
+            returncode=0, stdout=json.dumps({"targets": []}) + "\n"
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"GH_PR_DELIVERY_WATCH_PYTHON": sys.executable},
+                clear=False,
+            ),
+            patch.object(MODULE.subprocess, "run", return_value=completed) as run,
+        ):
+            MODULE.run_blocking_watcher(
+                "owner/repo", f"run-id=901,head-sha={CANDIDATE_SHA}", args
+            )
+
+        watcher_env = run.call_args.kwargs["env"]
+        self.assertEqual(watcher_env["GH_WORKFLOW_RUN_WATCH_PYTHON"], sys.executable)
+
     def test_launcher_uses_configured_python_without_path(self):
         launcher = (
             Path(__file__).resolve().parents[1] / "scripts" / "gh_pr_delivery_watch"
@@ -493,6 +607,20 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         result = subprocess.run(
             [str(launcher), "--help"],
             env={"PATH": "", "GH_PR_DELIVERY_WATCH_PYTHON": sys.executable},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("--expected-head-sha", result.stdout)
+
+    def test_launcher_accepts_the_workflow_watcher_python_override(self):
+        launcher = (
+            Path(__file__).resolve().parents[1] / "scripts" / "gh_pr_delivery_watch"
+        )
+        result = subprocess.run(
+            [str(launcher), "--help"],
+            env={"PATH": "", "GH_WORKFLOW_RUN_WATCH_PYTHON": sys.executable},
             capture_output=True,
             text=True,
             check=False,
