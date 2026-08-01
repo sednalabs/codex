@@ -59,7 +59,7 @@ jobs:
             config_file: ./.github/codeql/codeql-rust.yml
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
