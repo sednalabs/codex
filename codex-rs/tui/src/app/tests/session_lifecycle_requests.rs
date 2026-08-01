@@ -74,7 +74,7 @@ enum PickerBackfillTestBehavior {
     PersistedDescendantList,
     LegacyScan,
     ThreadReadAndHideFromThreadList { thread_id: String },
-    IgnoreAncestorThreadFilters {
+    PreAcknowledgementAncestorCompatibility {
         denied_thread_read_id: String,
         denied_thread_reads: Arc<Mutex<Vec<String>>>,
     },
@@ -105,19 +105,28 @@ impl PickerBackfillTestBehavior {
         )
     }
 
-    fn strips_ancestor_thread_filter(&self) -> bool {
-        matches!(self, Self::IgnoreAncestorThreadFilters { .. })
+    fn strips_loaded_ancestor_thread_filter(&self) -> bool {
+        matches!(self, Self::PreAcknowledgementAncestorCompatibility { .. })
     }
 
-    fn strip_ancestor_thread_filter(&self, request: &mut ClientRequest) {
-        if !self.strips_ancestor_thread_filter() {
+    fn strip_loaded_ancestor_thread_filter(&self, request: &mut ClientRequest) {
+        if !self.strips_loaded_ancestor_thread_filter() {
             return;
         }
         match request {
-            ClientRequest::ThreadList { params, .. } => params.ancestor_thread_id = None,
             ClientRequest::ThreadLoadedList { params, .. } => params.ancestor_thread_id = None,
             _ => {}
         }
+    }
+
+    fn omits_thread_list_ancestor_filter_ack(&self, request: &ClientRequest) -> bool {
+        matches!(
+            (self, request),
+            (
+                Self::PreAcknowledgementAncestorCompatibility { .. },
+                ClientRequest::ThreadList { params, .. },
+            ) if params.ancestor_thread_id.is_some()
+        )
     }
 
     fn hidden_thread_id_for_thread_list(&self, request: &ClientRequest) -> Option<&str> {
@@ -133,7 +142,7 @@ impl PickerBackfillTestBehavior {
     fn rejects_thread_read(&self, request: &ClientRequest) -> bool {
         match (self, request) {
             (
-                Self::IgnoreAncestorThreadFilters {
+                Self::PreAcknowledgementAncestorCompatibility {
                     denied_thread_read_id,
                     denied_thread_reads,
                 },
@@ -230,6 +239,10 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                     let rejected_thread_read = test_behavior
                         .as_ref()
                         .is_some_and(|behavior| behavior.rejects_thread_read(&request));
+                    let omits_thread_list_ancestor_filter_ack =
+                        test_behavior.as_ref().is_some_and(|behavior| {
+                            behavior.omits_thread_list_ancestor_filter_ack(&request)
+                        });
                     let response = if rejected_thread_read {
                         JSONRPCMessage::Error(JSONRPCError {
                             id: request_id,
@@ -255,10 +268,9 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                         })
                     } else {
                         if let Some(behavior) = test_behavior.as_ref() {
-                            // Older app servers ignore unknown ancestorThreadId fields instead of
-                            // rejecting them. Strip the field before forwarding to model that
-                            // successful-but-unfiltered compatibility response.
-                            behavior.strip_ancestor_thread_filter(&mut request);
+                            // The older app-server boundary supports thread/list's long-standing
+                            // ancestor filter but ignores the newer thread/loaded/list field.
+                            behavior.strip_loaded_ancestor_thread_filter(&mut request);
                         }
                         match embedded.request(request).await? {
                             Ok(result) => {
@@ -266,6 +278,14 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                                     let mut response =
                                         serde_json::from_value::<ThreadListResponse>(result)?;
                                     response.data.retain(|thread| thread.id != thread_id);
+                                    serde_json::to_value(response)?
+                                } else {
+                                    result
+                                };
+                                let result = if omits_thread_list_ancestor_filter_ack {
+                                    let mut response =
+                                        serde_json::from_value::<ThreadListResponse>(result)?;
+                                    response.ancestor_filter_applied = false;
                                     serde_json::to_value(response)?
                                 } else {
                                     result
@@ -2044,6 +2064,7 @@ fn agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent() -
 
 #[test]
 fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()> {
+    const CLOSED_DESCENDANT_COUNT: usize = 50;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
@@ -2092,11 +2113,40 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                     )
                     .expect("create expected child rollout"),
                 )?;
+                // These newer closed children fill the normal 50-row picker relation page. The
+                // still-loaded expected child must arrive from the bounded old-server
+                // compatibility window instead of an untrusted global loaded-id sweep.
+                for index in 0..CLOSED_DESCENDANT_COUNT {
+                    let seconds_from_start = index + 2;
+                    let timestamp = format!("2026-01-10T00-00-{seconds_from_start:02}");
+                    let created_at = format!("2026-01-10T00:00:{seconds_from_start:02}Z");
+                    create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        &timestamp,
+                        &created_at,
+                        &format!("Saved newer closed child message {index}"),
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from(format!("/root/closed-compat-worker-{index}"))
+                                    .expect("valid closed compatibility agent path"),
+                            ),
+                            agent_nickname: Some(format!("closed-compat-worker-{index}")),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create newer closed child rollout");
+                }
                 let unrelated_root_thread_id = ThreadId::from_string(
                     &create_fake_rollout(
                         codex_home.path(),
-                        "2026-01-10T00-00-02",
-                        "2026-01-10T00:00:02Z",
+                        "2026-01-10T00-01-00",
+                        "2026-01-10T00:01:00Z",
                         "Saved unrelated root message",
                         Some(app.config.model_provider_id.as_str()),
                         /*git_info*/ None,
@@ -2106,8 +2156,8 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                 let unrelated_child_thread_id = ThreadId::from_string(
                     &create_fake_parented_rollout_with_source(
                         codex_home.path(),
-                        "2026-01-10T00-00-03",
-                        "2026-01-10T00:00:03Z",
+                        "2026-01-10T00-01-01",
+                        "2026-01-10T00:01:01Z",
                         "Saved unrelated child message",
                         Some(app.config.model_provider_id.as_str()),
                         /*git_info*/ None,
@@ -2131,15 +2181,15 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                 let (mut app_server, requests, proxy) =
                     start_recording_app_server_with_picker_backfill_test_behavior(
                         &app.config,
-                        Some(PickerBackfillTestBehavior::IgnoreAncestorThreadFilters {
+                        Some(PickerBackfillTestBehavior::PreAcknowledgementAncestorCompatibility {
                             denied_thread_read_id: unrelated_child_thread_id.to_string(),
                             denied_thread_reads: Arc::clone(&denied_thread_reads),
                         }),
                     )
                     .await?;
-                // Populate the state-db relation index before the proxy starts stripping the
-                // TUI's requested ancestor filters. This makes both picker backfill requests
-                // return successful but unfiltered data, as an older app server would.
+                // Populate the state-db relation index before the proxy models the compatibility
+                // boundary: thread/loaded/list ignores the newer ancestor field, while the older
+                // thread/list ancestor filter still applies but omits its new acknowledgement.
                 let mut repair_cursor = None;
                 loop {
                     let repair_page = app_server
