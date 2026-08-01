@@ -7,7 +7,7 @@
 diff --git a/rs/platforms/triples.bzl b/rs/platforms/triples.bzl
 --- a/rs/platforms/triples.bzl
 +++ b/rs/platforms/triples.bzl
-@@ -61,0 +62,6 @@ SUPPORTED_EXEC_TRIPLES = [
+@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [
 +# Miri intentionally remains on SUPPORTED_EXEC_TRIPLES. Its distributed host
 +# tools do not cover this ABI, while Rust compiler tools do.
 +SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [

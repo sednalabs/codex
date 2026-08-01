@@ -17,9 +17,9 @@ permissions:
   contents: read
 
 # The native x86 health job is the sole writer for its stable repository-cache
-# key. The ARM64 selection analysis below restores only an isolated key, so
-# trusted pushes retain one known writer for the native cache; manual dispatches
-# never receive cache-write eligibility.
+# key. The ARM64 selection analysis uses its own key and can publish only under
+# the same trusted post-merge predicate; manual dispatches never receive cache-
+# write eligibility.
 concurrency:
   group: native-windows-bazel-health-${{ github.ref }}
   cancel-in-progress: false
@@ -38,11 +38,12 @@ jobs:
           persist-credentials: false
 
       - name: Prepare Bazel CI
+        id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
-          # Namespace a restore-only repository cache for this analysis. Do
-          # not add a matching cache-save step: native x86 health remains the
-          # sole writer for its stable repository cache.
+          # Keep this analysis cache distinct from the native x86 health key.
+          # Its matching save below remains restricted to trusted post-merge
+          # pushes by prepare-bazel-ci's repository cache write policy.
           target: aarch64-pc-windows-gnullvm
           cache-scope: bazel-${{ github.job }}
 
@@ -55,7 +56,8 @@ jobs:
           # `aquery` configures actions but does not execute build or test
           # actions. The target and extra execution platform together model
           # the ARM64 native Windows gnullvm selection contract.
-          bazel aquery \
+          ./.github/scripts/run_bazel_with_buildbuddy.py \
+            aquery \
             --platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
             --extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm \
             --include_artifacts=true \
@@ -68,6 +70,17 @@ jobs:
           python3 .github/scripts/verify_arm64_gnullvm_aquery.py \
             "${aquery_output}" \
             --target //codex-rs/otel:otel
+
+      # Keep the ARM64 analysis cache independent from the native x86 health
+      # cache. `repository-cache-write-enabled` is true only for trusted push
+      # runs on main or upstream-main, never for dispatches or untrusted refs.
+      - name: Save ARM64 gnullvm aquery repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
 
       - name: Check for a clean worktree
         if: always() && !cancelled()

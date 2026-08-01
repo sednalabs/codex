@@ -8,6 +8,7 @@ import io
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,48 @@ import yaml
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent.parent
+UNIFIED_DIFF_HUNK_HEADER = re.compile(
+    r"^@@ -\d+(?:,(?P<old_count>\d+))? \+\d+(?:,(?P<new_count>\d+))? @@"
+)
+
+
+def unified_diff_hunk_line_counts(patch: str) -> list[tuple[str, int, int, int, int]]:
+    """Return each hunk's declared and observed old/new line counts."""
+
+    hunks: list[tuple[str, int, int, int, int]] = []
+    header: str | None = None
+    expected_old = expected_new = observed_old = observed_new = 0
+
+    def finish_hunk() -> None:
+        if header is not None:
+            hunks.append(
+                (header, expected_old, observed_old, expected_new, observed_new)
+            )
+
+    for line in patch.splitlines():
+        match = UNIFIED_DIFF_HUNK_HEADER.match(line)
+        if match:
+            finish_hunk()
+            header = line
+            expected_old = int(match["old_count"] or 1)
+            expected_new = int(match["new_count"] or 1)
+            observed_old = observed_new = 0
+            continue
+        if line.startswith("@@"):
+            raise AssertionError(f"malformed unified diff hunk header: {line}")
+        if line.startswith("diff --git "):
+            finish_hunk()
+            header = None
+            continue
+        if header is None:
+            continue
+        if line.startswith((" ", "-")):
+            observed_old += 1
+        if line.startswith((" ", "+")):
+            observed_new += 1
+
+    finish_hunk()
+    return hunks
 
 
 def load_module(name: str, path: Path):
@@ -1142,6 +1185,16 @@ class RouteSelectionTests(unittest.TestCase):
 +]''',
             gnullvm_exec_patch,
         )
+        self.assertIn(
+            "@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [",
+            gnullvm_exec_patch,
+        )
+        for hunk, expected_old, observed_old, expected_new, observed_new in (
+            unified_diff_hunk_line_counts(gnullvm_exec_patch)
+        ):
+            with self.subTest(hunk=hunk):
+                self.assertEqual(observed_old, expected_old)
+                self.assertEqual(observed_new, expected_new)
         # `//:local_windows` inherits the runner CPU. Each compiler-tool
         # declaration must therefore resolve using full target-triple
         # constraints, including ARM64 gnullvm rather than an MSVC fallback.
@@ -1220,6 +1273,7 @@ class RouteSelectionTests(unittest.TestCase):
             None,
         )
         self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
+        self.assertEqual(prepare_step.get("id"), "prepare_bazel")
         self.assertEqual(
             (prepare_step.get("with") or {}).get("target"),
             "aarch64-pc-windows-gnullvm",
@@ -1243,7 +1297,9 @@ class RouteSelectionTests(unittest.TestCase):
             "ARM64 gnullvm toolchain selection step not found",
         )
         analysis_run = analysis_step.get("run") or ""
-        self.assertIn("bazel aquery", analysis_run)
+        self.assertIn("./.github/scripts/run_bazel_with_buildbuddy.py", analysis_run)
+        self.assertIn("aquery", analysis_run)
+        self.assertNotIn("\n          bazel aquery", analysis_run)
         self.assertNotIn("bazel build", analysis_run)
         self.assertNotIn("bazel test", analysis_run)
         self.assertIn(
@@ -1262,8 +1318,35 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn("--target //codex-rs/otel:otel", analysis_run)
         self.assertNotIn("grep", analysis_run)
-        self.assertFalse(
-            any(step.get("name") == "Save bazel repository cache" for step in analysis_steps)
+        analysis_cache_save = next(
+            (
+                step
+                for step in analysis_steps
+                if step.get("name") == "Save ARM64 gnullvm aquery repository cache"
+            ),
+            None,
+        )
+        self.assertIsNotNone(analysis_cache_save, "ARM64 analysis cache save not found")
+        self.assertEqual(analysis_cache_save.get("continue-on-error"), "true")
+        self.assertEqual(
+            analysis_cache_save.get("uses"),
+            "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        )
+        self.assertIn(
+            "steps.prepare_bazel.outputs.repository-cache-hit != 'true'",
+            analysis_cache_save.get("if") or "",
+        )
+        self.assertIn(
+            "steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'",
+            analysis_cache_save.get("if") or "",
+        )
+        self.assertEqual(
+            (analysis_cache_save.get("with") or {}).get("path"),
+            "${{ steps.prepare_bazel.outputs.repository-cache-path }}",
+        )
+        self.assertEqual(
+            (analysis_cache_save.get("with") or {}).get("key"),
+            "${{ steps.prepare_bazel.outputs.repository-cache-key }}",
         )
 
     def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
