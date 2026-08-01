@@ -1133,7 +1133,16 @@ impl App {
                         %err,
                         "bounded compatibility relation lookup was unavailable"
                     );
-                    None
+                    // The ordinary 50-row response cannot safely stand in for this required
+                    // relation window: it may be full of newer closed descendants while a loaded
+                    // child falls just beyond it. Match persisted-page failures by leaving this
+                    // backfill incomplete, so keyboard navigation does not cache the attempt and
+                    // can retry without widening the query or reading global metadata.
+                    self.sync_active_agent_label();
+                    return LoadedSubagentBackfill {
+                        completed: false,
+                        refreshed_thread_ids,
+                    };
                 }
             }
         } else {

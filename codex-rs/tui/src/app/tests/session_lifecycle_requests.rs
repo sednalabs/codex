@@ -77,6 +77,7 @@ enum PickerBackfillTestBehavior {
     PreAcknowledgementAncestorCompatibility {
         denied_thread_read_id: String,
         denied_thread_reads: Arc<Mutex<Vec<String>>>,
+        transient_compatibility_relation_failure: Option<Arc<Mutex<bool>>>,
     },
 }
 
@@ -129,6 +130,27 @@ impl PickerBackfillTestBehavior {
         )
     }
 
+    fn fails_compatibility_relation_page_once(&self, request: &ClientRequest) -> bool {
+        match (self, request) {
+            (
+                Self::PreAcknowledgementAncestorCompatibility {
+                    transient_compatibility_relation_failure: Some(pending),
+                    ..
+                },
+                ClientRequest::ThreadList { params, .. },
+            ) if params.use_state_db_only
+                && params.ancestor_thread_id.is_some()
+                && params.limit == Some(100) =>
+            {
+                std::mem::replace(
+                    &mut *pending.lock().expect("compatibility relation failure lock"),
+                    false,
+                )
+            }
+            _ => false,
+        }
+    }
+
     fn hidden_thread_id_for_thread_list(&self, request: &ClientRequest) -> Option<&str> {
         match (self, request) {
             (
@@ -145,6 +167,7 @@ impl PickerBackfillTestBehavior {
                 Self::PreAcknowledgementAncestorCompatibility {
                     denied_thread_read_id,
                     denied_thread_reads,
+                    ..
                 },
                 ClientRequest::ThreadRead { params, .. },
             ) if params.thread_id.as_str() == denied_thread_read_id => {
@@ -239,6 +262,11 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                     let rejected_thread_read = test_behavior
                         .as_ref()
                         .is_some_and(|behavior| behavior.rejects_thread_read(&request));
+                    let transient_compatibility_relation_failure = test_behavior
+                        .as_ref()
+                        .is_some_and(|behavior| {
+                            behavior.fails_compatibility_relation_page_once(&request)
+                        });
                     let omits_thread_list_ancestor_filter_ack =
                         test_behavior.as_ref().is_some_and(|behavior| {
                             behavior.omits_thread_list_ancestor_filter_ack(&request)
@@ -249,6 +277,16 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                             error: JSONRPCErrorError {
                                 code: -32000,
                                 message: "injected rejected untrusted metadata read".to_string(),
+                                data: None,
+                            },
+                        })
+                    } else if transient_compatibility_relation_failure {
+                        JSONRPCMessage::Error(JSONRPCError {
+                            id: request_id,
+                            error: JSONRPCErrorError {
+                                code: -32000,
+                                message: "injected transient compatibility relation failure"
+                                    .to_string(),
                                 data: None,
                             },
                         })
@@ -2184,6 +2222,9 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                         Some(PickerBackfillTestBehavior::PreAcknowledgementAncestorCompatibility {
                             denied_thread_read_id: unrelated_child_thread_id.to_string(),
                             denied_thread_reads: Arc::clone(&denied_thread_reads),
+                            transient_compatibility_relation_failure: Some(Arc::new(Mutex::new(
+                                true,
+                            ))),
                         }),
                     )
                     .await?;
@@ -2236,16 +2277,29 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
-                let first_backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
-                assert!(
-                    first_backfill.completed,
-                    "an unrelated rejected metadata read must not make an unacknowledged priority response retryable"
+                app.active_thread_id = Some(root_thread_id);
+                let first_navigation_attempt = app
+                    .adjacent_thread_id_with_backfill(
+                        &mut app_server,
+                        AgentNavigationDirection::Next,
+                    )
+                    .await;
+                assert_eq!(
+                    first_navigation_attempt, None,
+                    "a failed bounded compatibility page must not treat the ordinary 50-row page as complete"
                 );
-                let retry_backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
                 assert!(
-                    retry_backfill.completed,
-                    "each unacknowledged priority response must fall back without retry amplification"
+                    app.agent_navigation.get(&expected_child_thread_id).is_none(),
+                    "the failed compatibility page must not expose a partial relation result"
                 );
+                let retried_thread_id = app
+                    .adjacent_thread_id_with_backfill(
+                        &mut app_server,
+                        AgentNavigationDirection::Next,
+                    )
+                    .await
+                    .expect("the next keyboard attempt must retry the bounded compatibility page");
+                assert_eq!(retried_thread_id, expected_child_thread_id);
                 Box::pin(app.open_agent_picker(&mut app_server)).await;
 
                 assert!(
