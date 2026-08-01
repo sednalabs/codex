@@ -1069,7 +1069,7 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
-    def test_bazel_windows_native_main_avoids_remote_rust_cache(self) -> None:
+    def test_bazel_windows_native_main_uses_msvc_proc_macro_platform(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
 
@@ -1094,7 +1094,20 @@ class RouteSelectionTests(unittest.TestCase):
         )
 
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
+        self.assertEqual(
+            native_job.get("name"),
+            "Bazel test on windows-latest for x86_64-pc-windows-msvc (native health)",
+        )
         native_steps = native_job.get("steps") or []
+        prepare_step = next(
+            (step for step in native_steps if step.get("name") == "Prepare Bazel CI"),
+            None,
+        )
+        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
+        self.assertEqual(
+            (prepare_step.get("with") or {}).get("target"),
+            "x86_64-pc-windows-msvc",
+        )
         native_step = next(
             (step for step in native_steps if step.get("name") == "bazel test //..."),
             None,
@@ -1102,9 +1115,19 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
         self.assertNotIn("continue-on-error", native_step)
         native_test_run = native_step.get("run") or ""
+        self.assertIn("--platforms=//:windows_x86_64_msvc", native_test_run)
+        self.assertIn("--windows-msvc-host-platform", native_test_run)
         self.assertIn(
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
+        )
+
+        execution_logs_upload = next(
+            step for step in native_steps if step.get("name") == "Upload Bazel execution logs"
+        )
+        self.assertEqual(
+            (execution_logs_upload.get("with") or {}).get("name"),
+            "bazel-execution-logs-test-windows-native-x86_64-pc-windows-msvc",
         )
 
         diagnostics_step = next(
