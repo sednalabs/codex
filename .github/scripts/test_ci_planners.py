@@ -1143,6 +1143,11 @@ class RouteSelectionTests(unittest.TestCase):
             "exec_compatible_with = triple_to_rust_constraint_set(triple)",
             gnullvm_exec_patch,
         )
+        self.assertIn(
+            "if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch "
+            "and exec_triple.system == host_os:",
+            gnullvm_exec_patch,
+        )
 
         execution_logs_upload = next(
             step for step in native_steps if step.get("name") == "Upload Bazel execution logs"

@@ -1,7 +1,8 @@
 # What: register a distinct gnullvm Rust execution toolchain on Windows.
 # Why: native gnullvm proc macros must load against the matching Rust runtime;
 # the generic MSVC execution toolchain leaves those DLLs unloadable.
-# Scope: Rust compiler tools only. Miri retains its existing MSVC-only exec set.
+# Scope: Rust compiler tools only. Miri and module-extension host Cargo retain
+# their existing MSVC-only exec set.
 
 diff --git a/rs/platforms/triples.bzl b/rs/platforms/triples.bzl
 --- a/rs/platforms/triples.bzl
@@ -140,6 +141,9 @@ diff --git a/rs/toolchains/module_extension.bzl b/rs/toolchains/module_extension
 @@ -305 +310 @@ def _toolchains_impl(mctx):
 -            triple_suffix = exec_triple.system + "_" + exec_triple.arch
 +            triple_suffix = _exec_triple_suffix(exec_triple)
+@@ -323 +328 @@ def _toolchains_impl(mctx):
+-                if exec_triple.arch == host_arch and exec_triple.system == host_os:
++                if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch and exec_triple.system == host_os:
 @@ -364 +369 @@ def _toolchains_impl(mctx):
 -        for triple in SUPPORTED_EXEC_TRIPLES:
 +        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
