@@ -1133,9 +1133,20 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
 }
 
 #[tokio::test]
-async fn live_app_server_failed_spawn_renders_requested_without_effective_identity() {
+async fn live_app_server_failed_spawn_with_receiver_renders_failure_and_identity() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+    chat.set_collab_agent_identity(
+        receiver_thread_id,
+        crate::multi_agents::AgentMetadata {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: Some("/root/failed-spawn".to_string()),
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::Medium),
+        },
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -1168,10 +1179,10 @@ async fn live_app_server_failed_spawn_renders_requested_without_effective_identi
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Failed,
                 sender_thread_id: sender_thread_id.to_string(),
-                receiver_thread_ids: Vec::new(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 prompt: Some("Explore the repo".to_string()),
-                model: None,
-                reasoning_effort: None,
+                model: Some("gpt-effective".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
                 requested_model: None,
                 requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
@@ -1186,14 +1197,27 @@ async fn live_app_server_failed_spawn_renders_requested_without_effective_identi
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("Agent spawn failed · primitive: spawn_agent"));
+    assert!(rendered.contains("Robie [explorer] · /root/failed-spawn"));
     assert!(rendered.contains("requested: gpt-requested high"));
-    assert!(!rendered.contains("effective:"));
+    assert!(rendered.contains("effective: gpt-effective medium"));
+    assert!(!rendered.contains("Spawned · primitive: spawn_agent"));
 }
 
 #[tokio::test]
-async fn replayed_failed_spawn_renders_requested_without_effective_identity() {
+async fn replayed_failed_spawn_with_receiver_renders_failure_and_identity() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+    chat.set_collab_agent_identity(
+        receiver_thread_id,
+        crate::multi_agents::AgentMetadata {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: Some("/root/failed-spawn".to_string()),
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::Medium),
+        },
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -1205,10 +1229,10 @@ async fn replayed_failed_spawn_renders_requested_without_effective_identity() {
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Failed,
                 sender_thread_id: sender_thread_id.to_string(),
-                receiver_thread_ids: Vec::new(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
                 prompt: Some("Explore the repo".to_string()),
-                model: None,
-                reasoning_effort: None,
+                model: Some("gpt-effective".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
                 requested_model: Some("gpt-requested".to_string()),
                 requested_reasoning_effort: Some(ReasoningEffortConfig::High),
                 agents_states: HashMap::new(),
@@ -1223,8 +1247,10 @@ async fn replayed_failed_spawn_renders_requested_without_effective_identity() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(rendered.contains("Agent spawn failed · primitive: spawn_agent"));
+    assert!(rendered.contains("Robie [explorer] · /root/failed-spawn"));
     assert!(rendered.contains("requested: gpt-requested high"));
-    assert!(!rendered.contains("effective:"));
+    assert!(rendered.contains("effective: gpt-effective medium"));
+    assert!(!rendered.contains("Spawned · primitive: spawn_agent"));
 }
 
 #[tokio::test]

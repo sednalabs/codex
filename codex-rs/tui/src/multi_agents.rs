@@ -493,6 +493,7 @@ pub(crate) fn tool_call_history_cell(
             let fallback_spawn_request = spawn_request_summary(item);
             let spawn_request = cached_spawn_request.or(fallback_spawn_request.as_ref());
             Some(spawn_end(
+                status,
                 first_receiver,
                 prompt,
                 spawn_request,
@@ -641,6 +642,7 @@ fn spawn_begin(prompt: &str, spawn_request: Option<&SpawnRequestSummary>) -> Pla
 }
 
 fn spawn_end(
+    status: &CollabAgentToolCallStatus,
     new_thread_id: Option<ThreadId>,
     prompt: &str,
     spawn_request: Option<&SpawnRequestSummary>,
@@ -655,7 +657,11 @@ fn spawn_end(
             let effective_reasoning_effort =
                 effective_reasoning_effort.or(metadata.reasoning_effort.as_ref());
             title_with_primitive_spawn_details(
-                "Spawned",
+                if matches!(status, CollabAgentToolCallStatus::Failed) {
+                    "Agent spawn failed"
+                } else {
+                    "Spawned"
+                },
                 "spawn_agent",
                 agent_label(thread_id, &metadata),
                 effective_model,
