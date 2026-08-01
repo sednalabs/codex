@@ -1197,6 +1197,72 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual((diagnostics_upload.get("with") or {}).get("retention-days"), "3")
 
+    def test_native_windows_health_analyzes_arm64_gnullvm_rust_toolchain_selection(
+        self,
+    ) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
+        )
+        analysis_job = (
+            (payload.get("jobs") or {}).get("analyze-windows-arm64-gnullvm-toolchain")
+            or {}
+        )
+        self.assertEqual(analysis_job.get("runs-on"), "ubuntu-latest")
+        self.assertEqual(
+            analysis_job.get("name"),
+            "Bazel aquery for aarch64-pc-windows-gnullvm Rust toolchain selection",
+        )
+        self.assertEqual(analysis_job.get("timeout-minutes"), "20")
+
+        analysis_steps = analysis_job.get("steps") or []
+        prepare_step = next(
+            (step for step in analysis_steps if step.get("name") == "Prepare Bazel CI"),
+            None,
+        )
+        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
+        self.assertEqual(
+            (prepare_step.get("with") or {}).get("target"),
+            "aarch64-pc-windows-gnullvm",
+        )
+        self.assertEqual(
+            (prepare_step.get("with") or {}).get("cache-scope"),
+            "bazel-${{ github.job }}",
+        )
+
+        analysis_step = next(
+            (
+                step
+                for step in analysis_steps
+                if step.get("name")
+                == "Assert ARM64 gnullvm Rust action-toolchain selection"
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            analysis_step,
+            "ARM64 gnullvm toolchain selection step not found",
+        )
+        analysis_run = analysis_step.get("run") or ""
+        self.assertIn("bazel aquery", analysis_run)
+        self.assertNotIn("bazel build", analysis_run)
+        self.assertNotIn("bazel test", analysis_run)
+        self.assertIn(
+            "--platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
+            analysis_run,
+        )
+        self.assertIn(
+            "--extra_execution_platforms=@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
+            analysis_run,
+        )
+        self.assertIn("--include_artifacts=true", analysis_run)
+        self.assertIn("//codex-rs/otel:otel", analysis_run)
+        self.assertIn("rustc_windows_aarch64_gnullvm", analysis_run)
+        self.assertIn("cargo_windows_aarch64_gnullvm", analysis_run)
+        self.assertIn("(rustc|cargo)_windows_aarch64_msvc", analysis_run)
+        self.assertFalse(
+            any(step.get("name") == "Save bazel repository cache" for step in analysis_steps)
+        )
+
     def test_bazel_ci_docs_only_plan_is_fail_closed_and_preserves_required_signal(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         jobs = payload.get("jobs") or {}
