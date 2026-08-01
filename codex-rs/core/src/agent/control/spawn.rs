@@ -7,6 +7,8 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::Event;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -658,7 +660,22 @@ impl AgentControl {
 
         let status = match &initial_input_result {
             Ok(()) => self.get_status(new_thread.thread_id).await,
-            Err(error) => AgentStatus::Errored(format!("initial input delivery failed: {error}")),
+            Err(error) => {
+                let message = format!("initial input delivery failed: {error}");
+                let status = AgentStatus::Errored(message.clone());
+                new_thread
+                    .thread
+                    .session
+                    .send_event_raw(Event {
+                        id: crate::session::new_submission_id(),
+                        msg: EventMsg::Error(ErrorEvent {
+                            message,
+                            codex_error_info: None,
+                        }),
+                    })
+                    .await;
+                status
+            }
         };
         let agent = LiveAgent {
             thread_id: new_thread.thread_id,

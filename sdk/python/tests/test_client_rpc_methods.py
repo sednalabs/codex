@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from openai_codex.client import CodexClient, _params_dict
@@ -9,6 +10,8 @@ from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     ReasoningEffort,
     ReasoningEffortOption,
+    SubAgentActivityKind,
+    SubAgentActivityThreadItem,
     ThreadForkParams,
     ThreadListParams,
     ThreadResumeResponse,
@@ -35,6 +38,36 @@ def test_generated_params_models_are_snake_case_and_dump_by_alias() -> None:
 def test_generated_v2_bundle_has_single_shared_plan_type_definition() -> None:
     source = (ROOT / "src" / "openai_codex" / "generated" / "v2_all.py").read_text()
     assert source.count("class PlanType(") == 1
+
+
+def test_subagent_activity_errored_kind_matches_json_schema() -> None:
+    item = SubAgentActivityThreadItem.model_validate(
+        {
+            "agentPath": "/root/failed-child",
+            "agentThreadId": "child-thread-1",
+            "id": "activity-1",
+            "kind": "errored",
+            "type": "subAgentActivity",
+        }
+    )
+    schema_bundle = json.loads(
+        (
+            ROOT.parents[1]
+            / "codex-rs"
+            / "app-server-protocol"
+            / "schema"
+            / "json"
+            / "codex_app_server_protocol.v2.schemas.json"
+        ).read_text()
+    )
+
+    assert item.kind is SubAgentActivityKind.errored
+    assert schema_bundle["definitions"]["SubAgentActivityKind"]["enum"] == [
+        "started",
+        "interacted",
+        "interrupted",
+        "errored",
+    ]
 
 
 def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:

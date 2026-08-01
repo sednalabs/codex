@@ -663,6 +663,7 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
         .await
         .expect("root thread should start");
     let control = manager.agent_control();
+    let control_for_assertion = control.clone();
     control
         .fail_next_spawn_initial_input(codex_protocol::error::CodexErr::UnsupportedOperation(
             "injected initial communication failure".to_string(),
@@ -708,10 +709,22 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
         .get_thread(activity.agent_thread_id)
         .await
         .expect("committed child should remain registered");
+    let child_status = child.agent_status().await;
     assert!(matches!(
-        child.agent_status().await,
+        &child_status,
         AgentStatus::Errored(message) if message.contains("initial input delivery failed")
     ));
+    assert_eq!(
+        control_for_assertion
+            .get_status(activity.agent_thread_id)
+            .await,
+        child_status
+    );
+    let inventory = control_for_assertion
+        .get_live_agent_inventory_info(activity.agent_thread_id)
+        .await
+        .expect("committed child should remain present in the V2 live inventory");
+    assert_eq!(inventory.status, child_status);
     let child_config = child.config_snapshot().await;
     assert_eq!(activity.model.as_deref(), Some(child_config.model.as_str()));
     assert_eq!(activity.reasoning_effort, child_config.reasoning_effort);
@@ -761,6 +774,7 @@ async fn multi_agent_v2_spawn_cancellation_waits_for_errored_activity_cleanup() 
         .await
         .expect("root thread should start");
     let control = manager.agent_control();
+    let control_for_assertion = control.clone();
     control
         .fail_next_spawn_initial_input(codex_protocol::error::CodexErr::UnsupportedOperation(
             "injected initial communication failure".to_string(),
@@ -844,10 +858,22 @@ async fn multi_agent_v2_spawn_cancellation_waits_for_errored_activity_cleanup() 
         .get_thread(activity.agent_thread_id)
         .await
         .expect("committed child should remain registered");
+    let child_status = child.agent_status().await;
     assert!(matches!(
-        child.agent_status().await,
+        &child_status,
         AgentStatus::Errored(message) if message.contains("initial input delivery failed")
     ));
+    assert_eq!(
+        control_for_assertion
+            .get_status(activity.agent_thread_id)
+            .await,
+        child_status
+    );
+    let inventory = control_for_assertion
+        .get_live_agent_inventory_info(activity.agent_thread_id)
+        .await
+        .expect("committed child should remain present in the V2 live inventory");
+    assert_eq!(inventory.status, child_status);
     let child_config = child.config_snapshot().await;
     assert_eq!(activity.model.as_deref(), Some(child_config.model.as_str()));
     assert_eq!(activity.reasoning_effort, child_config.reasoning_effort);

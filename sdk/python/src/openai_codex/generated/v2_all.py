@@ -3921,6 +3921,7 @@ class SubAgentActivityKind(Enum):
     started = "started"
     interacted = "interacted"
     interrupted = "interrupted"
+    errored = "errored"
 
 
 class SubAgentSourceValue(Enum):
