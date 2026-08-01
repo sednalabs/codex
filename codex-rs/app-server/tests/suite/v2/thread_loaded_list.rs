@@ -125,12 +125,62 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
         root_thread_uuid.into(),
         root_thread_uuid,
     )?;
+    let child_thread_uuid = ThreadId::from_string(&child_thread_id)?;
+    let grandchild_thread_id = create_fake_parented_rollout_with_source(
+        codex_home.path(),
+        "2026-01-07T00-00-02",
+        "2026-01-07T00:00:02Z",
+        "Saved grandchild message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: child_thread_uuid,
+            depth: 2,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        root_thread_uuid.into(),
+        child_thread_uuid,
+    )?;
+    let unrelated_root_thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2026-01-07T00-00-03",
+        "2026-01-07T00:00:03Z",
+        "Saved unrelated root message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let unrelated_root_thread_uuid = ThreadId::from_string(&unrelated_root_thread_id)?;
+    let unrelated_child_thread_id = create_fake_parented_rollout_with_source(
+        codex_home.path(),
+        "2026-01-07T00-00-04",
+        "2026-01-07T00:00:04Z",
+        "Saved unrelated child message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: unrelated_root_thread_uuid,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        unrelated_root_thread_uuid.into(),
+        unrelated_root_thread_uuid,
+    )?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
         .await?;
-    for thread_id in [&root_thread_id, &child_thread_id] {
+    for thread_id in [
+        &root_thread_id,
+        &child_thread_id,
+        &grandchild_thread_id,
+        &unrelated_root_thread_id,
+        &unrelated_child_thread_id,
+    ] {
         let resume_id = mcp
             .send_thread_resume_request(ThreadResumeParams {
                 thread_id: thread_id.clone(),
@@ -144,13 +194,17 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
     let list_id = mcp
         .send_thread_loaded_list_request(ThreadLoadedListParams {
             cursor: None,
-            limit: Some(50),
+            limit: None,
             ancestor_thread_id: Some(root_thread_id),
         })
         .await?;
     let ThreadLoadedListResponse { data, next_cursor } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
-    assert_eq!(data, vec![child_thread_id]);
+    let mut expected = vec![child_thread_id, grandchild_thread_id];
+    expected.sort();
+    assert_eq!(data, expected);
+    assert!(!data.contains(&unrelated_root_thread_id));
+    assert!(!data.contains(&unrelated_child_thread_id));
     assert_eq!(next_cursor, None);
 
     Ok(())
