@@ -63,17 +63,11 @@ jobs:
             //codex-rs/otel:otel \
             >"${aquery_output}"
 
-          for repository in rustc_windows_aarch64_gnullvm cargo_windows_aarch64_gnullvm; do
-            if ! grep -Fq "${repository}" "${aquery_output}"; then
-              echo "Expected ARM64 gnullvm action-toolchain repository was not selected: ${repository}" >&2
-              exit 1
-            fi
-          done
-
-          if grep -Eq '(rustc|cargo)_windows_aarch64_msvc' "${aquery_output}"; then
-            echo "ARM64 MSVC Rust action-toolchain repository selected for gnullvm analysis" >&2
-            exit 1
-          fi
+          # Validate one exact Rustc action block. Whole-output checks could
+          # otherwise accept gnullvm text from an unrelated action.
+          python3 .github/scripts/verify_arm64_gnullvm_aquery.py \
+            "${aquery_output}" \
+            --target //codex-rs/otel:otel
 
       - name: Check for a clean worktree
         if: always() && !cancelled()

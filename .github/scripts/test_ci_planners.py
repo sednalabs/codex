@@ -1256,9 +1256,12 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertIn("--include_artifacts=true", analysis_run)
         self.assertIn("//codex-rs/otel:otel", analysis_run)
-        self.assertIn("rustc_windows_aarch64_gnullvm", analysis_run)
-        self.assertIn("cargo_windows_aarch64_gnullvm", analysis_run)
-        self.assertIn("(rustc|cargo)_windows_aarch64_msvc", analysis_run)
+        self.assertIn(
+            "python3 .github/scripts/verify_arm64_gnullvm_aquery.py",
+            analysis_run,
+        )
+        self.assertIn("--target //codex-rs/otel:otel", analysis_run)
+        self.assertNotIn("grep", analysis_run)
         self.assertFalse(
             any(step.get("name") == "Save bazel repository cache" for step in analysis_steps)
         )
