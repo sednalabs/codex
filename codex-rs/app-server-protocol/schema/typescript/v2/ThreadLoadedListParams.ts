@@ -10,4 +10,9 @@ cursor?: string | null,
 /**
  * Optional page size; defaults to no limit.
  */
-limit?: number | null, };
+limit?: number | null,
+/**
+ * Optional loaded thread-spawn ancestor. When set, returns only currently loaded
+ * descendants of that thread.
+ */
+ancestorThreadId?: string | null, };

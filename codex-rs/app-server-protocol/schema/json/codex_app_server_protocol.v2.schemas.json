@@ -16945,6 +16945,13 @@
     "ThreadLoadedListParams": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
+        "ancestorThreadId": {
+          "description": "Optional loaded thread-spawn ancestor. When set, returns only currently loaded\ndescendants of that thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "cursor": {
           "description": "Opaque pagination cursor returned by a previous call.",
           "type": [

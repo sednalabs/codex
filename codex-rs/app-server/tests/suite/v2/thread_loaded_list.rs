@@ -1,11 +1,18 @@
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::create_fake_parented_rollout_with_source;
+use app_test_support::create_fake_rollout;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -60,6 +67,7 @@ async fn thread_loaded_list_paginates() -> Result<()> {
         .send_thread_loaded_list_request(ThreadLoadedListParams {
             cursor: None,
             limit: Some(1),
+            ancestor_thread_id: None,
         })
         .await?;
     let ThreadLoadedListResponse {
@@ -73,6 +81,7 @@ async fn thread_loaded_list_paginates() -> Result<()> {
         .send_thread_loaded_list_request(ThreadLoadedListParams {
             cursor: next_cursor,
             limit: Some(1),
+            ancestor_thread_id: None,
         })
         .await?;
     let ThreadLoadedListResponse {
@@ -80,6 +89,68 @@ async fn thread_loaded_list_paginates() -> Result<()> {
         next_cursor,
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(second_page, vec![expected[1].clone()]);
+    assert_eq!(next_cursor, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let root_thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2026-01-07T00-00-00",
+        "2026-01-07T00:00:00Z",
+        "Saved root message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let root_thread_uuid = ThreadId::from_string(&root_thread_id)?;
+    let child_thread_id = create_fake_parented_rollout_with_source(
+        codex_home.path(),
+        "2026-01-07T00-00-01",
+        "2026-01-07T00:00:01Z",
+        "Saved child message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: root_thread_uuid,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        root_thread_uuid.into(),
+        root_thread_uuid,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    for thread_id in [&root_thread_id, &child_thread_id] {
+        let resume_id = mcp
+            .send_thread_resume_request(ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                ..Default::default()
+            })
+            .await?;
+        let _: ThreadResumeResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+    }
+
+    let list_id = mcp
+        .send_thread_loaded_list_request(ThreadLoadedListParams {
+            cursor: None,
+            limit: Some(50),
+            ancestor_thread_id: Some(root_thread_id),
+        })
+        .await?;
+    let ThreadLoadedListResponse { data, next_cursor } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+    assert_eq!(data, vec![child_thread_id]);
     assert_eq!(next_cursor, None);
 
     Ok(())

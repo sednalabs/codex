@@ -1263,9 +1263,18 @@ impl ThreadManager {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
     pub(crate) async fn list_live_thread_spawn_edges(&self) -> Vec<(ThreadId, ThreadId)> {
         self.state.list_live_thread_spawn_edges().await
+    }
+
+    /// Lists currently loaded thread-spawn descendants of one thread.
+    pub(crate) async fn list_live_thread_spawn_descendants(
+        &self,
+        ancestor_thread_id: ThreadId,
+    ) -> Vec<ThreadId> {
+        self.state
+            .list_live_thread_spawn_descendants(ancestor_thread_id)
+            .await
     }
 }
 
@@ -1304,6 +1313,37 @@ impl ThreadManagerState {
                 }
             })
             .collect()
+    }
+
+    /// Lists currently loaded thread-spawn descendants of one thread.
+    pub(crate) async fn list_live_thread_spawn_descendants(
+        &self,
+        ancestor_thread_id: ThreadId,
+    ) -> Vec<ThreadId> {
+        let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
+        for (parent_thread_id, child_thread_id) in self.list_live_thread_spawn_edges().await {
+            children_by_parent
+                .entry(parent_thread_id)
+                .or_default()
+                .push(child_thread_id);
+        }
+
+        let mut descendants = Vec::new();
+        let mut seen = HashSet::new();
+        let mut pending = vec![ancestor_thread_id];
+        while let Some(parent_thread_id) = pending.pop() {
+            let Some(children) = children_by_parent.get(&parent_thread_id) else {
+                continue;
+            };
+            for child_thread_id in children {
+                if seen.insert(*child_thread_id) {
+                    descendants.push(*child_thread_id);
+                    pending.push(*child_thread_id);
+                }
+            }
+        }
+        descendants.sort_by_key(|thread_id| thread_id.to_string());
+        descendants
     }
 
     /// Fetch a thread by ID or return ThreadNotFound.
