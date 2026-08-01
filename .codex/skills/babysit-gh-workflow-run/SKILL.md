@@ -142,8 +142,11 @@ boundary machine-readable with `proof_scope.whole_repository_health_proven:
 false` and records the selector also at `post_merge.selected_workflow`.
 
 For a relevant merge where `Native Windows Bazel health` is required evidence,
-a separate exact-main-SHA watch is mandatory after this receipt succeeds; it is
-outside the default `postmerge-ci` proof:
+that workflow must first be introduced and landed on `main` by its separate CI
+PR. It is not resolvable from a watcher-only branch or from a base that does not
+yet contain the workflow. Once the CI PR is landed and the relevant merge has
+completed, this separate exact-main-SHA watch is mandatory; it remains outside
+the default `postmerge-ci` proof:
 
 ```bash
 .codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch \

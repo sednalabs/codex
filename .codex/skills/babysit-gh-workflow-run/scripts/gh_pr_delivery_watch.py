@@ -50,6 +50,21 @@ class DeliveryStop(RuntimeError):
         self.action = action
 
 
+class ArgumentParseError(ValueError):
+    """An invalid command-line invocation that still receives a receipt."""
+
+    def __init__(self, message, parsed_args=None):
+        super().__init__(message)
+        self.parsed_args = parsed_args
+
+
+class ReceiptArgumentParser(argparse.ArgumentParser):
+    """Keep invalid invocations on the compact JSON receipt path."""
+
+    def error(self, message):
+        raise ArgumentParseError(message)
+
+
 def is_full_sha(value):
     return bool(FULL_SHA_RE.fullmatch(str(value or "").strip()))
 
@@ -518,6 +533,21 @@ def new_receipt(repo, args):
     }
 
 
+def new_argument_error_receipt(error):
+    args = error.parsed_args or argparse.Namespace(
+        repo=None,
+        pr=None,
+        expected_head_sha="",
+        main_ref="main",
+        merge_group_workflow="blocking-ci",
+        post_merge_workflow="postmerge-ci",
+    )
+    receipt = new_receipt(args.repo or "unknown", args)
+    receipt["actions"] = ["stop_invalid_arguments"]
+    receipt["error"] = str(error)
+    return receipt
+
+
 def execute_delivery(args):
     receipt = new_receipt(args.repo or "unknown", args)
     try:
@@ -644,8 +674,8 @@ def execute_delivery(args):
         return receipt, 1
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
+def parse_args(argv=None):
+    parser = ReceiptArgumentParser(
         description="Prove one PR delivery across its exact head, merge-group candidate, and main commit."
     )
     parser.add_argument("--pr", type=int, required=True, help="Pull request number.")
@@ -691,20 +721,22 @@ def parse_args():
         default=90,
         help="Retry-settle window forwarded to the blocking workflow watcher.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.pr <= 0:
-        parser.error("--pr must be > 0")
+        raise ArgumentParseError("--pr must be > 0", args)
     if not is_full_sha(args.expected_head_sha):
-        parser.error("--expected-head-sha must be a full 40-character Git SHA")
+        raise ArgumentParseError(
+            "--expected-head-sha must be a full 40-character Git SHA", args
+        )
     args.expected_head_sha = args.expected_head_sha.lower()
     if args.merge_group_run_id is not None and args.merge_group_run_id <= 0:
-        parser.error("--merge-group-run-id must be > 0")
+        raise ArgumentParseError("--merge-group-run-id must be > 0", args)
     if args.poll_seconds <= 0:
-        parser.error("--poll-seconds must be > 0")
+        raise ArgumentParseError("--poll-seconds must be > 0", args)
     if args.appearance_timeout_seconds < 0:
-        parser.error("--appearance-timeout-seconds must be >= 0")
+        raise ArgumentParseError("--appearance-timeout-seconds must be >= 0", args)
     if args.retry_settle_seconds < 0:
-        parser.error("--retry-settle-seconds must be >= 0")
+        raise ArgumentParseError("--retry-settle-seconds must be >= 0", args)
     return args
 
 
@@ -712,8 +744,13 @@ def emit(receipt):
     sys.stdout.write(json.dumps(receipt, sort_keys=True) + "\n")
 
 
-def main():
-    receipt, status = execute_delivery(parse_args())
+def main(argv=None):
+    try:
+        args = parse_args(argv)
+    except ArgumentParseError as error:
+        emit(new_argument_error_receipt(error))
+        return 1
+    receipt, status = execute_delivery(args)
     emit(receipt)
     return status
 
