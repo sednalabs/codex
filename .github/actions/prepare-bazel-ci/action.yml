@@ -68,6 +68,28 @@ runs:
         restore-keys: |
           ${{ steps.cache_bazel_repository_key.outputs.repository-cache-restore-key }}
 
+    - name: Summarize Bazel repository cache
+      shell: bash
+      env:
+        CACHE_SCOPE: ${{ inputs.cache-scope }}
+        TARGET: ${{ inputs.target }}
+        CACHE_KEY: ${{ steps.cache_bazel_repository_key.outputs.repository-cache-key }}
+        CACHE_HIT: ${{ steps.cache_bazel_repository_restore.outputs.cache-hit }}
+        WRITE_ENABLED: ${{ steps.repository_cache_write_policy.outputs.repository-cache-write-enabled }}
+        SETUP_BAZEL_DISK_CACHE_SCOPE: ${{ github.workflow }}
+      run: |
+        {
+          echo "### Bazel cache summary"
+          echo
+          echo "- setup-bazel Bazelisk download cache: \`enabled\`"
+          echo "- setup-bazel disk-cache scope: \`${SETUP_BAZEL_DISK_CACHE_SCOPE}\`"
+          echo "- Repository cache scope: \`${CACHE_SCOPE}\`"
+          echo "- Repository cache target: \`${TARGET}\`"
+          echo "- Repository cache primary key: \`${CACHE_KEY}\`"
+          echo "- Repository cache exact hit: \`${CACHE_HIT:-unknown}\`"
+          echo "- Repository cache trusted writer eligible: \`${WRITE_ENABLED}\`"
+        } >> "${GITHUB_STEP_SUMMARY}"
+
     - name: Set up Bazel execution logs
       shell: bash
       run: |

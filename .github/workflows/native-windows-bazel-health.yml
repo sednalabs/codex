@@ -1,0 +1,128 @@
+name: Native Windows Bazel health
+
+on:
+  # Keep the slower native Windows check as a post-merge health signal. The
+  # required Bazel workflow still covers merge-queue and PR candidates.
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      collect_diagnostics:
+        description: Capture targeted native-Windows evidence even when the test passes.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# This workflow has one job for its stable native repository-cache key. Serialise
+# trusted pushes so that one known job is the only possible writer for that key;
+# manual dispatches never receive cache-write eligibility.
+concurrency:
+  group: native-windows-bazel-health-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  test-windows-native-main:
+    timeout-minutes: 40
+    runs-on: windows-2022
+    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)
+    environment:
+      name: bazel
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-gnullvm
+          # Keep the former job identity in the scope so post-merge restores
+          # continue to use the existing native repository-cache key.
+          cache-scope: bazel-${{ github.job }}
+
+      - name: bazel test //...
+        id: native_bazel_test
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          bazel_targets=(
+            //...
+            # Keep standalone V8 library targets out of the ordinary Bazel CI
+            # path. V8 consumers under `//codex-rs/...` still participate
+            # transitively through `//...`.
+            -//third_party/v8:all
+            -//codex-rs/v8-poc:v8-poc-unit-tests
+          )
+
+          bazel_test_args=(
+            test
+            # Hosted Windows image changes can make cached Rust proc-macro DLLs
+            # unloadable even when Bazel fully materializes them. Rebuild only
+            # Rust actions locally while retaining remote cache reuse elsewhere.
+            --modify_execution_info=Rustc=+no-remote-cache
+            --test_tag_filters=-argument-comment-lint
+            --test_verbose_timeout_warnings
+            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            --build_metadata=TAG_windows_native_main=true
+          )
+
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            -- \
+            "${bazel_test_args[@]}" \
+            -- \
+            "${bazel_targets[@]}"
+
+      # The test remains fail-fast. This evidence path runs after a failure, or
+      # when an operator explicitly asks for a diagnostic dispatch; it does not
+      # turn a failing native test into a successful health result.
+      - name: Collect native Windows Bazel diagnostics
+        if: ${{ failure() || (github.event_name == 'workflow_dispatch' && inputs.collect_diagnostics) }}
+        shell: pwsh
+        run: >-
+          ./.github/scripts/collect-native-windows-bazel-diagnostics.ps1
+          -OutputDirectory "${{ runner.temp }}/native-windows-bazel-diagnostics"
+
+      - name: Upload Bazel execution logs
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm
+          path: ${{ runner.temp }}/bazel-execution-logs
+          if-no-files-found: ignore
+
+      - name: Upload native Windows Bazel diagnostics
+        if: ${{ always() && !cancelled() && (failure() || (github.event_name == 'workflow_dispatch' && inputs.collect_diagnostics)) }}
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-windows-bazel-diagnostics
+          path: ${{ runner.temp }}/native-windows-bazel-diagnostics
+          if-no-files-found: warn
+          retention-days: 3
+
+      # This serialised health job is the sole trusted writer for its effective
+      # cache key. Keep the cache service non-fatal: a cache outage must not
+      # mask the native Bazel health result.
+      - name: Save bazel repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
