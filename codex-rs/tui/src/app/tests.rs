@@ -37,6 +37,8 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
+use crate::multi_agents::sub_agent_activity_display;
+use crate::multi_agents::sub_agent_activity_history_cell;
 use assert_matches::assert_matches;
 
 use crate::app_command::AppCommand as Op;
@@ -71,6 +73,7 @@ use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
@@ -1507,6 +1510,7 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1565,6 +1569,7 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1579,6 +1584,81 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
 
     expected_entry.is_running = true;
     assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    Ok(())
+}
+
+#[tokio::test]
+async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // A child raw Error/SystemError marks the cached row failed before its parent receives the
+    // terminal V2 activity. That terminal activity must not make the row look idle again.
+    app.agent_navigation.set_system_error(thread_id, true);
+    let errored_item = ThreadItem::SubAgentActivity {
+        id: "activity-errored".to_string(),
+        kind: SubAgentActivityKind::Errored,
+        agent_thread_id: thread_id.to_string(),
+        agent_path: "/root/failed-child".to_string(),
+        model: None,
+        reasoning_effort: None,
+    };
+    let display = sub_agent_activity_display(&errored_item)
+        .expect("errored activity should update picker liveness");
+    assert!(display.has_system_error);
+    assert!(!display.is_running_hint);
+    let transcript = lines_to_single_string(
+        &sub_agent_activity_history_cell(&errored_item)
+            .expect("errored activity should render in the transcript")
+            .display_lines(/*width*/ 80),
+    );
+    assert!(transcript.contains("Failed `/root/failed-child`"));
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: errored_item,
+        }),
+    ));
+
+    assert_eq!(
+        app.agent_navigation.get(&thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_path: Some("/root/failed-child".to_string()),
+            is_running: false,
+            is_closed: false,
+            has_system_error: true,
+            ..AgentPickerThreadEntry::default()
+        })
+    );
+    assert!(
+        app.should_attach_live_thread_for_selection(thread_id),
+        "failed rows must keep their saved transcript inspectable"
+    );
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("/root/failed-child"));
+    assert!(picker.contains("system error failed inspect saved transcript"));
     Ok(())
 }
 
@@ -1605,6 +1685,7 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
     assert!(!app.agent_navigation.is_parent_owned(thread_id));
@@ -1645,6 +1726,7 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
             agent_path: "/root/worker".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1680,6 +1762,7 @@ async fn open_agent_picker_hides_closed_sidecars_until_closed_filter_is_entered(
             agent_path: "/root/finished".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: false,
         });
     app.mark_agent_picker_thread_closed(thread_id);
@@ -1754,6 +1837,7 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1957,6 +2041,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
                 agent_path: "/root/child-0".to_string(),
                 model: None,
                 reasoning_effort: None,
+                has_system_error: false,
                 is_running_hint: true,
             });
         app.thread_event_channels.remove(&child_thread_ids[1]);
