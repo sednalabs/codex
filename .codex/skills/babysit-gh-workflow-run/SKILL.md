@@ -126,10 +126,11 @@ both long workflow waits remain delegated to the existing
   exact run's `event`. The delivery receipt accepts that absence only after
   stage-specific exact identity checks: a `merge_group` receipt needs the
   selected candidate run id, queue ref, full candidate SHA, and normalized
-  workflow; a `post_merge` receipt needs the nested exact-target selection's
-  positive run id, full merge SHA, main ref, and normalized workflow. A
-  non-empty event other than `merge_group` or `push`, respectively, remains an
-  identity mismatch and stops the proof.
+  workflow; a `post_merge` receipt needs a direct Actions read of the nested
+  exact-target selection's run id to prove `push`, the full merge SHA, main
+  ref, and normalized workflow. The compact nested receipt alone is not event
+  evidence for a post-merge run. A non-empty event other than `merge_group` or
+  `push`, respectively, remains an identity mismatch and stops the proof.
 - The defaults require a successful `blocking-ci` `merge_group` run and one
   selected `postmerge-ci` `push` run on the exact merge commit. The singular
   `--post-merge-workflow` selector is deliberately not an inventory of every
