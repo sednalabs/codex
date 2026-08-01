@@ -619,6 +619,28 @@ impl App {
         Ok(live_attached)
     }
 
+    /// Materializes a closed saved thread for transcript replay without reviving it in the
+    /// app-server thread manager.
+    pub(super) async fn attach_replay_thread_for_selection(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        let thread = app_server
+            .thread_read(thread_id, /*include_turns*/ true)
+            .await?;
+        let turns = thread.turns.clone();
+        let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
+        // `thread/read` returns saved state only; never present it as a live app-server attach.
+        session.model.clear();
+
+        let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_replay_only();
+        let mut store = channel.store.lock().await;
+        store.set_session(session, turns);
+        Ok(())
+    }
+
     /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
     /// cache.
     ///
@@ -678,7 +700,17 @@ impl App {
             .get(&thread_id)
             .is_some_and(|entry| entry.is_closed);
         let mut attached_replay_only = false;
-        if self.should_attach_live_thread_for_selection(thread_id) {
+        if is_replay_only {
+            if let Err(err) = self
+                .attach_replay_thread_for_selection(app_server, thread_id)
+                .await
+            {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to load saved transcript for agent thread {thread_id}: {err}"
+                ));
+                return Ok(());
+            }
+        } else if self.should_attach_live_thread_for_selection(thread_id) {
             match self
                 .attach_live_thread_for_selection(app_server, thread_id)
                 .await
@@ -696,10 +728,6 @@ impl App {
                     return Ok(());
                 }
             }
-        } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
         }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
