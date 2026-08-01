@@ -1663,7 +1663,8 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
 }
 
 #[tokio::test]
-async fn thread_status_changes_update_errored_agent_picker_liveness() -> Result<()> {
+async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liveness() -> Result<()>
+{
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation
@@ -1675,6 +1676,32 @@ async fn thread_status_changes_update_errored_agent_picker_liveness() -> Result<
             has_system_error: true,
             is_running_hint: false,
         });
+
+    // The status watcher has no generation in its protocol payload. A delayed non-error status
+    // must therefore not recover a terminal parent activity before the matching SystemError is
+    // observed.
+    for delayed_status in [
+        ThreadStatus::Idle,
+        ThreadStatus::Active {
+            active_flags: Vec::new(),
+        },
+    ] {
+        app.enqueue_thread_notification(
+            thread_id,
+            ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: thread_id.to_string(),
+                    status: delayed_status,
+                },
+            ),
+        )
+        .await?;
+        assert!(
+            app.agent_navigation
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+    }
 
     app.enqueue_thread_notification(
         thread_id,
@@ -1692,8 +1719,7 @@ async fn thread_status_changes_update_errored_agent_picker_liveness() -> Result<
             .is_some_and(|entry| entry.has_system_error && !entry.is_running)
     );
 
-    // An app-server child-watch status is newer than stale picker metadata and explicitly
-    // recovers the row when the child becomes active again.
+    // Once the matching error has been observed, a later child-watch status is a true recovery.
     app.enqueue_thread_notification(
         thread_id,
         ServerNotification::ThreadStatusChanged(

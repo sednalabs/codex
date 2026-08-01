@@ -415,16 +415,24 @@ impl App {
         thread_id: ThreadId,
         thread_status: &ThreadStatus,
     ) {
-        if self.agent_navigation.get(&thread_id).is_none() {
-            return;
-        }
         let has_live_channel = self
             .thread_event_channels
             .get(&thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
         let status = agent_picker_thread_status(thread_status, has_live_channel);
         if status.is_closed {
-            self.mark_agent_picker_thread_closed(thread_id);
+            if self.agent_navigation.get(&thread_id).is_some() {
+                self.mark_agent_picker_thread_closed(thread_id);
+            }
+            return;
+        }
+        if !self
+            .agent_navigation
+            .accepts_thread_status_change(thread_id, status.has_system_error)
+        {
+            return;
+        }
+        if self.agent_navigation.get(&thread_id).is_none() {
             return;
         }
 
