@@ -1007,6 +1007,20 @@ impl App {
         };
 
         let is_continuation = cursor.is_some();
+        let mut refreshed_thread_ids = HashSet::new();
+        // Current loaded descendants are independent from the persisted relation index. Fetch
+        // them before the historical page so a transient state-db failure cannot hide a healthy
+        // live/idle sidecar from the picker or keyboard navigation.
+        let loaded_priority_completed = if !is_continuation {
+            self.backfill_loaded_priority_subagent_threads(
+                app_server,
+                primary_thread_id,
+                &mut refreshed_thread_ids,
+            )
+            .await
+        } else {
+            true
+        };
         let response = match app_server
             .thread_list(ThreadListParams {
                 cursor,
@@ -1041,7 +1055,13 @@ impl App {
                 if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
                     self.agent_navigation.set_next_picker_page_cursor(None);
                 }
-                return LoadedSubagentBackfill::default();
+                self.sync_active_agent_label();
+                return LoadedSubagentBackfill {
+                    // Keep the persisted-page failure retryable, even if the independent loaded
+                    // priority query succeeded.
+                    completed: false,
+                    refreshed_thread_ids,
+                };
             }
         };
 
@@ -1057,21 +1077,10 @@ impl App {
                 .set_next_picker_page_cursor(response.next_cursor.clone());
         }
 
-        let mut refreshed_thread_ids = HashSet::new();
         // The historical relation page is sorted by update time, so it can be filled with closed
-        // descendants. Merge every currently loaded descendant first: open and idle sidecars
-        // stay visible and keyboard-reachable without making finished history part of the default
-        // picker view.
-        let loaded_priority_completed = if !is_continuation {
-            self.backfill_loaded_priority_subagent_threads(
-                app_server,
-                primary_thread_id,
-                &mut refreshed_thread_ids,
-            )
-            .await
-        } else {
-            true
-        };
+        // descendants. The loaded priority set was already merged above, so open and idle
+        // sidecars stay visible and keyboard-reachable without making finished history part of
+        // the default picker view.
         for thread in response.data {
             self.register_agent_picker_thread_from_backend(
                 primary_thread_id,

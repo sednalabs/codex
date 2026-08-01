@@ -66,6 +66,7 @@ fn append_rollout_record(
 
 #[derive(Clone)]
 enum TransientPickerBackfillFailure {
+    PersistedDescendantList,
     LegacyScan,
     ThreadReadAndHideFromThreadList { thread_id: String },
 }
@@ -73,6 +74,12 @@ enum TransientPickerBackfillFailure {
 impl TransientPickerBackfillFailure {
     fn matches(&self, request: &ClientRequest) -> bool {
         matches!(
+            (self, request),
+            (
+                Self::PersistedDescendantList,
+                ClientRequest::ThreadList { params, .. },
+            ) if params.use_state_db_only && params.ancestor_thread_id.is_some()
+        ) || matches!(
             (self, request),
             (
                 Self::LegacyScan,
@@ -1022,6 +1029,157 @@ fn agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure(
         })?
         .join()
         .expect("legacy metadata fallback retry test thread")
+}
+
+#[test]
+fn agent_picker_keeps_loaded_descendants_when_persisted_list_fails() -> Result<()> {
+    const LOADED_DESCENDANT_COUNT: usize = 2;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-persisted-list-fallback".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                // The root plus two descendants is a supported V2 concurrency configuration.
+                app.config.multi_agent_v2.max_concurrent_threads_per_session =
+                    LOADED_DESCENDANT_COUNT + 1;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-08T00-00-00",
+                        "2026-01-08T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let mut loaded_child_thread_ids = Vec::with_capacity(LOADED_DESCENDANT_COUNT);
+                for index in 0..LOADED_DESCENDANT_COUNT {
+                    let timestamp = format!("2026-01-08T00-00-0{}", index + 1);
+                    let created_at = format!("2026-01-08T00:00:0{}Z", index + 1);
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
+                            codex_home.path(),
+                            &timestamp,
+                            &created_at,
+                            &format!("Saved loaded child message {index}"),
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: root_thread_id,
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from(format!("/root/fallback-worker-{index}"))
+                                        .expect("valid loaded agent path"),
+                                ),
+                                agent_nickname: Some(format!("fallback-worker-{index}")),
+                                agent_role: Some("worker".to_string()),
+                            }),
+                            root_thread_id.into(),
+                            root_thread_id,
+                        )
+                        .expect("create loaded child rollout"),
+                    )?;
+                    loaded_child_thread_ids.push(child_thread_id);
+                }
+
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server_with_transient_picker_backfill_failure(
+                        &app.config,
+                        Some(TransientPickerBackfillFailure::PersistedDescendantList),
+                    )
+                    .await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                for child_thread_id in loaded_child_thread_ids.iter().copied() {
+                    let _loaded_child = app_server
+                        .resume_thread(
+                            app.config.clone(),
+                            child_thread_id,
+                            app.resume_model_settings(),
+                        )
+                        .await?;
+                }
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                let expected_loaded_thread_ids = loaded_child_thread_ids
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::HashSet<_>>();
+                assert!(
+                    !backfill.completed,
+                    "the failed persisted relation page must remain retryable"
+                );
+                assert_eq!(backfill.refreshed_thread_ids, expected_loaded_thread_ids);
+                assert!(
+                    app.agent_navigation.needs_legacy_relation_fallback_check(),
+                    "a persisted-page failure must not mark the legacy fallback complete"
+                );
+
+                let visible_loaded_thread_ids = app
+                    .agent_navigation
+                    .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                    .into_iter()
+                    .filter_map(|(thread_id, entry)| (!entry.is_closed).then_some(thread_id))
+                    .collect::<std::collections::HashSet<_>>();
+                assert_eq!(
+                    visible_loaded_thread_ids, expected_loaded_thread_ids,
+                    "a healthy loaded-descendant lookup must survive a persisted relation failure"
+                );
+                Box::pin(app.render_agent_picker()).await;
+                let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
+                assert!(rendered.contains("fallback-worker-0"));
+                assert!(rendered.contains("fallback-worker-1"));
+
+                let mut current_thread_id = root_thread_id;
+                let mut keyboard_reachable_loaded_thread_ids =
+                    std::collections::HashSet::with_capacity(LOADED_DESCENDANT_COUNT);
+                for _ in 0..LOADED_DESCENDANT_COUNT {
+                    app.active_thread_id = Some(current_thread_id);
+                    let next_thread_id = app
+                        .adjacent_thread_id_with_backfill(
+                            &mut app_server,
+                            AgentNavigationDirection::Next,
+                        )
+                        .await
+                        .expect("loaded child should be reachable by keyboard navigation");
+                    assert!(expected_loaded_thread_ids.contains(&next_thread_id));
+                    assert!(keyboard_reachable_loaded_thread_ids.insert(next_thread_id));
+                    current_thread_id = next_thread_id;
+                }
+                assert_eq!(
+                    keyboard_reachable_loaded_thread_ids, expected_loaded_thread_ids,
+                    "keyboard navigation must cover every loaded descendant after the failure"
+                );
+                {
+                    let requests = requests.lock().expect("request recorder lock");
+                    assert!(requests.iter().any(|method| method == "thread/loaded/list"));
+                    assert!(requests.iter().any(|method| method == "thread/list"));
+                }
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("persisted list fallback test thread")
 }
 
 #[test]
