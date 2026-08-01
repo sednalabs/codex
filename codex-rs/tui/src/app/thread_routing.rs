@@ -179,6 +179,19 @@ impl App {
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
     }
 
+    /// Rejects a thread-scoped write after its live session was replaced with a replay-only
+    /// transcript. Keep this at the App-to-app-server boundary so delayed events and slash
+    /// actions cannot bypass the ordinary command-submission guard.
+    pub(super) fn reject_replay_only_thread_write(&mut self, thread_id: ThreadId) -> bool {
+        if !self.thread_is_replay_only(thread_id) {
+            return false;
+        }
+
+        self.chat_widget
+            .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
+        true
+    }
+
     pub(super) fn ignore_same_thread_resume(
         &mut self,
         target_session: &crate::resume_picker::SessionTarget,
@@ -450,9 +463,9 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
-        if self.thread_is_replay_only(thread_id) && replay_only_thread_op_targets_thread(&op) {
-            self.chat_widget
-                .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
+        if replay_only_thread_op_targets_thread(&op)
+            && self.reject_replay_only_thread_write(thread_id)
+        {
             return Ok(());
         }
 

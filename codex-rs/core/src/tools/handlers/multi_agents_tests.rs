@@ -151,6 +151,8 @@ async fn assert_failed_spawn_lifecycle(
         panic!("expected collab spawn start item");
     };
     assert_eq!(started.status, CollabAgentToolCallStatus::InProgress);
+    assert_eq!(started.model, None);
+    assert_eq!(started.reasoning_effort, None);
     assert_eq!(started.requested_model.as_deref(), requested_model);
     assert_eq!(
         started.requested_reasoning_effort,
@@ -541,6 +543,8 @@ async fn spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effor
     let TurnItem::CollabAgentToolCall(started) = started.item else {
         panic!("expected collab spawn start item");
     };
+    assert_eq!(started.model, None);
+    assert_eq!(started.reasoning_effort, None);
     assert_eq!(started.requested_model, None);
     assert_eq!(started.requested_reasoning_effort, None);
 
