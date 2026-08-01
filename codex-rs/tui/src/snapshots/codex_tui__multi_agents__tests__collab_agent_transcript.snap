@@ -2,7 +2,7 @@
 source: tui/src/multi_agents.rs
 expression: snapshot
 ---
-• Spawned · primitive: spawn_agent · Robie [explorer] (requested: gpt-5 high)
+• Spawned · primitive: spawn_agent · Robie [explorer] (effective: gpt-5 high)
   └ Compute 11! and reply with just the integer result.
 
 • Sent input to Robie [explorer]

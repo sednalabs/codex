@@ -79,8 +79,10 @@ async fn handle_spawn_agent(
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
                 prompt: Some(prompt.clone()),
-                model: Some(args.model.clone().unwrap_or_default()),
-                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                // Preserve the caller's optional request. The resolved child configuration is
+                // reported by the completed item below.
+                model: args.model.clone(),
+                reasoning_effort: args.reasoning_effort.clone(),
                 agents_states: Default::default(),
             }),
         )
