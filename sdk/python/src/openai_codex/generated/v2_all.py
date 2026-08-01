@@ -4717,6 +4717,13 @@ class ThreadStatusChangedNotification(BaseModel):
         populate_by_name=True,
     )
     status: ThreadStatus
+    status_revision: Annotated[
+        int | None,
+        Field(
+            alias="statusRevision",
+            description="Monotonically increasing revision for this thread's status notifications within the current app-server session. Older servers omit this field.",
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
 
 

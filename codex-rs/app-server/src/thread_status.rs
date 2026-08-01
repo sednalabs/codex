@@ -302,6 +302,7 @@ pub(crate) fn resolve_thread_status(
 #[derive(Default)]
 struct ThreadWatchState {
     runtime_by_thread_id: HashMap<String, RuntimeFacts>,
+    status_revision_by_thread_id: HashMap<String, u64>,
     status_watcher_by_thread_id: HashMap<String, watch::Sender<ThreadStatus>>,
 }
 
@@ -333,6 +334,7 @@ impl ThreadWatchState {
             Some(ThreadStatusChangedNotification {
                 thread_id: thread_id.to_string(),
                 status: ThreadStatus::NotLoaded,
+                status_revision: Some(self.next_status_revision(thread_id)),
             })
         } else {
             None
@@ -404,7 +406,7 @@ impl ThreadWatchState {
     }
 
     fn status_changed_notification(
-        &self,
+        &mut self,
         thread_id: String,
         previous_status: Option<ThreadStatus>,
     ) -> Option<ThreadStatusChangedNotification> {
@@ -414,7 +416,21 @@ impl ThreadWatchState {
             return None;
         }
 
-        Some(ThreadStatusChangedNotification { thread_id, status })
+        let status_revision = self.next_status_revision(&thread_id);
+        Some(ThreadStatusChangedNotification {
+            thread_id,
+            status,
+            status_revision: Some(status_revision),
+        })
+    }
+
+    fn next_status_revision(&mut self, thread_id: &str) -> u64 {
+        let revision = self
+            .status_revision_by_thread_id
+            .entry(thread_id.to_string())
+            .or_default();
+        *revision = revision.saturating_add(1);
+        *revision
     }
 }
 
@@ -700,6 +716,7 @@ mod tests {
             ThreadStatusChangedNotification {
                 thread_id: INTERACTIVE_THREAD_ID.to_string(),
                 status: ThreadStatus::Idle,
+                status_revision: Some(1),
             },
         );
 
@@ -711,6 +728,7 @@ mod tests {
                 status: ThreadStatus::Active {
                     active_flags: vec![],
                 },
+                status_revision: Some(2),
             },
         );
 
@@ -720,6 +738,7 @@ mod tests {
             ThreadStatusChangedNotification {
                 thread_id: INTERACTIVE_THREAD_ID.to_string(),
                 status: ThreadStatus::NotLoaded,
+                status_revision: Some(3),
             },
         );
     }
@@ -755,6 +774,7 @@ mod tests {
                 status: ThreadStatus::Active {
                     active_flags: vec![],
                 },
+                status_revision: Some(1),
             },
         );
     }

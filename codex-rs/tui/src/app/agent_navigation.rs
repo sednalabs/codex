@@ -50,6 +50,9 @@ pub(crate) struct AgentNavigationState {
     /// their picker row. The app-server status payload has no sequence number, so an activity and
     /// a status watcher can otherwise race across independent notification streams.
     system_error_epochs: HashMap<ThreadId, SystemErrorEpoch>,
+    /// Latest accepted status revision per thread. Revisions are scoped to one app-server session
+    /// and let the picker reject a status watcher message delivered out of order.
+    last_status_revisions: HashMap<ThreadId, u64>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
     /// Opaque continuation for the next bounded persisted-subagent page.
@@ -64,7 +67,10 @@ enum SystemErrorEpoch {
     /// A terminal activity was observed before its child status watcher reached `SystemError`.
     AwaitingSystemError,
     /// The watcher has confirmed the activity-derived failure; a later status may recover it.
-    ConfirmedSystemError,
+    ConfirmedSystemError {
+        /// Revision assigned to the matching `SystemError`, when the server supports it.
+        status_revision: Option<u64>,
+    },
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -120,6 +126,7 @@ impl AgentNavigationState {
     ) {
         if is_closed {
             self.system_error_epochs.remove(&thread_id);
+            self.last_status_revisions.remove(&thread_id);
         }
         let previous_entry = self.threads.get(&thread_id);
         let previous_is_running = previous_entry.is_some_and(|entry| entry.is_running);
@@ -207,15 +214,21 @@ impl AgentNavigationState {
                     updated_at: None,
                 });
         entry.agent_path = Some(activity.agent_path);
-        // A delayed non-error activity must not make a terminal `Errored` activity look like a
-        // recovery. Only a direct status transition or closure may clear this state.
-        entry.has_system_error |= activity.has_system_error;
         if activity.model.is_some() {
             entry.model = activity.model;
         }
         if activity.reasoning_effort.is_some() {
             entry.reasoning_effort = activity.reasoning_effort;
         }
+        if entry.is_closed {
+            // A `ThreadClosed` transition is terminal for picker liveness. Parent activity can
+            // arrive after that transition on an independent notification stream; retain its
+            // descriptive metadata above, but never let it recolor or revive a closed row.
+            return;
+        }
+        // A delayed non-error activity must not make a terminal `Errored` activity look like a
+        // recovery. Only a direct status transition or closure may clear this state.
+        entry.has_system_error |= activity.has_system_error;
         if activity.is_running_hint
             && !entry.is_closed
             && !self.stopped_threads.contains(&activity.thread_id)
@@ -258,18 +271,14 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
-        if self
+        let can_mark_running = self
             .threads
             .get(&thread_id)
-            .is_some_and(|entry| entry.is_closed)
-        {
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error);
+        if !can_mark_running {
             return;
         }
         self.stopped_threads.remove(&thread_id);
-        self.system_error_epochs.remove(&thread_id);
-        if let Some(entry) = self.threads.get_mut(&thread_id) {
-            entry.has_system_error = false;
-        }
         self.set_running(thread_id, /*is_running*/ true);
     }
 
@@ -287,6 +296,9 @@ impl AgentNavigationState {
     /// Records the app-server's current error state without hiding a replayable saved thread.
     pub(crate) fn set_system_error(&mut self, thread_id: ThreadId, has_system_error: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
+            if entry.is_closed {
+                return;
+            }
             entry.has_system_error = has_system_error;
             if has_system_error {
                 entry.is_running = false;
@@ -297,29 +309,74 @@ impl AgentNavigationState {
 
     /// Returns whether a status-watch update can change the picker liveness for this thread.
     ///
-    /// The V2 activity stream and the child status watcher have no shared sequence number. An
-    /// `Errored` activity therefore starts an epoch which ignores a delayed `Idle` or `Active`
-    /// status until the watcher reports the matching `SystemError`. Once that failure has been
-    /// confirmed, a later status is a causal recovery and may update the row normally.
+    /// The V2 activity stream and the child status watcher are independent. An `Errored` activity
+    /// therefore starts an epoch which ignores a delayed `Idle` or `Active` status until the
+    /// watcher reports the matching `SystemError`. Once confirmed, only a strictly newer status
+    /// revision may recover the row. Revisionless older servers fail closed after an error.
     pub(crate) fn accepts_thread_status_change(
         &mut self,
         thread_id: ThreadId,
         has_system_error: bool,
+        status_revision: Option<u64>,
+        is_closed: bool,
     ) -> bool {
-        if has_system_error {
-            self.system_error_epochs
-                .insert(thread_id, SystemErrorEpoch::ConfirmedSystemError);
+        if let Some(status_revision) = status_revision
+            && self
+                .last_status_revisions
+                .get(&thread_id)
+                .is_some_and(|latest| status_revision <= *latest)
+        {
+            return false;
+        }
+
+        if is_closed {
+            if let Some(status_revision) = status_revision {
+                self.last_status_revisions
+                    .insert(thread_id, status_revision);
+            }
             return true;
         }
 
-        match self.system_error_epochs.get(&thread_id) {
-            Some(SystemErrorEpoch::AwaitingSystemError) => false,
-            Some(SystemErrorEpoch::ConfirmedSystemError) => {
-                self.system_error_epochs.remove(&thread_id);
+        let accepts = match self.system_error_epochs.get(&thread_id).copied() {
+            Some(SystemErrorEpoch::AwaitingSystemError) if !has_system_error => false,
+            Some(SystemErrorEpoch::AwaitingSystemError) => {
+                self.system_error_epochs.insert(
+                    thread_id,
+                    SystemErrorEpoch::ConfirmedSystemError { status_revision },
+                );
+                true
+            }
+            Some(SystemErrorEpoch::ConfirmedSystemError {
+                status_revision: error_revision,
+            }) if !has_system_error => {
+                if error_revision.is_some_and(|error_revision| {
+                    status_revision.is_some_and(|status_revision| status_revision > error_revision)
+                }) {
+                    self.system_error_epochs.remove(&thread_id);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(SystemErrorEpoch::ConfirmedSystemError {
+                status_revision: error_revision,
+            }) => {
+                if error_revision.is_none() && status_revision.is_some() {
+                    self.system_error_epochs.insert(
+                        thread_id,
+                        SystemErrorEpoch::ConfirmedSystemError { status_revision },
+                    );
+                }
                 true
             }
             None => true,
+        };
+
+        if accepts && let Some(status_revision) = status_revision {
+            self.last_status_revisions
+                .insert(thread_id, status_revision);
         }
+        accepts
     }
 
     pub(crate) fn set_agent_path(&mut self, thread_id: ThreadId, agent_path: Option<String>) {
@@ -350,6 +407,7 @@ impl AgentNavigationState {
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
         self.system_error_epochs.remove(&thread_id);
+        self.last_status_revisions.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -371,6 +429,7 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.system_error_epochs.clear();
+        self.last_status_revisions.clear();
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.legacy_relation_fallback_checked = false;
@@ -411,6 +470,7 @@ impl AgentNavigationState {
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
         self.system_error_epochs.remove(&thread_id);
+        self.last_status_revisions.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
     }
 
@@ -863,7 +923,35 @@ mod tests {
                 .is_some_and(|entry| entry.has_system_error && !entry.is_running)
         );
 
-        // A newer active status is an explicit recovery signal.
+        // TurnStarted and active snapshots are not ordered with the terminal activity and cannot
+        // clear it on their own.
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, true);
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(2),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, false);
         state.mark_running(thread_id);
         assert!(
             state
@@ -871,7 +959,6 @@ mod tests {
                 .is_some_and(|entry| !entry.has_system_error && entry.is_running)
         );
 
-        state.set_system_error(thread_id, true);
         state.mark_closed(thread_id);
         assert!(
             state.get(&thread_id).is_some_and(|entry| entry.is_closed

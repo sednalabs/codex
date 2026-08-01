@@ -18099,6 +18099,15 @@
         "status": {
           "$ref": "#/definitions/ThreadStatus"
         },
+        "statusRevision": {
+          "description": "Monotonically increasing revision for this thread's status notifications within the\ncurrent app-server session. Older servers omit this field.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         }

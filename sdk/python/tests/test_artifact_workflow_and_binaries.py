@@ -472,6 +472,11 @@ def test_generation_preserves_current_agent_picker_protocol_fields(tmp_path: Pat
     receiver_thread_ids: Annotated[
 
 
+class ThreadStatusChangedNotification(BaseModel):
+    status: ThreadStatus
+    thread_id: Annotated[
+
+
 class ThreadLoadedListParams(BaseModel):
     cursor: Annotated[
 
@@ -493,12 +498,14 @@ class ThreadListResponse(BaseModel):
     for field in (
         "requested_model",
         "requested_reasoning_effort",
+        "status_revision",
         "ancestor_thread_id",
         "ancestor_filter_applied",
     ):
         assert field in once
     assert "alias=\"requestedModel\"" in once
     assert "alias=\"requestedReasoningEffort\"" in once
+    assert "alias=\"statusRevision\"" in once
     assert once.count("alias=\"ancestorFilterApplied\"") == 2
     assert "Effective model selected for the spawned agent" in once
     assert "Effective reasoning effort selected for the spawned agent" in once

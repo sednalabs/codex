@@ -13,12 +13,13 @@ use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_label;
 use crate::multi_agents::format_agent_picker_item_selected_description;
 use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStatus;
-use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
@@ -413,23 +414,25 @@ impl App {
     pub(super) fn apply_agent_picker_thread_status_change(
         &mut self,
         thread_id: ThreadId,
-        thread_status: &ThreadStatus,
+        notification: &ThreadStatusChangedNotification,
     ) {
         let has_live_channel = self
             .thread_event_channels
             .get(&thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-        let status = agent_picker_thread_status(thread_status, has_live_channel);
+        let status = agent_picker_thread_status(&notification.status, has_live_channel);
+        if !self.agent_navigation.accepts_thread_status_change(
+            thread_id,
+            status.has_system_error,
+            notification.status_revision,
+            status.is_closed,
+        ) {
+            return;
+        }
         if status.is_closed {
             if self.agent_navigation.get(&thread_id).is_some() {
                 self.mark_agent_picker_thread_closed(thread_id);
             }
-            return;
-        }
-        if !self
-            .agent_navigation
-            .accepts_thread_status_change(thread_id, status.has_system_error)
-        {
             return;
         }
         if self.agent_navigation.get(&thread_id).is_none() {

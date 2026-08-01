@@ -801,6 +801,20 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
     )
     source = _insert_generated_class_fields_before(
         source,
+        "ThreadStatusChangedNotification",
+        "    thread_id: Annotated[",
+        "status_revision",
+        """    status_revision: Annotated[
+        int | None,
+        Field(
+            alias="statusRevision",
+            description="Monotonically increasing revision for this thread's status notifications within the current app-server session. Older servers omit this field.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
         "CollabAgentToolCallThreadItem",
         "    receiver_thread_ids: Annotated[",
         "requested_model",
