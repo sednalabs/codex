@@ -1,5 +1,6 @@
-use super::*;
 use super::super::agent_navigation::AgentNavigationDirection;
+use super::super::thread_events::ThreadEventAttachment;
+use super::*;
 use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
 use app_test_support::rollout_path;
@@ -11,6 +12,7 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_protocol::AgentPath;
@@ -593,7 +595,7 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 .enable_all()
                 .build()?;
             runtime.block_on(async {
-                let mut app = make_test_app().await;
+                let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
@@ -630,7 +632,7 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     )
                     .expect("create child rollout"),
                 )?;
-                let (mut app_server, _requests, proxy) =
+                let (mut app_server, requests, proxy) =
                     start_recording_app_server(&app.config).await?;
                 let root = app_server
                     .resume_thread(
@@ -652,11 +654,48 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 );
 
                 let mut tui = crate::tui::test_support::make_test_tui()?;
+                while app_event_rx.try_recv().is_ok() {}
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
                     .await?;
 
+                let selection_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    !selection_requests
+                        .iter()
+                        .any(|method| method == "thread/resume"),
+                    "selecting a closed sidecar must not revive it through thread/resume"
+                );
                 assert_eq!(app.active_thread_id, Some(child_thread_id));
-                assert!(app.thread_event_channels.contains_key(&child_thread_id));
+                assert_eq!(
+                    app.thread_event_channels
+                        .get(&child_thread_id)
+                        .map(|channel| channel.attachment()),
+                    Some(ThreadEventAttachment::ReplayOnly),
+                    "closed sidecars must be represented by a replay-only channel"
+                );
+                let loaded = app_server
+                    .thread_loaded_list(ThreadLoadedListParams {
+                        cursor: None,
+                        limit: None,
+                        ancestor_thread_id: Some(root_thread_id.to_string()),
+                    })
+                    .await?;
+                assert_eq!(loaded.data, Vec::<String>::new());
+
+                let mut replayed_history = String::new();
+                while let Ok(event) = app_event_rx.try_recv() {
+                    if let AppEvent::InsertHistoryCell(cell) = event {
+                        replayed_history.push_str(&lines_to_single_string(
+                            &cell.transcript_lines(/*width*/ 100),
+                        ));
+                    }
+                }
+                assert!(
+                    replayed_history.contains("Saved child message"),
+                    "the closed sidecar transcript should replay from thread/read(includeTurns: true)"
+                );
                 app_server.shutdown().await?;
                 proxy.await??;
                 Ok(())
