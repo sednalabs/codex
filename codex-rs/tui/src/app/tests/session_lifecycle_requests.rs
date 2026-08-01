@@ -736,6 +736,74 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     "a replay-only selection must not show a read-only error before user input"
                 );
 
+                let state_db = codex_state::StateRuntime::init(
+                    app.config.sqlite.clone(),
+                    app.config.model_provider_id.clone(),
+                )
+                .await
+                .expect("state db should initialize");
+                let child_memory_mode_before = state_db
+                    .get_thread_memory_mode(child_thread_id)
+                    .await
+                    .expect("child thread memory mode should be readable");
+
+                app.config.memories.use_memories = true;
+                app.config.memories.generate_memories = false;
+                app.chat_widget
+                    .set_feature_enabled(Feature::MemoryTool, /*enabled*/ true);
+                app.chat_widget
+                    .set_memory_settings(/*use_memories*/ true, /*generate_memories*/ false);
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                app.chat_widget.apply_external_edit("/memories".to_string());
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+                let memory_settings_event = app_event_rx
+                    .try_recv()
+                    .expect("/memories confirmation should update the settings");
+                assert!(matches!(
+                    memory_settings_event,
+                    AppEvent::UpdateMemorySettings {
+                        use_memories: true,
+                        generate_memories: true,
+                    }
+                ));
+                let control = Box::pin(app.handle_event(
+                    &mut tui,
+                    &mut app_server,
+                    memory_settings_event,
+                ))
+                .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                assert!(app.config.memories.generate_memories);
+                assert!(app.chat_widget.config_ref().memories.generate_memories);
+
+                let child_memory_mode_after = state_db
+                    .get_thread_memory_mode(child_thread_id)
+                    .await
+                    .expect("child thread memory mode should remain readable");
+                assert_eq!(child_memory_mode_after, child_memory_mode_before);
+                let memory_settings_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    memory_settings_requests
+                        .iter()
+                        .any(|method| method == "config/batchWrite"),
+                    "/memories must still persist the global setting: {memory_settings_requests:?}"
+                );
+                assert!(
+                    !memory_settings_requests
+                        .iter()
+                        .any(|method| method == "thread/memoryMode/set"),
+                    "/memories must not mutate replay-only thread metadata: {memory_settings_requests:?}"
+                );
+
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 for text in ["normal replay input", "!echo replay-only"] {
                     app.chat_widget.apply_external_edit(text.to_string());
