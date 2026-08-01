@@ -6,7 +6,9 @@
 //! automatically detect and decode the vast majority of legacy encodings before falling back to
 //! lossy UTF-8 decoding.
 
-use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use chardetng::EncodingDetector;
+use chardetng::Iso2022JpDetection;
+use chardetng::Utf8Detection;
 use encoding_rs::Encoding;
 use encoding_rs::IBM866;
 use encoding_rs::WINDOWS_1252;
