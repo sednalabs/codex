@@ -20,6 +20,7 @@ from openai_codex.generated.v2_all import (
     ThreadListResponse,
     ThreadResumeResponse,
     ThreadStartParams,
+    ThreadStatusChangedNotification,
     ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
     TurnStartParams,
@@ -83,6 +84,13 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     thread_list_ack = ThreadListResponse.model_validate(
         {"data": [], "ancestorFilterApplied": True}
     )
+    status_changed = ThreadStatusChangedNotification.model_validate(
+        {
+            "status": {"type": "idle"},
+            "statusRevision": 7,
+            "threadId": "child-thread-1",
+        }
+    )
     tool_call = CollabAgentToolCallThreadItem.model_validate(
         {
             "agentsStates": {},
@@ -115,10 +123,18 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
         field.alias or name
         for name, field in CollabAgentToolCallThreadItem.model_fields.items()
     }
+    status_changed_properties = schema_bundle["definitions"][
+        "ThreadStatusChangedNotification"
+    ]["properties"]
+    status_changed_model_aliases = {
+        field.alias or name
+        for name, field in ThreadStatusChangedNotification.model_fields.items()
+    }
 
     assert _params_dict(ancestor_params) == {"ancestorThreadId": "root-thread-1"}
     assert loaded_ack.ancestor_filter_applied is True
     assert thread_list_ack.ancestor_filter_applied is True
+    assert status_changed.status_revision == 7
     assert tool_call.model_dump(by_alias=True, exclude_none=True) == {
         "agentsStates": {},
         "id": "call-1",
@@ -140,6 +156,7 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
         "ancestorFilterApplied",
     } <= schema_bundle["definitions"]["ThreadListResponse"]["properties"].keys()
     assert collab_model_aliases == set(collab_properties)
+    assert status_changed_model_aliases == set(status_changed_properties)
 
 
 def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:

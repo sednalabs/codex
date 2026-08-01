@@ -1659,6 +1659,11 @@ pub struct ThreadStartedNotification {
 pub struct ThreadStatusChangedNotification {
     pub thread_id: String,
     pub status: ThreadStatus,
+    /// Monotonically increasing revision for this thread's status notifications within the
+    /// current app-server session. Older servers omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub status_revision: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

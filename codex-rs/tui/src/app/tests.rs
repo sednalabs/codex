@@ -1663,8 +1663,72 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
 }
 
 #[tokio::test]
-async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liveness() -> Result<()>
-{
+async fn thread_closed_picker_row_ignores_late_errored_activity() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/closed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: false,
+        });
+
+    // `ThreadClosed` reaches the picker through this explicit close transition. A terminal
+    // parent activity may still be in flight when the child has already become a closed,
+    // replayable row.
+    app.mark_agent_picker_thread_closed(thread_id);
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-late-activity".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::SubAgentActivity {
+                id: "activity-after-close".to_string(),
+                kind: SubAgentActivityKind::Errored,
+                agent_thread_id: thread_id.to_string(),
+                agent_path: "/root/closed-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+        }),
+    ));
+
+    let entry = app
+        .agent_navigation
+        .get(&thread_id)
+        .expect("ThreadClosed row should remain in picker state");
+    assert!(entry.is_closed);
+    assert!(!entry.has_system_error);
+    assert!(!entry.is_running);
+    assert_eq!(
+        crate::multi_agents::agent_picker_status_dot_spans(
+            entry.is_closed,
+            entry.has_system_error,
+        )[0]
+        .style
+        .fg,
+        None,
+        "a closed row must not regain the red error dot from late activity"
+    );
+    assert!(
+        crate::multi_agents::format_agent_picker_item_description(
+            thread_id,
+            entry,
+            &crate::multi_agents::AgentPickerThreadUsage::default(),
+        )
+        .contains("closed stale finished")
+    );
+    assert!(
+        app.should_attach_live_thread_for_selection(thread_id),
+        "closed rows retain their saved-transcript selection path"
+    );
+}
+
+#[tokio::test]
+async fn thread_status_revisions_gate_error_recovery_picker_liveness() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation
@@ -1677,14 +1741,29 @@ async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liv
             is_running_hint: false,
         });
 
-    // The status watcher has no generation in its protocol payload. A delayed non-error status
-    // must therefore not recover a terminal parent activity before the matching SystemError is
-    // observed.
-    for delayed_status in [
-        ThreadStatus::Idle,
-        ThreadStatus::Active {
-            active_flags: Vec::new(),
-        },
+    // TurnStarted and active snapshots are independent liveness observations. They must not
+    // recover a terminal activity before a newer status revision proves recovery.
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_started_notification(thread_id, "turn-stale"),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+    );
+
+    // A delayed non-error status must not recover a terminal parent activity before the matching
+    // SystemError is observed.
+    for (delayed_status, status_revision) in [
+        (ThreadStatus::Idle, 1),
+        (
+            ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            2,
+        ),
     ] {
         app.enqueue_thread_notification(
             thread_id,
@@ -1692,6 +1771,7 @@ async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liv
                 codex_app_server_protocol::ThreadStatusChangedNotification {
                     thread_id: thread_id.to_string(),
                     status: delayed_status,
+                    status_revision: Some(status_revision),
                 },
             ),
         )
@@ -1709,6 +1789,7 @@ async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liv
             codex_app_server_protocol::ThreadStatusChangedNotification {
                 thread_id: thread_id.to_string(),
                 status: ThreadStatus::SystemError,
+                status_revision: Some(3),
             },
         ),
     )
@@ -1719,7 +1800,9 @@ async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liv
             .is_some_and(|entry| entry.has_system_error && !entry.is_running)
     );
 
-    // Once the matching error has been observed, a later child-watch status is a true recovery.
+    // The stale Active was generated before SystemError at revision 2 but arrives afterwards.
+    // A non-status running hint is equally unable to override confirmed error liveness.
+    app.agent_navigation.mark_running(thread_id);
     app.enqueue_thread_notification(
         thread_id,
         ServerNotification::ThreadStatusChanged(
@@ -1728,6 +1811,27 @@ async fn thread_status_changes_wait_for_error_epoch_before_recovering_picker_liv
                 status: ThreadStatus::Active {
                     active_flags: Vec::new(),
                 },
+                status_revision: Some(2),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+    );
+
+    // Only a status revision newer than the confirmed error is a true recovery.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: Vec::new(),
+                },
+                status_revision: Some(4),
             },
         ),
     )
