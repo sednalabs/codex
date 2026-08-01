@@ -77,6 +77,8 @@ pub(crate) struct SubAgentActivityDisplay {
     pub(crate) agent_path: String,
     pub(crate) model: Option<String>,
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
+    /// Whether this activity reports a child system error.
+    pub(crate) has_system_error: bool,
     pub(crate) is_running_hint: bool,
 }
 
@@ -553,17 +555,18 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     else {
         return None;
     };
-    let is_running_hint = match kind {
-        SubAgentActivityKind::Started => true,
+    let (is_running_hint, has_system_error) = match kind {
+        SubAgentActivityKind::Started => (true, false),
         SubAgentActivityKind::Interacted => return None,
-        SubAgentActivityKind::Interrupted => false,
-        SubAgentActivityKind::Errored => false,
+        SubAgentActivityKind::Interrupted => (false, false),
+        SubAgentActivityKind::Errored => (false, true),
     };
     Some(SubAgentActivityDisplay {
         thread_id: parse_thread_id(agent_thread_id)?,
         agent_path: agent_path.clone(),
         model: model.clone(),
         reasoning_effort: reasoning_effort.clone(),
+        has_system_error,
         is_running_hint,
     })
 }

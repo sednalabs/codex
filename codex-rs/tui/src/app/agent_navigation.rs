@@ -188,7 +188,7 @@ impl AgentNavigationState {
                     updated_at: None,
                 });
         entry.agent_path = Some(activity.agent_path);
-        entry.has_system_error = false;
+        entry.has_system_error = activity.has_system_error;
         if activity.model.is_some() {
             entry.model = activity.model;
         }
