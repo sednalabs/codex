@@ -1148,6 +1148,16 @@ class RouteSelectionTests(unittest.TestCase):
             "and exec_triple.system == host_os:",
             gnullvm_exec_patch,
         )
+        self.assertEqual(
+            gnullvm_exec_patch.count(
+                "if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:"
+            ),
+            2,
+        )
+        self.assertIn(
+            "name = \"miri_{}_{}_{}\".format(exec_triple.system, exec_triple.arch, version_key),",
+            gnullvm_exec_patch,
+        )
 
         execution_logs_upload = next(
             step for step in native_steps if step.get("name") == "Upload Bazel execution logs"

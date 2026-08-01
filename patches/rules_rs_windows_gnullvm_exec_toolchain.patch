@@ -129,6 +129,10 @@ diff --git a/rs/toolchains/module_extension.bzl b/rs/toolchains/module_extension
 @@ -245 +250 @@ def _toolchains_impl(mctx):
 -        for triple in SUPPORTED_EXEC_TRIPLES:
 +        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
+@@ -252,1 +257,2 @@ def _toolchains_impl(mctx):
+-            if version in miri_versions:
++            # Miri does not ship a gnullvm host distribution.
++            if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:
 @@ -262 +267 @@ def _toolchains_impl(mctx):
 -        for triple in SUPPORTED_EXEC_TRIPLES:
 +        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
@@ -144,6 +148,14 @@ diff --git a/rs/toolchains/module_extension.bzl b/rs/toolchains/module_extension
 @@ -323 +328 @@ def _toolchains_impl(mctx):
 -                if exec_triple.arch == host_arch and exec_triple.system == host_os:
 +                if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch and exec_triple.system == host_os:
+@@ -339,2 +344,3 @@ def _toolchains_impl(mctx):
+-            if version in miri_versions:
++            # Miri's declaration keeps its legacy OS/CPU-only repository name.
++            if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:
+                 miri_repository(
+@@ -341 +347 @@ def _toolchains_impl(mctx):
+-                    name = "miri_{}_{}".format(triple_suffix, version_key),
++                    name = "miri_{}_{}_{}".format(exec_triple.system, exec_triple.arch, version_key),
 @@ -364 +369 @@ def _toolchains_impl(mctx):
 -        for triple in SUPPORTED_EXEC_TRIPLES:
 +        for triple in SUPPORTED_RUST_EXEC_TRIPLES:
