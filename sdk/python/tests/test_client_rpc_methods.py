@@ -75,7 +75,7 @@ def test_subagent_activity_errored_kind_matches_json_schema() -> None:
 
 
 def test_agent_picker_protocol_models_match_current_schema() -> None:
-    """Keep ancestor-filter and spawned-agent request fields across SDK regeneration."""
+    """Keep ancestor-filter and spawned-agent request fields aligned with the V2 bundle."""
     ancestor_params = ThreadLoadedListParams(ancestor_thread_id="root-thread-1")
     loaded_ack = ThreadLoadedListResponse.model_validate(
         {"data": ["child-thread-1"], "ancestorFilterApplied": True}
@@ -111,6 +111,10 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
         for variant in schema_bundle["definitions"]["ThreadItem"]["oneOf"]
         if variant.get("title") == "CollabAgentToolCallThreadItem"
     )
+    collab_model_aliases = {
+        field.alias or name
+        for name, field in CollabAgentToolCallThreadItem.model_fields.items()
+    }
 
     assert _params_dict(ancestor_params) == {"ancestorThreadId": "root-thread-1"}
     assert loaded_ack.ancestor_filter_applied is True
@@ -135,7 +139,7 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     assert {
         "ancestorFilterApplied",
     } <= schema_bundle["definitions"]["ThreadListResponse"]["properties"].keys()
-    assert {"requestedModel", "requestedReasoningEffort"} <= collab_properties.keys()
+    assert collab_model_aliases == set(collab_properties)
 
 
 def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:

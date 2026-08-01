@@ -46,12 +46,25 @@ pub(crate) struct AgentNavigationState {
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
+    /// Error activities that must see their matching status before a later status can recover
+    /// their picker row. The app-server status payload has no sequence number, so an activity and
+    /// a status watcher can otherwise race across independent notification streams.
+    system_error_epochs: HashMap<ThreadId, SystemErrorEpoch>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
     /// Opaque continuation for the next bounded persisted-subagent page.
     next_picker_page_cursor: Option<String>,
     /// Whether this session has completed the bounded legacy relation repair fallback.
     legacy_relation_fallback_checked: bool,
+}
+
+/// The causal state for one activity-derived system error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SystemErrorEpoch {
+    /// A terminal activity was observed before its child status watcher reached `SystemError`.
+    AwaitingSystemError,
+    /// The watcher has confirmed the activity-derived failure; a later status may recover it.
+    ConfirmedSystemError,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -105,6 +118,9 @@ impl AgentNavigationState {
         created_at: Option<i64>,
         updated_at: Option<i64>,
     ) {
+        if is_closed {
+            self.system_error_epochs.remove(&thread_id);
+        }
         let previous_entry = self.threads.get(&thread_id);
         let previous_is_running = previous_entry.is_some_and(|entry| entry.is_running);
         let previous_has_system_error = previous_entry.is_some_and(|entry| entry.has_system_error);
@@ -168,6 +184,8 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
+        let thread_id = activity.thread_id;
+        let is_errored_activity = activity.has_system_error;
         if !self.threads.contains_key(&activity.thread_id) {
             self.order.push(activity.thread_id);
         }
@@ -207,6 +225,11 @@ impl AgentNavigationState {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
         }
+        if is_errored_activity {
+            self.system_error_epochs
+                .entry(thread_id)
+                .or_insert(SystemErrorEpoch::AwaitingSystemError);
+        }
     }
 
     pub(crate) fn update_identity(
@@ -243,6 +266,7 @@ impl AgentNavigationState {
             return;
         }
         self.stopped_threads.remove(&thread_id);
+        self.system_error_epochs.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.has_system_error = false;
         }
@@ -268,6 +292,33 @@ impl AgentNavigationState {
                 entry.is_running = false;
                 self.stopped_threads.insert(thread_id);
             }
+        }
+    }
+
+    /// Returns whether a status-watch update can change the picker liveness for this thread.
+    ///
+    /// The V2 activity stream and the child status watcher have no shared sequence number. An
+    /// `Errored` activity therefore starts an epoch which ignores a delayed `Idle` or `Active`
+    /// status until the watcher reports the matching `SystemError`. Once that failure has been
+    /// confirmed, a later status is a causal recovery and may update the row normally.
+    pub(crate) fn accepts_thread_status_change(
+        &mut self,
+        thread_id: ThreadId,
+        has_system_error: bool,
+    ) -> bool {
+        if has_system_error {
+            self.system_error_epochs
+                .insert(thread_id, SystemErrorEpoch::ConfirmedSystemError);
+            return true;
+        }
+
+        match self.system_error_epochs.get(&thread_id) {
+            Some(SystemErrorEpoch::AwaitingSystemError) => false,
+            Some(SystemErrorEpoch::ConfirmedSystemError) => {
+                self.system_error_epochs.remove(&thread_id);
+                true
+            }
+            None => true,
         }
     }
 
@@ -298,6 +349,7 @@ impl AgentNavigationState {
     /// this up" by deleting the entry instead, wraparound navigation will silently change shape
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
+        self.system_error_epochs.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -318,6 +370,7 @@ impl AgentNavigationState {
         self.threads.clear();
         self.order.clear();
         self.stopped_threads.clear();
+        self.system_error_epochs.clear();
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.legacy_relation_fallback_checked = false;
@@ -357,6 +410,7 @@ impl AgentNavigationState {
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
+        self.system_error_epochs.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
     }
 
