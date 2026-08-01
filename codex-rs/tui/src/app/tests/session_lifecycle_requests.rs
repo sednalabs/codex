@@ -1244,6 +1244,65 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     "replay-only /fork must explain that the saved transcript is read-only"
                 );
 
+                // Prompt editing branches by reading the transcript and then either forking it
+                // or starting a new thread. `/side` similarly forks directly, including when it
+                // carries an inline prompt, and safety-buffered retry interrupts then forks.
+                // All three must reject the saved transcript before any app-server request and
+                // retain the inline text locally for the user.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                let prompt = crate::chatwidget::UserMessage::from("replay-only prompt edit");
+                let control = Box::pin(app.handle_event(
+                    &mut tui,
+                    &mut app_server,
+                    AppEvent::ForkSessionForPromptEdit {
+                        thread_id: child_thread_id,
+                        nth_user_message: 0,
+                        prompt: prompt.clone(),
+                    },
+                ))
+                .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                assert_eq!(app.chat_widget.composer_text_with_pending(), prompt.text);
+                let primary_thread_id = app.primary_thread_id;
+                app.primary_thread_id = Some(child_thread_id);
+                let control = Box::pin(app.handle_event(
+                    &mut tui,
+                    &mut app_server,
+                    AppEvent::RetrySafetyBufferedTurn {
+                        thread_id: child_thread_id,
+                        turn_id: "replay-only-turn".to_string(),
+                        model: "gpt-5.4".to_string(),
+                        turn: AppCommand::run_user_shell_command(
+                            "echo replay-only retry".to_string(),
+                        ),
+                        prompt: crate::chatwidget::UserMessage::from("replay-only retry"),
+                    },
+                ))
+                .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                app.primary_thread_id = primary_thread_id;
+                for user_message in [
+                    None,
+                    Some(crate::chatwidget::UserMessage::from("replay-only /side prompt")),
+                ] {
+                    let control = Box::pin(app.handle_event(
+                        &mut tui,
+                        &mut app_server,
+                        AppEvent::StartSide {
+                            parent_thread_id: child_thread_id,
+                            user_message,
+                        },
+                    ))
+                    .await?;
+                    assert!(matches!(control, AppRunControl::Continue));
+                }
+                let replay_only_branch_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    replay_only_branch_requests.is_empty(),
+                    "replay-only prompt editing, retry, and bare or inline /side must not reach the app server: {replay_only_branch_requests:?}"
+                );
+
                 // Switching away routes through `select_agent_thread_and_discard_side`. A
                 // selected saved sidecar has no live operation or app-server subscription to
                 // tear down, so this direct cleanup path must remain entirely local too.

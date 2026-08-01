@@ -818,7 +818,58 @@ impl AgentControl {
             }
         }
 
-        let mut queue = VecDeque::from([(tree_root_thread_id, tree_root_session_state, 0usize)]);
+        // Resolve an explicit branch filter before applying the bounded traversal. In particular,
+        // a sibling that happens to sort before a requested branch must not consume the entire
+        // result capacity and make the requested branch disappear. Exact agent-path lookups keep
+        // this preselection bounded without materializing unrelated siblings.
+        let mut traversal_roots = Vec::new();
+        if agent_roots_applied.is_empty() {
+            traversal_roots.push((tree_root_thread_id, tree_root_session_state, 0usize));
+        } else {
+            let mut resolved_roots = Vec::new();
+            let mut seen_thread_ids = HashSet::new();
+            for agent_root in &agent_roots_applied {
+                let resolved_root = if agent_root.as_str() == tree_root_name.as_str() {
+                    Some((tree_root_thread_id, tree_root_session_state))
+                } else if let Some(thread_id) = self.state.agent_id_for_path(agent_root) {
+                    Some((thread_id, AgentSessionState::Live))
+                } else if let Some(state_db_ctx) = state_db_ctx.as_ref() {
+                    state_db_ctx
+                        .find_thread_spawn_descendant_by_path(
+                            tree_root_thread_id,
+                            agent_root.as_str(),
+                        )
+                        .await
+                        .map_err(|err| {
+                            CodexErr::Fatal(format!(
+                                "failed to inspect persisted agent path `{}`: {err}",
+                                agent_root.as_str()
+                            ))
+                        })?
+                        .map(|thread_id| (thread_id, AgentSessionState::Stale))
+                } else {
+                    None
+                };
+
+                if let Some((thread_id, session_state)) = resolved_root
+                    && seen_thread_ids.insert(thread_id)
+                {
+                    let depth =
+                        agent_name_relative_depth(agent_root.as_str(), tree_root_name.as_str());
+                    resolved_roots.push((agent_root.to_string(), thread_id, session_state, depth));
+                }
+            }
+            resolved_roots.sort_by(|left, right| left.0.cmp(&right.0));
+            traversal_roots.extend(
+                resolved_roots
+                    .into_iter()
+                    .map(|(_, thread_id, session_state, depth)| {
+                        (thread_id, session_state, depth)
+                    }),
+            );
+        }
+
+        let mut queue = VecDeque::from(traversal_roots.clone());
         let mut depth_by_thread_id = HashMap::<ThreadId, usize>::new();
         let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
         let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
@@ -890,11 +941,21 @@ impl AgentControl {
         }
 
         let mut descendant_counts = HashMap::<ThreadId, usize>::new();
-        compute_descendant_counts(tree_root_thread_id, &tree_children, &mut descendant_counts);
+        for (thread_id, _, _) in &traversal_roots {
+            compute_descendant_counts(*thread_id, &tree_children, &mut descendant_counts);
+        }
 
         let mut ordered_thread_ids = Vec::with_capacity(tree_records.len());
-        let mut stack = vec![tree_root_thread_id];
+        let mut ordered_seen = HashSet::new();
+        let mut stack = traversal_roots
+            .iter()
+            .rev()
+            .map(|(thread_id, _, _)| *thread_id)
+            .collect::<Vec<_>>();
         while let Some(thread_id) = stack.pop() {
+            if !ordered_seen.insert(thread_id) {
+                continue;
+            }
             ordered_thread_ids.push(thread_id);
             if let Some(children) = tree_children.get(&thread_id) {
                 for child_id in children.iter().rev().copied() {
@@ -916,6 +977,7 @@ impl AgentControl {
                         })
                     })
             })
+            .take(max_agents)
             .collect::<Vec<_>>();
 
         let mut summary = AgentTreeSummary {
@@ -976,7 +1038,7 @@ impl AgentControl {
         let root_agent_name = tree_records
             .get(&tree_root_thread_id)
             .map(|record| record.agent_name.clone())
-            .unwrap_or_else(|| tree_root_thread_id.to_string());
+            .unwrap_or(tree_root_name);
 
         Ok(AgentTreeInspection {
             root_agent_name,
@@ -1582,6 +1644,13 @@ fn agent_name_is_same_or_descendant_of(agent_name: &str, parent_name: &str) -> b
         || agent_name
             .strip_prefix(parent_name)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn agent_name_relative_depth(agent_name: &str, tree_root_name: &str) -> usize {
+    agent_name
+        .strip_prefix(tree_root_name)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .map_or(0, |relative_name| relative_name.split('/').count())
 }
 
 pub(crate) fn render_input_preview(input: &[UserInput]) -> String {

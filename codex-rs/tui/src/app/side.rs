@@ -635,6 +635,12 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
+        if self.reject_replay_only_thread_write(parent_thread_id) {
+            self.restore_side_user_message(user_message.take());
+            self.sync_side_thread_ui();
+            return Ok(AppRunControl::Continue);
+        }
+
         if let Some((&side_thread_id, state)) = self.side_threads.iter().next()
             && (parent_thread_id != state.parent_thread_id
                 || !self.discard_side_thread(app_server, side_thread_id).await)

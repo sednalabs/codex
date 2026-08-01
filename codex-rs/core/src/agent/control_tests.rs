@@ -526,6 +526,86 @@ async fn inspect_agent_tree_stops_at_depth_and_agent_bound_before_materializing_
     assert_eq!(inspection.summary.total_agents, 1);
 }
 
+#[tokio::test]
+async fn inspect_agent_tree_applies_agent_roots_before_the_output_bound() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+
+    let mut b_thread_id = None;
+    for agent_name in ["a", "b"] {
+        let agent_path = AgentPath::root().join(agent_name).expect("agent path");
+        let thread_id = harness
+            .control
+            .spawn_agent(
+                harness.config.clone(),
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path),
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+            )
+            .await
+            .expect("named child spawn should succeed");
+        if agent_name == "b" {
+            b_thread_id = Some(thread_id);
+        }
+    }
+    let b_thread_id = b_thread_id.expect("b should be spawned");
+    harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("grandchild task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: b_thread_id,
+                depth: 2,
+                agent_path: Some(
+                    AgentPath::root()
+                        .join("b")
+                        .expect("b agent path")
+                        .join("child")
+                        .expect("child agent path"),
+                ),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("b child spawn should succeed");
+
+    let agent_roots = vec!["/root/b".to_string()];
+    let inspection = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 2,
+        )
+        .await
+        .expect("filtered inspection should succeed");
+
+    assert_eq!(
+        inspection
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/root/b", "/root/b/child"]
+    );
+    assert_eq!(inspection.summary.total_agents, 2);
+    assert!(!inspection.truncated);
+}
+
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
     match manager.get_thread(thread_id).await {
         Err(err) => match err.details() {
