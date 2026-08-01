@@ -951,6 +951,9 @@ impl App {
         let tracked_thread_ids: Vec<ThreadId> =
             self.thread_event_channels.keys().copied().collect();
         for thread_id in tracked_thread_ids {
+            if self.thread_is_replay_only(thread_id) {
+                continue;
+            }
             if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                 tracing::warn!("failed to unsubscribe tracked thread {thread_id}: {err}");
             }

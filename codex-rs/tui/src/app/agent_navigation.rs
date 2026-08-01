@@ -328,6 +328,10 @@ impl AgentNavigationState {
             return;
         }
         let is_errored_activity = activity.has_system_error;
+        let accepted_system_error = self
+            .last_accepted_statuses
+            .get(&thread_id)
+            .is_some_and(|status| status.has_system_error);
         let error_epoch = is_errored_activity.then(|| {
             self.last_accepted_statuses
                 .get(&thread_id)
@@ -355,7 +359,10 @@ impl AgentNavigationState {
                     task_name: None,
                     is_running: false,
                     is_closed: false,
-                    has_system_error: false,
+                    // A status watcher can report SystemError before any parent activity creates
+                    // this picker row. Preserve that accepted status when the row finally
+                    // materializes so a delayed Started item cannot invent a green running row.
+                    has_system_error: accepted_system_error,
                     created_at: None,
                     updated_at: None,
                 });
@@ -379,6 +386,7 @@ impl AgentNavigationState {
         entry.has_system_error |= activity.has_system_error;
         if activity.is_running_hint
             && !entry.is_closed
+            && !entry.has_system_error
             && !self.stopped_threads.contains(&activity.thread_id)
         {
             entry.is_running = true;
@@ -551,6 +559,7 @@ impl AgentNavigationState {
             return true;
         }
 
+        let mut recovered_system_error_lifecycle = false;
         let accepts = match self.system_error_epochs.get(&thread_id).copied() {
             Some(SystemErrorEpoch::AwaitingSystemError) if !has_system_error => false,
             Some(SystemErrorEpoch::AwaitingSystemError) => {
@@ -574,6 +583,7 @@ impl AgentNavigationState {
                     _ => false,
                 } {
                     self.system_error_epochs.remove(&thread_id);
+                    recovered_system_error_lifecycle = true;
                     true
                 } else {
                     false
@@ -596,6 +606,9 @@ impl AgentNavigationState {
         if accepts {
             self.record_accepted_status(thread_id, has_system_error, status_revision);
             self.advance_terminal_lifecycle_for_newer_status(thread_id, status_revision);
+            if recovered_system_error_lifecycle {
+                self.record_recovered_system_error_lifecycle(thread_id, status_revision);
+            }
             self.record_unknown_nonterminal_status_provenance(thread_id);
         }
         accepts
@@ -707,6 +720,37 @@ impl AgentNavigationState {
         if self.closed_thread_tombstones.contains_key(&thread_id) {
             self.clear_closed_tombstone(thread_id);
         }
+    }
+
+    /// A `SystemError`-to-nonterminal status transition retires the activity epoch that caused
+    /// the failure even though the row itself remains open. Preserve that epoch's activity ids
+    /// behind the recovered watermark so independently delivered old Errored/Interrupted events
+    /// cannot overwrite the newly active row.
+    fn record_recovered_system_error_lifecycle(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) {
+        let Some(status_revision) = status_revision else {
+            return;
+        };
+        self.remove_unknown_thread_status_provenance_tracking(thread_id);
+        let existing = self.terminal_lifecycle_watermarks.get(&thread_id).cloned();
+        let mut activity_ids = existing
+            .as_ref()
+            .map(|watermark| watermark.activity_ids().clone())
+            .unwrap_or_default();
+        if let Some(active_activity_ids) = self.active_lifecycle_activity_ids.get(&thread_id) {
+            activity_ids.extend(active_activity_ids);
+        }
+        self.active_lifecycle_activity_ids.remove(&thread_id);
+        self.record_terminal_lifecycle_watermark(
+            thread_id,
+            TerminalLifecycleWatermark::Recovered {
+                status_revision,
+                activity_ids,
+            },
+        );
     }
 
     fn record_terminal_lifecycle_closed(
@@ -1480,6 +1524,112 @@ mod tests {
                 .get(&thread_id)
                 .is_some_and(|entry| !entry.has_system_error && entry.is_running)
         );
+    }
+
+    #[test]
+    fn status_first_system_error_seeds_a_late_started_picker_row() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000114").expect("valid thread");
+
+        // A status watcher can win the race before picker metadata or parent activity exists.
+        // The later Started item must inherit that accepted SystemError instead of creating a
+        // green running row with no error provenance.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-114-started".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-started".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+    }
+
+    #[test]
+    fn system_error_recovery_retires_prior_activity_epoch_before_late_replay() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000115").expect("valid thread");
+
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-115-started", false, true),
+            ("activity-115-interrupted", false, false),
+            ("activity-115-errored", true, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/recovering-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+        }
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, false);
+        state.mark_running(thread_id);
+
+        // The rev-4 recovery stays active even when the rev-3 epoch is replayed afterward.
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-115-errored", true, false),
+            ("activity-115-interrupted", false, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/recovering-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+        }
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+
+        // A genuinely new lifecycle activity remains valid after the old epoch is retired.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-115-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.get(&thread_id).is_some_and(|entry| entry.is_running
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/fresh-child")));
     }
 
     #[test]

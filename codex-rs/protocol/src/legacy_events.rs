@@ -257,11 +257,10 @@ impl CollabAgentToolCallItem {
                     started_at_ms,
                     sender_thread_id: self.sender_thread_id,
                     prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.requested_model.clone().or_else(|| self.model.clone()),
-                    reasoning_effort: self
-                        .requested_reasoning_effort
-                        .clone()
-                        .or_else(|| self.reasoning_effort.clone()),
+                    // Legacy spawn-begin records caller input, not the identity eventually
+                    // selected for the child. Effective model/effort remain terminal evidence.
+                    model: self.requested_model.clone(),
+                    reasoning_effort: self.requested_reasoning_effort.clone(),
                 },
             )),
             CollabAgentTool::SendInput => receiver_thread_id.map(|receiver_thread_id| {
@@ -639,5 +638,59 @@ impl HasLegacyEvent for EventMsg {
             }
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::openai_models::ReasoningEffort;
+
+    #[test]
+    fn legacy_spawn_begin_keeps_requested_identity_separate_from_effective_identity() {
+        let item = CollabAgentToolCallItem {
+            id: "spawn-1".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the repository".to_string()),
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            requested_model: Some("gpt-requested".to_string()),
+            requested_reasoning_effort: Some(ReasoningEffort::High),
+            agents_states: Default::default(),
+        };
+
+        let Some(EventMsg::CollabAgentSpawnBegin(begin)) = item.as_legacy_begin_event(123) else {
+            panic!("spawn item should emit a legacy begin event");
+        };
+        assert_eq!(begin.model.as_deref(), Some("gpt-requested"));
+        assert_eq!(begin.reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn legacy_spawn_begin_does_not_infer_a_request_from_effective_identity() {
+        let item = CollabAgentToolCallItem {
+            id: "spawn-1".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: None,
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            requested_model: None,
+            requested_reasoning_effort: None,
+            agents_states: Default::default(),
+        };
+
+        let Some(EventMsg::CollabAgentSpawnBegin(begin)) = item.as_legacy_begin_event(123) else {
+            panic!("spawn item should emit a legacy begin event");
+        };
+        assert_eq!(begin.model, None);
+        assert_eq!(begin.reasoning_effort, None);
     }
 }

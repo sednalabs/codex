@@ -906,8 +906,9 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
-            model: payload.model.clone(),
-            reasoning_effort: payload.reasoning_effort.clone(),
+            // Spawn-begin values are requested overrides, not a confirmed effective identity.
+            model: None,
+            reasoning_effort: None,
             requested_model: payload.model.clone(),
             requested_reasoning_effort: payload.reasoning_effort.clone(),
             agents_states: HashMap::new(),
@@ -4067,6 +4068,46 @@ mod tests {
                 .into_iter()
                 .collect(),
             }
+        );
+    }
+
+    #[test]
+    fn reconstructs_in_progress_legacy_spawn_with_requested_but_no_effective_identity() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                call_id: "in-progress-spawn".into(),
+                started_at_ms: 0,
+                sender_thread_id,
+                prompt: "inspect the repo".into(),
+                model: Some("gpt-requested".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        let [ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+            panic!("expected a reconstructed in-progress spawn item");
+        };
+        assert_eq!(spawn.status, CollabAgentToolCallStatus::InProgress);
+        assert_eq!(spawn.model, None);
+        assert_eq!(spawn.reasoning_effort, None);
+        assert_eq!(spawn.requested_model.as_deref(), Some("gpt-requested"));
+        assert_eq!(
+            spawn.requested_reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
         );
     }
 

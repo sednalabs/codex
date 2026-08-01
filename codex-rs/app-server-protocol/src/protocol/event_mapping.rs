@@ -88,8 +88,10 @@ pub fn item_event_to_server_notification(
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 prompt: Some(begin_event.prompt),
-                model: begin_event.model,
-                reasoning_effort: begin_event.reasoning_effort,
+                // A legacy begin event carries caller-requested values only. The effective
+                // identity is only known once a terminal spawn event resolves it.
+                model: None,
+                reasoning_effort: None,
                 requested_model,
                 requested_reasoning_effort,
                 agents_states: HashMap::new(),
@@ -596,7 +598,7 @@ mod tests {
                     sender_thread_id: event.sender_thread_id.to_string(),
                     receiver_thread_ids: Vec::new(),
                     prompt: Some(event.prompt),
-                    model: Some("gpt-caller".to_string()),
+                    model: None,
                     reasoning_effort: None,
                     requested_model: Some("gpt-caller".to_string()),
                     requested_reasoning_effort: None,

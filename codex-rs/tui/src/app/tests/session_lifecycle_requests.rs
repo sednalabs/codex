@@ -1098,6 +1098,41 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     Some(codex_protocol::config_types::Personality::Pragmatic),
                     "rejecting a replay-only thread write must not undo the current global selection"
                 );
+
+                // Ctrl+C routes through `shutdown_current_thread`; saved-only transcripts have
+                // no app-server subscription to tear down, so that path must stay local.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                Box::pin(app.shutdown_current_thread(&mut app_server)).await;
+                let shutdown_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    !shutdown_requests
+                        .iter()
+                        .any(|method| method == "thread/unsubscribe"),
+                    "shutting down a replay-only selection must not unsubscribe it: {shutdown_requests:?}"
+                );
+
+                // A fresh-thread transition performs a second unsubscribe sweep after shutdown.
+                // Keep only the replay-only child in this focused assertion: live parent cleanup
+                // remains separately valid, while this saved transcript must never produce an
+                // unsubscribe RPC in either transition phase.
+                app.thread_event_channels.remove(&root_thread_id);
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                let control = Box::pin(app.handle_event(
+                    &mut tui,
+                    &mut app_server,
+                    AppEvent::NewSession { name: None },
+                ))
+                .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                let transition_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    !transition_requests
+                        .iter()
+                        .any(|method| method == "thread/unsubscribe"),
+                    "a new-thread transition must not unsubscribe the replay-only child: {transition_requests:?}"
+                );
                 app_server.shutdown().await?;
                 proxy.await??;
                 Ok(())
