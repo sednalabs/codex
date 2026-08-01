@@ -196,6 +196,8 @@ pub(crate) struct AgentTreeNode {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct AgentTreeInspection {
+    /// Canonical context root. In stale scope, a live context root is intentionally omitted from
+    /// `agents` while its persisted closed descendants remain addressable relative to this name.
     pub(crate) root_agent_name: String,
     pub(crate) scope_applied: AgentTreeScope,
     pub(crate) agent_roots_applied: Vec<String>,
@@ -797,8 +799,36 @@ impl AgentControl {
         // result capacity and make the requested branch disappear. Exact agent-path lookups keep
         // this preselection bounded without materializing unrelated siblings.
         let mut traversal_roots = Vec::new();
+        let mut traversal_truncated = false;
         if agent_roots_applied.is_empty() {
-            traversal_roots.push((tree_root_thread_id, tree_root_session_state, 0usize));
+            if agent_tree_scope_includes(scope, tree_root_session_state) {
+                traversal_roots.push((tree_root_thread_id, tree_root_session_state, 0usize));
+            } else {
+                // With an omitted target, `tree_root_thread_id` is the caller's live root.
+                // Stale scope must not report that live root merely to reach its persisted closed
+                // descendants, so seed the traversal from the scope-admitted direct children.
+                let child_states = self
+                    .tree_child_session_states(
+                        &state,
+                        state_db_ctx.as_ref(),
+                        tree_root_thread_id,
+                        scope,
+                        max_agents.saturating_add(1),
+                    )
+                    .await?;
+                let mut child_ids = child_states.keys().copied().collect::<Vec<_>>();
+                child_ids.sort_by_key(std::string::ToString::to_string);
+                if child_ids.len() > max_agents {
+                    traversal_truncated = true;
+                }
+                child_ids.truncate(max_agents);
+                traversal_roots.extend(child_ids.into_iter().filter_map(|child_thread_id| {
+                    child_states
+                        .get(&child_thread_id)
+                        .copied()
+                        .map(|session_state| (child_thread_id, session_state, 1usize))
+                }));
+            }
         } else {
             let mut resolved_roots = Vec::new();
             let mut seen_thread_ids = HashSet::new();
@@ -840,8 +870,6 @@ impl AgentControl {
         let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
         let mut parent_by_thread_id = HashMap::<ThreadId, ThreadId>::new();
         let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
-        let mut traversal_truncated = false;
-
         while let Some((thread_id, session_state, depth)) = queue.pop_front() {
             if tree_records.contains_key(&thread_id) {
                 continue;

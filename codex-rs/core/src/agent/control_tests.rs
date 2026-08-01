@@ -703,6 +703,27 @@ async fn inspect_agent_tree_explicit_target_respects_scope_and_serializes_stale_
         serde_json::Value::Null
     );
 
+    let stale_from_live_root = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("stale scope should include persisted children without reporting the live root");
+    assert_eq!(stale_from_live_root.root_agent_name, "/root");
+    assert_eq!(stale_from_live_root.summary.live_agents, 0);
+    assert_eq!(stale_from_live_root.summary.stale_agents, 1);
+    assert_eq!(stale_from_live_root.agents.len(), 1);
+    assert_eq!(stale_from_live_root.agents[0].agent_name, "/root/closed");
+    assert_eq!(stale_from_live_root.agents[0].depth, 1);
+    assert_eq!(stale_from_live_root.agents[0].session_state, AgentSessionState::Stale);
+
     let agent_roots = vec![child_path.to_string()];
     let stale_filtered = harness
         .control

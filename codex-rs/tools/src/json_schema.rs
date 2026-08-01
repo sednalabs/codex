@@ -54,6 +54,14 @@ pub struct JsonSchema {
     pub minimum: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maximum: Option<u64>,
+    #[serde(rename = "minLength", skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<u64>,
+    #[serde(rename = "maxLength", skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<u64>,
+    #[serde(rename = "minItems", skip_serializing_if = "Option::is_none")]
+    pub min_items: Option<u64>,
+    #[serde(rename = "maxItems", skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<JsonSchema>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,6 +147,26 @@ impl JsonSchema {
 
     pub fn with_maximum(mut self, maximum: u64) -> Self {
         self.maximum = Some(maximum);
+        self
+    }
+
+    pub fn with_min_length(mut self, min_length: u64) -> Self {
+        self.min_length = Some(min_length);
+        self
+    }
+
+    pub fn with_max_length(mut self, max_length: u64) -> Self {
+        self.max_length = Some(max_length);
+        self
+    }
+
+    pub fn with_min_items(mut self, min_items: u64) -> Self {
+        self.min_items = Some(min_items);
+        self
+    }
+
+    pub fn with_max_items(mut self, max_items: u64) -> Self {
+        self.max_items = Some(max_items);
         self
     }
 

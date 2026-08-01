@@ -696,6 +696,9 @@ impl App {
                 (session, turns, false)
             }
         };
+        // A successful explicit resume/read is positive recovery evidence. It is the only path
+        // in this selection flow allowed to replace a previous local discard tombstone.
+        self.mark_thread_attached(thread_id);
         let channel = self.ensure_thread_channel(thread_id);
         if live_attached {
             channel.mark_live();
@@ -726,6 +729,9 @@ impl App {
         // `thread/read` returns saved state only; never present it as a live app-server attach.
         session.model.clear();
 
+        // The user explicitly opened this saved transcript; allow it to reappear only as a
+        // replay-only recovery, never as a passive notification-driven attachment.
+        self.mark_thread_attached(thread_id);
         let channel = self.ensure_thread_channel(thread_id);
         channel.mark_replay_only();
         let mut store = channel.store.lock().await;

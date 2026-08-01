@@ -527,6 +527,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let AppEvent::ThreadHistoryEntryResponse {
         thread_id: routed_thread_id,
         event,
+        ..
     } = app_event
     else {
         panic!("expected thread-routed history response");
@@ -551,6 +552,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let AppEvent::ThreadHistoryEntryResponse {
         thread_id: routed_thread_id,
         event,
+        ..
     } = app_event
     else {
         panic!("expected thread-routed history batch response");
@@ -5633,7 +5635,7 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
 
 #[tokio::test]
 async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
-    let mut app = make_test_app().await;
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let parent_thread_id = ThreadId::new();
     let side_thread_id = ThreadId::new();
     app.active_thread_id = Some(side_thread_id);
@@ -5649,6 +5651,17 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
         /*created_at*/ None,
         /*updated_at*/ None,
     );
+    let pending_request = exec_approval_request(
+        side_thread_id,
+        "turn-discarded",
+        "discarded-call",
+        /*approval_id*/ None,
+    );
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_thread_server_request(side_thread_id, &pending_request),
+        None
+    );
 
     app.discard_closed_side_thread(side_thread_id).await;
 
@@ -5656,6 +5669,70 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
     assert!(!app.side_threads.contains_key(&side_thread_id));
     assert!(!app.thread_event_channels.contains_key(&side_thread_id));
     assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+    assert!(app.thread_is_discarded(side_thread_id));
+
+    // Late traffic cannot recreate a local buffer, re-surface a prompt, or recover the old
+    // request-id mapping that would otherwise let a stale UI action send an app-server reply.
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::ServerRequestResolved(
+            codex_app_server_protocol::ServerRequestResolvedNotification {
+                thread_id: side_thread_id.to_string(),
+                request_id: AppServerRequestId::Integer(1),
+            },
+        ),
+    )
+    .await
+    .expect("discarded notification is ignored");
+    app.enqueue_thread_request(side_thread_id, pending_request)
+        .await
+        .expect("discarded request is ignored");
+    app.enqueue_thread_history_entry_response(
+        side_thread_id,
+        HistoryLookupResponse::Entry {
+            offset: 0,
+            log_id: 1,
+            entry: Some("late history".to_string()),
+        },
+    )
+    .await
+    .expect("discarded history response is ignored");
+    assert!(!app.thread_event_channels.contains_key(&side_thread_id));
+    assert!(
+        app.pending_app_server_requests
+            .take_resolution(&Op::ExecApproval {
+                id: "discarded-call".to_string(),
+                turn_id: None,
+                decision: codex_app_server_protocol::CommandExecutionApprovalDecision::Accept,
+            })
+            .expect("discarded request lookup should not serialize")
+            .is_none()
+    );
+    assert!(!app.chat_widget.has_active_view());
+    assert!(app_event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+
+    app.discard_closed_side_thread(thread_id).await;
+    assert!(app.thread_is_discarded(thread_id));
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached")),
+        Vec::new(),
+    )
+    .await?;
+
+    assert!(!app.thread_is_discarded(thread_id));
+    assert!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(ThreadEventChannel::has_live_attachment)
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -5998,6 +6075,8 @@ async fn make_test_app() -> App {
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
         thread_event_channels: HashMap::new(),
+        thread_lifecycle_generations: HashMap::new(),
+        discarded_thread_generations: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
         side_threads: HashMap::new(),
@@ -6069,6 +6148,8 @@ async fn make_test_app_with_channels() -> (
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
+            thread_lifecycle_generations: HashMap::new(),
+            discarded_thread_generations: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),

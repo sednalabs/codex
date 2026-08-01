@@ -240,6 +240,7 @@ pub(crate) enum AppEvent {
     /// Deliver a synthetic history lookup response to a specific thread channel.
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         event: HistoryLookupResponse,
     },
 

@@ -528,9 +528,15 @@ impl App {
             AppEvent::SubmitThreadOp { thread_id, op } => {
                 self.submit_thread_op(app_server, thread_id, op).await?;
             }
-            AppEvent::ThreadHistoryEntryResponse { thread_id, event } => {
-                self.enqueue_thread_history_entry_response(thread_id, event)
-                    .await?;
+            AppEvent::ThreadHistoryEntryResponse {
+                thread_id,
+                lifecycle_generation,
+                event,
+            } => {
+                if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+                    self.enqueue_thread_history_entry_response(thread_id, event)
+                        .await?;
+                }
             }
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane
