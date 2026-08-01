@@ -74,7 +74,10 @@ enum PickerBackfillTestBehavior {
     PersistedDescendantList,
     LegacyScan,
     ThreadReadAndHideFromThreadList { thread_id: String },
-    IgnoreAncestorThreadFilters,
+    IgnoreAncestorThreadFilters {
+        denied_thread_read_id: String,
+        denied_thread_reads: Arc<Mutex<Vec<String>>>,
+    },
 }
 
 impl PickerBackfillTestBehavior {
@@ -103,7 +106,7 @@ impl PickerBackfillTestBehavior {
     }
 
     fn strips_ancestor_thread_filter(&self) -> bool {
-        matches!(self, Self::IgnoreAncestorThreadFilters)
+        matches!(self, Self::IgnoreAncestorThreadFilters { .. })
     }
 
     fn strip_ancestor_thread_filter(&self, request: &mut ClientRequest) {
@@ -124,6 +127,25 @@ impl PickerBackfillTestBehavior {
                 ClientRequest::ThreadList { .. },
             ) => Some(thread_id),
             _ => None,
+        }
+    }
+
+    fn rejects_thread_read(&self, request: &ClientRequest) -> bool {
+        match (self, request) {
+            (
+                Self::IgnoreAncestorThreadFilters {
+                    denied_thread_read_id,
+                    denied_thread_reads,
+                },
+                ClientRequest::ThreadRead { params, .. },
+            ) if params.thread_id.as_str() == denied_thread_read_id => {
+                denied_thread_reads
+                    .lock()
+                    .expect("denied thread read recorder lock")
+                    .push(params.thread_id.clone());
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -205,7 +227,19 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                         .as_ref()
                         .and_then(|failure| failure.hidden_thread_id_for_thread_list(&request))
                         .map(str::to_owned);
-                    let response = if !transient_failure_injected
+                    let rejected_thread_read = test_behavior
+                        .as_ref()
+                        .is_some_and(|behavior| behavior.rejects_thread_read(&request));
+                    let response = if rejected_thread_read {
+                        JSONRPCMessage::Error(JSONRPCError {
+                            id: request_id,
+                            error: JSONRPCErrorError {
+                                code: -32000,
+                                message: "injected rejected untrusted metadata read".to_string(),
+                                data: None,
+                            },
+                        })
+                    } else if !transient_failure_injected
                         && test_behavior
                             .as_ref()
                             .is_some_and(|failure| failure.matches(&request))
@@ -2093,10 +2127,14 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                     .expect("create unrelated child rollout"),
                 )?;
 
-                let (mut app_server, _requests, proxy) =
+                let denied_thread_reads = Arc::new(Mutex::new(Vec::new()));
+                let (mut app_server, requests, proxy) =
                     start_recording_app_server_with_picker_backfill_test_behavior(
                         &app.config,
-                        Some(PickerBackfillTestBehavior::IgnoreAncestorThreadFilters),
+                        Some(PickerBackfillTestBehavior::IgnoreAncestorThreadFilters {
+                            denied_thread_read_id: unrelated_child_thread_id.to_string(),
+                            denied_thread_reads: Arc::clone(&denied_thread_reads),
+                        }),
                     )
                     .await?;
                 // Populate the state-db relation index before the proxy starts stripping the
@@ -2148,6 +2186,16 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
+                let first_backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(
+                    first_backfill.completed,
+                    "an unrelated rejected metadata read must not make an unacknowledged priority response retryable"
+                );
+                let retry_backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(
+                    retry_backfill.completed,
+                    "each unacknowledged priority response must fall back without retry amplification"
+                );
                 Box::pin(app.open_agent_picker(&mut app_server)).await;
 
                 assert!(
@@ -2188,6 +2236,28 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                     .await
                     .expect("the relationship-proven child should be keyboard-reachable");
                 assert_eq!(next_thread_id, expected_child_thread_id);
+                let recorded_requests = requests.lock().expect("request recorder lock").clone();
+                assert!(
+                    recorded_requests
+                        .iter()
+                        .filter(|method| method.as_str() == "thread/loaded/list")
+                        .count()
+                        >= 3,
+                    "the repeated compatibility responses must be exercised"
+                );
+                assert!(
+                    !recorded_requests
+                        .iter()
+                        .any(|method| method == "thread/read"),
+                    "an unacknowledged global loaded list must not trigger metadata reads"
+                );
+                assert!(
+                    denied_thread_reads
+                        .lock()
+                        .expect("denied thread read recorder lock")
+                        .is_empty(),
+                    "the proxy would reject the unrelated loaded metadata read if it were attempted"
+                );
 
                 app_server.shutdown().await?;
                 proxy.await??;

@@ -1234,11 +1234,12 @@ impl App {
 
     /// Merges every currently loaded descendant ahead of historical picker rows.
     ///
-    /// The app-server filters by the spawn-tree relationship before returning ids. `limit: None`
-    /// is intentionally the protocol's no-limit mode, bounded by the currently loaded sessions
-    /// for this one primary thread rather than its unbounded saved history. That keeps every
-    /// effective V2 concurrency slot reachable even when it exceeds the historical page size.
-    /// Re-registration is idempotent and preserves first-seen navigation order.
+    /// The app-server confirms that it filtered by the spawn-tree relationship before these ids
+    /// are trusted. `limit: None` is intentionally the protocol's no-limit mode, bounded by the
+    /// currently loaded sessions for this one primary thread rather than its unbounded saved
+    /// history. That keeps every effective V2 concurrency slot reachable even when it exceeds
+    /// the historical page size. Re-registration is idempotent and preserves first-seen
+    /// navigation order.
     async fn backfill_loaded_priority_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1262,11 +1263,21 @@ impl App {
                 return false;
             }
         };
-        let ancestor_filter_applied = response.ancestor_filter_applied;
+        if !response.ancestor_filter_applied {
+            // Older servers silently ignore an unknown ancestorThreadId and return every loaded
+            // thread. Do not turn that global id list into an unbounded thread/read sweep. The
+            // bounded persisted and legacy relation paths below remain responsible for old-server
+            // discovery, and an unrelated metadata failure must not make this primary retry.
+            tracing::debug!(
+                "loaded descendant response did not acknowledge the ancestor filter; \
+                 skipping untrusted global metadata reads"
+            );
+            return true;
+        }
+
         let loaded_thread_ids = response.data;
         let mut loaded_metadata_completed = true;
         let mut loaded_descendant_count = 0;
-        let mut unproven_loaded_threads = Vec::new();
         for thread_id in loaded_thread_ids {
             let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
                 loaded_metadata_completed = false;
@@ -1277,19 +1288,15 @@ impl App {
                 .await
             {
                 Ok(thread) => {
-                    if ancestor_filter_applied {
-                        // The app server acknowledged the requested ancestor relation. Do not
-                        // reconstruct it from only the loaded metadata here: an unloaded
-                        // intermediary would otherwise hide a returned loaded nested descendant.
-                        self.register_agent_picker_thread_from_backend(
-                            primary_thread_id,
-                            thread,
-                            refreshed_thread_ids,
-                        );
-                        loaded_descendant_count += 1;
-                    } else {
-                        unproven_loaded_threads.push(thread);
-                    }
+                    // The app server acknowledged the requested ancestor relation. Do not
+                    // reconstruct it from only the loaded metadata here: an unloaded
+                    // intermediary would otherwise hide a returned loaded nested descendant.
+                    self.register_agent_picker_thread_from_backend(
+                        primary_thread_id,
+                        thread,
+                        refreshed_thread_ids,
+                    );
+                    loaded_descendant_count += 1;
                 }
                 Err(err) => {
                     // A listed thread whose metadata cannot be read has not been covered by this
@@ -1301,31 +1308,6 @@ impl App {
                         %thread_id,
                         "loaded descendant priority metadata read failed"
                     );
-                }
-            }
-        }
-        if !ancestor_filter_applied {
-            tracing::debug!(
-                "loaded descendant response did not acknowledge the ancestor filter; \
-                 locally verifying returned threads"
-            );
-            let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
-                unproven_loaded_threads.clone(),
-                primary_thread_id,
-            )
-            .into_iter()
-            .map(|thread| thread.thread_id)
-            .collect::<HashSet<_>>();
-            for thread in unproven_loaded_threads {
-                let is_descendant = ThreadId::from_string(&thread.id)
-                    .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
-                if is_descendant {
-                    self.register_agent_picker_thread_from_backend(
-                        primary_thread_id,
-                        thread,
-                        refreshed_thread_ids,
-                    );
-                    loaded_descendant_count += 1;
                 }
             }
         }
