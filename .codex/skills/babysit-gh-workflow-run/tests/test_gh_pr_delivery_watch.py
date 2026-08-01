@@ -106,6 +106,28 @@ def make_candidate(*, run_id=901, candidate_sha=CANDIDATE_SHA):
     }
 
 
+def make_actions_run(
+    *,
+    run_id,
+    workflow,
+    event,
+    branch,
+    sha,
+    conclusion="success",
+):
+    return {
+        "id": run_id,
+        "attempt": 1,
+        "workflow": workflow,
+        "url": f"https://example.invalid/runs/{run_id}",
+        "event": event,
+        "head_branch": branch,
+        "head_sha": sha,
+        "status": "completed",
+        "conclusion": conclusion,
+    }
+
+
 def make_watcher_receipt(
     *,
     run_id,
@@ -143,6 +165,13 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
     def test_success_receipt_proves_all_three_identities(self):
         args = make_args()
         candidate = make_candidate()
+        authoritative_post_merge_run = make_actions_run(
+            run_id=902,
+            workflow="postmerge-ci",
+            event="push",
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
         candidate_receipt = make_watcher_receipt(
             run_id=901,
             workflow="blocking-ci",
@@ -153,7 +182,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         post_merge_receipt = make_watcher_receipt(
             run_id=902,
             workflow="postmerge-ci",
-            event="push",
+            event=None,
             branch="main",
             sha=MERGE_COMMIT_SHA,
         )
@@ -180,7 +209,11 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
-            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(
+                MODULE,
+                "fetch_actions_run",
+                side_effect=[candidate, candidate, authoritative_post_merge_run],
+            ),
             patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
             candidate_association(),
             patch.object(
@@ -216,6 +249,10 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["merge_group"]["run"]["id"], 901)
         self.assertEqual(receipt["merge_commit"]["sha"], MERGE_COMMIT_SHA)
         self.assertEqual(receipt["post_merge"]["run"]["id"], 902)
+        self.assertEqual(
+            receipt["post_merge"]["event_binding"],
+            {"source": "exact_actions_run", "run_id": 902, "event": "push"},
+        )
         self.assertEqual(receipt["post_merge"]["selected_workflow"], "postmerge-ci")
         self.assertEqual(watcher.call_count, 2)
         self.assertEqual(fetch_pr.call_count, 4)
@@ -415,6 +452,191 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
 
         self.assertEqual(
             raised.exception.action, "stop_merge_group_run_identity_mismatch"
+        )
+
+    def test_post_merge_watcher_accepts_an_absent_event_after_exact_identity_checks(
+        self,
+    ):
+        receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="Postmerge CI",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+        authoritative_run = make_actions_run(
+            run_id=902,
+            workflow="postmerge-ci",
+            event="push",
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        with patch.object(MODULE, "fetch_actions_run", return_value=authoritative_run):
+            watched = MODULE.verify_watched_run(
+                receipt,
+                repo="owner/repo",
+                stage="post_merge",
+                expected_sha=MERGE_COMMIT_SHA,
+                expected_event="push",
+                expected_branch="main",
+                expected_workflow=".github/workflows/postmerge-ci.yml",
+            )
+
+        self.assertEqual(watched["outcome"], "success")
+        self.assertEqual(watched["run"]["id"], 902)
+        self.assertNotIn("event", watched["run"])
+        self.assertEqual(
+            watched["event_binding"],
+            {"source": "exact_actions_run", "run_id": 902, "event": "push"},
+        )
+
+    def test_post_merge_watcher_rejects_a_contradictory_event(self):
+        receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="postmerge-ci",
+            event="workflow_dispatch",
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        with self.assertRaisesRegex(
+            MODULE.DeliveryStop, "event is 'workflow_dispatch'"
+        ) as raised:
+            MODULE.verify_watched_run(
+                receipt,
+                stage="post_merge",
+                expected_sha=MERGE_COMMIT_SHA,
+                expected_event="push",
+                expected_branch="main",
+                expected_workflow="postmerge-ci",
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_post_merge_run_identity_mismatch"
+        )
+
+    def test_post_merge_watcher_requires_a_direct_push_event_for_compact_omission(
+        self,
+    ):
+        receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="postmerge-ci",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+        authoritative_run = make_actions_run(
+            run_id=902,
+            workflow="postmerge-ci",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        with (
+            patch.object(MODULE, "fetch_actions_run", return_value=authoritative_run),
+            self.assertRaisesRegex(MODULE.DeliveryStop, "event is 'None'") as raised,
+        ):
+            MODULE.verify_watched_run(
+                receipt,
+                repo="owner/repo",
+                stage="post_merge",
+                expected_sha=MERGE_COMMIT_SHA,
+                expected_event="push",
+                expected_branch="main",
+                expected_workflow="postmerge-ci",
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_post_merge_run_identity_mismatch"
+        )
+
+    def test_post_merge_workflow_dispatch_receipt_fails_after_exact_run_read(self):
+        args = make_args()
+        candidate = make_candidate()
+        candidate_receipt = make_watcher_receipt(
+            run_id=901,
+            workflow="blocking-ci",
+            event="merge_group",
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+        post_merge_receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="postmerge-ci",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+        authoritative_manual_run = make_actions_run(
+            run_id=902,
+            workflow="postmerge-ci",
+            event="workflow_dispatch",
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+        with (
+            patch.object(
+                MODULE,
+                "fetch_pr",
+                side_effect=[
+                    make_pr(),
+                    make_pr(),
+                    make_pr(
+                        merged=True,
+                        queue_entry_id=None,
+                        merge_commit_sha=MERGE_COMMIT_SHA,
+                    ),
+                ],
+            ),
+            patch.object(
+                MODULE, "resolve_merge_group_candidate", return_value=candidate
+            ),
+            patch.object(
+                MODULE,
+                "fetch_actions_run",
+                side_effect=[candidate, candidate, authoritative_manual_run],
+            ),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
+            candidate_association(),
+            patch.object(
+                MODULE,
+                "run_blocking_watcher",
+                side_effect=[candidate_receipt, post_merge_receipt],
+            ),
+            patch.object(MODULE, "fetch_ref_sha", return_value=MERGE_COMMIT_SHA),
+            patch.object(MODULE, "is_commit_reachable_from_main", return_value=True),
+            candidate_merge_correlation(),
+            patch.object(MODULE.time, "sleep"),
+        ):
+            receipt, status = MODULE.execute_delivery(args)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_post_merge_run_identity_mismatch"])
+        self.assertIn("event is 'workflow_dispatch'", receipt["error"])
+
+    def test_post_merge_watcher_requires_an_authoritative_run_id_for_absence(self):
+        receipt = make_watcher_receipt(
+            run_id=0,
+            workflow="postmerge-ci",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        with self.assertRaisesRegex(MODULE.DeliveryStop, "event is 'None'") as raised:
+            MODULE.verify_watched_run(
+                receipt,
+                stage="post_merge",
+                expected_sha=MERGE_COMMIT_SHA,
+                expected_event="push",
+                expected_branch="main",
+                expected_workflow="postmerge-ci",
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_post_merge_run_identity_mismatch"
         )
 
     def test_queue_entry_disappearing_without_merge_is_a_distinct_stop(self):
@@ -752,7 +974,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         wrong_post_merge_receipt = make_watcher_receipt(
             run_id=902,
             workflow="postmerge-ci",
-            event="push",
+            event=None,
             branch="main",
             sha=OTHER_SHA,
         )
