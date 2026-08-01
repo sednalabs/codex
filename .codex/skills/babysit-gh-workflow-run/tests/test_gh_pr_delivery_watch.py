@@ -853,6 +853,51 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
 
         run.assert_not_called()
 
+    def test_leading_dot_repository_name_reaches_fixed_gh_argv(self):
+        completed = types.SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "number": 17,
+                                "headRefOid": EXPECTED_HEAD_SHA,
+                                "baseRefName": "main",
+                                "baseRefOid": CURRENT_BASE_SHA,
+                                "merged": False,
+                                "mergeQueueEntry": {"id": "entry"},
+                                "mergeCommit": None,
+                            }
+                        }
+                    }
+                }
+            ),
+        )
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            pr = MODULE.fetch_pr("sednalabs/.github", 17)
+
+        self.assertEqual(pr["number"], 17)
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["gh", "api", "graphql"])
+        self.assertIn("name=.github", command)
+        self.assertFalse(run.call_args.kwargs["shell"])
+
+    def test_separator_only_repository_names_reject_before_execution(self):
+        with patch.object(MODULE.subprocess, "run") as run:
+            for name in (".", ".."):
+                with self.subTest(name=name):
+                    receipt, status = MODULE.execute_delivery(
+                        make_args(repo=f"sednalabs/{name}")
+                    )
+                    self.assertEqual(status, 1)
+                    self.assertEqual(
+                        receipt["actions"], ["stop_operator_help_required"]
+                    )
+                    self.assertIn("Repository must use OWNER/REPO", receipt["error"])
+
+        run.assert_not_called()
+
     def test_gh_process_pins_the_github_cli_executable(self):
         completed = types.SimpleNamespace(returncode=0, stdout="{}")
         with patch.object(MODULE.subprocess, "run", return_value=completed) as run:

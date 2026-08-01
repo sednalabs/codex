@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/(?!\.{1,2}$)[A-Za-z0-9._-]+$")
 QUEUE_PR_COMPONENT_RE = re.compile(r"(?:^|/)pr-(\d+)(?:-|$)")
 WATCHER_LAUNCHER = Path(__file__).with_name("gh_workflow_run_watch")
 
