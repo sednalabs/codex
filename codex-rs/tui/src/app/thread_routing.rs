@@ -142,9 +142,10 @@ impl App {
             format!("Agent ({short_id})")
         };
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
-            let label = format_agent_picker_item_name(
+            let label = format_agent_picker_item_label(
                 entry.agent_nickname.as_deref(),
                 entry.agent_role.as_deref(),
+                entry.agent_path.as_deref(),
                 is_primary,
             );
             if label == "Agent" {

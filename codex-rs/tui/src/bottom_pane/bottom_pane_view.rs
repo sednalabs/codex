@@ -56,6 +56,14 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    /// Current plain-text filter for a searchable list view.
+    ///
+    /// Refreshing a live view should keep an explicit user filter intact rather
+    /// than silently restoring every row and losing the context of the view.
+    fn search_query(&self) -> Option<&str> {
+        None
+    }
+
     /// Handle Ctrl-C while this view is active.
     fn on_ctrl_c(&mut self) -> CancellationEvent {
         CancellationEvent::NotHandled
