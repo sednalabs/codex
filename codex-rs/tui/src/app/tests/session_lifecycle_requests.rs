@@ -694,16 +694,46 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 assert_eq!(loaded.data, Vec::<String>::new());
 
                 let mut replayed_history = String::new();
+                let mut dispatched_selection_skills_refresh = false;
                 while let Ok(event) = app_event_rx.try_recv() {
-                    if let AppEvent::InsertHistoryCell(cell) = event {
-                        replayed_history.push_str(&lines_to_single_string(
-                            &cell.transcript_lines(/*width*/ 100),
-                        ));
+                    match event {
+                        AppEvent::InsertHistoryCell(cell) => {
+                            replayed_history.push_str(&lines_to_single_string(
+                                &cell.transcript_lines(/*width*/ 100),
+                            ));
+                        }
+                        AppEvent::CodexOp(op @ AppCommand::ListSkills { .. }) => {
+                            let control = Box::pin(app.handle_event(
+                                &mut tui,
+                                &mut app_server,
+                                AppEvent::CodexOp(op),
+                            ))
+                            .await?;
+                            assert!(matches!(control, AppRunControl::Continue));
+                            dispatched_selection_skills_refresh = true;
+                        }
+                        _ => {}
                     }
                 }
                 assert!(
                     replayed_history.contains("Saved child message"),
                     "the closed sidecar transcript should replay from thread/read(includeTurns: true)"
+                );
+                assert!(
+                    dispatched_selection_skills_refresh,
+                    "selecting a replay-only transcript must dispatch its queued global skills refresh"
+                );
+                let selection_refresh_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    selection_refresh_requests
+                        .iter()
+                        .any(|method| method == "skills/list"),
+                    "the replay-only selection should allow its global skills refresh"
+                );
+                assert!(
+                    !replayed_history.contains(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE),
+                    "a replay-only selection must not show a read-only error before user input"
                 );
 
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
