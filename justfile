@@ -213,6 +213,9 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_label_keeps_friendly_name_before_canonical_path --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::spawned_agent_shows_effective_identity_and_omits_matching_request --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::spawned_agent_keeps_a_different_requested_identity_for_comparison --lib -- --exact --test-threads=1
 
 # Focused shared picker-model tool-description slice for upgradeable legacy
 
