@@ -1,7 +1,8 @@
 name: postmerge-ci
 
-# This is the single entrypoint for main-only CI that is intentionally outside
-# the merge-blocking suite. It keeps the broader postmerge signal in one run.
+# This workflow aggregates post-merge rust-ci-full and v8-canary coverage. It
+# does not represent all independent post-merge health signals; observe Native
+# Windows Bazel health separately for the exact pushed main SHA.
 on:
   push:
     branches: [main]
