@@ -153,7 +153,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         post_merge_receipt = make_watcher_receipt(
             run_id=902,
             workflow="postmerge-ci",
-            event="push",
+            event=None,
             branch="main",
             sha=MERGE_COMMIT_SHA,
         )
@@ -415,6 +415,78 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
 
         self.assertEqual(
             raised.exception.action, "stop_merge_group_run_identity_mismatch"
+        )
+
+    def test_post_merge_watcher_accepts_an_absent_event_after_exact_identity_checks(
+        self,
+    ):
+        receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="Postmerge CI",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        watched = MODULE.verify_watched_run(
+            receipt,
+            stage="post_merge",
+            expected_sha=MERGE_COMMIT_SHA,
+            expected_event="push",
+            expected_branch="main",
+            expected_workflow=".github/workflows/postmerge-ci.yml",
+        )
+
+        self.assertEqual(watched["outcome"], "success")
+        self.assertEqual(watched["run"]["id"], 902)
+        self.assertNotIn("event", watched["run"])
+
+    def test_post_merge_watcher_rejects_a_contradictory_event(self):
+        receipt = make_watcher_receipt(
+            run_id=902,
+            workflow="postmerge-ci",
+            event="workflow_dispatch",
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        with self.assertRaisesRegex(
+            MODULE.DeliveryStop, "event is 'workflow_dispatch'"
+        ) as raised:
+            MODULE.verify_watched_run(
+                receipt,
+                stage="post_merge",
+                expected_sha=MERGE_COMMIT_SHA,
+                expected_event="push",
+                expected_branch="main",
+                expected_workflow="postmerge-ci",
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_post_merge_run_identity_mismatch"
+        )
+
+    def test_post_merge_watcher_requires_an_authoritative_run_id_for_absence(self):
+        receipt = make_watcher_receipt(
+            run_id=0,
+            workflow="postmerge-ci",
+            event=None,
+            branch="main",
+            sha=MERGE_COMMIT_SHA,
+        )
+
+        with self.assertRaisesRegex(MODULE.DeliveryStop, "event is 'None'") as raised:
+            MODULE.verify_watched_run(
+                receipt,
+                stage="post_merge",
+                expected_sha=MERGE_COMMIT_SHA,
+                expected_event="push",
+                expected_branch="main",
+                expected_workflow="postmerge-ci",
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_post_merge_run_identity_mismatch"
         )
 
     def test_queue_entry_disappearing_without_merge_is_a_distinct_stop(self):
@@ -752,7 +824,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         wrong_post_merge_receipt = make_watcher_receipt(
             run_id=902,
             workflow="postmerge-ci",
-            event="push",
+            event=None,
             branch="main",
             sha=OTHER_SHA,
         )

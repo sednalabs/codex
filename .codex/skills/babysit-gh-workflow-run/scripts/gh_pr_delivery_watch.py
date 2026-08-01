@@ -73,6 +73,13 @@ def is_full_sha(value):
     return bool(FULL_SHA_RE.fullmatch(str(value or "").strip()))
 
 
+def is_positive_run_id(value):
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def normalize_workflow_name(value):
     normalized = str(value or "").strip().lower().replace("\\", "/")
     normalized = normalized.rsplit("/", 1)[-1]
@@ -447,19 +454,27 @@ def verify_watched_run(
             f"The {stage} run workflow is '{run.get('workflow')}', not '{expected_workflow}'.",
         )
     observed_event = run.get("event")
-    missing_merge_group_event_is_independently_proven = (
-        stage == "merge_group"
-        and expected_event == "merge_group"
-        and observed_event in (None, "")
-        and expected_run_id is not None
+    missing_event_has_exact_identity = (
+        observed_event in (None, "")
         and is_full_sha(expected_sha)
         and bool(expected_branch)
         and bool(expected_workflow)
     )
-    if (
-        observed_event != expected_event
-        and not missing_merge_group_event_is_independently_proven
-    ):
+    missing_merge_group_event_is_independently_proven = (
+        stage == "merge_group"
+        and expected_event == "merge_group"
+        and is_positive_run_id(expected_run_id)
+    )
+    missing_post_merge_event_is_independently_proven = (
+        stage == "post_merge"
+        and expected_event == "push"
+        and is_positive_run_id(run.get("id"))
+    )
+    missing_event_is_independently_proven = missing_event_has_exact_identity and (
+        missing_merge_group_event_is_independently_proven
+        or missing_post_merge_event_is_independently_proven
+    )
+    if observed_event != expected_event and not missing_event_is_independently_proven:
         raise DeliveryStop(
             f"stop_{stage}_run_identity_mismatch",
             f"The {stage} run event is '{observed_event}', not '{expected_event}'.",
