@@ -776,7 +776,14 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     .expect("create child rollout"),
                 )?;
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                    start_recording_app_server_with_picker_backfill_test_behavior(
+                        &app.config,
+                        Some(PickerBackfillTestBehavior::StaleThreadReadStatus {
+                            thread_id: child_thread_id.to_string(),
+                            status: ThreadStatus::Idle,
+                        }),
+                    )
+                    .await?;
                 let root = app_server
                     .resume_thread(
                         app.config.clone(),
@@ -807,6 +814,13 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
                     .await?;
+
+                assert!(
+                    app.agent_navigation
+                        .get(&child_thread_id)
+                        .is_some_and(|entry| entry.is_closed),
+                    "a stale idle thread/read must not reopen a terminal picker row before selection"
+                );
 
                 let selection_requests =
                     std::mem::take(&mut *requests.lock().expect("request recorder lock"));

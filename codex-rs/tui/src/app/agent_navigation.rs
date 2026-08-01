@@ -274,9 +274,28 @@ impl AgentNavigationState {
         );
     }
 
-    pub(crate) fn upsert_with_path(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
+    pub(crate) fn upsert_with_path(
+        &mut self,
+        thread_id: ThreadId,
+        mut entry: AgentPickerThreadEntry,
+    ) {
         self.remove_unknown_thread_status_provenance_tracking(thread_id);
         let existing = self.threads.get(&thread_id).cloned();
+        let preserves_terminal_closure = existing.as_ref().is_some_and(|entry| entry.is_closed)
+            || self
+                .terminal_lifecycle_watermarks
+                .get(&thread_id)
+                .is_some_and(|watermark| {
+                    matches!(watermark, TerminalLifecycleWatermark::Closed { .. })
+                });
+        if preserves_terminal_closure {
+            // Metadata and backfill reads carry no status revision, so they cannot establish a
+            // new lifecycle after a terminal close. Only `reopen_after_newer_status`, after the
+            // watcher has accepted a strictly newer nonterminal status, may clear this state.
+            entry.is_closed = true;
+            entry.is_running = false;
+            entry.has_system_error = false;
+        }
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
@@ -1409,6 +1428,71 @@ mod tests {
                 created_at: Some(1),
                 updated_at: Some(4),
             })
+        );
+    }
+
+    #[test]
+    fn metadata_upserts_preserve_terminal_closure_until_newer_status_recovers_it() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000116").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Finished child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+        state.mark_running(thread_id);
+        state.mark_closed(thread_id);
+
+        state.upsert(
+            thread_id,
+            Some("Stale idle metadata".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(3),
+        );
+        state.upsert_with_path(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/finished-child".to_string()),
+                is_running: true,
+                is_closed: false,
+                has_system_error: true,
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_closed
+                && !entry.is_running
+                && !entry.has_system_error
+                && entry.agent_nickname.as_deref() == Some("Stale idle metadata")
+                && entry.agent_path.as_deref() == Some("/root/finished-child")
+        }));
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ false,
+        ));
+        state.reopen_after_newer_status(thread_id);
+        state.mark_running(thread_id);
+        state.upsert(
+            thread_id,
+            Some("Recovered child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(4),
+        );
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.is_closed && entry.is_running)
         );
     }
 

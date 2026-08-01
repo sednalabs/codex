@@ -1899,6 +1899,20 @@ async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<
             .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
     );
 
+    // A delayed metadata refresh is not status evidence, so it must not clear the terminal
+    // lifecycle before the watcher accepts a genuinely newer nonterminal status.
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("stale metadata".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
     // The next status is newer, so it may reopen the existing row and establish fresh liveness.
     app.apply_agent_picker_thread_status_change(
         thread_id,
