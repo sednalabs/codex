@@ -2234,14 +2234,47 @@ async fn delayed_unrevisioned_thread_closed_does_not_close_recovered_child() -> 
 }
 
 #[tokio::test]
-async fn status_first_not_loaded_keeps_notification_buffer_non_live_across_backfill() -> Result<()>
+async fn request_first_not_loaded_keeps_synthetic_buffer_non_live_across_backfill() -> Result<()>
 {
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();
     let thread_id = ThreadId::new();
 
-    // Routing must allocate a buffer for this unknown child, but that synthetic buffer is not
-    // positive proof of a live app-server attachment. Treat status-first NotLoaded as terminal.
+    // An approval may arrive before either a lifecycle notification or a resume/fork response.
+    // Routing must preserve it for replay without treating its synthetic queue as positive proof
+    // of a live app-server attachment.
+    app.enqueue_thread_request(
+        thread_id,
+        exec_approval_request(
+            thread_id,
+            "request-first-turn",
+            "request-first-call",
+            /*approval_id*/ None,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::NotificationBuffer),
+        "a request-first synthetic buffer must not advertise a live attachment"
+    );
+    assert!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .expect("request-first channel")
+            .store
+            .lock()
+            .await
+            .snapshot()
+            .events
+            .iter()
+            .any(|event| matches!(event, ThreadBufferedEvent::Request(_))),
+        "the request must remain available for replay after the child is classified closed"
+    );
+
+    // The subsequent status must still classify the unmaterialized child as terminal.
     app.enqueue_thread_notification(
         thread_id,
         ServerNotification::ThreadStatusChanged(
@@ -2325,6 +2358,10 @@ async fn status_first_not_loaded_keeps_notification_buffer_non_live_across_backf
         app.agent_navigation
             .get(&thread_id)
             .is_some_and(|entry| entry.is_closed && !entry.is_running)
+    );
+    assert!(
+        !app.thread_accepts_live_metadata_update(thread_id),
+        "a request-first child classified NotLoaded must follow the replay path, not write through a synthetic channel"
     );
 
     app.agent_navigation

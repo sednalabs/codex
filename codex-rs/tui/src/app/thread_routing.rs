@@ -64,9 +64,11 @@ impl App {
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
     }
 
-    /// Buffers an unsolicited thread notification without claiming a live app-server attachment.
-    /// A later real resume/fork/session response promotes the same channel to `Live`.
-    fn ensure_thread_notification_channel(
+    /// Buffers an unsolicited thread update without claiming a live app-server attachment.
+    ///
+    /// Notifications and server requests can both arrive before a resume, fork, or primary
+    /// session response. A later real attachment promotes the same channel to `Live`.
+    fn ensure_thread_buffer_channel(
         &mut self,
         thread_id: ThreadId,
     ) -> &mut ThreadEventChannel {
@@ -217,6 +219,28 @@ impl App {
         self.chat_widget
             .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
         true
+    }
+
+    /// Whether a delayed metadata result still belongs to the current live thread lifecycle.
+    ///
+    /// A branch lookup starts outside the app event loop, so its result can arrive after a side
+    /// thread was discarded or after a saved transcript replaced a live channel. Requiring the
+    /// current channel, a live attachment, and a nonterminal picker lifecycle keeps that stale
+    /// result from writing metadata through the app-server boundary. A tracked side must also
+    /// still belong to the active primary lineage.
+    pub(super) fn thread_accepts_live_metadata_update(&self, thread_id: ThreadId) -> bool {
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return false;
+        };
+        if !channel.has_live_attachment() || self.agent_navigation.is_terminally_closed(thread_id)
+        {
+            return false;
+        }
+
+        self.side_threads.get(&thread_id).is_none_or(|side| {
+            self.primary_thread_id == Some(side.parent_thread_id)
+                || self.thread_event_channels.contains_key(&side.parent_thread_id)
+        })
     }
 
     pub(super) fn ignore_same_thread_resume(
@@ -1042,7 +1066,7 @@ impl App {
         };
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
-            let channel = self.ensure_thread_notification_channel(thread_id);
+            let channel = self.ensure_thread_buffer_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
         let (notification, pending_status, turn_stopped) = {
@@ -1257,7 +1281,10 @@ impl App {
             None
         };
         let (sender, store) = {
-            let channel = self.ensure_thread_channel(thread_id);
+            // Requests can arrive before a corresponding live attach just like notifications.
+            // Preserve the request for rendering/replay, but do not let its local buffer make a
+            // later `NotLoaded` status look live and reopen a saved child for writes.
+            let channel = self.ensure_thread_buffer_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
 

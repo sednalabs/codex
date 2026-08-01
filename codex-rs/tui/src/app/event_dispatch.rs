@@ -487,13 +487,22 @@ impl App {
                 self.append_message_history_entry(thread_id, text);
             }
             AppEvent::SyncThreadGitBranch { thread_id, branch } => {
-                if !self.reject_replay_only_thread_write(thread_id) {
+                if self.thread_accepts_live_metadata_update(thread_id) {
                     if let Err(err) = app_server
                         .thread_metadata_update_branch(thread_id, branch)
                         .await
                     {
                         tracing::warn!("failed to sync thread git branch from directive: {err}");
                     }
+                } else if self.thread_is_replay_only(thread_id) {
+                    // Keep the established user-facing replay-only rejection while the broader
+                    // lifecycle guard below drops discarded and notification-only channels.
+                    self.reject_replay_only_thread_write(thread_id);
+                } else {
+                    tracing::debug!(
+                        %thread_id,
+                        "skipping branch metadata update for a stale thread lifecycle"
+                    );
                 }
             }
             AppEvent::LookupMessageHistoryEntry {
