@@ -321,8 +321,8 @@ impl CollabAgentToolCallItem {
                     new_agent_nickname,
                     new_agent_role,
                     prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.model.clone().unwrap_or_default(),
-                    reasoning_effort: self.reasoning_effort.clone().unwrap_or_default(),
+                    model: self.model.clone(),
+                    reasoning_effort: self.reasoning_effort.clone(),
                     status: receiver_thread_id
                         .map(|thread_id| self.agent_status(thread_id))
                         .unwrap_or(AgentStatus::NotFound),

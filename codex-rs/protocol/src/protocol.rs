@@ -4432,9 +4432,15 @@ pub struct CollabAgentSpawnEndEvent {
     /// beginning.
     pub prompt: String,
     /// Effective model used by the spawned agent after inheritance and role overrides.
-    pub model: String,
+    /// Absent when no child was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
     /// Effective reasoning effort used by the spawned agent after inheritance and role overrides.
-    pub reasoning_effort: ReasoningEffortConfig,
+    /// Absent when no child was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
 }

@@ -92,43 +92,130 @@ async fn handle_spawn_agent(
         )
         .await;
     let mut config =
-        build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
+        match build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref()) {
+            Ok(config) => config,
+            Err(err) => {
+                emit_failed_spawn_agent_lifecycle(
+                    session.as_ref(),
+                    turn.as_ref(),
+                    &call_id,
+                    &prompt,
+                    &requested_model,
+                    &requested_reasoning_effort,
+                )
+                .await;
+                return Err(err);
+            }
+        };
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
     if args.fork_context {
-        reject_full_fork_agent_type_override(role_name)?;
+        if let Err(err) = reject_full_fork_agent_type_override(role_name) {
+            emit_failed_spawn_agent_lifecycle(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+            )
+            .await;
+            return Err(err);
+        }
     }
-    apply_requested_spawn_agent_model_overrides(
+    if let Err(err) = apply_requested_spawn_agent_model_overrides(
         &session,
         turn.as_ref(),
         &mut config,
         args.model.as_deref(),
         args.reasoning_effort.clone(),
     )
-    .await?;
-    if !args.fork_context {
-        apply_spawn_agent_role(&session, &mut config, role_name).await?;
+    .await
+    {
+        emit_failed_spawn_agent_lifecycle(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            &prompt,
+            &requested_model,
+            &requested_reasoning_effort,
+        )
+        .await;
+        return Err(err);
     }
-    apply_spawn_agent_service_tier(
+    if !args.fork_context {
+        if let Err(err) = apply_spawn_agent_role(&session, &mut config, role_name).await {
+            emit_failed_spawn_agent_lifecycle(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+            )
+            .await;
+            return Err(err);
+        }
+    }
+    if let Err(err) = apply_spawn_agent_service_tier(
         &session,
         &mut config,
         turn.config.service_tier.as_deref(),
         args.service_tier.as_deref(),
     )
-    .await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    .await
+    {
+        emit_failed_spawn_agent_lifecycle(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            &prompt,
+            &requested_model,
+            &requested_reasoning_effort,
+        )
+        .await;
+        return Err(err);
+    }
+    if let Err(err) = apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref()) {
+        emit_failed_spawn_agent_lifecycle(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            &prompt,
+            &requested_model,
+            &requested_reasoning_effort,
+        )
+        .await;
+        return Err(err);
+    }
 
-    let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
+    let spawn_source = match thread_spawn_source(
+        session.thread_id,
+        &turn.session_source,
+        child_depth,
+        role_name,
+        /*task_name*/ None,
+    ) {
+        Ok(source) => source,
+        Err(err) => {
+            emit_failed_spawn_agent_lifecycle(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+            )
+            .await;
+            return Err(err);
+        }
+    };
+
+    let spawned_agent = match Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
         input_items,
-        Some(thread_spawn_source(
-            session.thread_id,
-            &turn.session_source,
-            child_depth,
-            role_name,
-            /*task_name*/ None,
-        )?),
+        Some(spawn_source),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
@@ -137,15 +224,26 @@ async fn handle_spawn_agent(
         },
     ))
     .await
-    .map_err(collab_spawn_error);
-    let (new_thread_id, new_agent_metadata, status) = match &result {
-        Ok(spawned_agent) => (
-            Some(spawned_agent.thread_id),
-            Some(spawned_agent.metadata.clone()),
-            spawned_agent.status.clone(),
-        ),
-        Err(_) => (None, None, AgentStatus::NotFound),
+    .map_err(collab_spawn_error)
+    {
+        Ok(spawned_agent) => spawned_agent,
+        Err(err) => {
+            emit_failed_spawn_agent_lifecycle(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+            )
+            .await;
+            return Err(err);
+        }
     };
+    let spawned_thread_id = spawned_agent.thread_id;
+    let new_thread_id = Some(spawned_thread_id);
+    let new_agent_metadata = Some(spawned_agent.metadata);
+    let status = spawned_agent.status;
     let agent_snapshot = match new_thread_id {
         Some(thread_id) => {
             session
@@ -210,7 +308,6 @@ async fn handle_spawn_agent(
             }),
         )
         .await;
-    let new_thread_id = result?.thread_id;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
@@ -219,9 +316,39 @@ async fn handle_spawn_agent(
     );
 
     Ok(SpawnAgentResult {
-        agent_id: new_thread_id.to_string(),
+        agent_id: spawned_thread_id.to_string(),
         nickname,
     })
+}
+
+async fn emit_failed_spawn_agent_lifecycle(
+    session: &crate::session::session::Session,
+    turn: &crate::session::turn_context::TurnContext,
+    call_id: &str,
+    prompt: &str,
+    requested_model: &Option<String>,
+    requested_reasoning_effort: &Option<ReasoningEffort>,
+) {
+    session
+        .emit_turn_item_completed(
+            turn,
+            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id.to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Failed,
+                sender_thread_id: session.thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some(prompt.to_string()),
+                // No child was created, so there is no effective identity to report.
+                model: None,
+                reasoning_effort: None,
+                requested_model: requested_model.clone(),
+                requested_reasoning_effort: requested_reasoning_effort.clone(),
+                agents_states: Default::default(),
+            }),
+        )
+        .await;
 }
 
 impl CoreToolRuntime for Handler {

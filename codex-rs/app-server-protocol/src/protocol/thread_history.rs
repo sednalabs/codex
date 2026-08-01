@@ -961,8 +961,8 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
-            model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort.clone()),
+            model: payload.model.clone(),
+            reasoning_effort: payload.reasoning_effort.clone(),
             requested_model,
             requested_reasoning_effort,
             agents_states,
@@ -4031,8 +4031,8 @@ mod tests {
                 new_agent_nickname: Some("Scout".into()),
                 new_agent_role: Some("explorer".into()),
                 prompt: "inspect the repo".into(),
-                model: "gpt-5.4-mini".into(),
-                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                model: Some("gpt-5.4-mini".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
                 status: AgentStatus::Running,
             }),
         ];
@@ -4102,8 +4102,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect model".into(),
-                model: "gpt-effective-model".into(),
-                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                model: Some("gpt-effective-model".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
                 status: AgentStatus::Running,
             }),
             EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
@@ -4125,8 +4125,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect effort".into(),
-                model: "gpt-effective-effort".into(),
-                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                model: Some("gpt-effective-effort".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
                 status: AgentStatus::Running,
             }),
             EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
@@ -4148,8 +4148,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect mismatch".into(),
-                model: "gpt-effective-pair".into(),
-                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Low,
+                model: Some("gpt-effective-pair".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Low),
                 status: AgentStatus::Running,
             }),
         ];
@@ -4223,6 +4223,60 @@ mod tests {
         assert_eq!(
             requested_reasoning_effort,
             &Some(codex_protocol::openai_models::ReasoningEffort::Ultra)
+        );
+    }
+
+    #[test]
+    fn reconstructs_failed_collab_spawn_with_requested_but_no_effective_identity() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "spawn agent".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                call_id: "failed-spawn".into(),
+                started_at_ms: 0,
+                sender_thread_id,
+                prompt: "inspect the repo".into(),
+                model: Some("gpt-requested".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "failed-spawn".into(),
+                completed_at_ms: 1,
+                sender_thread_id,
+                new_thread_id: None,
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect the repo".into(),
+                model: None,
+                reasoning_effort: None,
+                status: AgentStatus::NotFound,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        let [_, ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+            panic!("expected a reconstructed failed spawn item");
+        };
+        assert_eq!(spawn.status, CollabAgentToolCallStatus::Failed);
+        assert!(spawn.receiver_thread_ids.is_empty());
+        assert_eq!(spawn.model, None);
+        assert_eq!(spawn.reasoning_effort, None);
+        assert_eq!(spawn.requested_model.as_deref(), Some("gpt-requested"));
+        assert_eq!(
+            spawn.requested_reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
         );
     }
 

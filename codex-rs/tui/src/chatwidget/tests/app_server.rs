@@ -1133,6 +1133,101 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
 }
 
 #[tokio::test]
+async fn live_app_server_failed_spawn_renders_requested_without_effective_identity() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "failed-spawn".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("Explore the repo".to_string()),
+                model: Some("gpt-requested".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 1,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "failed-spawn".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Failed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("Explore the repo".to_string()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Agent spawn failed · primitive: spawn_agent"));
+    assert!(rendered.contains("requested: gpt-requested high"));
+    assert!(!rendered.contains("effective:"));
+}
+
+#[tokio::test]
+async fn replayed_failed_spawn_renders_requested_without_effective_identity() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 1,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "failed-spawn".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Failed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("Explore the repo".to_string()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::new(),
+            },
+        }),
+        Some(ReplayKind::ThreadSnapshot),
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Agent spawn failed · primitive: spawn_agent"));
+    assert!(rendered.contains("requested: gpt-requested high"));
+    assert!(!rendered.contains("effective:"));
+}
+
+#[tokio::test]
 async fn fresh_tui_renders_requested_overrides_from_completed_spawn_history() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id = ThreadId::new();

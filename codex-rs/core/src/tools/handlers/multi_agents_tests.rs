@@ -9,6 +9,7 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
@@ -68,6 +69,7 @@ use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
+use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
@@ -112,6 +114,86 @@ fn function_payload(args: serde_json::Value) -> ToolPayload {
     ToolPayload::Function {
         arguments: args.to_string(),
     }
+}
+
+async fn assert_failed_spawn_lifecycle(
+    args: Value,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) {
+    let (session, turn, rx) = make_session_and_context_with_rx().await;
+    let result = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(args),
+        ))
+        .await;
+    assert!(
+        matches!(result, Err(FunctionCallError::RespondToModel(_))),
+        "spawn should fail after publishing a terminal lifecycle item"
+    );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn start event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.status, CollabAgentToolCallStatus::InProgress);
+    assert_eq!(started.requested_model.as_deref(), requested_model);
+    assert_eq!(
+        started.requested_reasoning_effort,
+        requested_reasoning_effort
+    );
+
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("legacy spawn begin channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn failure completion should arrive")
+        .expect("spawn failure completion channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+    assert_eq!(completed.model, None);
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model.as_deref(), requested_model);
+    assert_eq!(
+        completed.requested_reasoning_effort,
+        requested_reasoning_effort
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn end should arrive")
+        .expect("legacy spawn end channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert_eq!(legacy_end.model, None);
+    assert_eq!(legacy_end.reasoning_effort, None);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
 }
 
 fn parse_agent_id(id: &str) -> ThreadId {
@@ -366,6 +448,53 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
             "Provide either message or items, but not both".to_string()
         )
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_invalid_model_completes_failed_lifecycle_without_effective_identity() {
+    assert_failed_spawn_lifecycle(
+        json!({
+            "message": "inspect this repo",
+            "model": "not-a-configured-model"
+        }),
+        Some("not-a-configured-model"),
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_invalid_reasoning_effort_completes_failed_lifecycle_without_effective_identity()
+ {
+    assert_failed_spawn_lifecycle(
+        json!({
+            "message": "inspect this repo",
+            "reasoning_effort": "ultra"
+        }),
+        None,
+        Some(ReasoningEffort::Ultra),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_invalid_role_completes_failed_lifecycle_without_effective_identity() {
+    assert_failed_spawn_lifecycle(
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "not-a-configured-role"
+        }),
+        None,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_runtime_failure_completes_failed_lifecycle_without_effective_identity() {
+    // The default test session has no live ThreadManager behind AgentControl, so the actual
+    // runtime spawn call fails after all request and role validation has succeeded.
+    assert_failed_spawn_lifecycle(json!({"message": "inspect this repo"}), None, None).await;
 }
 
 #[tokio::test]

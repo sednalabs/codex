@@ -2664,6 +2664,94 @@ async fn live_canonical_spawn_lifecycle_preserves_requested_analytics_attributio
 }
 
 #[tokio::test]
+async fn failed_spawn_completion_emits_analytics_and_clears_pending_lifecycle_state() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+    ingest_review_prerequisites(&mut reducer, &mut events).await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_started_notification(
+                "thread-1", "turn-1",
+            ))),
+            &mut events,
+        )
+        .await;
+
+    let started = ThreadItem::CollabAgentToolCall {
+        id: "failed-spawn".to_string(),
+        tool: CollabAgentTool::SpawnAgent,
+        status: CollabAgentToolCallStatus::InProgress,
+        sender_thread_id: "thread-1".to_string(),
+        receiver_thread_ids: Vec::new(),
+        prompt: Some("inspect the repository".to_string()),
+        model: Some("gpt-requested".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        requested_model: Some("gpt-requested".to_string()),
+        requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        agents_states: Default::default(),
+    };
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                ItemStartedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 1_000,
+                    item: started,
+                },
+            ))),
+            &mut events,
+        )
+        .await;
+    assert_eq!(reducer.spawn_item_starts.len(), 1);
+    assert_eq!(reducer.tool_items_started_at_ms.len(), 1);
+
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 1_025,
+                    item: ThreadItem::CollabAgentToolCall {
+                        id: "failed-spawn".to_string(),
+                        tool: CollabAgentTool::SpawnAgent,
+                        status: CollabAgentToolCallStatus::Failed,
+                        sender_thread_id: "thread-1".to_string(),
+                        receiver_thread_ids: Vec::new(),
+                        prompt: Some("inspect the repository".to_string()),
+                        model: None,
+                        reasoning_effort: None,
+                        requested_model: None,
+                        requested_reasoning_effort: None,
+                        agents_states: Default::default(),
+                    },
+                },
+            ))),
+            &mut events,
+        )
+        .await;
+
+    assert!(reducer.spawn_item_starts.is_empty());
+    assert!(reducer.tool_items_started_at_ms.is_empty());
+    let payload = serde_json::to_value(&events).expect("serialize analytics event");
+    assert_eq!(payload.as_array().expect("analytics event array").len(), 1);
+    assert_eq!(
+        payload[0]["event_type"],
+        "codex_collab_agent_tool_call_event"
+    );
+    assert_eq!(payload[0]["event_params"]["terminal_status"], "failed");
+    assert_eq!(
+        payload[0]["event_params"]["requested_model"],
+        "gpt-requested"
+    );
+    assert_eq!(
+        payload[0]["event_params"]["requested_reasoning_effort"],
+        "high"
+    );
+}
+
+#[tokio::test]
 async fn terminal_turn_discards_uncompleted_spawn_lifecycle_state() {
     let mut reducer = AnalyticsReducer::default();
     let mut events = Vec::new();
