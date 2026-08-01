@@ -187,6 +187,7 @@ tui-config-refresh-session-targeted:
 # Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
     cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_filters_loaded_spawn_descendants -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_list::thread_list_relation_filters_read_spawn_graph_from_state_db -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_query_fails -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
@@ -199,6 +200,7 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_the_forward_page_after_reopen --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_descendant_over_closed_history --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_locally_filters_unacknowledged_ancestor_responses --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_next_page --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1

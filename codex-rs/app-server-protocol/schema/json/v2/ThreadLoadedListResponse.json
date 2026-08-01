@@ -1,6 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "ancestorFilterApplied": {
+      "description": "True only when the server applied the requested `ancestorThreadId` filter.\n\nOlder servers omit this field. Clients must treat an omitted acknowledgement as false.",
+      "type": "boolean"
+    },
     "data": {
       "description": "Thread ids for sessions currently loaded in memory.",
       "items": {

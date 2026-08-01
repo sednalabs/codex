@@ -70,13 +70,14 @@ fn append_rollout_record(
 }
 
 #[derive(Clone)]
-enum TransientPickerBackfillFailure {
+enum PickerBackfillTestBehavior {
     PersistedDescendantList,
     LegacyScan,
     ThreadReadAndHideFromThreadList { thread_id: String },
+    IgnoreAncestorThreadFilters,
 }
 
-impl TransientPickerBackfillFailure {
+impl PickerBackfillTestBehavior {
     fn matches(&self, request: &ClientRequest) -> bool {
         matches!(
             (self, request),
@@ -101,6 +102,21 @@ impl TransientPickerBackfillFailure {
         )
     }
 
+    fn strips_ancestor_thread_filter(&self) -> bool {
+        matches!(self, Self::IgnoreAncestorThreadFilters)
+    }
+
+    fn strip_ancestor_thread_filter(&self, request: &mut ClientRequest) {
+        if !self.strips_ancestor_thread_filter() {
+            return;
+        }
+        match request {
+            ClientRequest::ThreadList { params, .. } => params.ancestor_thread_id = None,
+            ClientRequest::ThreadLoadedList { params, .. } => params.ancestor_thread_id = None,
+            _ => {}
+        }
+    }
+
     fn hidden_thread_id_for_thread_list(&self, request: &ClientRequest) -> Option<&str> {
         match (self, request) {
             (
@@ -120,16 +136,13 @@ async fn start_recording_app_server(
     Arc<Mutex<Vec<String>>>,
     JoinHandle<Result<()>>,
 )> {
-    start_recording_app_server_with_transient_picker_backfill_failure(
-        config,
-        /*transient_failure*/ None,
-    )
-    .await
+    start_recording_app_server_with_picker_backfill_test_behavior(config, /*test_behavior*/ None)
+        .await
 }
 
-async fn start_recording_app_server_with_transient_picker_backfill_failure(
+async fn start_recording_app_server_with_picker_backfill_test_behavior(
     config: &Config,
-    transient_failure: Option<TransientPickerBackfillFailure>,
+    test_behavior: Option<PickerBackfillTestBehavior>,
 ) -> Result<(
     AppServerSession,
     Arc<Mutex<Vec<String>>>,
@@ -186,14 +199,14 @@ async fn start_recording_app_server_with_transient_picker_backfill_failure(
                         .expect("request recorder lock")
                         .push(request.method.clone());
                     let request_id = request.id.clone();
-                    let request =
+                    let mut request =
                         serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
-                    let hidden_thread_id = transient_failure
+                    let hidden_thread_id = test_behavior
                         .as_ref()
                         .and_then(|failure| failure.hidden_thread_id_for_thread_list(&request))
                         .map(str::to_owned);
                     let response = if !transient_failure_injected
-                        && transient_failure
+                        && test_behavior
                             .as_ref()
                             .is_some_and(|failure| failure.matches(&request))
                     {
@@ -207,6 +220,12 @@ async fn start_recording_app_server_with_transient_picker_backfill_failure(
                             },
                         })
                     } else {
+                        if let Some(behavior) = test_behavior.as_ref() {
+                            // Older app servers ignore unknown ancestorThreadId fields instead of
+                            // rejecting them. Strip the field before forwarding to model that
+                            // successful-but-unfiltered compatibility response.
+                            behavior.strip_ancestor_thread_filter(&mut request);
+                        }
                         match embedded.request(request).await? {
                             Ok(result) => {
                                 let result = if let Some(thread_id) = hidden_thread_id {
@@ -1102,9 +1121,9 @@ fn agent_picker_retries_legacy_fallback_after_transient_scan_failure() -> Result
                 )?;
 
                 let (mut app_server, _requests, proxy) =
-                    start_recording_app_server_with_transient_picker_backfill_failure(
+                    start_recording_app_server_with_picker_backfill_test_behavior(
                         &app.config,
-                        Some(TransientPickerBackfillFailure::LegacyScan),
+                        Some(PickerBackfillTestBehavior::LegacyScan),
                     )
                     .await?;
                 let root = app_server
@@ -1200,11 +1219,13 @@ fn agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure(
                 // process list but absent from the persisted relation/scan result. The first
                 // metadata read fails; the next bounded refresh must retry it and discover child.
                 let (mut app_server, _requests, proxy) =
-                    start_recording_app_server_with_transient_picker_backfill_failure(
+                    start_recording_app_server_with_picker_backfill_test_behavior(
                         &app.config,
-                        Some(TransientPickerBackfillFailure::ThreadReadAndHideFromThreadList {
-                            thread_id: legacy_child_thread_id.to_string(),
-                        }),
+                        Some(
+                            PickerBackfillTestBehavior::ThreadReadAndHideFromThreadList {
+                                thread_id: legacy_child_thread_id.to_string(),
+                            },
+                        ),
                     )
                     .await?;
                 let root = app_server
@@ -1312,9 +1333,9 @@ fn agent_picker_keeps_loaded_descendants_when_persisted_list_fails() -> Result<(
                 }
 
                 let (mut app_server, requests, proxy) =
-                    start_recording_app_server_with_transient_picker_backfill_failure(
+                    start_recording_app_server_with_picker_backfill_test_behavior(
                         &app.config,
-                        Some(TransientPickerBackfillFailure::PersistedDescendantList),
+                        Some(PickerBackfillTestBehavior::PersistedDescendantList),
                     )
                     .await?;
                 let root = app_server
@@ -1985,4 +2006,194 @@ fn agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent() -
         })?
         .join()
         .expect("loaded nested descendant priority test thread")
+}
+
+#[test]
+fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-unacknowledged-ancestor-filter".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-10T00-00-00",
+                        "2026-01-10T00:00:00Z",
+                        "Saved root message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let expected_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-10T00-00-01",
+                        "2026-01-10T00:00:01Z",
+                        "Saved expected child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/expected-child")
+                                    .expect("valid expected child agent path"),
+                            ),
+                            agent_nickname: Some("expected-child".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create expected child rollout"),
+                )?;
+                let unrelated_root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-10T00-00-02",
+                        "2026-01-10T00:00:02Z",
+                        "Saved unrelated root message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create unrelated root rollout"),
+                )?;
+                let unrelated_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-10T00-00-03",
+                        "2026-01-10T00:00:03Z",
+                        "Saved unrelated child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: unrelated_root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/unrelated-child")
+                                    .expect("valid unrelated child agent path"),
+                            ),
+                            agent_nickname: Some("unrelated-child".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        unrelated_root_thread_id.into(),
+                        unrelated_root_thread_id,
+                    )
+                    .expect("create unrelated child rollout"),
+                )?;
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server_with_picker_backfill_test_behavior(
+                        &app.config,
+                        Some(PickerBackfillTestBehavior::IgnoreAncestorThreadFilters),
+                    )
+                    .await?;
+                // Populate the state-db relation index before the proxy starts stripping the
+                // TUI's requested ancestor filters. This makes both picker backfill requests
+                // return successful but unfiltered data, as an older app server would.
+                let mut repair_cursor = None;
+                loop {
+                    let repair_page = app_server
+                        .thread_list(ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(50),
+                            sort_key: Some(ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = repair_page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                let mut _loaded_threads = Vec::new();
+                for thread_id in [
+                    expected_child_thread_id,
+                    unrelated_root_thread_id,
+                    unrelated_child_thread_id,
+                ] {
+                    let loaded_thread = app_server
+                        .resume_thread(app.config.clone(), thread_id, app.resume_model_settings())
+                        .await?;
+                    _loaded_threads.push(loaded_thread);
+                }
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+                assert!(
+                    app.agent_navigation
+                        .get(&expected_child_thread_id)
+                        .is_some_and(|entry| !entry.is_closed),
+                    "the direct child must remain available after local relation verification"
+                );
+                for unrelated_thread_id in [unrelated_root_thread_id, unrelated_child_thread_id] {
+                    assert!(
+                        app.agent_navigation.get(&unrelated_thread_id).is_none(),
+                        "unfiltered older-server data must not leak unrelated threads into /agent"
+                    );
+                }
+                let visible_loaded_thread_ids = app
+                    .agent_navigation
+                    .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                    .into_iter()
+                    .filter_map(|(thread_id, entry)| (!entry.is_closed).then_some(thread_id))
+                    .collect::<std::collections::HashSet<_>>();
+                assert_eq!(
+                    visible_loaded_thread_ids,
+                    [expected_child_thread_id]
+                        .into_iter()
+                        .collect::<std::collections::HashSet<_>>(),
+                    "only the primary thread's relationship-proven child may be visible"
+                );
+                Box::pin(app.render_agent_picker()).await;
+                let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
+                assert!(rendered.contains("expected-child"));
+                assert!(!rendered.contains("unrelated-child"));
+                app.active_thread_id = Some(root_thread_id);
+                let next_thread_id = app
+                    .adjacent_thread_id_with_backfill(
+                        &mut app_server,
+                        AgentNavigationDirection::Next,
+                    )
+                    .await
+                    .expect("the relationship-proven child should be keyboard-reachable");
+                assert_eq!(next_thread_id, expected_child_thread_id);
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("unacknowledged ancestor filter test thread")
 }
