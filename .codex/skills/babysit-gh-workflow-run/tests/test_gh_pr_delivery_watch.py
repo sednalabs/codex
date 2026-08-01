@@ -367,6 +367,56 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         )
         self.assertEqual(watched["outcome"], "success")
 
+    def test_merge_group_watcher_accepts_an_absent_event_after_exact_identity_checks(
+        self,
+    ):
+        candidate = make_candidate()
+        receipt = make_watcher_receipt(
+            run_id=candidate["id"],
+            workflow="blocking-ci",
+            event=None,
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+
+        watched = MODULE.verify_watched_run(
+            receipt,
+            stage="merge_group",
+            expected_sha=CANDIDATE_SHA,
+            expected_run_id=candidate["id"],
+            expected_event="merge_group",
+            expected_branch=candidate["head_branch"],
+            expected_workflow="blocking-ci",
+        )
+
+        self.assertEqual(watched["outcome"], "success")
+        self.assertNotIn("event", watched["run"])
+
+    def test_merge_group_watcher_rejects_a_contradictory_event(self):
+        candidate = make_candidate()
+        receipt = make_watcher_receipt(
+            run_id=candidate["id"],
+            workflow="blocking-ci",
+            event="push",
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+
+        with self.assertRaisesRegex(MODULE.DeliveryStop, "event is 'push'") as raised:
+            MODULE.verify_watched_run(
+                receipt,
+                stage="merge_group",
+                expected_sha=CANDIDATE_SHA,
+                expected_run_id=candidate["id"],
+                expected_event="merge_group",
+                expected_branch=candidate["head_branch"],
+                expected_workflow="blocking-ci",
+            )
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_run_identity_mismatch"
+        )
+
     def test_queue_entry_disappearing_without_merge_is_a_distinct_stop(self):
         args = make_args()
         candidate = make_candidate()

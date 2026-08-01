@@ -408,11 +408,6 @@ def verify_watched_run(
             f"stop_{stage}_run_sha_mismatch",
             f"The {stage} watcher returned SHA {run.get('head_sha')}, not {expected_sha}.",
         )
-    if run.get("event") != expected_event:
-        raise DeliveryStop(
-            f"stop_{stage}_run_identity_mismatch",
-            f"The {stage} run event is '{run.get('event')}', not '{expected_event}'.",
-        )
     if run.get("head_branch") != expected_branch:
         raise DeliveryStop(
             f"stop_{stage}_run_identity_mismatch",
@@ -422,6 +417,24 @@ def verify_watched_run(
         raise DeliveryStop(
             f"stop_{stage}_run_identity_mismatch",
             f"The {stage} run workflow is '{run.get('workflow')}', not '{expected_workflow}'.",
+        )
+    observed_event = run.get("event")
+    missing_merge_group_event_is_independently_proven = (
+        stage == "merge_group"
+        and expected_event == "merge_group"
+        and observed_event in (None, "")
+        and expected_run_id is not None
+        and is_full_sha(expected_sha)
+        and bool(expected_branch)
+        and bool(expected_workflow)
+    )
+    if (
+        observed_event != expected_event
+        and not missing_merge_group_event_is_independently_proven
+    ):
+        raise DeliveryStop(
+            f"stop_{stage}_run_identity_mismatch",
+            f"The {stage} run event is '{observed_event}', not '{expected_event}'.",
         )
     watched["outcome"] = (
         "success"
