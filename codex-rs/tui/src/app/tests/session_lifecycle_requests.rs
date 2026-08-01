@@ -573,3 +573,779 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         .join()
         .expect("session lifecycle request test thread")
 }
+
+#[test]
+fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-closed-sidecar-replay".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-02T00-00-00",
+                        "2026-01-02T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-02T00-00-01",
+                        "2026-01-02T00:00:01Z",
+                        "Saved child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/worker").expect("valid agent path"),
+                            ),
+                            agent_nickname: Some("worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create child rollout"),
+                )?;
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(backfill.completed);
+                assert!(
+                    app.agent_navigation
+                        .get(&child_thread_id)
+                        .is_some_and(|entry| entry.is_closed),
+                    "a persisted but not-loaded descendant should be offered as saved history"
+                );
+
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+                    .await?;
+
+                assert_eq!(app.active_thread_id, Some(child_thread_id));
+                assert!(app.thread_event_channels.contains_key(&child_thread_id));
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("closed sidecar replay test thread")
+}
+
+#[test]
+fn agent_picker_backfill_combines_indexed_and_legacy_descendants() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-mixed-agent-picker-backfill".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-04T00-00-00",
+                        "2026-01-04T00:00:00Z",
+                        "Saved root message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let legacy_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-04T00-00-01",
+                        "2026-01-04T00:00:01Z",
+                        "Saved legacy child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/legacy")
+                                    .expect("valid legacy agent path"),
+                            ),
+                            agent_nickname: Some("legacy".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create legacy child rollout"),
+                )?;
+                let other_indexed_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-04T00-00-02",
+                        "2026-01-04T00:00:02Z",
+                        "Saved other indexed child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/indexed-two")
+                                    .expect("valid second indexed agent path"),
+                            ),
+                            agent_nickname: Some("indexed-two".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create second indexed child rollout"),
+                )?;
+                let indexed_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-04T00-00-03",
+                        "2026-01-04T00:00:03Z",
+                        "Saved indexed child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/indexed")
+                                    .expect("valid indexed agent path"),
+                            ),
+                            agent_nickname: Some("indexed".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create indexed child rollout"),
+                )?;
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                // The first one-row page overfetches its bounded scan to repair the two newest
+                // children before opening the root. The older child remains unindexed, producing
+                // a deliberately mixed state database.
+                let repair_page = app_server
+                    .thread_list(ThreadListParams {
+                        cursor: None,
+                        limit: Some(1),
+                        sort_key: Some(ThreadSortKey::UpdatedAt),
+                        sort_direction: Some(SortDirection::Desc),
+                        model_providers: None,
+                        source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                        thread_sources: None,
+                        archived: Some(false),
+                        is_pinned: None,
+                        cwd: None,
+                        use_state_db_only: false,
+                        search_term: None,
+                        parent_thread_id: None,
+                        ancestor_thread_id: None,
+                    })
+                    .await?;
+                assert_eq!(repair_page.data.len(), 1);
+                assert_eq!(repair_page.data[0].id, indexed_child_thread_id.to_string());
+
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                let backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(backfill.completed);
+                assert!(
+                    app.agent_navigation.get(&indexed_child_thread_id).is_some(),
+                    "the relation-indexed descendant should remain visible"
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(&other_indexed_child_thread_id)
+                        .is_some(),
+                    "the other relation-indexed descendant should remain visible"
+                );
+                assert!(
+                    app.agent_navigation.get(&legacy_child_thread_id).is_some(),
+                    "the bounded legacy repair must supplement a non-empty indexed page"
+                );
+                assert_eq!(
+                    app.agent_navigation
+                        .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                        .len(),
+                    3,
+                    "mixed backfill should deduplicate indexed children while adding the legacy child"
+                );
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("mixed agent picker backfill test thread")
+}
+
+#[test]
+fn agent_picker_retries_legacy_fallback_after_transient_scan_failure() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-legacy-fallback-retry".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-05T00-00-00",
+                        "2026-01-05T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let legacy_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-05T00-00-01",
+                        "2026-01-05T00:00:01Z",
+                        "Saved legacy child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/legacy-retry")
+                                    .expect("valid legacy agent path"),
+                            ),
+                            agent_nickname: Some("legacy-retry".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create legacy child rollout"),
+                )?;
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server_with_transient_picker_backfill_failure(
+                        &app.config,
+                        Some(TransientPickerBackfillFailure::LegacyScan),
+                    )
+                    .await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                let first_backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(
+                    !first_backfill.completed,
+                    "a failed legacy scan must leave the bounded fallback retryable"
+                );
+                assert!(app.agent_navigation.needs_legacy_relation_fallback_check());
+                assert!(
+                    app.agent_navigation.get(&legacy_child_thread_id).is_none(),
+                    "the injected failed scan must not pretend the legacy child was discovered"
+                );
+
+                let retry_backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(retry_backfill.completed);
+                assert!(!app.agent_navigation.needs_legacy_relation_fallback_check());
+                assert!(
+                    app.agent_navigation.get(&legacy_child_thread_id).is_some(),
+                    "a later successful bounded pass must expose the legacy descendant"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("legacy fallback retry test thread")
+}
+
+#[test]
+fn agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-legacy-metadata-retry".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-06T00-00-00",
+                        "2026-01-06T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let legacy_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-06T00-00-01",
+                        "2026-01-06T00:00:01Z",
+                        "Saved legacy child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/legacy-metadata-retry")
+                                    .expect("valid legacy agent path"),
+                            ),
+                            agent_nickname: Some("legacy-metadata-retry".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create legacy child rollout"),
+                )?;
+
+                // The proxy models a pre-index legacy child that is visible through the loaded
+                // process list but absent from the persisted relation/scan result. The first
+                // metadata read fails; the next bounded refresh must retry it and discover child.
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server_with_transient_picker_backfill_failure(
+                        &app.config,
+                        Some(TransientPickerBackfillFailure::ThreadReadAndHideFromThreadList {
+                            thread_id: legacy_child_thread_id.to_string(),
+                        }),
+                    )
+                    .await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                let _legacy_child = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        legacy_child_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                assert!(
+                    app.agent_navigation.needs_legacy_relation_fallback_check(),
+                    "a failed loaded-thread metadata read must leave the fallback retryable"
+                );
+                assert!(
+                    app.agent_navigation.get(&legacy_child_thread_id).is_none(),
+                    "the hidden scan result must not mask the failed metadata lookup"
+                );
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                assert!(!app.agent_navigation.needs_legacy_relation_fallback_check());
+                assert!(
+                    app.agent_navigation.get(&legacy_child_thread_id).is_some(),
+                    "the next bounded refresh must retry and discover the loaded legacy child"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("legacy metadata fallback retry test thread")
+}
+
+#[test]
+fn agent_picker_keeps_the_forward_page_after_reopen() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+    const DESCENDANT_COUNT: usize = 2 * 50 + 1;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-page-continuation".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-03T00-00-00",
+                        "2026-01-03T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let mut child_thread_ids = Vec::with_capacity(DESCENDANT_COUNT);
+                for index in 0..DESCENDANT_COUNT {
+                    let seconds_from_start = index + 1;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    let timestamp = format!("2026-01-03T00-{minute:02}-{second:02}");
+                    let created_at = format!("2026-01-03T00:{minute:02}:{second:02}Z");
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
+                            codex_home.path(),
+                            &timestamp,
+                            &created_at,
+                            &format!("Saved child message {index}"),
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: root_thread_id,
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from(format!("/root/worker-{index}"))
+                                        .expect("valid agent path"),
+                                ),
+                                agent_nickname: Some(format!("worker-{index}")),
+                                agent_role: Some("worker".to_string()),
+                            }),
+                            root_thread_id.into(),
+                            root_thread_id,
+                        )
+                        .expect("create child rollout"),
+                    )?;
+                    child_thread_ids.push(child_thread_id);
+                }
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                // Prime the state database as a modern rollout would have done while the agents
+                // were spawned. The picker assertions below then exercise relation pagination,
+                // rather than the separate one-page legacy repair fallback.
+                let mut repair_cursor = None;
+                loop {
+                    let repair_page = app_server
+                        .thread_list(codex_app_server_protocol::ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(50),
+                            sort_key: Some(codex_app_server_protocol::ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![
+                                codex_app_server_protocol::ThreadSourceKind::SubAgentThreadSpawn,
+                            ]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = repair_page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                for character in "closed".chars() {
+                    app.chat_widget.handle_key_event(KeyEvent::new(
+                        KeyCode::Char(character),
+                        KeyModifiers::NONE,
+                    ));
+                }
+                Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
+                assert_eq!(
+                    app.agent_navigation
+                        .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                        .len(),
+                    100
+                );
+                let third_page_cursor = app
+                    .agent_navigation
+                    .next_picker_page_cursor()
+                    .expect("the third page should remain available after page two");
+                assert_eq!(
+                    app.chat_widget.selection_view_search_query("agent-picker"),
+                    Some("closed".to_string())
+                );
+
+                app.chat_widget
+                    .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                assert_eq!(
+                    app.chat_widget.selection_view_search_query("agent-picker"),
+                    None
+                );
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                assert_eq!(
+                    app.agent_navigation.next_picker_page_cursor(),
+                    Some(third_page_cursor),
+                    "a first-page refresh must not reset pagination to page two"
+                );
+                for character in "closed".chars() {
+                    app.chat_widget.handle_key_event(KeyEvent::new(
+                        KeyCode::Char(character),
+                        KeyModifiers::NONE,
+                    ));
+                }
+                Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
+
+                assert_eq!(
+                    app.agent_navigation
+                        .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                        .len(),
+                    DESCENDANT_COUNT
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(child_thread_ids.last().expect("last child"))
+                        .is_some(),
+                    "the continuation after reopen must advance to the previously unseen page"
+                );
+                assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("agent picker continuation test thread")
+}
+
+#[test]
+fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()> {
+    const CLOSED_DESCENDANT_COUNT: usize = 50;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-loaded-priority".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-07T00-00-00",
+                        "2026-01-07T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let idle_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-07T00-00-01",
+                        "2026-01-07T00:00:01Z",
+                        "Saved idle child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/idle-worker")
+                                    .expect("valid idle agent path"),
+                            ),
+                            agent_nickname: Some("idle-worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create idle child rollout"),
+                )?;
+                for index in 0..CLOSED_DESCENDANT_COUNT {
+                    let seconds_from_start = index + 2;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    let timestamp = format!("2026-01-07T00-{minute:02}-{second:02}");
+                    let created_at = format!("2026-01-07T00:{minute:02}:{second:02}Z");
+                    create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        &timestamp,
+                        &created_at,
+                        &format!("Saved closed child message {index}"),
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from(format!("/root/closed-worker-{index}"))
+                                    .expect("valid closed agent path"),
+                            ),
+                            agent_nickname: Some(format!("closed-worker-{index}")),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create closed child rollout");
+                }
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                // Populate the persisted relationship index exactly as a modern session would.
+                // The first persisted page then contains the 50 newer closed descendants, while
+                // the older child below remains loaded and must come from the priority path.
+                let mut repair_cursor = None;
+                loop {
+                    let repair_page = app_server
+                        .thread_list(ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(50),
+                            sort_key: Some(ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = repair_page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                let _idle_child = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        idle_child_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+                let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
+                assert!(
+                    rendered.contains("Subagent: idle-worker [worker] · /root/idle-worker"),
+                    "the unfiltered picker must show the older loaded idle child ahead of closed history"
+                );
+                assert!(
+                    !rendered.contains("closed-worker-49"),
+                    "closed history must remain hidden from the default picker view"
+                );
+                assert_eq!(
+                    app.adjacent_thread_id_with_backfill(
+                        &mut app_server,
+                        AgentNavigationDirection::Next,
+                    )
+                    .await,
+                    Some(idle_child_thread_id),
+                    "the loaded idle child must be reachable by next-agent keyboard navigation"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("loaded descendant priority test thread")
+}
