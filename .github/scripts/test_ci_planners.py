@@ -3460,7 +3460,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 checkout_step = next(
                     step
                     for step in run_job.get("steps") or []
-                    if step.get("uses") == "actions/checkout@v6"
+                    if step.get("uses") == "actions/checkout@v7"
                 )
                 self.assertEqual(
                     (checkout_step.get("with") or {}).get("fetch-depth"),
@@ -3537,7 +3537,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 checkout_steps = [
                     step
                     for step in run_job.get("steps") or []
-                    if step.get("uses") == "actions/checkout@v6"
+                    if step.get("uses") == "actions/checkout@v7"
                 ]
                 self.assertGreaterEqual(len(checkout_steps), 2)
                 self.assertEqual(
@@ -3709,7 +3709,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("fromJSON(needs.plan.outputs.matrix)", workflow_json)
 
         checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
-        self.assertEqual(checkout_step.get("uses"), "actions/checkout@v6")
+        self.assertEqual(checkout_step.get("uses"), "actions/checkout@v7")
         self.assertEqual((checkout_step.get("with") or {}).get("persist-credentials"), "false")
 
         install_rust_step = next(
@@ -5206,7 +5206,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         steps = summary.get("steps") or []
         self.assertEqual((summary.get("permissions") or {}).get("actions"), "read")
         uses_steps = [step.get("uses") for step in steps]
-        self.assertIn("actions/checkout@v6", uses_steps)
+        self.assertIn("actions/checkout@v7", uses_steps)
         self.assertIn("actions/download-artifact@v8", uses_steps)
         self.assertIn("actions/upload-artifact@v7", uses_steps)
         self.assertTrue(
