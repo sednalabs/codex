@@ -1506,6 +1506,7 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 4));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-child".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
@@ -1565,6 +1566,7 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
     assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-child-error".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
@@ -1600,6 +1602,7 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-failed-child".to_string(),
             thread_id,
             agent_path: "/root/failed-child".to_string(),
             model: None,
@@ -1621,6 +1624,7 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
     };
     let display = sub_agent_activity_display(&errored_item)
         .expect("errored activity should update picker liveness");
+    assert_eq!(display.activity_id, "activity-errored");
     assert!(display.has_system_error);
     assert!(!display.is_running_hint);
     let transcript = lines_to_single_string(
@@ -1668,6 +1672,7 @@ async fn thread_closed_picker_row_ignores_late_errored_activity() {
     let thread_id = ThreadId::new();
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-closed-child".to_string(),
             thread_id,
             agent_path: "/root/closed-child".to_string(),
             model: None,
@@ -1733,6 +1738,7 @@ async fn thread_status_revisions_gate_error_recovery_picker_liveness() -> Result
     let thread_id = ThreadId::new();
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-status-watched-child".to_string(),
             thread_id,
             agent_path: "/root/status-watched-child".to_string(),
             model: None,
@@ -1863,6 +1869,7 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
     );
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-errored-child".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
@@ -1904,6 +1911,7 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-worker".to_string(),
             thread_id,
             agent_path: "/root/worker".to_string(),
             model: None,
@@ -1940,6 +1948,7 @@ async fn open_agent_picker_hides_closed_sidecars_until_closed_filter_is_entered(
         ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-finished".to_string(),
             thread_id,
             agent_path: "/root/finished".to_string(),
             model: None,
@@ -2015,6 +2024,7 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
     app.thread_event_channels.insert(thread_id, channel);
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-channel-child".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
@@ -2219,6 +2229,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
 
         app.agent_navigation
             .record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: "activity-child-0".to_string(),
                 thread_id: child_thread_ids[0],
                 agent_path: "/root/child-0".to_string(),
                 model: None,

@@ -2037,6 +2037,7 @@ fn agent_picker_keeps_errored_activity_failed_across_stale_loaded_descendant_bac
                         .await?;
                     app.agent_navigation
                         .record_sub_agent_activity(SubAgentActivityDisplay {
+                            activity_id: "activity-child".to_string(),
                             thread_id: child_thread_id,
                             agent_path: agent_path.clone(),
                             model: None,

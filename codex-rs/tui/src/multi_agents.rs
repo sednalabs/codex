@@ -73,6 +73,8 @@ pub(crate) struct AgentPickerThreadEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SubAgentActivityDisplay {
+    /// Stable V2 turn-item/call identity for correlating one child lifecycle.
+    pub(crate) activity_id: String,
     pub(crate) thread_id: ThreadId,
     pub(crate) agent_path: String,
     pub(crate) model: Option<String>,
@@ -545,6 +547,7 @@ pub(crate) fn tool_call_history_cell(
 
 pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentActivityDisplay> {
     let ThreadItem::SubAgentActivity {
+        id,
         kind,
         agent_thread_id,
         agent_path,
@@ -562,6 +565,7 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
         SubAgentActivityKind::Errored => (false, true),
     };
     Some(SubAgentActivityDisplay {
+        activity_id: id.clone(),
         thread_id: parse_thread_id(agent_thread_id)?,
         agent_path: agent_path.clone(),
         model: model.clone(),
