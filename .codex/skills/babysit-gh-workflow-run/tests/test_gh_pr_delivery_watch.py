@@ -585,6 +585,56 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["repo"], "owner/repo")
         self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
 
+    def test_malformed_expected_head_sha_emits_a_compact_json_receipt(self):
+        launcher = (
+            Path(__file__).resolve().parents[1] / "scripts" / "gh_pr_delivery_watch"
+        )
+        result = subprocess.run(
+            [
+                str(launcher),
+                "--repo",
+                "owner/repo",
+                "--pr",
+                "17",
+                "--expected-head-sha",
+                "not-a-full-sha",
+                "--post-merge-workflow",
+                ".github/workflows/postmerge-ci.yml",
+            ],
+            env={"PATH": "", "GH_PR_DELIVERY_WATCH_PYTHON": sys.executable},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        self.assertEqual(result.stderr, "")
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["repo"], "owner/repo")
+        self.assertEqual(receipt["pr"]["number"], 17)
+        self.assertEqual(receipt["pr"]["expected_head_sha"], "not-a-full-sha")
+        self.assertEqual(receipt["actions"], ["stop_invalid_arguments"])
+        self.assertIn("full 40-character Git SHA", receipt["error"])
+        self.assertEqual(
+            receipt["proof_scope"]["selected_post_merge_workflows"],
+            [".github/workflows/postmerge-ci.yml"],
+        )
+        self.assertFalse(receipt["proof_scope"]["whole_repository_health_proven"])
+
+    def test_skill_requires_native_health_workflow_to_land_before_watching(self):
+        skill = Path(__file__).resolve().parents[1] / "SKILL.md"
+        content = " ".join(skill.read_text(encoding="utf-8").split())
+
+        self.assertIn(
+            "must first be introduced and landed on `main` by its separate CI PR",
+            content,
+        )
+        self.assertIn("not resolvable from a watcher-only branch", content)
+        self.assertIn(
+            "workflow=Native Windows Bazel health,ref=main,head-sha=<merge-commit-sha>",
+            content,
+        )
+
     def test_blocking_watcher_invocation_uses_the_existing_terminal_helper(self):
         args = make_args()
         output = json.dumps({"targets": []}) + "\n"
