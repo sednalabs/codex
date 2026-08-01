@@ -24,6 +24,10 @@ use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
 const AGENT_PICKER_PAGE_SIZE: u32 = 50;
+/// One bounded relation page for servers that predate `ancestorFilterApplied` but support the
+/// older `thread/list.ancestorThreadId` filter. The app server clamps a single list request at
+/// 100 rows, and this path never performs a per-id metadata sweep.
+const AGENT_PICKER_UNACKNOWLEDGED_RELATION_PAGE_SIZE: u32 = 100;
 const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
@@ -1097,6 +1101,45 @@ impl App {
 
         let ancestor_filter_applied = response.ancestor_filter_applied;
 
+        // `thread/list.ancestorThreadId` predates the acknowledgement on this response. When an
+        // older server applies that stable filter but omits the acknowledgement, read one bounded
+        // compatibility window and still locally reconstruct every accepted relationship. This
+        // keeps a currently loaded descendant visible when it falls just beyond the ordinary 50
+        // row picker page, without trusting an unacknowledged response or reading global loaded
+        // ids one at a time.
+        let unacknowledged_relation_threads = if !ancestor_filter_applied && !is_continuation {
+            match app_server
+                .thread_list(ThreadListParams {
+                    cursor: None,
+                    limit: Some(AGENT_PICKER_UNACKNOWLEDGED_RELATION_PAGE_SIZE),
+                    sort_key: Some(ThreadSortKey::UpdatedAt),
+                    sort_direction: Some(SortDirection::Desc),
+                    model_providers: None,
+                    source_kinds: None,
+                    thread_sources: None,
+                    archived: Some(false),
+                    is_pinned: None,
+                    cwd: None,
+                    use_state_db_only: true,
+                    search_term: None,
+                    parent_thread_id: None,
+                    ancestor_thread_id: Some(primary_thread_id.to_string()),
+                })
+                .await
+            {
+                Ok(response) => Some(response.data),
+                Err(err) => {
+                    tracing::debug!(
+                        %err,
+                        "bounded compatibility relation lookup was unavailable"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // A normal `/agent` reopen refreshes the first page for liveness but must not rewind an
         // available cached continuation after the user has already loaded page two. A first page
         // with no continuation is authoritative, though: it means the relation set has shrunk
@@ -1131,12 +1174,15 @@ impl App {
                 "persisted descendant response did not acknowledge the ancestor filter; \
                  locally verifying returned threads"
             );
-            let descendant_thread_ids =
-                find_loaded_subagent_threads_for_primary(response.data.clone(), primary_thread_id)
-                    .into_iter()
-                    .map(|thread| thread.thread_id)
-                    .collect::<HashSet<_>>();
-            for thread in response.data {
+            let relation_threads = unacknowledged_relation_threads.unwrap_or(response.data);
+            let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
+                relation_threads.clone(),
+                primary_thread_id,
+            )
+            .into_iter()
+            .map(|thread| thread.thread_id)
+            .collect::<HashSet<_>>();
+            for thread in relation_threads {
                 let is_descendant = ThreadId::from_string(&thread.id)
                     .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
                 if is_descendant {
