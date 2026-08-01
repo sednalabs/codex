@@ -26,6 +26,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       number
       headRefOid
       baseRefName
+      baseRefOid
       merged
       mergeQueueEntry { id }
       mergeCommit { oid }
@@ -100,13 +101,21 @@ def compact_failed_job(failed_jobs):
     } or None
 
 
+def run_process(command):
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as err:
+        executable = str(command[0]) if command else "required command"
+        raise GhCommandError(f"Unable to execute {executable!r}.") from err
+
+
 def gh_json(args):
-    result = subprocess.run(
-        ["gh", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_process(["gh", *args])
     if result.returncode != 0:
         raise GhCommandError(
             f"GitHub CLI command failed with exit status {result.returncode}."
@@ -123,11 +132,8 @@ def detect_repo():
     )
     if configured:
         return configured
-    result = subprocess.run(
+    result = run_process(
         ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-        capture_output=True,
-        text=True,
-        check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
@@ -159,13 +165,16 @@ def fetch_pr(repo, pr_number):
             f"number={int(pr_number)}",
         ]
     )
-    pr = ((payload.get("data") or {}).get("repository") or {}).get("pullRequest")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    repository = data.get("repository") if isinstance(data, dict) else None
+    pr = repository.get("pullRequest") if isinstance(repository, dict) else None
     if not isinstance(pr, dict):
         raise GhCommandError(f"Pull request #{pr_number} was not found in {repo}.")
     return {
         "number": pr.get("number"),
         "head_sha": str(pr.get("headRefOid") or ""),
         "base_ref": str(pr.get("baseRefName") or ""),
+        "base_sha": str(pr.get("baseRefOid") or ""),
         "merged": bool(pr.get("merged")),
         "merge_queue_entry_id": ((pr.get("mergeQueueEntry") or {}).get("id")),
         "merge_commit_sha": str(((pr.get("mergeCommit") or {}).get("oid")) or ""),
@@ -298,7 +307,7 @@ def run_blocking_watcher(repo, target, args):
         "--retry-settle-seconds",
         str(args.retry_settle_seconds),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = run_process(command)
     payload = parse_watcher_payload(result.stdout)
     if result.returncode != 0:
         raise GhCommandError("The blocking workflow watcher exited unsuccessfully.")
@@ -407,16 +416,53 @@ def fetch_ref_sha(repo, ref):
     return sha
 
 
-def is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
-    if merge_commit_sha.lower() == main_head_sha.lower():
+def is_commit_ancestor(repo, ancestor_sha, descendant_sha):
+    if ancestor_sha.lower() == descendant_sha.lower():
         return True
     payload = gh_json(
-        ["api", f"repos/{repo}/compare/{merge_commit_sha}...{main_head_sha}"]
+        ["api", f"repos/{repo}/compare/{ancestor_sha}...{descendant_sha}"]
     )
     return isinstance(payload, dict) and payload.get("status") in {
-        "behind",
+        "ahead",
         "identical",
     }
+
+
+def verify_candidate_association(repo, candidate_sha, pr, args):
+    expected_base_sha = str(pr.get("base_sha") or "")
+    if not is_full_sha(expected_base_sha):
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            f"PR #{args.pr} did not return a full current base SHA.",
+        )
+    try:
+        includes_expected_head = is_commit_ancestor(
+            repo, args.expected_head_sha, candidate_sha
+        )
+        includes_current_base = is_commit_ancestor(
+            repo, expected_base_sha, candidate_sha
+        )
+    except GhCommandError as err:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            "GitHub could not establish the merge-group candidate commit ancestry.",
+        ) from err
+    if not includes_expected_head or not includes_current_base:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_stale",
+            f"Merge-group candidate {candidate_sha} does not contain PR #{args.pr}'s "
+            "current expected head and base.",
+        )
+    return {
+        "expected_pr_head_sha": args.expected_head_sha,
+        "expected_base_sha": expected_base_sha,
+        "candidate_contains_expected_head": True,
+        "candidate_contains_current_base": True,
+    }
+
+
+def is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
+    return is_commit_ancestor(repo, merge_commit_sha, main_head_sha)
 
 
 def new_receipt(repo, args):
@@ -436,15 +482,17 @@ def new_receipt(repo, args):
 
 
 def execute_delivery(args):
-    repo = args.repo or detect_repo()
-    receipt = new_receipt(repo, args)
+    receipt = new_receipt(args.repo or "unknown", args)
     try:
+        repo = args.repo or detect_repo()
+        receipt["repo"] = repo
         initial_pr = fetch_pr(repo, args.pr)
         assert_pr_identity(initial_pr, args)
         receipt["pr"].update(
             {
                 "observed_head_sha": initial_pr["head_sha"],
                 "merge_queue_entry_id": initial_pr["merge_queue_entry_id"],
+                "observed_base_sha": initial_pr["base_sha"],
             }
         )
 
@@ -457,6 +505,9 @@ def execute_delivery(args):
             if args.merge_group_run_id is not None
             else "unique_discovery",
         }
+        receipt["merge_group"]["association"] = verify_candidate_association(
+            repo, candidate_sha, initial_pr, args
+        )
         candidate_payload = run_blocking_watcher(
             repo,
             f"run-id={candidate['id']},head-sha={candidate_sha}",
@@ -541,6 +592,10 @@ def execute_delivery(args):
     except GhCommandError as error:
         receipt["actions"] = ["stop_operator_help_required"]
         receipt["error"] = str(error)
+        return receipt, 1
+    except (AttributeError, KeyError, TypeError, ValueError):
+        receipt["actions"] = ["stop_operator_help_required"]
+        receipt["error"] = "Unexpected error while building the delivery receipt."
         return receipt, 1
 
 
