@@ -1126,6 +1126,19 @@ class RouteSelectionTests(unittest.TestCase):
             native_test_run,
         )
 
+        module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
+        self.assertIn(
+            '"//patches:rules_rs_windows_msvc_rust_lld.patch"',
+            module_bazel,
+        )
+        msvc_linker_patch = (
+            REPO_ROOT / "patches/rules_rs_windows_msvc_rust_lld.patch"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"@llvm//constraints/windows/abi:msvc": "{}rust-lld".format(rustc_repo_label)',
+            msvc_linker_patch,
+        )
+
         execution_logs_upload = next(
             step for step in native_steps if step.get("name") == "Upload Bazel execution logs"
         )
