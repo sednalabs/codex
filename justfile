@@ -198,6 +198,7 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_loaded_descendants_when_persisted_list_fails --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_the_forward_page_after_reopen --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_descendant_over_closed_history --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_next_page --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1

@@ -1783,3 +1783,206 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
         .join()
         .expect("loaded descendant priority test thread")
 }
+
+#[test]
+fn agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent() -> Result<()> {
+    const CLOSED_DESCENDANT_COUNT: usize = 50;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-loaded-nested-priority".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-09T00-00-00",
+                        "2026-01-09T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let unloaded_child_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-09T00-00-01",
+                        "2026-01-09T00:00:01Z",
+                        "Saved unloaded child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/unloaded-intermediary")
+                                    .expect("valid unloaded child agent path"),
+                            ),
+                            agent_nickname: Some("unloaded-intermediary".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create unloaded child rollout"),
+                )?;
+                let loaded_grandchild_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-09T00-00-02",
+                        "2026-01-09T00:00:02Z",
+                        "Saved loaded grandchild message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: unloaded_child_thread_id,
+                            depth: 2,
+                            agent_path: Some(
+                                AgentPath::try_from("/root/loaded-nested-worker")
+                                    .expect("valid loaded grandchild agent path"),
+                            ),
+                            agent_nickname: Some("loaded-nested-worker".to_string()),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        unloaded_child_thread_id,
+                    )
+                    .expect("create loaded grandchild rollout"),
+                )?;
+                for index in 0..CLOSED_DESCENDANT_COUNT {
+                    let seconds_from_start = index + 3;
+                    let timestamp = format!("2026-01-09T00-00-{seconds_from_start:02}");
+                    let created_at = format!("2026-01-09T00:00:{seconds_from_start:02}Z");
+                    create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        &timestamp,
+                        &created_at,
+                        &format!("Saved closed child message {index}"),
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                            parent_thread_id: root_thread_id,
+                            depth: 1,
+                            agent_path: Some(
+                                AgentPath::try_from(format!("/root/nested-closed-worker-{index}"))
+                                    .expect("valid closed agent path"),
+                            ),
+                            agent_nickname: Some(format!("nested-closed-worker-{index}")),
+                            agent_role: Some("worker".to_string()),
+                        }),
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create closed child rollout");
+                }
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                // Populate the durable root -> child -> grandchild chain. The first persisted
+                // page is instead full of the 50 newer closed children, so the loaded grandchild
+                // must arrive through the independent ancestor-filtered loaded-priority query.
+                let mut repair_cursor = None;
+                loop {
+                    let repair_page = app_server
+                        .thread_list(ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(50),
+                            sort_key: Some(ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = repair_page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                let _loaded_grandchild = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        loaded_grandchild_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+                assert!(
+                    app.agent_navigation.next_picker_page_cursor().is_some(),
+                    "the first persisted page must remain full of newer closed history"
+                );
+                assert!(
+                    app.agent_navigation.get(&unloaded_child_thread_id).is_none(),
+                    "the unloaded intermediary must not be registered as a loaded descendant"
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(&loaded_grandchild_thread_id)
+                        .is_some_and(|entry| !entry.is_closed),
+                    "the ancestor-filtered loaded grandchild must not be dropped by local relation reconstruction"
+                );
+                let visible_loaded_thread_ids = app
+                    .agent_navigation
+                    .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                    .into_iter()
+                    .filter_map(|(thread_id, entry)| (!entry.is_closed).then_some(thread_id))
+                    .collect::<std::collections::HashSet<_>>();
+                assert_eq!(
+                    visible_loaded_thread_ids,
+                    [loaded_grandchild_thread_id]
+                        .into_iter()
+                        .collect::<std::collections::HashSet<_>>(),
+                    "the loaded nested descendant must be visible before historical pagination"
+                );
+                Box::pin(app.render_agent_picker()).await;
+                let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
+                assert!(rendered.contains("loaded-nested-worker"));
+                assert!(
+                    !rendered.contains("nested-closed-worker-49"),
+                    "closed history must remain hidden from the default picker view"
+                );
+                app.active_thread_id = Some(root_thread_id);
+                let next_thread_id = app
+                    .adjacent_thread_id_with_backfill(
+                        &mut app_server,
+                        AgentNavigationDirection::Next,
+                    )
+                    .await
+                    .expect("the loaded grandchild should be reachable before closed history");
+                assert_eq!(next_thread_id, loaded_grandchild_thread_id);
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("loaded nested descendant priority test thread")
+}

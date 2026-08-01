@@ -1233,14 +1233,27 @@ impl App {
             }
         };
         let mut loaded_metadata_completed = true;
-        let mut loaded_threads = Vec::with_capacity(loaded_thread_ids.len());
+        let mut loaded_descendant_count = 0;
         for thread_id in loaded_thread_ids {
             let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
                 loaded_metadata_completed = false;
                 continue;
             };
-            match app_server.thread_read(thread_id, /*include_turns*/ false).await {
-                Ok(thread) => loaded_threads.push(thread),
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                // The app server already applied the requested ancestor relation. Do not
+                // reconstruct it from only the loaded metadata here: an unloaded intermediary
+                // would otherwise hide a returned loaded nested descendant.
+                Ok(thread) => {
+                    self.register_agent_picker_thread_from_backend(
+                        primary_thread_id,
+                        thread,
+                        refreshed_thread_ids,
+                    );
+                    loaded_descendant_count += 1;
+                }
                 Err(err) => {
                     // A listed thread whose metadata cannot be read has not been covered by this
                     // priority pass. Leave it incomplete so the next first-page refresh retries
@@ -1254,29 +1267,11 @@ impl App {
                 }
             }
         }
-        let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
-            loaded_threads.clone(),
-            primary_thread_id,
-        )
-        .into_iter()
-        .map(|thread| thread.thread_id)
-        .collect::<HashSet<_>>();
-        if !descendant_thread_ids.is_empty() {
+        if loaded_descendant_count > 0 {
             tracing::debug!(
-                descendants = descendant_thread_ids.len(),
+                descendants = loaded_descendant_count,
                 "used complete loaded-descendant priority set for subagent metadata"
             );
-            for thread in loaded_threads {
-                let is_descendant = ThreadId::from_string(&thread.id)
-                    .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
-                if is_descendant {
-                    self.register_agent_picker_thread_from_backend(
-                        primary_thread_id,
-                        thread,
-                        refreshed_thread_ids,
-                    );
-                }
-            }
         }
 
         loaded_metadata_completed
