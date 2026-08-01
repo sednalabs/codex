@@ -17,7 +17,6 @@ use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_state::StateRuntime;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
-use sqlx::SqlitePool;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
@@ -344,11 +343,11 @@ async fn thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_quer
 
     // Inject a persisted-graph query failure after the live registry has been populated. The
     // ancestor-filtered RPC must still use the loaded direct and nested ThreadSpawn edges.
-    let state_db_url = format!("sqlite://{}", sqlite.state_db_path().display());
-    let fault_injection_db = SqlitePool::connect(&state_db_url).await?;
+    let fault_injection_db = sqlite.open_read_write_pool(&sqlite.state_db_path()).await?;
     sqlx::query("DROP TABLE thread_spawn_edges")
         .execute(&fault_injection_db)
         .await?;
+    fault_injection_db.close().await;
 
     let mut expected = vec![child_thread_id, grandchild_thread_id];
     expected.sort();
@@ -385,7 +384,6 @@ async fn thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_quer
     assert!(!second_page.contains(&unrelated_root_thread_id));
     assert!(!second_page.contains(&unrelated_child_thread_id));
 
-    fault_injection_db.close().await;
     Ok(())
 }
 
