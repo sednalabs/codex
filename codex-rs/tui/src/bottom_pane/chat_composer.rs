@@ -1552,6 +1552,11 @@ impl ChatComposer {
         self.placeholder_text = "Viewing sub-agent — direct input is disabled".to_string();
     }
 
+    pub(crate) fn set_replay_only_thread(&mut self) {
+        self.blocks_direct_input = true;
+        self.placeholder_text = "Viewing saved transcript — direct input is disabled".to_string();
+    }
+
     /// Move the cursor to the end of the current text buffer.
     pub(crate) fn move_cursor_to_end(&mut self) {
         self.draft

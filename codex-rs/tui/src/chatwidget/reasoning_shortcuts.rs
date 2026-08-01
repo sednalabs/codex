@@ -19,7 +19,6 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyEvent;
 
 use super::ChatWidget;
-use super::PARENT_OWNED_INPUT_MESSAGE;
 use crate::app_event::AppEvent;
 use crate::key_hint::KeyBindingListExt;
 
@@ -74,7 +73,7 @@ impl ChatWidget {
         }
 
         if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            self.add_error_message(self.direct_input_blocked_message().to_string());
             return true;
         }
 

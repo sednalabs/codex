@@ -760,7 +760,9 @@ impl App {
             /*initial_user_message*/ None,
         );
         self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-        if blocks_direct_input {
+        if is_replay_only {
+            self.chat_widget.set_replay_only_thread();
+        } else if blocks_direct_input {
             self.chat_widget.set_parent_owned_thread();
         }
 

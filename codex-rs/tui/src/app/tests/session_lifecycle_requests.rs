@@ -24,6 +24,9 @@ use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_state::SqliteConfig;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use futures::SinkExt;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
@@ -652,6 +655,12 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                         .is_some_and(|entry| entry.is_closed),
                     "a persisted but not-loaded descendant should be offered as saved history"
                 );
+                let child = app_server.thread_read(child_thread_id, /*include_turns*/ true).await?;
+                assert_eq!(
+                    child.can_accept_direct_input,
+                    Some(true),
+                    "the closed descendant must model an older direct-input-capable thread"
+                );
 
                 let mut tui = crate::tui::test_support::make_test_tui()?;
                 while app_event_rx.try_recv().is_ok() {}
@@ -695,6 +704,79 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 assert!(
                     replayed_history.contains("Saved child message"),
                     "the closed sidecar transcript should replay from thread/read(includeTurns: true)"
+                );
+
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                for text in ["normal replay input", "!echo replay-only"] {
+                    app.chat_widget.apply_external_edit(text.to_string());
+                    app.chat_widget
+                        .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    assert_eq!(
+                        app.chat_widget.composer_text_with_pending(),
+                        text,
+                        "replay-only input must remain available for the user to copy or edit"
+                    );
+                }
+                app.submit_active_thread_op(
+                    &mut app_server,
+                    AppCommand::run_user_shell_command("echo replay-only-dispatch".to_string()),
+                )
+                .await?;
+                app.submit_active_thread_op(
+                    &mut app_server,
+                    AppCommand::override_turn_context(
+                        /*cwd*/ None,
+                        /*approval_policy*/ None,
+                        /*approvals_reviewer*/ None,
+                        /*permission_profile*/ None,
+                        /*active_permission_profile*/ None,
+                        /*windows_sandbox_level*/ None,
+                        Some("replay-only-settings".to_string()),
+                        /*effort*/ None,
+                        /*summary*/ None,
+                        /*service_tier*/ None,
+                        /*collaboration_mode*/ None,
+                        /*personality*/ None,
+                    ),
+                )
+                .await?;
+
+                let input_events = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                    .collect::<Vec<_>>();
+                assert!(
+                    input_events.iter().all(|event| !matches!(
+                        event,
+                        AppEvent::CodexOp(_) | AppEvent::SubmitThreadOp { .. }
+                    )),
+                    "replay-only input must not emit a Codex operation"
+                );
+                let input_feedback = input_events
+                    .into_iter()
+                    .filter_map(|event| match event {
+                        AppEvent::InsertHistoryCell(cell) => Some(cell.transcript_lines(/*width*/ 100)),
+                        _ => None,
+                    })
+                    .flatten()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    input_feedback.contains(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE),
+                    "replay-only input must explain that the saved transcript is read-only"
+                );
+                assert!(
+                    !input_feedback.contains("controlled by its parent"),
+                    "replay-only input must not use the parent-owned wording"
+                );
+
+                let blocked_operations =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    blocked_operations.iter().all(|method| !matches!(
+                        method.as_str(),
+                        "turn/start" | "turn/steer" | "thread/settings/update" | "thread/shellCommand"
+                    )),
+                    "replay-only input must not emit turn, settings, or shell-command requests: {blocked_operations:?}"
                 );
                 app_server.shutdown().await?;
                 proxy.await??;
