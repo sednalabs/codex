@@ -255,6 +255,10 @@ impl App {
                 if self.chat_widget.thread_id() != Some(thread_id) {
                     return Ok(AppRunControl::Continue);
                 }
+                if self.reject_replay_only_thread_write(thread_id) {
+                    self.chat_widget.restore_user_message_to_composer(prompt);
+                    return Ok(AppRunControl::Continue);
+                }
                 self.session_telemetry.counter(
                     "codex.thread.fork",
                     /*inc*/ 1,
