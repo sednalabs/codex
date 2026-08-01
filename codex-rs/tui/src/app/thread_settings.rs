@@ -171,6 +171,11 @@ impl App {
         if !thread_settings_update_has_changes(&params) {
             return;
         }
+        if let Ok(thread_id) = ThreadId::from_string(&params.thread_id)
+            && self.reject_replay_only_thread_write(thread_id)
+        {
+            return;
+        }
         if let Err(err) = app_server.thread_settings_update(params).await {
             tracing::warn!("failed to update app-server thread settings from TUI: {err}");
             self.chat_widget

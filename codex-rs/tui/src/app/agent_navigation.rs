@@ -494,7 +494,8 @@ impl AgentNavigationState {
     /// The V2 activity stream and the child status watcher are independent. An `Errored` activity
     /// therefore starts an epoch which ignores a delayed `Idle` or `Active` status until the
     /// watcher reports the matching `SystemError`. Once confirmed, only a strictly newer status
-    /// revision may recover the row. Revisionless older servers fail closed after an error.
+    /// revision may recover the row. A tracked close moves its causal revision into a terminal
+    /// lifecycle watermark, so revisionless older servers also fail closed after terminal state.
     pub(crate) fn accepts_thread_status_change(
         &mut self,
         thread_id: ThreadId,
@@ -519,6 +520,21 @@ impl AgentNavigationState {
                 self.record_closed_tombstone(thread_id, Some(status_revision));
             }
             return false;
+        }
+
+        if !is_closed && let Some(watermark) = self.terminal_lifecycle_watermarks.get(&thread_id) {
+            let Some(status_revision) = status_revision else {
+                // A picker row may clear its ordinary revision cache when it closes, but the
+                // terminal watermark still owns the causal boundary. Do not let an older server's
+                // revisionless status revive that row without positive newer evidence.
+                return false;
+            };
+            if watermark
+                .status_revision()
+                .is_some_and(|terminal_revision| status_revision <= terminal_revision)
+            {
+                return false;
+            }
         }
 
         if is_closed {
@@ -848,6 +864,23 @@ impl AgentNavigationState {
                 /*is_closed*/ true, /*created_at*/ None, /*updated_at*/ None,
             );
         }
+    }
+
+    /// Reopens a tracked picker row after [`Self::accepts_thread_status_change`] has accepted a
+    /// strictly newer nonterminal status. The caller owns that causal check; this helper only
+    /// resets the row so the subsequent status can establish its current running/error state.
+    pub(crate) fn reopen_after_newer_status(&mut self, thread_id: ThreadId) {
+        let Some(entry) = self.threads.get_mut(&thread_id) else {
+            return;
+        };
+        if !entry.is_closed {
+            return;
+        }
+
+        entry.is_closed = false;
+        entry.is_running = false;
+        entry.has_system_error = false;
+        self.stopped_threads.remove(&thread_id);
     }
 
     /// Drops all cached picker state.

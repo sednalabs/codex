@@ -1061,6 +1061,43 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     )),
                     "replay-only goal and delayed metadata writes must be rejected before RPC dispatch: {replay_only_write_requests:?}"
                 );
+
+                // These direct event handlers bypass normal operation submission as well. The
+                // replay-only boundary must reject destructive archive/delete calls and every
+                // settings-picker thread write while leaving their local/global UI changes alone.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                for event in [
+                    AppEvent::ArchiveCurrentThread,
+                    AppEvent::DeleteCurrentThread,
+                    AppEvent::UpdateModel("gpt-5.4".to_string()),
+                    AppEvent::UpdateReasoningEffort(Some(
+                        codex_protocol::openai_models::ReasoningEffort::High,
+                    )),
+                    AppEvent::UpdatePersonality(codex_protocol::config_types::Personality::Pragmatic),
+                ] {
+                    let control = Box::pin(app.handle_event(&mut tui, &mut app_server, event))
+                        .await?;
+                    assert!(matches!(control, AppRunControl::Continue));
+                }
+                let replay_only_direct_write_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    replay_only_direct_write_requests.iter().all(|method| !matches!(
+                        method.as_str(),
+                        "thread/archive" | "thread/delete" | "thread/settings/update"
+                    )),
+                    "replay-only destructive and settings writes must be rejected before RPC dispatch: {replay_only_direct_write_requests:?}"
+                );
+                assert_eq!(app.chat_widget.current_model(), "gpt-5.4");
+                assert_eq!(
+                    app.chat_widget.current_reasoning_effort(),
+                    Some(codex_protocol::openai_models::ReasoningEffort::High)
+                );
+                assert_eq!(
+                    app.chat_widget.config_ref().personality,
+                    Some(codex_protocol::config_types::Personality::Pragmatic),
+                    "rejecting a replay-only thread write must not undo the current global selection"
+                );
                 app_server.shutdown().await?;
                 proxy.await??;
                 Ok(())

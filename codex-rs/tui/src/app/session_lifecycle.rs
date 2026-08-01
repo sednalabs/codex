@@ -436,6 +436,7 @@ impl App {
             return;
         }
 
+        self.agent_navigation.reopen_after_newer_status(thread_id);
         self.agent_navigation
             .set_system_error(thread_id, status.has_system_error);
         if status.is_running {
