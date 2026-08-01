@@ -60,6 +60,11 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) is_running: bool,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
+    /// Whether the app server most recently reported a system error for this thread.
+    ///
+    /// An errored thread may still have a saved rollout, so this is deliberately distinct from
+    /// `is_closed`: picker users can inspect and replay the transcript instead of losing the row.
+    pub(crate) has_system_error: bool,
     /// Unix timestamp (seconds) when the thread was created, if known.
     pub(crate) created_at: Option<i64>,
     /// Unix timestamp (seconds) when the thread was last updated, if known.
@@ -117,7 +122,16 @@ pub(crate) struct AgentPickerThreadUsage {
 }
 
 pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
-    let dot = if is_closed {
+    agent_picker_status_dot_spans_with_system_error(is_closed, /*has_system_error*/ false)
+}
+
+pub(crate) fn agent_picker_status_dot_spans_with_system_error(
+    is_closed: bool,
+    has_system_error: bool,
+) -> Vec<Span<'static>> {
+    let dot = if has_system_error {
+        "•".red()
+    } else if is_closed {
         "•".into()
     } else {
         "•".green()
@@ -244,12 +258,13 @@ fn format_agent_picker_item_description_at(
     {
         parts.push(format!("path: {path}"));
     }
-    if entry.is_running {
-        parts.push("live active open".to_string());
-    } else if entry.is_closed {
-        parts.push("closed stale finished".to_string());
-    } else {
-        parts.push("idle inactive open".to_string());
+    match (entry.is_running, entry.has_system_error, entry.is_closed) {
+        (true, _, _) => parts.push("live active open".to_string()),
+        (false, true, _) => {
+            parts.push("system error failed inspect saved transcript".to_string())
+        }
+        (false, false, true) => parts.push("closed stale finished".to_string()),
+        (false, false, false) => parts.push("idle inactive open".to_string()),
     }
     if usage.token_usage.total_tokens > 0 {
         parts.push(format!(
@@ -1251,6 +1266,34 @@ mod tests {
                 &AgentPickerThreadUsage::default(),
             ),
             "00000000-0000-0000-0000-000000000111 • idle inactive open"
+        );
+    }
+
+    #[test]
+    fn picker_description_marks_system_error_rows_for_saved_transcript_inspection() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000116").expect("valid thread");
+        let entry = AgentPickerThreadEntry {
+            has_system_error: true,
+            ..AgentPickerThreadEntry::default()
+        };
+
+        assert_eq!(
+            format_agent_picker_item_description(
+                thread_id,
+                &entry,
+                &AgentPickerThreadUsage::default(),
+            ),
+            "00000000-0000-0000-0000-000000000116 • system error failed inspect saved transcript"
+        );
+        assert_eq!(
+            agent_picker_status_dot_spans_with_system_error(
+                /*is_closed*/ false,
+                /*has_system_error*/ true,
+            )[0]
+                .style
+                .fg,
+            Some(Color::Red)
         );
     }
 
