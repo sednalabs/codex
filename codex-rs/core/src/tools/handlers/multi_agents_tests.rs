@@ -503,6 +503,84 @@ async fn spawn_agent_runtime_failure_completes_failed_lifecycle_without_effectiv
 }
 
 #[tokio::test]
+async fn spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effort() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    // A child can legitimately have no resolved effort. Make the test prove that a missing
+    // post-spawn snapshot preserves that absence instead of inventing `medium`.
+    turn.reasoning_effort = None;
+    turn.model_info.default_reasoning_level = None;
+    let child_model = turn.model_info.slug.clone();
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.hide_next_agent_config_snapshot().await;
+    session.services.agent_control = control;
+    session.thread_id = root.thread_id;
+
+    SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo"})),
+        ))
+        .await
+        .expect("spawn should fall back to the authoritative live-agent identity");
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.requested_model, None);
+    assert_eq!(started.requested_reasoning_effort, None);
+
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.model.as_deref(), Some(child_model.as_str()));
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model, None);
+    assert_eq!(completed.requested_reasoning_effort, None);
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.model, completed.model);
+    assert_eq!(legacy_end.reasoning_effort, completed.reasoning_effort);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+}
+
+#[tokio::test]
 async fn spawn_agent_cancellation_waits_for_terminal_lifecycle_with_created_child() {
     assert!(
         SpawnAgentHandler::default().waits_for_runtime_cancellation(),
@@ -1885,7 +1963,9 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
-    session.services.agent_control = manager.agent_control();
+    let control = manager.agent_control();
+    control.hide_next_agent_config_snapshot().await;
+    session.services.agent_control = control;
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
     config

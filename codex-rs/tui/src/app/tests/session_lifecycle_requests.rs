@@ -74,7 +74,9 @@ fn append_rollout_record(
 enum PickerBackfillTestBehavior {
     PersistedDescendantList,
     LegacyScan,
-    ThreadReadAndHideFromThreadList { thread_id: String },
+    ThreadReadAndHideFromThreadList {
+        thread_id: String,
+    },
     StaleThreadReadStatus {
         thread_id: String,
         status: ThreadStatus,
@@ -205,8 +207,10 @@ async fn start_recording_app_server(
     Arc<Mutex<Vec<String>>>,
     JoinHandle<Result<()>>,
 )> {
-    start_recording_app_server_with_picker_backfill_test_behavior(config, /*test_behavior*/ None)
-        .await
+    start_recording_app_server_with_picker_backfill_test_behavior(
+        config, /*test_behavior*/ None,
+    )
+    .await
 }
 
 async fn start_recording_app_server_with_picker_backfill_test_behavior(
@@ -280,9 +284,8 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                     let stale_thread_read_status = test_behavior
                         .as_ref()
                         .and_then(|behavior| behavior.stale_thread_read_status(&request));
-                    let transient_compatibility_relation_failure = test_behavior
-                        .as_ref()
-                        .is_some_and(|behavior| {
+                    let transient_compatibility_relation_failure =
+                        test_behavior.as_ref().is_some_and(|behavior| {
                             behavior.fails_compatibility_relation_page_once(&request)
                         });
                     let omits_thread_list_ancestor_filter_ack =

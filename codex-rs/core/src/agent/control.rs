@@ -241,6 +241,8 @@ pub(crate) struct AgentControl {
     next_spawn_initial_input_error: Arc<tokio::sync::Mutex<Option<CodexErr>>>,
     #[cfg(test)]
     next_spawn_initial_input_gate: Arc<tokio::sync::Mutex<Option<SpawnInitialInputGate>>>,
+    #[cfg(test)]
+    hide_next_agent_config_snapshot: Arc<tokio::sync::Mutex<bool>>,
 }
 
 impl AgentControl {
@@ -278,6 +280,11 @@ impl AgentControl {
             proceed: proceed_receiver,
         });
         (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hide_next_agent_config_snapshot(&self) {
+        *self.hide_next_agent_config_snapshot.lock().await = true;
     }
 
     #[cfg(test)]
@@ -512,6 +519,10 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<ThreadConfigSnapshot> {
+        #[cfg(test)]
+        if std::mem::take(&mut *self.hide_next_agent_config_snapshot.lock().await) {
+            return None;
+        }
         let Ok(state) = self.upgrade() else {
             return None;
         };

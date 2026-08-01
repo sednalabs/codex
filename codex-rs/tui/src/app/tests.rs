@@ -2461,9 +2461,7 @@ async fn transient_liveness_failure_preserves_known_system_error_status() {
         "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
     );
     assert!(app.handle_agent_picker_thread_liveness_read_error(
-        thread_id,
-        /*has_replay_channel*/ false,
-        &err,
+        thread_id, /*has_replay_channel*/ false, &err,
     ));
 
     let entry = app
@@ -2479,7 +2477,7 @@ async fn transient_liveness_failure_preserves_known_system_error_status() {
 
 #[tokio::test]
 async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_matches_closed_filter()
-{
+ {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2498,9 +2496,7 @@ async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_m
         "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
     );
     assert!(app.handle_agent_picker_thread_liveness_read_error(
-        thread_id,
-        /*has_replay_channel*/ true,
-        &err,
+        thread_id, /*has_replay_channel*/ true, &err,
     ));
 
     let entry = app
@@ -2534,7 +2530,9 @@ async fn invalid_agent_picker_continuation_clears_the_stale_load_more_action() -
     let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
-    let started = app_server.start_thread(app.chat_widget.config_ref()).await?;
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
     app.agent_navigation.upsert(
@@ -2573,7 +2571,9 @@ async fn agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_
     let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
         .await
         .expect("embedded app server");
-    let started = app_server.start_thread(app.chat_widget.config_ref()).await?;
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
     app.agent_navigation.upsert(
@@ -7302,8 +7302,7 @@ async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
                         item: ThreadItem::CollabAgentToolCall {
                             id: "spawn-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
-                            status:
-                                codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                            status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
                             sender_thread_id: ThreadId::new().to_string(),
                             receiver_thread_ids: vec![receiver_thread_id.to_string()],
                             prompt: None,
@@ -7357,10 +7356,22 @@ async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
         }
     }
 
-    assert!(saw_named_spawn, "expected replayed spawn item to keep agent identity");
-    assert!(saw_named_wait, "expected replayed wait item to keep agent identity");
-    assert!(saw_effective_identity, "expected replayed spawn to use effective metadata");
-    assert!(saw_requested_identity, "expected replayed spawn to retain requested metadata");
+    assert!(
+        saw_named_spawn,
+        "expected replayed spawn item to keep agent identity"
+    );
+    assert!(
+        saw_named_wait,
+        "expected replayed wait item to keep agent identity"
+    );
+    assert!(
+        saw_effective_identity,
+        "expected replayed spawn to use effective metadata"
+    );
+    assert!(
+        saw_requested_identity,
+        "expected replayed spawn to retain requested metadata"
+    );
 }
 
 #[tokio::test]

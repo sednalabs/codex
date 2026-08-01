@@ -261,6 +261,8 @@ async fn handle_spawn_agent(
     };
     let spawned_thread_id = spawned_agent.thread_id;
     let new_thread_id = Some(spawned_thread_id);
+    let spawned_effective_model = spawned_agent.effective_model;
+    let spawned_effective_reasoning_effort = spawned_agent.effective_reasoning_effort;
     let new_agent_metadata = Some(spawned_agent.metadata);
     let status = spawned_agent.status;
     let agent_snapshot = match new_thread_id {
@@ -290,11 +292,11 @@ async fn handle_spawn_agent(
     let effective_model = agent_snapshot
         .as_ref()
         .map(|snapshot| snapshot.model.clone())
-        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        .unwrap_or(spawned_effective_model);
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
         .and_then(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or(args.reasoning_effort.unwrap_or_default());
+        .or(spawned_effective_reasoning_effort);
     let nickname = new_agent_nickname.clone();
     let receiver_thread_ids = new_thread_id.into_iter().collect();
     let receiver_agents = new_thread_id
@@ -320,7 +322,7 @@ async fn handle_spawn_agent(
                 receiver_agents,
                 prompt: Some(prompt),
                 model: Some(effective_model),
-                reasoning_effort: Some(effective_reasoning_effort),
+                reasoning_effort: effective_reasoning_effort,
                 requested_model,
                 requested_reasoning_effort,
                 agents_states,

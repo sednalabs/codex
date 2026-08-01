@@ -156,6 +156,8 @@ async fn handle_spawn_agent(
         Err(error) => return Err(collab_spawn_error(error)),
     };
     let new_thread_id = spawned_agent.thread_id;
+    let spawned_effective_model = spawned_agent.effective_model;
+    let spawned_effective_reasoning_effort = spawned_agent.effective_reasoning_effort;
     let agent_snapshot = session
         .services
         .agent_control
@@ -168,11 +170,11 @@ async fn handle_spawn_agent(
     let effective_model = agent_snapshot
         .as_ref()
         .map(|snapshot| snapshot.model.clone())
-        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        .unwrap_or(spawned_effective_model);
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
         .map(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or_else(|| args.reasoning_effort.clone());
+        .unwrap_or(spawned_effective_reasoning_effort);
     emit_sub_agent_activity(
         &session,
         &turn,
