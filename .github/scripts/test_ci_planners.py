@@ -1136,12 +1136,24 @@ class RouteSelectionTests(unittest.TestCase):
             gnullvm_exec_patch,
         )
         self.assertIn(
-            '"x86_64-pc-windows-gnullvm",',
+            '''+SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
++    "x86_64-pc-windows-gnullvm",
++    "aarch64-pc-windows-gnullvm",
++]''',
             gnullvm_exec_patch,
         )
-        self.assertIn(
-            "exec_compatible_with = triple_to_rust_constraint_set(triple)",
-            gnullvm_exec_patch,
+        # `//:local_windows` inherits the runner CPU. Each compiler-tool
+        # declaration must therefore resolve using full target-triple
+        # constraints, including ARM64 gnullvm rather than an MSVC fallback.
+        self.assertEqual(
+            gnullvm_exec_patch.count(
+                "exec_compatible_with = triple_to_rust_constraint_set(triple),"
+            ),
+            3,
+        )
+        self.assertEqual(
+            gnullvm_exec_patch.count("execs = SUPPORTED_RUST_EXEC_TRIPLES"),
+            3,
         )
         self.assertIn(
             "if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch "

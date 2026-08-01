@@ -12,6 +12,7 @@ diff --git a/rs/platforms/triples.bzl b/rs/platforms/triples.bzl
 +# tools do not cover this ABI, while Rust compiler tools do.
 +SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
 +    "x86_64-pc-windows-gnullvm",
++    "aarch64-pc-windows-gnullvm",
 +]
 +
 diff --git a/rs/toolchains/declare_rust_analyzer_toolchains.bzl b/rs/toolchains/declare_rust_analyzer_toolchains.bzl
