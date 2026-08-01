@@ -5,6 +5,7 @@ use crate::protocol::item_builders::build_file_change_begin_item;
 use crate::protocol::item_builders::build_file_change_end_item;
 use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::item_builders::review_output_text;
+use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
@@ -65,6 +66,39 @@ use codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;
 use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
+
+/// Moves request provenance out of the pre-v2 canonical spawn-start fields.
+///
+/// Old `ItemStarted` snapshots stored the requested model/effort in `model` and
+/// `reasoning_effort`; a terminal item later inherits those values through
+/// `merge_spawn_request_provenance`. Translate that shape before the merge so the V1 omitted
+/// override sentinel cannot be promoted back into request provenance on completion.
+fn normalize_legacy_canonical_spawn_start_provenance(item: &mut ThreadItem) {
+    let ThreadItem::CollabAgentToolCall {
+        tool,
+        status,
+        model,
+        reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = item
+    else {
+        return;
+    };
+    if tool != &CollabAgentTool::SpawnAgent
+        || status != &CollabAgentToolCallStatus::InProgress
+        || requested_model.is_some()
+        || requested_reasoning_effort.is_some()
+    {
+        return;
+    }
+
+    let (normalized_model, normalized_reasoning_effort) =
+        normalize_legacy_spawn_requested_identity(model.take(), reasoning_effort.take());
+    *requested_model = normalized_model;
+    *requested_reasoning_effort = normalized_reasoning_effort;
+}
 
 #[cfg(test)]
 use crate::protocol::v2::CommandAction;
@@ -646,6 +680,7 @@ impl ThreadHistoryBuilder {
 
         if should_upsert {
             let mut item = ThreadItem::from(item.clone());
+            normalize_legacy_canonical_spawn_start_provenance(&mut item);
             if let Some(started_item) = started_item {
                 merge_spawn_request_provenance(&mut item, started_item);
             }
@@ -899,6 +934,11 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
+        let (requested_model, requested_reasoning_effort) =
+            normalize_legacy_spawn_requested_identity(
+                payload.model.clone(),
+                payload.reasoning_effort.clone(),
+            );
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
@@ -909,8 +949,8 @@ impl ThreadHistoryBuilder {
             // Spawn-begin values are requested overrides, not a confirmed effective identity.
             model: None,
             reasoning_effort: None,
-            requested_model: payload.model.clone(),
-            requested_reasoning_effort: payload.reasoning_effort.clone(),
+            requested_model,
+            requested_reasoning_effort,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -4479,6 +4519,81 @@ mod tests {
             spawn.requested_reasoning_effort,
             Some(codex_protocol::openai_models::ReasoningEffort::High)
         );
+    }
+
+    #[test]
+    fn legacy_canonical_spawn_start_normalizes_the_v1_sentinel_without_losing_real_medium() {
+        let thread_id = ThreadId::new();
+        let cases = [
+            (
+                "legacy-v1-omitted-override",
+                Some(""),
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                None,
+                None,
+            ),
+            (
+                "legacy-real-medium-override",
+                Some("gpt-requested-model"),
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                Some("gpt-requested-model"),
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            ),
+        ];
+
+        for (id, legacy_model, legacy_effort, expected_model, expected_effort) in cases {
+            let turn_id = format!("turn-{id}");
+            let mut builder = ThreadHistoryBuilder::new();
+            builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }));
+            builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: turn_id.clone(),
+                item: legacy_canonical_spawn_start_item(id, legacy_model, legacy_effort.clone()),
+                started_at_ms: 1,
+            }));
+
+            let started_turn = builder.turn_snapshot(&turn_id).expect("started legacy turn");
+            let [ThreadItem::CollabAgentToolCall(started_spawn)] = started_turn.items.as_slice()
+            else {
+                panic!("expected a started legacy canonical spawn");
+            };
+            assert_eq!(started_spawn.model, None);
+            assert_eq!(started_spawn.reasoning_effort, None);
+            assert_eq!(started_spawn.requested_model.as_deref(), expected_model);
+            assert_eq!(started_spawn.requested_reasoning_effort, expected_effort);
+
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: turn_id.clone(),
+                item: canonical_spawn_item(
+                    id,
+                    CoreCollabAgentToolCallStatus::Completed,
+                    Some("gpt-effective-model"),
+                    Some(codex_protocol::openai_models::ReasoningEffort::High),
+                ),
+                completed_at_ms: 2,
+            }));
+
+            let completed_turn = builder.turn_snapshot(&turn_id).expect("completed legacy turn");
+            let [ThreadItem::CollabAgentToolCall(completed_spawn)] =
+                completed_turn.items.as_slice()
+            else {
+                panic!("expected a completed legacy canonical spawn");
+            };
+            assert_eq!(completed_spawn.model.as_deref(), Some("gpt-effective-model"));
+            assert_eq!(
+                completed_spawn.reasoning_effort,
+                Some(codex_protocol::openai_models::ReasoningEffort::High)
+            );
+            assert_eq!(completed_spawn.requested_model.as_deref(), expected_model);
+            assert_eq!(completed_spawn.requested_reasoning_effort, expected_effort);
+        }
     }
 
     #[test]

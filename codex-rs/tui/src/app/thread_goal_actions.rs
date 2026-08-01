@@ -21,13 +21,26 @@ const EPHEMERAL_THREAD_GOAL_ERROR_MESSAGE: &str = concat!(
 );
 
 impl App {
+    fn thread_goal_action_is_current(
+        &self,
+        thread_id: ThreadId,
+        lifecycle_generation: u64,
+    ) -> bool {
+        self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation)
+            && self.current_displayed_thread_id() == Some(thread_id)
+    }
+
     pub(super) async fn open_thread_goal_menu(
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
     ) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            return;
+        }
         let result = app_server.thread_goal_get(thread_id).await;
-        if self.current_displayed_thread_id() != Some(thread_id) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
             return;
         }
 
@@ -56,8 +69,9 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) {
+        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
         let result = app_server.thread_goal_get(thread_id).await;
-        if self.current_displayed_thread_id() != Some(thread_id) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
             return;
         }
 
@@ -85,14 +99,18 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: Option<ThreadId>,
+        lifecycle_generation: u64,
     ) {
         let Some(thread_id) = thread_id else {
             self.show_no_thread_goal_to_edit();
             return;
         };
 
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            return;
+        }
         let result = app_server.thread_goal_get(thread_id).await;
-        if self.current_displayed_thread_id() != Some(thread_id) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
             return;
         }
 
@@ -111,16 +129,17 @@ impl App {
         };
 
         let codex_home = app_server.codex_home_path(&self.config.codex_home);
-        match goal_files::objective_text_for_edit(app_server, codex_home.as_ref(), &goal.objective)
-            .await
-        {
+        let objective_result =
+            goal_files::objective_text_for_edit(app_server, codex_home.as_ref(), &goal.objective)
+                .await;
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            return;
+        }
+        match objective_result {
             Ok(objective) => goal.objective = objective,
             Err(err) => {
                 self.chat_widget.add_error_message(err.to_string());
             }
-        }
-        if self.current_displayed_thread_id() != Some(thread_id) {
-            return;
         }
         self.chat_widget.show_goal_edit_prompt(thread_id, goal);
     }
@@ -129,9 +148,13 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         draft: goal_files::GoalDraft,
         mode: ThreadGoalSetMode,
     ) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            return;
+        }
         if self.reject_replay_only_thread_write(thread_id) {
             return;
         }
@@ -139,14 +162,18 @@ impl App {
         let codex_home = app_server.codex_home_path(&self.config.codex_home);
         let mode = if matches!(mode, ThreadGoalSetMode::ConfirmIfExists) {
             let result = app_server.thread_goal_get(thread_id).await;
-            if self.current_displayed_thread_id() != Some(thread_id) {
+            if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
                 return;
             }
 
             match result {
                 Ok(response) => match response.goal.as_ref() {
                     Some(goal) if should_confirm_before_replacing_goal(goal) => {
-                        self.show_replace_thread_goal_confirmation(thread_id, draft);
+                        self.show_replace_thread_goal_confirmation(
+                            thread_id,
+                            lifecycle_generation,
+                            draft,
+                        );
                         return;
                     }
                     Some(_) => ThreadGoalSetMode::ReplaceExisting,
@@ -171,12 +198,17 @@ impl App {
         {
             Ok(materialized) => materialized,
             Err(err) => {
-                if self.current_displayed_thread_id() == Some(thread_id) {
+                if self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
                     self.chat_widget.add_error_message(err.to_string());
                 }
                 return;
             }
         };
+
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            cleanup_materialized_goal_files(app_server, output_dir).await;
+            return;
+        }
 
         let replacing_goal = matches!(mode, ThreadGoalSetMode::ReplaceExisting);
         if replacing_goal {
@@ -184,11 +216,15 @@ impl App {
 
             if let Err(err) = result {
                 cleanup_materialized_goal_files(app_server, output_dir).await;
-                if self.current_displayed_thread_id() != Some(thread_id) {
+                if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
                     return;
                 }
                 self.chat_widget
                     .add_error_message(thread_goal_error_message("replace", &err));
+                return;
+            }
+            if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+                cleanup_materialized_goal_files(app_server, output_dir).await;
                 return;
             }
         }
@@ -209,7 +245,7 @@ impl App {
 
         match result {
             Ok(response) => {
-                if self.current_displayed_thread_id() != Some(thread_id) {
+                if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
                     return;
                 }
                 self.chat_widget.add_info_message(
@@ -220,7 +256,7 @@ impl App {
             }
             Err(err) => {
                 cleanup_materialized_goal_files(app_server, output_dir).await;
-                if self.current_displayed_thread_id() != Some(thread_id) {
+                if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
                     return;
                 }
                 let action = if replacing_goal { "replace" } else { "set" };
@@ -234,8 +270,12 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         status: ThreadGoalStatus,
     ) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            return;
+        }
         if self.reject_replay_only_thread_write(thread_id) {
             return;
         }
@@ -248,7 +288,7 @@ impl App {
                 /*token_budget*/ None,
             )
             .await;
-        if self.current_displayed_thread_id() != Some(thread_id) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
             return;
         }
 
@@ -267,13 +307,17 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
     ) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
+            return;
+        }
         if self.reject_replay_only_thread_write(thread_id) {
             return;
         }
 
         let result = app_server.thread_goal_clear(thread_id).await;
-        if self.current_displayed_thread_id() != Some(thread_id) {
+        if !self.thread_goal_action_is_current(thread_id, lifecycle_generation) {
             return;
         }
 
@@ -298,6 +342,7 @@ impl App {
     pub(super) fn show_replace_thread_goal_confirmation(
         &mut self,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         draft: goal_files::GoalDraft,
     ) {
         let objective = draft.objective.clone();
@@ -305,6 +350,7 @@ impl App {
         let replace_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::SetThreadGoalDraft {
                 thread_id,
+                lifecycle_generation,
                 draft: replace_draft.clone(),
                 mode: ThreadGoalSetMode::ReplaceExisting,
             });

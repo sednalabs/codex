@@ -253,6 +253,7 @@ pub(crate) enum AppEvent {
     /// Persist a branch discovered from an App git-action directive into thread metadata.
     SyncThreadGitBranch {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         branch: String,
     },
 
@@ -372,16 +373,19 @@ pub(crate) enum AppEvent {
     /// Open the current thread goal summary/action menu.
     OpenThreadGoalMenu {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
     },
 
     /// Open an editor for the current thread goal objective.
     OpenThreadGoalEditor {
         thread_id: Option<ThreadId>,
+        lifecycle_generation: u64,
     },
 
     /// Set or replace the current thread goal objective.
     SetThreadGoalObjective {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         objective: String,
         mode: ThreadGoalSetMode,
     },
@@ -389,6 +393,7 @@ pub(crate) enum AppEvent {
     /// Set or replace the current thread goal from a validated draft.
     SetThreadGoalDraft {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         draft: crate::goal_files::GoalDraft,
         mode: ThreadGoalSetMode,
     },
@@ -396,12 +401,14 @@ pub(crate) enum AppEvent {
     /// Pause or resume the current thread goal.
     SetThreadGoalStatus {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         status: ThreadGoalStatus,
     },
 
     /// Clear the current thread goal.
     ClearThreadGoal {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
     },
 
     /// Result of refreshing rate limits.

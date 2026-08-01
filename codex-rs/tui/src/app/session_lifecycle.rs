@@ -948,7 +948,7 @@ impl App {
                         "failed to unsubscribe stale startup thread: {err}"
                     );
                 }
-                self.discard_thread_local_state(thread_id).await;
+                self.discard_thread_local_state(app_server, thread_id).await;
             }
             return Ok(());
         }

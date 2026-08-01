@@ -673,6 +673,11 @@ pub(crate) struct ChatWidget {
     #[cfg(test)]
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
+    /// Generation owned by `App` for the thread currently projected into this widget.
+    ///
+    /// Async UI work copies it into its event so a discarded lifecycle cannot affect a later
+    /// attachment with the same server thread id.
+    thread_lifecycle_generation: u64,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
     /// The nudge is only a discovery aid, so once a user dismisses it or enters Plan mode we keep it
@@ -1864,6 +1869,10 @@ impl ChatWidget {
 
     pub(crate) fn thread_id(&self) -> Option<ThreadId> {
         self.thread_id
+    }
+
+    pub(crate) fn set_thread_lifecycle_generation(&mut self, generation: u64) {
+        self.thread_lifecycle_generation = generation;
     }
 
     pub(crate) fn thread_name(&self) -> Option<String> {

@@ -304,7 +304,10 @@ impl ChatWidget {
                 }
                 if let Some(thread_id) = self.thread_id {
                     self.app_event_tx
-                        .send(AppEvent::OpenThreadGoalMenu { thread_id });
+                        .send(AppEvent::OpenThreadGoalMenu {
+                            thread_id,
+                            lifecycle_generation: self.thread_lifecycle_generation,
+                        });
                     self.append_message_history_entry("/goal".to_string());
                 } else {
                     self.add_info_message(
@@ -822,6 +825,7 @@ impl ChatWidget {
                     "edit" => {
                         self.app_event_tx.send(AppEvent::OpenThreadGoalEditor {
                             thread_id: self.thread_id,
+                            lifecycle_generation: self.thread_lifecycle_generation,
                         });
                         if source == SlashCommandDispatchSource::Live {
                             self.clear_live_goal_submission();
@@ -848,11 +852,18 @@ impl ChatWidget {
                     match command {
                         GoalControlCommand::Clear => {
                             self.app_event_tx
-                                .send(AppEvent::ClearThreadGoal { thread_id });
+                                .send(AppEvent::ClearThreadGoal {
+                                    thread_id,
+                                    lifecycle_generation: self.thread_lifecycle_generation,
+                                });
                         }
                         GoalControlCommand::SetStatus(status) => {
                             self.app_event_tx
-                                .send(AppEvent::SetThreadGoalStatus { thread_id, status });
+                                .send(AppEvent::SetThreadGoalStatus {
+                                    thread_id,
+                                    lifecycle_generation: self.thread_lifecycle_generation,
+                                    status,
+                                });
                         }
                     }
                     self.append_message_history_entry(format!("/goal {trimmed}"));
@@ -904,6 +915,7 @@ impl ChatWidget {
                 let history_objective = draft.objective.clone();
                 self.app_event_tx.send(AppEvent::SetThreadGoalDraft {
                     thread_id,
+                    lifecycle_generation: self.thread_lifecycle_generation,
                     draft,
                     mode: ThreadGoalSetMode::ConfirmIfExists,
                 });

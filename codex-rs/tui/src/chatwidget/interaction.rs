@@ -563,6 +563,7 @@ impl ChatWidget {
         };
         self.app_event_tx.send(AppEvent::SetThreadGoalStatus {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation,
             status: AppThreadGoalStatus::Paused,
         });
     }

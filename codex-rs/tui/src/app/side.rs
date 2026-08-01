@@ -433,7 +433,7 @@ impl App {
         if self.thread_is_replay_only(thread_id)
             || self.agent_navigation.is_terminally_closed(thread_id)
         {
-            self.discard_thread_local_state(thread_id).await;
+            self.discard_thread_local_state(app_server, thread_id).await;
             return true;
         }
 
@@ -449,18 +449,42 @@ impl App {
             self.chat_widget.add_error_message(message);
             return false;
         }
-        self.discard_thread_local_state(thread_id).await;
+        self.discard_thread_local_state(app_server, thread_id).await;
         true
     }
 
-    pub(super) async fn discard_closed_side_thread(&mut self, thread_id: ThreadId) {
-        self.discard_thread_local_state(thread_id).await;
+    pub(super) async fn discard_closed_side_thread(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        self.discard_thread_local_state(app_server, thread_id).await;
     }
 
-    pub(super) async fn discard_thread_local_state(&mut self, thread_id: ThreadId) {
+    pub(super) async fn discard_thread_local_state(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+    ) {
         self.mark_thread_discarded(thread_id);
         for request in self.pending_app_server_requests.clear_thread(thread_id) {
-            self.chat_widget.dismiss_app_server_request(&request);
+            self.chat_widget.dismiss_app_server_request(&request.request);
+            if let Err(err) = self
+                .reject_app_server_request(
+                    app_server,
+                    request.request_id,
+                    format!(
+                        "The TUI discarded thread {thread_id} before this request could be handled."
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %thread_id,
+                    error = %err,
+                    "failed to reject discarded app-server request"
+                );
+            }
         }
         self.abort_thread_event_listener(thread_id);
         self.thread_event_channels.remove(&thread_id);
