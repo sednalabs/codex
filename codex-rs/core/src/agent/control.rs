@@ -736,41 +736,15 @@ impl AgentControl {
         }
 
         let (tree_root_thread_id, tree_root_session_state) = match target_path.as_ref() {
-            Some(target_path) => {
-                if let Some(thread_id) = self.state.agent_id_for_path(target_path) {
-                    (thread_id, AgentSessionState::Live)
-                } else {
-                    let Some(state_db_ctx) = state_db_ctx.as_ref() else {
-                        return Err(CodexErr::UnsupportedOperation(format!(
-                            "agent path `{}` not found in the live tree",
-                            target_path.as_str()
-                        )));
-                    };
-                    let thread_id = if target_path.is_root() {
-                        Some(root_live_thread_id)
-                    } else {
-                        state_db_ctx
-                            .find_thread_spawn_descendant_by_path(
-                                root_live_thread_id,
-                                target_path.as_str(),
-                            )
-                            .await
-                            .map_err(|err| {
-                                CodexErr::Fatal(format!(
-                                    "failed to inspect persisted agent path `{}`: {err}",
-                                    target_path.as_str()
-                                ))
-                            })?
-                    }
-                    .ok_or_else(|| {
-                        CodexErr::UnsupportedOperation(format!(
-                            "agent path `{}` not found",
-                            target_path.as_str()
-                        ))
-                    })?;
-                    (thread_id, AgentSessionState::Stale)
-                }
-            }
+            Some(target_path) => self
+                .resolve_agent_tree_path_in_scope(
+                    state_db_ctx.as_ref(),
+                    root_live_thread_id,
+                    target_path,
+                    scope,
+                )
+                .await?
+                .ok_or_else(|| inspect_agent_tree_path_not_found(target_path.as_str(), scope))?,
             None => (current_thread_id, AgentSessionState::Live),
         };
         let tree_root_name = match tree_root_session_state {
@@ -830,30 +804,22 @@ impl AgentControl {
             let mut seen_thread_ids = HashSet::new();
             for agent_root in &agent_roots_applied {
                 let resolved_root = if agent_root.as_str() == tree_root_name.as_str() {
-                    Some((tree_root_thread_id, tree_root_session_state))
-                } else if let Some(thread_id) = self.state.agent_id_for_path(agent_root) {
-                    Some((thread_id, AgentSessionState::Live))
-                } else if let Some(state_db_ctx) = state_db_ctx.as_ref() {
-                    state_db_ctx
-                        .find_thread_spawn_descendant_by_path(
-                            tree_root_thread_id,
-                            agent_root.as_str(),
-                        )
-                        .await
-                        .map_err(|err| {
-                            CodexErr::Fatal(format!(
-                                "failed to inspect persisted agent path `{}`: {err}",
-                                agent_root.as_str()
-                            ))
-                        })?
-                        .map(|thread_id| (thread_id, AgentSessionState::Stale))
+                    agent_tree_scope_includes(scope, tree_root_session_state)
+                        .then_some((tree_root_thread_id, tree_root_session_state))
                 } else {
-                    None
+                    self.resolve_agent_tree_path_in_scope(
+                        state_db_ctx.as_ref(),
+                        tree_root_thread_id,
+                        agent_root,
+                        scope,
+                    )
+                    .await?
                 };
 
-                if let Some((thread_id, session_state)) = resolved_root
-                    && seen_thread_ids.insert(thread_id)
-                {
+                let (thread_id, session_state) = resolved_root.ok_or_else(|| {
+                    inspect_agent_tree_path_not_found(agent_root.as_str(), scope)
+                })?;
+                if seen_thread_ids.insert(thread_id) {
                     let depth =
                         agent_name_relative_depth(agent_root.as_str(), tree_root_name.as_str());
                     resolved_roots.push((agent_root.to_string(), thread_id, session_state, depth));
@@ -872,6 +838,7 @@ impl AgentControl {
         let mut queue = VecDeque::from(traversal_roots.clone());
         let mut depth_by_thread_id = HashMap::<ThreadId, usize>::new();
         let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
+        let mut parent_by_thread_id = HashMap::<ThreadId, ThreadId>::new();
         let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
         let mut traversal_truncated = false;
 
@@ -906,6 +873,26 @@ impl AgentControl {
                 .await?;
             let mut child_ids = child_states.keys().copied().collect::<Vec<_>>();
             child_ids.sort_by_key(std::string::ToString::to_string);
+            child_ids.retain(|child_thread_id| {
+                let repeated_node = tree_records.contains_key(child_thread_id)
+                    || parent_by_thread_id.contains_key(child_thread_id);
+                let cyclic_edge = agent_tree_edge_would_form_cycle(
+                    thread_id,
+                    *child_thread_id,
+                    &parent_by_thread_id,
+                );
+                if repeated_node || cyclic_edge {
+                    warn!(
+                        parent_thread_id = %thread_id,
+                        child_thread_id = %child_thread_id,
+                        repeated_node,
+                        cyclic_edge,
+                        "discarding repeated or cyclic agent tree edge"
+                    );
+                    return false;
+                }
+                true
+            });
             if depth >= max_depth {
                 traversal_truncated |= !child_ids.is_empty();
                 tree_children.insert(thread_id, Vec::new());
@@ -918,6 +905,7 @@ impl AgentControl {
             tree_children.insert(thread_id, child_ids.clone());
 
             for child_id in child_ids {
+                parent_by_thread_id.insert(child_id, thread_id);
                 if let Some(child_state) = child_states.get(&child_id).copied() {
                     queue.push_back((child_id, child_state, depth.saturating_add(1)));
                 }
@@ -1493,6 +1481,52 @@ impl AgentControl {
 
         Ok(child_states)
     }
+
+    /// Resolves a canonical agent path using exactly the sources admitted by `scope`.
+    ///
+    /// Live registry membership is the only evidence of a live agent. Persisted stale lookup
+    /// follows closed edges only, including every edge on a nested path, so an evicted Open child
+    /// never becomes a fabricated stale result.
+    async fn resolve_agent_tree_path_in_scope(
+        &self,
+        state_db_ctx: Option<&state_db::StateDbHandle>,
+        root_live_thread_id: ThreadId,
+        agent_path: &AgentPath,
+        scope: AgentTreeScope,
+    ) -> CodexResult<Option<(ThreadId, AgentSessionState)>> {
+        if !matches!(scope, AgentTreeScope::Stale) {
+            let live_thread_id = if agent_path.is_root() {
+                Some(root_live_thread_id)
+            } else {
+                self.state.agent_id_for_path(agent_path)
+            };
+            if let Some(thread_id) = live_thread_id {
+                return Ok(Some((thread_id, AgentSessionState::Live)));
+            }
+        }
+
+        if !matches!(scope, AgentTreeScope::Live) && !agent_path.is_root() {
+            let Some(state_db_ctx) = state_db_ctx else {
+                return Err(inspect_agent_tree_state_db_unavailable());
+            };
+            let thread_id = state_db_ctx
+                .find_thread_spawn_descendant_by_path_with_status(
+                    root_live_thread_id,
+                    agent_path.as_str(),
+                    DirectionalThreadSpawnEdgeStatus::Closed,
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to inspect persisted agent path `{}`: {err}",
+                        agent_path.as_str()
+                    ))
+                })?;
+            return Ok(thread_id.map(|thread_id| (thread_id, AgentSessionState::Stale)));
+        }
+
+        Ok(None)
+    }
 }
 
 fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<ThreadId> {
@@ -1506,6 +1540,50 @@ fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<Threa
 
 fn inspect_agent_tree_state_db_unavailable() -> CodexErr {
     CodexErr::UnsupportedOperation(INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE.to_string())
+}
+
+fn inspect_agent_tree_path_not_found(agent_path: &str, scope: AgentTreeScope) -> CodexErr {
+    let scope_name = match scope {
+        AgentTreeScope::Live => "live",
+        AgentTreeScope::Stale => "stale",
+        AgentTreeScope::All => "inspected",
+    };
+    CodexErr::UnsupportedOperation(format!(
+        "agent path `{agent_path}` not found in the {scope_name} tree"
+    ))
+}
+
+fn agent_tree_scope_includes(
+    scope: AgentTreeScope,
+    session_state: AgentSessionState,
+) -> bool {
+    matches!(
+        (scope, session_state),
+        (AgentTreeScope::All, _)
+            | (AgentTreeScope::Live, AgentSessionState::Live)
+            | (AgentTreeScope::Stale, AgentSessionState::Stale)
+    )
+}
+
+/// Returns true when attaching `child_thread_id` below `parent_thread_id` would make this
+/// materialized forest cyclic or give one node more than one tree parent.
+fn agent_tree_edge_would_form_cycle(
+    parent_thread_id: ThreadId,
+    child_thread_id: ThreadId,
+    parent_by_thread_id: &HashMap<ThreadId, ThreadId>,
+) -> bool {
+    if parent_thread_id == child_thread_id || parent_by_thread_id.contains_key(&child_thread_id) {
+        return true;
+    }
+
+    let mut ancestor = Some(parent_thread_id);
+    while let Some(ancestor_thread_id) = ancestor {
+        if ancestor_thread_id == child_thread_id {
+            return true;
+        }
+        ancestor = parent_by_thread_id.get(&ancestor_thread_id).copied();
+    }
+    false
 }
 
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {
