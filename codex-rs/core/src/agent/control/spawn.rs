@@ -250,7 +250,7 @@ impl AgentControl {
             SpawnAgentOptions::default(),
         ))
         .await?;
-        Ok(spawned_agent.thread_id)
+        Ok(spawned_agent.into_result()?.thread_id)
     }
 
     /// Spawn an agent thread with some metadata.
@@ -261,6 +261,27 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions, // TODO(jif) drop with new fork.
     ) -> CodexResult<LiveAgent> {
+        Box::pin(self.spawn_agent_with_metadata_outcome(
+            config,
+            initial_input,
+            session_source,
+            options,
+        ))
+        .await?
+        .into_result()
+    }
+
+    /// Spawn an agent while preserving a child committed before its initial input failed.
+    ///
+    /// Most callers retain the historical `CodexResult<LiveAgent>` contract above. Lifecycle
+    /// owners can use this richer outcome to terminalize the parent record truthfully.
+    pub(crate) async fn spawn_agent_with_metadata_outcome(
+        &self,
+        config: Config,
+        initial_input: Vec<UserInput>,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<SpawnAgentOutcome> {
         Box::pin(self.spawn_agent_internal(
             config,
             SpawnInitialInput::UserInput(initial_input),
@@ -284,7 +305,8 @@ impl AgentControl {
             session_source,
             options,
         ))
-        .await
+        .await?
+        .into_result()
     }
 
     pub(crate) async fn ensure_v2_agent_loaded(
@@ -439,7 +461,7 @@ impl AgentControl {
         initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
-    ) -> CodexResult<LiveAgent> {
+    ) -> CodexResult<SpawnAgentOutcome> {
         let state = self.upgrade()?;
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
@@ -596,21 +618,10 @@ impl AgentControl {
         )
         .await;
 
-        match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
-                    .await?;
-            }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
-                )
-                .await?;
-            }
-        }
+        let initial_input_result = self
+            .deliver_spawn_initial_input(new_thread.thread_id, &state, initial_input)
+            .await;
+        let effective_config = new_thread.thread.config_snapshot().await;
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -625,11 +636,52 @@ impl AgentControl {
             );
         }
 
-        Ok(LiveAgent {
+        let status = match &initial_input_result {
+            Ok(()) => self.get_status(new_thread.thread_id).await,
+            Err(error) => AgentStatus::Errored(format!("initial input delivery failed: {error}")),
+        };
+        let agent = LiveAgent {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
-            status: self.get_status(new_thread.thread_id).await,
-        })
+            status,
+            effective_model: effective_config.model,
+            effective_reasoning_effort: effective_config.reasoning_effort,
+        };
+        match initial_input_result {
+            Ok(()) => Ok(SpawnAgentOutcome::Spawned(agent)),
+            Err(error) => Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }),
+        }
+    }
+
+    async fn deliver_spawn_initial_input(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        initial_input: SpawnInitialInput,
+    ) -> CodexResult<()> {
+        #[cfg(test)]
+        self.wait_for_next_spawn_initial_input().await;
+
+        #[cfg(test)]
+        if let Some(error) = self.take_next_spawn_initial_input_error().await {
+            return Err(error);
+        }
+
+        match initial_input {
+            SpawnInitialInput::UserInput(input) => self
+                .send_input_after_capacity_check(agent_id, state, input)
+                .await
+                .map(drop),
+            SpawnInitialInput::InterAgentCommunication(communication, context) => self
+                .send_inter_agent_communication_after_capacity_check(
+                    agent_id,
+                    state,
+                    communication,
+                    context,
+                )
+                .await
+                .map(drop),
+        }
     }
 
     async fn spawn_forked_thread(

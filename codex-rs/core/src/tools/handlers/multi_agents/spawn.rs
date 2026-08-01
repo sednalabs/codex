@@ -1,6 +1,8 @@
 use super::*;
+use crate::agent::control::LiveAgent;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
+use crate::agent::control::SpawnAgentOutcome;
 use crate::agent::control::render_input_preview;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
@@ -212,22 +214,39 @@ async fn handle_spawn_agent(
         }
     };
 
-    let spawned_agent = match Box::pin(session.services.agent_control.spawn_agent_with_metadata(
-        config,
-        input_items,
-        Some(spawn_source),
-        SpawnAgentOptions {
-            fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
-            fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
-            parent_thread_id: Some(session.thread_id),
-            environments: Some(turn.environments.to_selections()),
-        },
-    ))
+    let spawned_agent = match Box::pin(
+        session
+            .services
+            .agent_control
+            .spawn_agent_with_metadata_outcome(
+                config,
+                input_items,
+                Some(spawn_source),
+                SpawnAgentOptions {
+                    fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
+                    fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
+                    parent_thread_id: Some(session.thread_id),
+                    environments: Some(turn.environments.to_selections()),
+                },
+            ),
+    )
     .await
-    .map_err(collab_spawn_error)
     {
-        Ok(spawned_agent) => spawned_agent,
-        Err(err) => {
+        Ok(SpawnAgentOutcome::Spawned(spawned_agent)) => spawned_agent,
+        Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }) => {
+            emit_failed_spawn_agent_lifecycle_with_created_child(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+                &agent,
+            )
+            .await;
+            return Err(collab_spawn_error(error));
+        }
+        Err(error) => {
             emit_failed_spawn_agent_lifecycle(
                 session.as_ref(),
                 turn.as_ref(),
@@ -237,7 +256,7 @@ async fn handle_spawn_agent(
                 &requested_reasoning_effort,
             )
             .await;
-            return Err(err);
+            return Err(collab_spawn_error(error));
         }
     };
     let spawned_thread_id = spawned_agent.thread_id;
@@ -329,6 +348,66 @@ async fn emit_failed_spawn_agent_lifecycle(
     requested_model: &Option<String>,
     requested_reasoning_effort: &Option<ReasoningEffort>,
 ) {
+    emit_terminal_spawn_agent_lifecycle(
+        session,
+        turn,
+        call_id,
+        prompt,
+        requested_model,
+        requested_reasoning_effort,
+        None,
+    )
+    .await;
+}
+
+async fn emit_failed_spawn_agent_lifecycle_with_created_child(
+    session: &crate::session::session::Session,
+    turn: &crate::session::turn_context::TurnContext,
+    call_id: &str,
+    prompt: &str,
+    requested_model: &Option<String>,
+    requested_reasoning_effort: &Option<ReasoningEffort>,
+    agent: &LiveAgent,
+) {
+    emit_terminal_spawn_agent_lifecycle(
+        session,
+        turn,
+        call_id,
+        prompt,
+        requested_model,
+        requested_reasoning_effort,
+        Some(agent),
+    )
+    .await;
+}
+
+async fn emit_terminal_spawn_agent_lifecycle(
+    session: &crate::session::session::Session,
+    turn: &crate::session::turn_context::TurnContext,
+    call_id: &str,
+    prompt: &str,
+    requested_model: &Option<String>,
+    requested_reasoning_effort: &Option<ReasoningEffort>,
+    created_agent: Option<&LiveAgent>,
+) {
+    let (receiver_thread_ids, receiver_agents, model, reasoning_effort, agents_states) =
+        match created_agent {
+            Some(agent) => {
+                let thread_id = agent.thread_id;
+                (
+                    vec![thread_id],
+                    vec![CollabAgentRef {
+                        thread_id,
+                        agent_nickname: agent.metadata.agent_nickname.clone(),
+                        agent_role: agent.metadata.agent_role.clone(),
+                    }],
+                    Some(agent.effective_model.clone()),
+                    agent.effective_reasoning_effort.clone(),
+                    [(thread_id, agent.status.clone())].into_iter().collect(),
+                )
+            }
+            None => (Vec::new(), Vec::new(), None, None, Default::default()),
+        };
     session
         .emit_turn_item_completed(
             turn,
@@ -337,15 +416,14 @@ async fn emit_failed_spawn_agent_lifecycle(
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Failed,
                 sender_thread_id: session.thread_id,
-                receiver_thread_ids: Vec::new(),
-                receiver_agents: Vec::new(),
+                receiver_thread_ids,
+                receiver_agents,
                 prompt: Some(prompt.to_string()),
-                // No child was created, so there is no effective identity to report.
-                model: None,
-                reasoning_effort: None,
+                model,
+                reasoning_effort,
                 requested_model: requested_model.clone(),
                 requested_reasoning_effort: requested_reasoning_effort.clone(),
-                agents_states: Default::default(),
+                agents_states,
             }),
         )
         .await;
@@ -354,6 +432,10 @@ async fn emit_failed_spawn_agent_lifecycle(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
     }
 }
 

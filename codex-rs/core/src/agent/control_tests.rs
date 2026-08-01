@@ -214,6 +214,71 @@ impl AgentControlHarness {
     }
 }
 
+#[tokio::test]
+async fn spawn_agent_outcome_preserves_committed_child_when_initial_input_fails() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .fail_next_spawn_initial_input(CodexErr::UnsupportedOperation(
+            "injected initial input failure".to_string(),
+        ))
+        .await;
+
+    let outcome = harness
+        .control
+        .spawn_agent_with_metadata_outcome(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a committed child should be returned with its delivery failure");
+
+    let SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error } = outcome else {
+        panic!("initial input failure should preserve the created child");
+    };
+    assert_matches!(
+        error.details(),
+        CodexErrorDetails::UnsupportedOperation(message) if message == "injected initial input failure"
+    );
+    assert_matches!(
+        &agent.status,
+        AgentStatus::Errored(message) if message.contains("initial input delivery failed")
+    );
+    assert_eq!(agent.metadata.agent_id, Some(agent.thread_id));
+
+    let child_thread = harness
+        .manager
+        .get_thread(agent.thread_id)
+        .await
+        .expect("child should remain registered after delivery fails");
+    let child_config = child_thread.config_snapshot().await;
+    assert_eq!(agent.effective_model, child_config.model);
+    assert_eq!(
+        agent.effective_reasoning_effort,
+        child_config.reasoning_effort
+    );
+    assert!(
+        harness
+            .manager
+            .list_live_thread_spawn_edges()
+            .await
+            .contains(&(parent_thread_id, agent.thread_id)),
+        "committed child should retain its parent edge"
+    );
+}
+
 async fn persisted_originator(thread: &CodexThread) -> String {
     thread.ensure_rollout_materialized().await;
     thread
