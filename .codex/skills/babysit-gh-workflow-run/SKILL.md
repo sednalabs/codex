@@ -118,9 +118,17 @@ existing `gh_workflow_run_watch --watch-until-terminal` helper.
   the candidate must be proven by GitHub commit ancestry to contain both the
   exact expected PR head and the PR's current base SHA; an older or otherwise
   uncorrelatable candidate stops the receipt.
+- Workflow inputs accept a display name, file basename, or a
+  `.github/workflows/*.yml` / `.yaml` path. They are compared by their
+  normalized workflow basename, so `Blocking CI` matches `blocking-ci.yml`.
 - The defaults require a successful `blocking-ci` `merge_group` run and a
   successful `postmerge-ci` `push` run on the exact merge commit. Override the
   workflow names only for a repository with different entrypoints.
+- A successful candidate proves delivery only when GitHub ancestry establishes
+  that the selected candidate SHA reaches the eventual merge commit. A later
+  superseding queue candidate fails closed instead of borrowing the earlier
+  success. `GH_PR_DELIVERY_WATCH_PYTHON` is forwarded to the nested watcher as
+  `GH_WORKFLOW_RUN_WATCH_PYTHON` when an explicit interpreter is required.
 - Standard output is one compact JSON receipt. A non-zero status still emits a
   receipt with a stable `stop_*` action and the first failed job when available.
 
