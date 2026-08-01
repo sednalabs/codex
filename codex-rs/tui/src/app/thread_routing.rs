@@ -445,6 +445,7 @@ impl App {
             .thread_event_channels
             .get(&thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+            && replay_only_thread_op_targets_thread(&op)
         {
             self.chat_widget
                 .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
@@ -1711,6 +1712,16 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Global refreshes do not act on the selected thread, so they remain available while replaying a
+/// saved transcript. Every other app-server command either targets the thread or resolves one of
+/// its pending requests and must stay blocked.
+fn replay_only_thread_op_targets_thread(op: &AppCommand) -> bool {
+    !matches!(
+        op,
+        AppCommand::ListSkills { .. } | AppCommand::ReloadUserConfig
+    )
 }
 
 #[cfg(test)]
