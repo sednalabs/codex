@@ -222,14 +222,14 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: Check out validation target
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: ${{ (inputs.profile == 'artifact' || inputs.artifact_build) && '0' || '1' }}
           persist-credentials: false
@@ -873,14 +873,14 @@ jobs:
       matrix: ${{ fromJson(needs.metadata.outputs.selected_nextest_archive_matrix) }}
     steps:
       # Validation-target checkout runs with read-only permissions and no persisted credentials.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: ${{ matrix.checkout_fetch_depth }}
           persist-credentials: false
           ref: ${{ needs.metadata.outputs.checkout_ref }}
 
       - name: Check out workflow helpers
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -1298,7 +1298,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           persist-credentials: false

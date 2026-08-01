@@ -182,7 +182,7 @@ jobs:
       rust_integration_max_parallel: ${{ steps.meta.outputs.rust_integration_max_parallel }}
       release_max_parallel: ${{ steps.meta.outputs.release_max_parallel }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # Resolve lane selection from the workflow revision itself so manual runs
@@ -1088,7 +1088,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
           ref: ${{ github.sha }}
