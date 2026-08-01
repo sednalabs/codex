@@ -1283,10 +1283,7 @@ mod tests {
             "00000000-0000-0000-0000-000000000116 • system error failed inspect saved transcript"
         );
         assert_eq!(
-            agent_picker_status_dot_spans(
-                /*is_closed*/ false,
-                /*has_system_error*/ true,
-            )[0]
+            agent_picker_status_dot_spans(/*is_closed*/ false, /*has_system_error*/ true)[0]
                 .style
                 .fg,
             Some(Color::Red)
