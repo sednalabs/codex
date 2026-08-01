@@ -200,6 +200,20 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
             )
             .await?;
     }
+    // These persisted descendants are intentionally never resumed. A loaded-list request must
+    // not materialize this historical subtree merely to find the one loaded nested descendant.
+    for historical_suffix in 100..356 {
+        let historical_thread_id = ThreadId::from_string(&format!(
+            "00000000-0000-0000-0000-{historical_suffix:012}"
+        ))?;
+        state_db
+            .upsert_thread_spawn_edge(
+                root_thread_uuid,
+                historical_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await?;
+    }
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -228,7 +242,7 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
         .send_thread_loaded_list_request(ThreadLoadedListParams {
             cursor: None,
             limit: Some(1),
-            ancestor_thread_id: Some(root_thread_id),
+            ancestor_thread_id: Some(root_thread_id.clone()),
         })
         .await?;
     let ThreadLoadedListResponse {
@@ -236,12 +250,32 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
         next_cursor,
         ancestor_filter_applied,
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
-    assert_eq!(data, vec![grandchild_thread_id]);
+    assert_eq!(data, vec![grandchild_thread_id.clone()]);
     assert!(!data.contains(&child_thread_id));
     assert!(!data.contains(&unrelated_root_thread_id));
     assert!(!data.contains(&unrelated_child_thread_id));
     assert_eq!(next_cursor, None);
     assert!(ancestor_filter_applied);
+
+    // An oversized public limit is clamped before it reaches the manager's probe allocation.
+    // The same bounded path handles the protocol's omitted-limit compatibility form.
+    for limit in [Some(u32::MAX), None] {
+        let list_id = mcp
+            .send_thread_loaded_list_request(ThreadLoadedListParams {
+                cursor: None,
+                limit,
+                ancestor_thread_id: Some(root_thread_id.clone()),
+            })
+            .await?;
+        let ThreadLoadedListResponse {
+            data,
+            next_cursor,
+            ancestor_filter_applied,
+        } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+        assert_eq!(data, vec![grandchild_thread_id.clone()]);
+        assert_eq!(next_cursor, None);
+        assert!(ancestor_filter_applied);
+    }
 
     Ok(())
 }

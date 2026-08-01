@@ -153,16 +153,24 @@ use std::path::PathBuf;
 /// lifecycles long enough to emit the tool analytics event, but bound terminal-turn retention so
 /// interrupted or disconnected streams cannot retain them for the process lifetime.
 pub(crate) const TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT: usize = 256;
+/// A turn event can precede valid delayed tool completions. Keep its provenance for the same
+/// bounded terminal window so those completions still have a turn state to update.
+pub(crate) const TERMINAL_EMITTED_TURN_STATE_LIMIT: usize = TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT;
 /// Every started tool item is retained until its completion, even when the enclosing turn has not
 /// reached a terminal notification. Bound that global queue as well: an interrupted connection
 /// can otherwise emit an unbounded started-only stream before `TurnCompleted` has a chance to
 /// apply its per-turn cleanup.
 pub(crate) const PENDING_TOOL_ITEM_LIFECYCLE_LIMIT: usize = 1_024;
+/// Bound retained started-item payloads for any individual turn as well as globally. A single
+/// disconnected turn must not consume the whole delayed-completion retention budget.
+pub(crate) const PENDING_TOOL_ITEMS_PER_TURN_LIMIT: usize = 64;
 
 #[derive(Default)]
 pub(crate) struct AnalyticsReducer {
     requests: HashMap<(u64, RequestId), RequestState>,
     turns: HashMap<String, TurnState>,
+    terminal_turn_states: HashMap<String, TurnState>,
+    terminal_turn_state_order: VecDeque<String>,
     connections: HashMap<u64, ConnectionState>,
     threads: HashMap<String, ThreadAnalyticsState>,
     tool_items_started_at_ms: HashMap<ToolItemKey, u64>,
@@ -693,7 +701,7 @@ impl AnalyticsReducer {
         let turn_id = input.turn_id.clone();
         let thread_id = input.thread_id.clone();
         let num_input_images = input.num_input_images;
-        let turn_state = self.turns.entry(turn_id.clone()).or_default();
+        let turn_state = self.turn_state_mut_or_insert(turn_id.clone());
         turn_state.thread_id = Some(thread_id);
         turn_state.num_input_images = Some(num_input_images);
         turn_state.resolved_config = Some(input);
@@ -706,7 +714,7 @@ impl AnalyticsReducer {
         out: &mut Vec<TrackEventRequest>,
     ) {
         let turn_id = input.turn_id.clone();
-        let turn_state = self.turns.entry(turn_id.clone()).or_default();
+        let turn_state = self.turn_state_mut_or_insert(turn_id.clone());
         turn_state.thread_id = Some(input.thread_id);
         turn_state.token_usage = Some(input.token_usage);
         self.maybe_emit_turn_event(&turn_id, out).await;
@@ -718,7 +726,7 @@ impl AnalyticsReducer {
         out: &mut Vec<TrackEventRequest>,
     ) {
         let TurnProfileFact { turn_id, profile } = input;
-        let turn_state = self.turns.entry(turn_id.clone()).or_default();
+        let turn_state = self.turn_state_mut_or_insert(turn_id.clone());
         turn_state.profile = Some(profile);
         self.maybe_emit_turn_event(&turn_id, out).await;
     }
@@ -729,7 +737,7 @@ impl AnalyticsReducer {
             thread_id,
             error,
         } = input;
-        let turn_state = self.turns.entry(turn_id).or_default();
+        let turn_state = self.turn_state_mut_or_insert(turn_id);
         turn_state.thread_id.get_or_insert(thread_id);
         turn_state.codex_error = Some(error);
     }
@@ -968,7 +976,7 @@ impl AnalyticsReducer {
                 else {
                     return;
                 };
-                let turn_state = self.turns.entry(turn_id.clone()).or_default();
+                let turn_state = self.turn_state_mut_or_insert(turn_id.clone());
                 turn_state.connection_id = Some(connection_id);
                 turn_state.thread_id = Some(pending_request.thread_id);
                 turn_state.num_input_images = Some(pending_request.num_input_images);
@@ -1264,7 +1272,7 @@ impl AnalyticsReducer {
             }
             ServerNotification::ItemCompleted(mut notification) => {
                 if matches!(notification.item, ThreadItem::SubAgentActivity { .. }) {
-                    let Some(turn_state) = self.turns.get_mut(&notification.turn_id) else {
+                    let Some(turn_state) = self.turn_state_mut(&notification.turn_id) else {
                         tracing::warn!(
                             thread_id = %notification.thread_id,
                             turn_id = %notification.turn_id,
@@ -1290,7 +1298,7 @@ impl AnalyticsReducer {
                 if let Some(started_spawn_item) = started_spawn_item.as_ref() {
                     merge_spawn_request_provenance(&mut notification.item, started_spawn_item);
                 }
-                let Some(turn_state) = self.turns.get_mut(&notification.turn_id) else {
+                let Some(turn_state) = self.turn_state_mut(&notification.turn_id) else {
                     tracing::warn!(
                         thread_id = %notification.thread_id,
                         turn_id = %notification.turn_id,
@@ -1340,19 +1348,19 @@ impl AnalyticsReducer {
                 self.ingest_guardian_review_completed(notification, out);
             }
             ServerNotification::TurnStarted(notification) => {
-                let turn_state = self.turns.entry(notification.turn.id).or_default();
+                let turn_state = self.turn_state_mut_or_insert(notification.turn.id);
                 turn_state.started_at = notification
                     .turn
                     .started_at
                     .and_then(|started_at| u64::try_from(started_at).ok());
             }
             ServerNotification::TurnDiffUpdated(notification) => {
-                let turn_state = self.turns.entry(notification.turn_id.clone()).or_default();
+                let turn_state = self.turn_state_mut_or_insert(notification.turn_id.clone());
                 turn_state.thread_id = Some(notification.thread_id);
                 turn_state.latest_diff = Some(notification.diff);
             }
             ServerNotification::TurnCompleted(notification) => {
-                let turn_state = self.turns.entry(notification.turn.id.clone()).or_default();
+                let turn_state = self.turn_state_mut_or_insert(notification.turn.id.clone());
                 turn_state.completed = Some(CompletedTurnState {
                     status: analytics_turn_status(notification.turn.status),
                     turn_error: notification
@@ -1526,7 +1534,7 @@ impl AnalyticsReducer {
         else {
             return;
         };
-        if let Some(turn_state) = self.turns.get_mut(&response.turn_id) {
+        if let Some(turn_state) = self.turn_state_mut(&response.turn_id) {
             turn_state.steer_count += 1;
         }
         self.emit_turn_steer_event(
@@ -1672,21 +1680,51 @@ impl AnalyticsReducer {
         self.pending_tool_item_lifecycle_order
             .retain(|candidate| candidate != &key);
         self.pending_tool_item_lifecycle_order.push_back(key);
+        let newest = self
+            .pending_tool_item_lifecycle_order
+            .back()
+            .expect("a retained tool item must remain queued")
+            .clone();
+
+        while self
+            .pending_tool_item_lifecycle_order
+            .iter()
+            .filter(|candidate| {
+                candidate.thread_id == newest.thread_id && candidate.turn_id == newest.turn_id
+            })
+            .count()
+            > PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+        {
+            let expired_index = self
+                .pending_tool_item_lifecycle_order
+                .iter()
+                .position(|candidate| {
+                    candidate.thread_id == newest.thread_id && candidate.turn_id == newest.turn_id
+                })
+                .expect("the newest tool item must have a queued per-turn predecessor");
+            let expired = self
+                .pending_tool_item_lifecycle_order
+                .remove(expired_index)
+                .expect("pending tool-item lifecycle order must contain the selected item");
+            self.expire_pending_tool_item_lifecycle(expired);
+        }
 
         while self.pending_tool_item_lifecycle_order.len() > PENDING_TOOL_ITEM_LIFECYCLE_LIMIT {
             let expired = self
                 .pending_tool_item_lifecycle_order
                 .pop_front()
                 .expect("pending tool-item lifecycle order must contain every retained item");
-            let expired_thread_id = expired.thread_id.clone();
-            let expired_turn_id = expired.turn_id.clone();
-            self.tool_items_started_at_ms.remove(&expired);
-            self.spawn_item_starts.remove(&expired);
-            self.remove_terminal_turn_item_lifecycle_if_drained(
-                &expired_thread_id,
-                &expired_turn_id,
-            );
+            self.expire_pending_tool_item_lifecycle(expired);
         }
+    }
+
+    fn expire_pending_tool_item_lifecycle(&mut self, expired: ToolItemKey) {
+        let expired_thread_id = expired.thread_id.clone();
+        let expired_turn_id = expired.turn_id.clone();
+        self.tool_items_started_at_ms.remove(&expired);
+        self.spawn_item_starts.remove(&expired);
+        self.item_review_summaries.remove(&expired);
+        self.remove_terminal_turn_item_lifecycle_if_drained(&expired_thread_id, &expired_turn_id);
     }
 
     fn remove_pending_tool_item_lifecycle(&mut self, key: &ToolItemKey) {
@@ -1723,6 +1761,57 @@ impl AnalyticsReducer {
             .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
         self.pending_tool_item_lifecycle_order
             .retain(|key| key.thread_id != thread_id || key.turn_id != turn_id);
+        self.item_review_summaries
+            .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
+    }
+
+    fn turn_state_mut(&mut self, turn_id: &str) -> Option<&mut TurnState> {
+        if let Some(turn_state) = self.turns.get_mut(turn_id) {
+            return Some(turn_state);
+        }
+        self.terminal_turn_states.get_mut(turn_id)
+    }
+
+    fn turn_state_mut_or_insert(&mut self, turn_id: String) -> &mut TurnState {
+        if self.terminal_turn_states.contains_key(&turn_id) {
+            return self
+                .terminal_turn_states
+                .get_mut(&turn_id)
+                .expect("terminal turn state must exist after contains_key");
+        }
+        self.turns.entry(turn_id).or_default()
+    }
+
+    fn retain_terminal_turn_state(&mut self, turn_id: &str) {
+        let Some(turn_state) = self.turns.remove(turn_id) else {
+            return;
+        };
+        self.terminal_turn_states.insert(turn_id.to_string(), turn_state);
+        self.terminal_turn_state_order
+            .retain(|candidate| candidate != turn_id);
+        self.terminal_turn_state_order.push_back(turn_id.to_string());
+
+        while self.terminal_turn_states.len() > TERMINAL_EMITTED_TURN_STATE_LIMIT {
+            let expired_turn_id = self
+                .terminal_turn_state_order
+                .pop_front()
+                .expect("terminal turn state order must contain every retained turn");
+            self.terminal_turn_states.remove(&expired_turn_id);
+            self.clear_terminal_turn_item_lifecycle_for_turn(&expired_turn_id);
+        }
+    }
+
+    fn clear_terminal_turn_item_lifecycle_for_turn(&mut self, turn_id: &str) {
+        self.tool_items_started_at_ms
+            .retain(|key, _| key.turn_id != turn_id);
+        self.spawn_item_starts.retain(|key, _| key.turn_id != turn_id);
+        self.pending_tool_item_lifecycle_order
+            .retain(|key| key.turn_id != turn_id);
+        self.item_review_summaries.retain(|key, _| key.turn_id != turn_id);
+        self.terminal_turn_item_lifecycles
+            .retain(|(_, candidate_turn_id)| candidate_turn_id != turn_id);
+        self.terminal_turn_item_lifecycle_order
+            .retain(|(_, candidate_turn_id)| candidate_turn_id != turn_id);
     }
 
     async fn maybe_emit_turn_event(&mut self, turn_id: &str, out: &mut Vec<TrackEventRequest>) {
@@ -1782,7 +1871,7 @@ impl AnalyticsReducer {
             input.repo_hash = accepted_line_repo_hash_for_cwd(cwd.as_path()).await;
             out.extend(accepted_line_fingerprint_event_requests(input));
         }
-        self.turns.remove(turn_id);
+        self.retain_terminal_turn_state(turn_id);
     }
 
     fn thread_connection_or_warn(
@@ -3046,5 +3135,33 @@ mod tests {
             safe_plugin_relative_script_path(/*plugin_id*/ None, Some("scripts/run.py"),),
             None
         );
+    }
+
+    #[test]
+    fn pending_tool_item_retention_is_bounded_per_turn() {
+        let mut reducer = AnalyticsReducer::default();
+        for item_number in 0..=PENDING_TOOL_ITEMS_PER_TURN_LIMIT {
+            let key = ToolItemKey {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: format!("item-{item_number}"),
+            };
+            reducer.tool_items_started_at_ms.insert(key.clone(), 1);
+            reducer.retain_pending_tool_item_lifecycle(key);
+        }
+
+        assert_eq!(
+            reducer.pending_tool_item_lifecycle_order.len(),
+            PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+        );
+        assert_eq!(
+            reducer.tool_items_started_at_ms.len(),
+            PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+        );
+        assert!(!reducer.tool_items_started_at_ms.contains_key(&ToolItemKey {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "item-0".to_string(),
+        }));
     }
 }

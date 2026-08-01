@@ -4949,6 +4949,84 @@ async fn turn_lifecycle_emits_turn_event() {
 }
 
 #[tokio::test]
+async fn delayed_tool_completion_after_turn_event_is_recorded() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut out = Vec::new();
+
+    // Use every normal turn-event prerequisite, then prove that the turn has actually emitted
+    // before the delayed tool lifecycle arrives.
+    ingest_turn_prerequisites(
+        &mut reducer,
+        &mut out,
+        /*include_initialize*/ true,
+        /*include_resolved_config*/ true,
+        /*include_started*/ true,
+        /*include_token_usage*/ true,
+    )
+    .await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_completed_notification(
+                "thread-2",
+                "turn-2",
+                AppServerTurnStatus::Completed,
+                /*codex_error_info*/ None,
+            ))),
+            &mut out,
+        )
+        .await;
+    assert!(matches!(out.as_slice(), [TrackEventRequest::TurnEvent(_)]));
+    out.clear();
+
+    // Both lifecycle notifications are late. The completed turn's bounded retained state must
+    // still supply the provenance required to emit the command-execution analytics event.
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                ItemStartedNotification {
+                    thread_id: "thread-2".to_string(),
+                    turn_id: "turn-2".to_string(),
+                    started_at_ms: 1_000,
+                    item: sample_command_execution_item_with_id(
+                        "late-command",
+                        CommandExecutionStatus::InProgress,
+                        /*exit_code*/ None,
+                        /*duration_ms*/ None,
+                    ),
+                },
+            ))),
+            &mut out,
+        )
+        .await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    thread_id: "thread-2".to_string(),
+                    turn_id: "turn-2".to_string(),
+                    completed_at_ms: 1_042,
+                    item: sample_command_execution_item_with_id(
+                        "late-command",
+                        CommandExecutionStatus::Completed,
+                        Some(0),
+                        Some(42),
+                    ),
+                },
+            ))),
+            &mut out,
+        )
+        .await;
+
+    assert!(matches!(
+        out.as_slice(),
+        [TrackEventRequest::CommandExecution(_)]
+    ));
+    let payload = serde_json::to_value(&out[0]).expect("serialize delayed tool event");
+    assert_eq!(payload["event_params"]["thread_id"], json!("thread-2"));
+    assert_eq!(payload["event_params"]["turn_id"], json!("turn-2"));
+}
+
+#[tokio::test]
 async fn turn_event_counts_completed_tool_items() {
     let mut reducer = AnalyticsReducer::default();
     let mut out = Vec::new();

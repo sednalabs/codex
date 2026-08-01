@@ -1085,11 +1085,16 @@ impl App {
             // the retained channel is live or the transcript is replayed later. When picker
             // metadata has not arrived yet, keep only bounded terminal evidence so delayed
             // activity cannot materialize a ghost closed child.
-            if self.agent_navigation.get(&thread_id).is_some() {
-                self.mark_agent_picker_thread_closed(thread_id);
-            } else {
-                self.agent_navigation
-                    .record_unmatched_thread_closed(thread_id);
+            if self
+                .agent_navigation
+                .accepts_unrevisioned_thread_closed(thread_id)
+            {
+                if self.agent_navigation.get(&thread_id).is_some() {
+                    self.mark_agent_picker_thread_closed(thread_id);
+                } else {
+                    self.agent_navigation
+                        .record_unmatched_thread_closed(thread_id);
+                }
             }
         } else if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
@@ -1558,6 +1563,7 @@ impl App {
     /// 1. the event is `thread/closed`;
     /// 2. the active thread differs from the primary thread;
     /// 3. the active thread is not the pending shutdown-exit thread.
+    /// 4. the revisionless close does not conflict with a newer recovered lifecycle.
     pub(super) fn active_non_primary_shutdown_target(
         &self,
         notification: &ServerNotification,
@@ -1568,6 +1574,12 @@ impl App {
         let active_thread_id = self.active_thread_id?;
         let primary_thread_id = self.primary_thread_id?;
         if self.pending_shutdown_exit_thread_id == Some(active_thread_id) {
+            return None;
+        }
+        if !self
+            .agent_navigation
+            .accepts_unrevisioned_thread_closed(active_thread_id)
+        {
             return None;
         }
         (active_thread_id != primary_thread_id).then_some((active_thread_id, primary_thread_id))

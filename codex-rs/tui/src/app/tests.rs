@@ -2169,6 +2169,71 @@ async fn inactive_live_child_thread_closed_marks_picker_closed_and_hides_default
 }
 
 #[tokio::test]
+async fn delayed_unrevisioned_thread_closed_does_not_close_recovered_child() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-recovered-child".to_string(),
+            thread_id,
+            agent_path: "/root/recovered-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // The non-live NotLoaded status closes the first lifecycle at revision 7. A newer Active
+    // status recovers the same picker row at revision 8 before its old teardown notification
+    // arrives on the independent thread event stream.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(7),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running)
+    );
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: Vec::new(),
+                },
+                status_revision: Some(8),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+            !entry.is_closed && entry.is_running && !entry.has_system_error
+        })
+    );
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert!(
+        app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+            !entry.is_closed && entry.is_running && !entry.has_system_error
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn status_first_not_loaded_keeps_notification_buffer_non_live_across_backfill() -> Result<()>
 {
     let mut app = make_test_app().await;
@@ -5597,6 +5662,47 @@ async fn active_non_primary_shutdown_target_returns_ids_for_non_primary_shutdown
     assert_eq!(
         app.active_non_primary_shutdown_target(&thread_closed_notification(active_thread_id)),
         Some((active_thread_id, primary_thread_id))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_non_primary_shutdown_target_rejects_stale_close_after_status_recovery() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let active_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(ThreadId::new());
+    app.active_thread_id = Some(active_thread_id);
+    app.agent_navigation.upsert(
+        active_thread_id,
+        Some("Recovered child".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+
+    assert!(app.agent_navigation.accepts_thread_status_change(
+        active_thread_id,
+        /*has_system_error*/ false,
+        /*status_revision*/ Some(7),
+        /*is_closed*/ true,
+    ));
+    app.agent_navigation.mark_closed(active_thread_id);
+    assert!(app.agent_navigation.accepts_thread_status_change(
+        active_thread_id,
+        /*has_system_error*/ false,
+        /*status_revision*/ Some(8),
+        /*is_closed*/ false,
+    ));
+    app.agent_navigation
+        .reopen_after_newer_status(active_thread_id);
+    app.agent_navigation.mark_running(active_thread_id);
+
+    assert_eq!(
+        app.active_non_primary_shutdown_target(&thread_closed_notification(active_thread_id)),
+        None,
+        "an unrevisioned close cannot override the recovered lifecycle"
     );
     Ok(())
 }

@@ -29,6 +29,9 @@ const AGENT_PICKER_PAGE_SIZE: u32 = 50;
 /// older `thread/list.ancestorThreadId` filter. The app server clamps a single list request at
 /// 100 rows, and this path never performs a per-id metadata sweep.
 const AGENT_PICKER_UNACKNOWLEDGED_RELATION_PAGE_SIZE: u32 = 100;
+/// Keep the loaded-descendant priority pass finite too. The list protocol now caps this request,
+/// but an explicit client value makes the picker bound clear and compatible with older servers.
+const AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE: u32 = 100;
 const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
@@ -1109,10 +1112,9 @@ impl App {
     ///
     /// The historical page is deliberately small and relation-filtered at the app server so
     /// opening `/agent` does not enumerate every saved descendant and then issue one
-    /// `thread/read` request per row. The loaded-descendant priority query is deliberately
-    /// unpaginated within its loaded-session relation: active and idle descendants remain
-    /// immediately visible, while historical sidecars stay bounded and on demand under the
-    /// `closed` filter.
+    /// `thread/read` request per row. The loaded-descendant priority query uses one finite
+    /// relation page, while historical sidecars remain bounded and on demand under the `closed`
+    /// filter.
     pub(super) async fn backfill_loaded_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1390,11 +1392,9 @@ impl App {
     /// Merges every currently loaded descendant ahead of historical picker rows.
     ///
     /// The app-server confirms that it filtered by the spawn-tree relationship before these ids
-    /// are trusted. `limit: None` is intentionally the protocol's no-limit mode, bounded by the
-    /// currently loaded sessions for this one primary thread rather than its unbounded saved
-    /// history. That keeps every effective V2 concurrency slot reachable even when it exceeds
-    /// the historical page size. Re-registration is idempotent and preserves first-seen
-    /// navigation order.
+    /// are trusted. This is deliberately one finite page: a picker open must not traverse every
+    /// loaded candidate or the primary's persisted historical subtree. Re-registration is
+    /// idempotent and preserves first-seen navigation order.
     async fn backfill_loaded_priority_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1404,7 +1404,7 @@ impl App {
         let response = match app_server
             .thread_loaded_list(ThreadLoadedListParams {
                 cursor: None,
-                limit: None,
+                limit: Some(AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE),
                 ancestor_thread_id: Some(primary_thread_id.to_string()),
             })
             .await
@@ -1456,7 +1456,8 @@ impl App {
                 Err(err) => {
                     // A listed thread whose metadata cannot be read has not been covered by this
                     // priority pass. Leave it incomplete so the next first-page refresh retries
-                    // this complete loaded relation while legacy scan-and-repair still runs below.
+                    // this bounded loaded relation page while legacy scan-and-repair still runs
+                    // below.
                     loaded_metadata_completed = false;
                     tracing::debug!(
                         %err,
@@ -1469,7 +1470,7 @@ impl App {
         if loaded_descendant_count > 0 {
             tracing::debug!(
                 descendants = loaded_descendant_count,
-                "used complete loaded-descendant priority set for subagent metadata"
+                "used bounded loaded-descendant priority page for subagent metadata"
             );
         }
 

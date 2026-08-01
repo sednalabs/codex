@@ -40,6 +40,15 @@ use wiremock::MockServer;
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
+#[test]
+fn loaded_thread_descendant_page_size_is_capped_before_probe_allocation() {
+    assert_eq!(bounded_loaded_thread_list_page_size(0), 1);
+    assert_eq!(
+        bounded_loaded_thread_list_page_size(usize::MAX),
+        MAX_LOADED_THREAD_LIST_PAGE_SIZE
+    );
+}
+
 struct FakeAgentGraphStore {
     root_thread_id: ThreadId,
     descendant_thread_ids: Vec<ThreadId>,

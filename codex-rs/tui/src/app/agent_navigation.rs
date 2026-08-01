@@ -771,6 +771,19 @@ impl AgentNavigationState {
         self.record_closed_tombstone(thread_id, /*status_revision*/ None);
     }
 
+    /// Returns whether a revisionless `ThreadClosed` notification can close this child.
+    ///
+    /// The app-server protocol supplies only a thread id for `ThreadClosed`, so it cannot prove
+    /// that the notification belongs to a lifecycle recovered by a newer watcher status. Keep a
+    /// recovered watermark authoritative until a terminal status with newer revision evidence
+    /// arrives; otherwise a delayed teardown notification could close the reopened picker row.
+    pub(crate) fn accepts_unrevisioned_thread_closed(&self, thread_id: ThreadId) -> bool {
+        !matches!(
+            self.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Recovered { .. })
+        )
+    }
+
     /// Records revision provenance for an accepted status-only thread while there is no picker
     /// row or terminal lifecycle watermark to own it. A terminal status moves this provenance to
     /// [`Self::terminal_lifecycle_watermarks`]; a later activity or metadata update moves it to

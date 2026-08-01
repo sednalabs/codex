@@ -84,7 +84,7 @@ use codex_thread_store::UpdateThreadMetadataParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,6 +97,17 @@ use tracing::instrument;
 use tracing::warn;
 
 const THREAD_CREATED_CHANNEL_CAPACITY: usize = 1024;
+/// The public app-server clamps its requested page size too. Keep this guard at the manager
+/// boundary as well because callers may bypass that protocol surface.
+const MAX_LOADED_THREAD_LIST_PAGE_SIZE: usize = 100;
+/// A descendant page never inspects every currently loaded thread. This deliberately leaves room
+/// for unrelated loaded sessions while still bounding graph queries and candidate materialization.
+const MAX_LOADED_THREAD_LIST_CANDIDATE_SCAN: usize = 256;
+
+fn bounded_loaded_thread_list_page_size(limit: usize) -> usize {
+    limit.clamp(1, MAX_LOADED_THREAD_LIST_PAGE_SIZE)
+}
+
 /// Test-only override for enabling thread-manager behaviors used by integration
 /// tests.
 ///
@@ -276,7 +287,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 /// `Arc` reference that can be downgraded to by `AgentControl` while preventing every single
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
-    threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    threads: Arc<RwLock<BTreeMap<ThreadId, Arc<CodexThread>>>>,
     thread_created_tx: broadcast::Sender<ThreadId>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
@@ -378,7 +389,7 @@ impl ThreadManager {
         ));
         Self {
             state: Arc::new(ThreadManagerState {
-                threads: Arc::new(RwLock::new(HashMap::new())),
+                threads: Arc::new(RwLock::new(BTreeMap::new())),
                 thread_created_tx,
                 models_manager,
                 environment_manager,
@@ -510,7 +521,7 @@ impl ThreadManager {
         let agent_graph_store = local_agent_graph_store_from_state_db(state_db.as_ref());
         Self {
             state: Arc::new(ThreadManagerState {
-                threads: Arc::new(RwLock::new(HashMap::new())),
+                threads: Arc::new(RwLock::new(BTreeMap::new())),
                 thread_created_tx,
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
@@ -1267,55 +1278,6 @@ impl ThreadManager {
         self.state.list_live_thread_spawn_edges().await
     }
 
-    /// Lists loaded thread-spawn descendants of one thread.
-    ///
-    /// The persisted graph determines ancestry so an unloaded intermediary cannot hide a loaded
-    /// nested agent. When that graph is temporarily unavailable, the live registry provides the
-    /// available ancestry instead. In both cases, the result includes only currently loaded,
-    /// non-internal threads.
-    pub(crate) async fn list_live_thread_spawn_descendants(
-        &self,
-        ancestor_thread_id: ThreadId,
-    ) -> CodexResult<Vec<ThreadId>> {
-        let loaded_thread_ids: HashSet<ThreadId> =
-            self.state.list_thread_ids().await.into_iter().collect();
-        let mut descendants = match self.state.agent_graph_store() {
-            Some(agent_graph_store) => match agent_graph_store
-                .list_thread_spawn_descendants(ancestor_thread_id, /*status_filter*/ None)
-                .await
-            {
-                Ok(mut persisted_descendants) => {
-                    persisted_descendants.extend(
-                        self.state
-                            .list_live_thread_spawn_descendants(ancestor_thread_id)
-                            .await,
-                    );
-                    persisted_descendants
-                }
-                Err(err) => {
-                    warn!(
-                        "failed to load persisted thread-spawn descendants for \
-                         {ancestor_thread_id}; falling back to live descendants: {err}"
-                    );
-                    self.state
-                        .list_live_thread_spawn_descendants(ancestor_thread_id)
-                        .await
-                }
-            },
-            None => {
-                self.state
-                    .list_live_thread_spawn_descendants(ancestor_thread_id)
-                    .await
-            }
-        };
-        descendants.retain(|thread_id| {
-            *thread_id != ancestor_thread_id && loaded_thread_ids.contains(thread_id)
-        });
-        descendants.sort_by_key(|thread_id| thread_id.to_string());
-        descendants.dedup();
-        Ok(descendants)
-    }
-
     /// Returns one stable page of loaded descendants without materializing the ancestor's full
     /// persisted subtree. Persisted ancestry keeps an unloaded intermediary visible; the live
     /// registry remains a narrow fallback for graph outages and just-created edges.
@@ -1325,19 +1287,20 @@ impl ThreadManager {
         cursor: Option<ThreadId>,
         limit: usize,
     ) -> CodexResult<(Vec<ThreadId>, Option<ThreadId>)> {
-        let limit = limit.max(1);
-        let cursor = cursor.map(|thread_id| thread_id.to_string());
-        let mut candidates = self.state.list_thread_ids().await;
-        candidates.sort_by_key(std::string::ToString::to_string);
+        let limit = bounded_loaded_thread_list_page_size(limit);
+        let candidate_limit = limit
+            .saturating_mul(4)
+            .saturating_add(1)
+            .clamp(limit.saturating_add(1), MAX_LOADED_THREAD_LIST_CANDIDATE_SCAN);
+        let (candidates, candidate_next_cursor) = self
+            .state
+            .list_thread_ids_page(cursor, candidate_limit)
+            .await;
         let graph_store = self.state.agent_graph_store();
         let mut page_with_probe = Vec::with_capacity(limit.saturating_add(1));
 
         for candidate_thread_id in candidates {
-            if candidate_thread_id == ancestor_thread_id
-                || cursor
-                    .as_ref()
-                    .is_some_and(|cursor| candidate_thread_id.to_string() <= *cursor)
-            {
+            if candidate_thread_id == ancestor_thread_id {
                 continue;
             }
             let is_descendant = match graph_store.as_ref() {
@@ -1383,12 +1346,27 @@ impl ThreadManager {
 
         let has_more = page_with_probe.len() > limit;
         page_with_probe.truncate(limit);
-        let next_cursor = has_more.then(|| {
-            *page_with_probe
-                .last()
-                .expect("a page with a probe always contains a returned row")
-        });
+        let next_cursor = if has_more {
+            Some(
+                *page_with_probe
+                    .last()
+                    .expect("a page with a probe always contains a returned row"),
+            )
+        } else {
+            candidate_next_cursor
+        };
         Ok((page_with_probe, next_cursor))
+    }
+
+    /// Lists a bounded, stable page of loaded thread ids without allocating or sorting the full
+    /// registry. The cursor may name a non-returned candidate when an ancestor filter was applied,
+    /// so callers must treat it as opaque.
+    pub(crate) async fn list_thread_ids_page(
+        &self,
+        cursor: Option<ThreadId>,
+        limit: usize,
+    ) -> (Vec<ThreadId>, Option<ThreadId>) {
+        self.state.list_thread_ids_page(cursor, limit).await
     }
 }
 
@@ -1406,6 +1384,56 @@ impl ThreadManagerState {
                 (!thread.session_source.is_internal()).then_some(*thread_id)
             })
             .collect()
+    }
+
+    /// Returns at most `limit` registry candidates and one non-materialized source probe cursor.
+    /// The ordered map lets this resume without a full loaded-thread snapshot or a global sort.
+    async fn list_thread_ids_page(
+        &self,
+        cursor: Option<ThreadId>,
+        limit: usize,
+    ) -> (Vec<ThreadId>, Option<ThreadId>) {
+        let limit = limit.clamp(1, MAX_LOADED_THREAD_LIST_CANDIDATE_SCAN);
+        let threads = self.threads.read().await;
+        let mut thread_ids = Vec::with_capacity(limit);
+        let mut last_scanned = cursor;
+        let mut has_more = false;
+        let mut scanned = 0usize;
+
+        let mut scan = |thread_id: &ThreadId, thread: &Arc<CodexThread>| {
+            if scanned == limit {
+                has_more = true;
+                return false;
+            }
+            scanned += 1;
+            last_scanned = Some(*thread_id);
+            if !thread.session_source.is_internal() {
+                thread_ids.push(*thread_id);
+            }
+            true
+        };
+
+        match cursor {
+            Some(cursor) => {
+                for (thread_id, thread) in threads.range((
+                    std::ops::Bound::Excluded(cursor),
+                    std::ops::Bound::Unbounded,
+                )) {
+                    if !scan(thread_id, thread) {
+                        break;
+                    }
+                }
+            }
+            None => {
+                for (thread_id, thread) in threads.iter() {
+                    if !scan(thread_id, thread) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        (thread_ids, has_more.then_some(last_scanned).flatten())
     }
 
     /// List parent-child edges for currently loaded thread-spawn agents.
@@ -1495,37 +1523,6 @@ impl ThreadManagerState {
             current_thread_id = *parent_thread_id;
         }
         false
-    }
-
-    /// Lists currently loaded thread-spawn descendants of one thread.
-    pub(crate) async fn list_live_thread_spawn_descendants(
-        &self,
-        ancestor_thread_id: ThreadId,
-    ) -> Vec<ThreadId> {
-        let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
-        for (parent_thread_id, child_thread_id) in self.list_live_thread_spawn_edges().await {
-            children_by_parent
-                .entry(parent_thread_id)
-                .or_default()
-                .push(child_thread_id);
-        }
-
-        let mut descendants = Vec::new();
-        let mut seen = HashSet::new();
-        let mut pending = vec![ancestor_thread_id];
-        while let Some(parent_thread_id) = pending.pop() {
-            let Some(children) = children_by_parent.get(&parent_thread_id) else {
-                continue;
-            };
-            for child_thread_id in children {
-                if seen.insert(*child_thread_id) {
-                    descendants.push(*child_thread_id);
-                    pending.push(*child_thread_id);
-                }
-            }
-        }
-        descendants.sort_by_key(|thread_id| thread_id.to_string());
-        descendants
     }
 
     /// Fetch a thread by ID or return ThreadNotFound.
