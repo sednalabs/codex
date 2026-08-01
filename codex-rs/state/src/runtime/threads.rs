@@ -292,30 +292,86 @@ LIMIT 2
         root_thread_id: ThreadId,
         agent_path: &str,
     ) -> anyhow::Result<Option<ThreadId>> {
-        let rows = sqlx::query(
+        self.find_thread_spawn_descendant_by_path_matching(
+            root_thread_id,
+            agent_path,
+            /*status*/ None,
+        )
+        .await
+    }
+
+    /// Find a spawned descendant by canonical path when every traversed edge has `status`.
+    ///
+    /// This is intentionally stricter than filtering only the terminal edge: a stale tree path
+    /// must be reachable through persisted closed edges at every level, matching descendant-list
+    /// semantics and avoiding classification of evicted-but-open descendants as stale.
+    pub async fn find_thread_spawn_descendant_by_path_with_status(
+        &self,
+        root_thread_id: ThreadId,
+        agent_path: &str,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
+    ) -> anyhow::Result<Option<ThreadId>> {
+        self.find_thread_spawn_descendant_by_path_matching(
+            root_thread_id,
+            agent_path,
+            Some(status),
+        )
+        .await
+    }
+
+    async fn find_thread_spawn_descendant_by_path_matching(
+        &self,
+        root_thread_id: ThreadId,
+        agent_path: &str,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+    ) -> anyhow::Result<Option<ThreadId>> {
+        let status = status.map(|status| status.to_string());
+        let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
 WITH RECURSIVE subtree(child_thread_id, visited_thread_ids) AS (
     SELECT child_thread_id, ',' || parent_thread_id || ',' || child_thread_id || ','
     FROM thread_spawn_edges
-    WHERE parent_thread_id = ?
+    WHERE parent_thread_id =
+            "#,
+        );
+        builder.push_bind(root_thread_id.to_string());
+        if let Some(status) = status.as_ref() {
+            builder.push(" AND status = ").push_bind(status.clone());
+        }
+        builder.push(
+            r#"
     UNION ALL
     SELECT edge.child_thread_id, subtree.visited_thread_ids || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE instr(subtree.visited_thread_ids, ',' || edge.child_thread_id || ',') = 0
+    WHERE
+            "#,
+        );
+        if let Some(status) = status.as_ref() {
+            builder
+                .push("edge.status = ")
+                .push_bind(status.clone())
+                .push(" AND ");
+        }
+        builder.push(
+            r#"
+instr(subtree.visited_thread_ids, ',' || edge.child_thread_id || ',') = 0
 )
 SELECT threads.id
 FROM subtree
 JOIN threads ON threads.id = subtree.child_thread_id
-WHERE threads.agent_path = ?
+WHERE threads.agent_path =
+            "#,
+        );
+        builder
+            .push_bind(agent_path)
+            .push(
+                r#"
 ORDER BY threads.id
 LIMIT 2
             "#,
-        )
-        .bind(root_thread_id.to_string())
-        .bind(agent_path)
-        .fetch_all(self.pool.as_ref())
-        .await?;
+            );
+        let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
         one_thread_id_from_rows(rows, agent_path)
     }
 

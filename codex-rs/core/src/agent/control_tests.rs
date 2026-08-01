@@ -448,6 +448,29 @@ async fn wait_for_live_thread_spawn_children(
     .expect("expected persisted child tree");
 }
 
+async fn spawn_named_agent_for_tree_inspection(
+    harness: &AgentControlHarness,
+    parent_thread_id: ThreadId,
+    depth: usize,
+    agent_path: AgentPath,
+) -> ThreadId {
+    harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_path: Some(agent_path),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("named child spawn should succeed")
+}
+
 #[tokio::test]
 async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
     let (home, config) = test_config().await;
@@ -604,6 +627,355 @@ async fn inspect_agent_tree_applies_agent_roots_before_the_output_bound() {
     );
     assert_eq!(inspection.summary.total_agents, 2);
     assert!(!inspection.truncated);
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_explicit_target_respects_scope_and_serializes_stale_status() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let child_path = AgentPath::root().join("closed").expect("agent path");
+    let child_thread_id = spawn_named_agent_for_tree_inspection(
+        &harness,
+        root_thread_id,
+        /*depth*/ 1,
+        child_path.clone(),
+    )
+    .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id])
+        .await;
+    harness
+        .control
+        .close_agent(child_thread_id)
+        .await
+        .expect("child close should succeed");
+
+    let live_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("closed target must not be returned by live scope");
+    assert_matches!(
+        live_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/closed` not found in the live tree"
+    );
+
+    let stale = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("closed target should be returned by stale scope");
+    assert_eq!(stale.summary.stale_agents, 1);
+    assert_eq!(stale.summary.live_agents, 0);
+    assert_eq!(stale.agents.len(), 1);
+    assert_eq!(stale.agents[0].agent_name, "/root/closed");
+    assert_eq!(stale.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(stale.agents[0].agent_status, None);
+    assert_eq!(
+        serde_json::to_value(&stale).expect("stale receipt should serialize")["agents"][0]
+            ["agent_status"],
+        serde_json::Value::Null
+    );
+
+    let agent_roots = vec![child_path.to_string()];
+    let stale_filtered = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("a closed explicit branch root should be returned by stale scope");
+    assert_eq!(stale_filtered.agents.len(), 1);
+    assert_eq!(stale_filtered.agents[0].agent_name, "/root/closed");
+    assert_eq!(
+        stale_filtered.agents[0].session_state,
+        AgentSessionState::Stale
+    );
+
+    let live_filtered_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("a closed explicit branch root must not be returned by live scope");
+    assert_matches!(
+        live_filtered_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/closed` not found in the live tree"
+    );
+
+    let all = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("all scope should include the closed target as stale");
+    assert_eq!(all.agents[0].session_state, AgentSessionState::Stale);
+
+    let stale_root_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some("/root"),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("live root must not be returned by explicit stale scope");
+    assert_matches!(
+        stale_root_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root` not found in the stale tree"
+    );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_never_reclassifies_live_or_open_paths_as_stale() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let child_path = AgentPath::root().join("open").expect("agent path");
+    let child_thread_id = spawn_named_agent_for_tree_inspection(
+        &harness,
+        root_thread_id,
+        /*depth*/ 1,
+        child_path.clone(),
+    )
+    .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id])
+        .await;
+
+    let stale_live_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("a live target must not be returned by stale scope");
+    assert_matches!(
+        stale_live_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/open` not found in the stale tree"
+    );
+
+    let live = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("all scope should prefer the loaded target");
+    assert_eq!(live.agents[0].session_state, AgentSessionState::Live);
+
+    harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("open child shutdown should succeed");
+    let persisted_open_children = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be configured")
+        .list_thread_spawn_children_with_status(
+            root_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open edge should remain persisted after ordinary shutdown");
+    assert_eq!(persisted_open_children, vec![child_thread_id]);
+    let open_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("an evicted Open edge must not be fabricated as a stale target");
+    assert_matches!(
+        open_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/open` not found in the inspected tree"
+    );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_rejects_unresolved_explicit_agent_roots() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let agent_roots = vec!["/root/missing".to_string()];
+
+    let err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("an unresolved explicit branch root must not look like an empty tree");
+    assert_matches!(
+        err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/missing` not found in the live tree"
+    );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_discards_persisted_cycle_edges_before_counting() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let child_path = AgentPath::root().join("cycle").expect("agent path");
+    let child_thread_id = spawn_named_agent_for_tree_inspection(
+        &harness,
+        root_thread_id,
+        /*depth*/ 1,
+        child_path,
+    )
+    .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id])
+        .await;
+    harness
+        .control
+        .close_agent(child_thread_id)
+        .await
+        .expect("child close should succeed");
+    let state_db = harness.state_db.as_ref().expect("state db should be configured");
+    state_db
+        .upsert_thread_spawn_edge(
+            child_thread_id,
+            root_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("malformed persisted cycle should be inserted for regression coverage");
+
+    let inspection = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 3,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("cycle-safe inspection should succeed");
+    assert_eq!(
+        inspection
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/root", "/root/cycle"]
+    );
+    let root = inspection
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root")
+        .expect("root row");
+    assert_eq!(root.direct_child_count, 1);
+    assert_eq!(root.descendant_count, 1);
+    let child = inspection
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/cycle")
+        .expect("child row");
+    assert_eq!(child.direct_child_count, 0);
+    assert_eq!(child.descendant_count, 0);
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {

@@ -713,6 +713,10 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
 }
 
 fn inspect_agent_tree_output_schema() -> Value {
+    let agent_status_schema = json!({
+        "anyOf": [agent_status_output_schema(), { "type": "null" }],
+        "description": "Live agent status. Null for a persisted stale thread because no live runtime status is available."
+    });
     json!({
         "type": "object",
         "properties": {
@@ -777,7 +781,7 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "agent_name": { "type": "string" },
                         "depth": { "type": "number" },
                         "session_state": { "type": "string" },
-                        "agent_status": { "type": "string" },
+                        "agent_status": agent_status_schema,
                         "nickname": { "type": ["string", "null"] },
                         "role": { "type": ["string", "null"] },
                         "effective_model": {
