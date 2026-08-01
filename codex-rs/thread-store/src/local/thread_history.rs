@@ -1,6 +1,7 @@
 use codex_app_server_protocol::ThreadHistoryChangeSet;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::merge_spawn_request_provenance;
 use codex_protocol::ThreadId;
 use codex_protocol::models::MessagePhase;
 
@@ -338,8 +339,28 @@ WHERE thread_id = ?
         .map_err(thread_history_error)?;
     }
 
-    for item in changes.changed_items {
+    for mut item in changes.changed_items {
         let item_id = item.item.id().to_string();
+        if is_terminal_spawn_item(&item.item) {
+            let previous_item_json = sqlx::query_scalar::<_, String>(
+                r#"
+SELECT item_json
+FROM thread_items
+WHERE thread_id = ? AND turn_id = ? AND item_id = ?
+                "#,
+            )
+            .bind(thread_id)
+            .bind(item.turn_id.as_str())
+            .bind(item_id.as_str())
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(thread_history_error)?;
+            if let Some(previous_item_json) = previous_item_json {
+                let started_item = serde_json::from_str::<ThreadItem>(&previous_item_json)
+                    .map_err(thread_history_error)?;
+                merge_spawn_request_provenance(&mut item.item, &started_item);
+            }
+        }
         let item_json = serde_json::to_string(&item.item).map_err(thread_history_error)?;
         // Completed items are immutable: local producers emit ItemCompleted exactly once per
         // item. Tolerate an unexpected duplicate defensively so it cannot poison materialization,
@@ -440,6 +461,18 @@ WHERE thread_id = ?
         }
     }
     Ok(())
+}
+
+fn is_terminal_spawn_item(item: &ThreadItem) -> bool {
+    matches!(
+        item,
+        ThreadItem::CollabAgentToolCall {
+            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+            status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed
+                | codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
+            ..
+        }
+    )
 }
 
 fn turn_status(status: &TurnStatus) -> &'static str {

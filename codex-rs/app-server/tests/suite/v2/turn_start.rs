@@ -3280,8 +3280,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
-    assert_eq!(requested_model, None);
-    assert_eq!(requested_reasoning_effort, None);
+    assert_eq!(requested_model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(requested_reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");
@@ -3609,8 +3609,8 @@ config_file = "./custom-role.toml"
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(ROLE_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
-    assert_eq!(requested_model, None);
-    assert_eq!(requested_reasoning_effort, None);
+    assert_eq!(requested_model, Some(ROLE_MODEL.to_string()));
+    assert_eq!(requested_reasoning_effort, Some(ROLE_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");

@@ -525,6 +525,83 @@ impl ThreadItem {
     }
 }
 
+/// Carries caller-provided spawn overrides from an in-progress snapshot to its
+/// terminal snapshot without changing the effective values selected at completion.
+///
+/// Canonical item lifecycle events materialize their start and completion snapshots
+/// independently. Core deliberately records the effective model and effort on the
+/// terminal snapshot, so request provenance must be retained from the matching start.
+pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, started: &ThreadItem) {
+    let (
+        completed_id,
+        completed_tool,
+        completed_status,
+        completed_requested_model,
+        completed_requested_reasoning_effort,
+    ) = match completed {
+        ThreadItem::CollabAgentToolCall {
+            id,
+            tool,
+            status,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } => (
+            id,
+            tool,
+            status,
+            requested_model,
+            requested_reasoning_effort,
+        ),
+        _ => return,
+    };
+    if *completed_tool != CollabAgentTool::SpawnAgent
+        || !matches!(
+            completed_status,
+            CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+        )
+    {
+        return;
+    }
+
+    let (
+        started_id,
+        started_tool,
+        started_status,
+        started_requested_model,
+        started_requested_reasoning_effort,
+    ) = match started {
+        ThreadItem::CollabAgentToolCall {
+            id,
+            tool,
+            status,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } => (
+            id,
+            tool,
+            status,
+            requested_model,
+            requested_reasoning_effort,
+        ),
+        _ => return,
+    };
+    if completed_id != started_id
+        || *started_tool != CollabAgentTool::SpawnAgent
+        || *started_status != CollabAgentToolCallStatus::InProgress
+    {
+        return;
+    }
+
+    if completed_requested_model.is_none() {
+        completed_requested_model.clone_from(started_requested_model);
+    }
+    if completed_requested_reasoning_effort.is_none() {
+        completed_requested_reasoning_effort.clone_from(started_requested_reasoning_effort);
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

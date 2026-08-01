@@ -127,6 +127,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::WebSearchAction;
+use codex_app_server_protocol::merge_spawn_request_provenance;
 use codex_git_utils::collect_git_info;
 use codex_git_utils::get_git_repo_root;
 use codex_login::default_client::originator;
@@ -153,6 +154,7 @@ pub(crate) struct AnalyticsReducer {
     connections: HashMap<u64, ConnectionState>,
     threads: HashMap<String, ThreadAnalyticsState>,
     tool_items_started_at_ms: HashMap<ToolItemKey, u64>,
+    spawn_item_starts: HashMap<ToolItemKey, ThreadItem>,
     pending_reviews: HashMap<RequestId, PendingReviewState>,
     item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
 }
@@ -1232,16 +1234,18 @@ impl AnalyticsReducer {
                 else {
                     return;
                 };
-                self.tool_items_started_at_ms.insert(
-                    ToolItemKey {
-                        thread_id: notification.thread_id,
-                        turn_id: notification.turn_id,
-                        item_id: item_id.to_string(),
-                    },
-                    started_at_ms,
-                );
+                let key = ToolItemKey {
+                    thread_id: notification.thread_id,
+                    turn_id: notification.turn_id,
+                    item_id: item_id.to_string(),
+                };
+                if is_spawn_start(&notification.item) {
+                    self.spawn_item_starts
+                        .insert(key.clone(), notification.item);
+                }
+                self.tool_items_started_at_ms.insert(key, started_at_ms);
             }
-            ServerNotification::ItemCompleted(notification) => {
+            ServerNotification::ItemCompleted(mut notification) => {
                 if matches!(notification.item, ThreadItem::SubAgentActivity { .. }) {
                     let Some(turn_state) = self.turns.get_mut(&notification.turn_id) else {
                         tracing::warn!(
@@ -1257,6 +1261,16 @@ impl AnalyticsReducer {
                 let Some(item_id) = tracked_tool_item_id(&notification.item) else {
                     return;
                 };
+                let key = ToolItemKey {
+                    thread_id: notification.thread_id.clone(),
+                    turn_id: notification.turn_id.clone(),
+                    item_id: item_id.to_string(),
+                };
+                let started_spawn_item = self.spawn_item_starts.remove(&key);
+                let started_at_ms = self.tool_items_started_at_ms.remove(&key);
+                if let Some(started_spawn_item) = started_spawn_item.as_ref() {
+                    merge_spawn_request_provenance(&mut notification.item, started_spawn_item);
+                }
                 let Some(turn_state) = self.turns.get_mut(&notification.turn_id) else {
                     tracing::warn!(
                         thread_id = %notification.thread_id,
@@ -1267,12 +1281,7 @@ impl AnalyticsReducer {
                     return;
                 };
                 turn_state.tool_counts.record(&notification.item);
-                let key = ToolItemKey {
-                    thread_id: notification.thread_id.clone(),
-                    turn_id: notification.turn_id.clone(),
-                    item_id: item_id.to_string(),
-                };
-                let Some(started_at_ms) = self.tool_items_started_at_ms.remove(&key) else {
+                let Some(started_at_ms) = started_at_ms else {
                     tracing::warn!(
                         thread_id = %notification.thread_id,
                         turn_id = %notification.turn_id,
@@ -1775,6 +1784,17 @@ fn item_review_summary_key(pending_review: &PendingReviewState) -> Option<ToolIt
         }),
         ReviewSubjectKind::Permissions | ReviewSubjectKind::NetworkAccess => None,
     }
+}
+
+fn is_spawn_start(item: &ThreadItem) -> bool {
+    matches!(
+        item,
+        ThreadItem::CollabAgentToolCall {
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            ..
+        }
+    )
 }
 
 struct ToolItemEventInput<'a> {

@@ -1105,11 +1105,25 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &event.item,
             )
             .await;
-            let notification = item_event_to_server_notification(
+            // The thread reducer processes the canonical start before this completion is
+            // forwarded. Use its materialized snapshot so a completed spawn retains optional
+            // caller-provided request fields while the core completion keeps effective values.
+            let materialized_item = thread_state
+                .lock()
+                .await
+                .turn_item_snapshot(&event.turn_id, event.item.id());
+            let mut notification = item_event_to_server_notification(
                 EventMsg::ItemCompleted(event),
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
+            if let (
+                Some(materialized_item),
+                Some(ServerNotification::ItemCompleted(notification)),
+            ) = (materialized_item, notification.as_mut())
+            {
+                notification.item = materialized_item;
+            }
             if let Some(notification) = notification {
                 outgoing.send_server_notification(notification).await;
             }

@@ -155,6 +155,13 @@ impl ThreadState {
         self.current_turn_history.active_turn_snapshot()
     }
 
+    /// Returns a canonical lifecycle item's materialized snapshot after it has
+    /// passed through the per-thread history reducer.
+    pub(crate) fn turn_item_snapshot(&self, turn_id: &str, item_id: &str) -> Option<ThreadItem> {
+        self.current_turn_history
+            .turn_item_snapshot(turn_id, item_id)
+    }
+
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;

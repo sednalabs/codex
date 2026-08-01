@@ -3,7 +3,7 @@ use std::path::Path;
 
 use chrono::DateTime;
 use codex_app_server_protocol::ThreadHistoryChangeSet;
-use codex_app_server_protocol::project_rollout_line;
+use codex_app_server_protocol::ThreadHistoryProjector;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::RolloutLine;
 use tokio::io::AsyncReadExt;
@@ -43,6 +43,7 @@ pub(super) async fn materialize_to_sqlite(
         .map_or(0, |base| base.end_ordinal_exclusive);
     let subagent_history_start_ordinal = session_meta.subagent_history_start_ordinal;
 
+    let mut projector = ThreadHistoryProjector::default();
     let projections = lines
         .iter()
         .map(|record| {
@@ -56,7 +57,7 @@ pub(super) async fn materialize_to_sqlite(
             let changes = if subagent_history_start_ordinal.is_some_and(|start| ordinal < start) {
                 ThreadHistoryChangeSet::default()
             } else {
-                project_rollout_line(line)
+                projector.project_rollout_line(line)
             };
             Ok(ProjectedRolloutLine {
                 ordinal,
