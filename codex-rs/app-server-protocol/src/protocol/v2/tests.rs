@@ -2874,6 +2874,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
+        requested_model: None,
+        requested_reasoning_effort: None,
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
@@ -2902,6 +2904,41 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             .into_iter()
             .collect(),
         }
+    );
+
+    let completed_spawn = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-1".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::Completed,
+        sender_thread_id,
+        receiver_thread_ids: vec![receiver_thread_id],
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect the repository".to_string()),
+        model: Some("gpt-effective-model".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: Some("gpt-requested-model".to_string()),
+        requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        agents_states: Default::default(),
+    });
+    let ThreadItem::CollabAgentToolCall {
+        model,
+        reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = ThreadItem::from(completed_spawn)
+    else {
+        panic!("expected converted collab spawn");
+    };
+    assert_eq!(model.as_deref(), Some("gpt-effective-model"));
+    assert_eq!(
+        reasoning_effort,
+        Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+    );
+    assert_eq!(requested_model.as_deref(), Some("gpt-requested-model"));
+    assert_eq!(
+        requested_reasoning_effort,
+        Some(codex_protocol::openai_models::ReasoningEffort::High)
     );
 
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {

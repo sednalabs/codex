@@ -1721,6 +1721,7 @@ mod tests {
         model: Option<&str>,
         reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     ) -> CoreTurnItem {
+        let is_start = status == CoreCollabAgentToolCallStatus::InProgress;
         CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
             id: id.to_string(),
             tool: CoreCollabAgentTool::SpawnAgent,
@@ -1730,7 +1731,9 @@ mod tests {
             receiver_agents: Vec::new(),
             prompt: Some("inspect the repository".to_string()),
             model: model.map(str::to_string),
-            reasoning_effort,
+            reasoning_effort: reasoning_effort.clone(),
+            requested_model: is_start.then(|| model.map(str::to_string)).flatten(),
+            requested_reasoning_effort: is_start.then_some(reasoning_effort).flatten(),
             agents_states: HashMap::new(),
         })
     }
