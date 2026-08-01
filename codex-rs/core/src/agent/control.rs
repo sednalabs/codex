@@ -93,6 +93,35 @@ pub(crate) struct LiveAgent {
     pub(crate) thread_id: ThreadId,
     pub(crate) metadata: AgentMetadata,
     pub(crate) status: AgentStatus,
+    /// The configuration selected for the child before its initial input was delivered.
+    pub(crate) effective_model: String,
+    pub(crate) effective_reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Result of creating an agent and delivering its initial input.
+///
+/// The child is committed before initial-input delivery. Callers that own a parent lifecycle
+/// must retain the child identity when that final delivery step fails so their terminal records
+/// do not contradict the live registry and spawn edge.
+#[derive(Debug)]
+pub(crate) enum SpawnAgentOutcome {
+    Spawned(LiveAgent),
+    InitialInputDeliveryFailed { agent: LiveAgent, error: CodexErr },
+}
+
+impl SpawnAgentOutcome {
+    pub(crate) fn into_result(self) -> CodexResult<LiveAgent> {
+        match self {
+            Self::Spawned(agent) => Ok(agent),
+            Self::InitialInputDeliveryFailed { error, .. } => Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+struct SpawnInitialInputGate {
+    started: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
 }
 
 /// Internal inventory snapshot for a spawned sub-agent.
@@ -208,6 +237,10 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    #[cfg(test)]
+    next_spawn_initial_input_error: Arc<tokio::sync::Mutex<Option<CodexErr>>>,
+    #[cfg(test)]
+    next_spawn_initial_input_gate: Arc<tokio::sync::Mutex<Option<SpawnInitialInputGate>>>,
 }
 
 impl AgentControl {
@@ -224,6 +257,41 @@ impl AgentControl {
             control.rollout_budget.configure(rollout_budget);
         }
         control
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fail_next_spawn_initial_input(&self, error: CodexErr) {
+        *self.next_spawn_initial_input_error.lock().await = Some(error);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_next_spawn_initial_input(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (proceed_sender, proceed_receiver) = tokio::sync::oneshot::channel();
+        *self.next_spawn_initial_input_gate.lock().await = Some(SpawnInitialInputGate {
+            started: started_sender,
+            proceed: proceed_receiver,
+        });
+        (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    async fn take_next_spawn_initial_input_error(&self) -> Option<CodexErr> {
+        self.next_spawn_initial_input_error.lock().await.take()
+    }
+
+    #[cfg(test)]
+    async fn wait_for_next_spawn_initial_input(&self) {
+        let Some(gate) = self.next_spawn_initial_input_gate.lock().await.take() else {
+            return;
+        };
+        let _ = gate.started.send(());
+        let _ = gate.proceed.await;
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
