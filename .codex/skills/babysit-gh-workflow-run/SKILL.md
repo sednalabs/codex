@@ -94,6 +94,36 @@ Optional:
 
 ## Commands
 
+### Exact merge-queue delivery receipt
+
+Use `scripts/gh_pr_delivery_watch` when one pull request must be proved through
+all three delivery identities: its expected full head SHA, the synthetic
+`merge_group` candidate, and the resulting merge commit on `main`. It performs
+only finite PR/queue/commit reads itself; both long waits are delegated to the
+existing `gh_workflow_run_watch --watch-until-terminal` helper.
+
+```bash
+.codex/skills/babysit-gh-workflow-run/scripts/gh_pr_delivery_watch \
+  --repo sednalabs/codex \
+  --pr 123 \
+  --expected-head-sha 0123456789012345678901234567890123456789 \
+  --merge-group-run-id 123456789
+```
+
+- `--expected-head-sha` must be a full 40-character SHA; prefixes are rejected.
+- Supplying `--merge-group-run-id` is preferred. Without it, a single discovery
+  read is accepted only when exactly one `blocking-ci` queue candidate names the
+  PR; absent or multiple candidate SHAs stop the receipt.
+- The defaults require a successful `blocking-ci` `merge_group` run and a
+  successful `postmerge-ci` `push` run on the exact merge commit. Override the
+  workflow names only for a repository with different entrypoints.
+- Standard output is one compact JSON receipt. A non-zero status still emits a
+  receipt with a stable `stop_*` action and the first failed job when available.
+
+The helper fails closed if the PR head changes, a queue entry disappears without
+a merge, the merge commit cannot be correlated to `main`, or either watched run
+reports an identity different from its exact target SHA.
+
 ### One-shot snapshot for the current branch
 
 ```bash

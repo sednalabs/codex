@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""Prove one merge-queue PR delivery with exact GitHub identities.
+
+This script deliberately does not poll GitHub itself.  It performs finite
+identity reads around two invocations of gh_workflow_run_watch, which owns the
+blocking waits for the exact merge-group and post-merge workflow runs.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+QUEUE_PR_COMPONENT_RE = re.compile(r"(?:^|/)pr-(\d+)(?:-|$)")
+WATCHER_LAUNCHER = Path(__file__).with_name("gh_workflow_run_watch")
+
+PULL_REQUEST_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number
+      headRefOid
+      baseRefName
+      merged
+      mergeQueueEntry { id }
+      mergeCommit { oid }
+    }
+  }
+}
+"""
+
+
+class GhCommandError(RuntimeError):
+    """Raised when an authoritative GitHub read cannot be completed."""
+
+
+class DeliveryStop(RuntimeError):
+    """A fail-closed delivery-proof stop with a stable receipt action."""
+
+    def __init__(self, action, message):
+        super().__init__(message)
+        self.action = action
+
+
+def is_full_sha(value):
+    return bool(FULL_SHA_RE.fullmatch(str(value or "").strip()))
+
+
+def normalize_workflow_name(value):
+    normalized = str(value or "").strip().lower()
+    normalized = normalized.removesuffix(".yaml")
+    normalized = normalized.removesuffix(".yml")
+    return normalized
+
+
+def workflow_matches(observed, expected):
+    return normalize_workflow_name(observed) == normalize_workflow_name(expected)
+
+
+def queue_ref_mentions_pr(queue_ref, pr_number):
+    return any(
+        int(match.group(1)) == int(pr_number)
+        for match in QUEUE_PR_COMPONENT_RE.finditer(str(queue_ref or ""))
+    )
+
+
+def compact_run(run):
+    compact = {
+        "id": run.get("id"),
+        "attempt": run.get("attempt"),
+        "workflow": run.get("workflow"),
+        "url": run.get("url"),
+        "event": run.get("event"),
+        "head_branch": run.get("head_branch"),
+        "head_sha": run.get("head_sha"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+    }
+    return {key: value for key, value in compact.items() if value not in (None, "", [])}
+
+
+def compact_failed_job(failed_jobs):
+    if not isinstance(failed_jobs, list) or not failed_jobs:
+        return None
+    first = failed_jobs[0]
+    if not isinstance(first, dict):
+        return None
+    compact = {
+        "id": first.get("id"),
+        "name": first.get("name"),
+        "conclusion": first.get("conclusion"),
+    }
+    return {
+        key: value for key, value in compact.items() if value not in (None, "", [])
+    } or None
+
+
+def gh_json(args):
+    result = subprocess.run(
+        ["gh", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise GhCommandError(
+            f"GitHub CLI command failed with exit status {result.returncode}."
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as err:
+        raise GhCommandError("GitHub CLI returned invalid JSON.") from err
+
+
+def detect_repo():
+    configured = os.environ.get("GH_PR_DELIVERY_WATCH_REPO") or os.environ.get(
+        "GH_REPO"
+    )
+    if configured:
+        return configured
+    result = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    raise GhCommandError(
+        "Unable to determine OWNER/REPO. Pass --repo or set GH_PR_DELIVERY_WATCH_REPO."
+    )
+
+
+def split_repo(repo):
+    owner, separator, name = str(repo or "").partition("/")
+    if not separator or not owner or not name:
+        raise GhCommandError("Repository must use OWNER/REPO form.")
+    return owner, name
+
+
+def fetch_pr(repo, pr_number):
+    owner, name = split_repo(repo)
+    payload = gh_json(
+        [
+            "api",
+            "graphql",
+            "-f",
+            f"query={PULL_REQUEST_QUERY}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"number={int(pr_number)}",
+        ]
+    )
+    pr = ((payload.get("data") or {}).get("repository") or {}).get("pullRequest")
+    if not isinstance(pr, dict):
+        raise GhCommandError(f"Pull request #{pr_number} was not found in {repo}.")
+    return {
+        "number": pr.get("number"),
+        "head_sha": str(pr.get("headRefOid") or ""),
+        "base_ref": str(pr.get("baseRefName") or ""),
+        "merged": bool(pr.get("merged")),
+        "merge_queue_entry_id": ((pr.get("mergeQueueEntry") or {}).get("id")),
+        "merge_commit_sha": str(((pr.get("mergeCommit") or {}).get("oid")) or ""),
+    }
+
+
+def fetch_actions_run(repo, run_id):
+    payload = gh_json(["api", f"repos/{repo}/actions/runs/{int(run_id)}"])
+    if not isinstance(payload, dict):
+        raise GhCommandError(f"Actions run {run_id} returned an unexpected payload.")
+    return normalize_actions_run(payload)
+
+
+def list_merge_group_runs(repo):
+    payload = gh_json(
+        ["api", f"repos/{repo}/actions/runs?event=merge_group&per_page=100"]
+    )
+    runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
+    if not isinstance(runs, list):
+        raise GhCommandError(
+            "Merge-group Actions listing returned an unexpected payload."
+        )
+    return [normalize_actions_run(run) for run in runs if isinstance(run, dict)]
+
+
+def normalize_actions_run(run):
+    return {
+        "id": int(run.get("id") or run.get("databaseId") or 0),
+        "attempt": run.get("run_attempt") or run.get("attempt"),
+        "workflow": str(run.get("name") or run.get("workflowName") or ""),
+        "url": str(run.get("html_url") or run.get("url") or ""),
+        "event": str(run.get("event") or ""),
+        "head_branch": str(run.get("head_branch") or run.get("headBranch") or ""),
+        "head_sha": str(run.get("head_sha") or run.get("headSha") or ""),
+        "status": str(run.get("status") or ""),
+        "conclusion": str(run.get("conclusion") or ""),
+    }
+
+
+def verify_merge_group_candidate(run, args):
+    if run.get("id", 0) <= 0:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            "Merge-group run has no exact run id.",
+        )
+    if run.get("event") != "merge_group":
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            f"Actions run {run['id']} is not a merge_group run.",
+        )
+    if not workflow_matches(run.get("workflow"), args.merge_group_workflow):
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            f"Actions run {run['id']} belongs to workflow '{run.get('workflow')}', not "
+            f"'{args.merge_group_workflow}'.",
+        )
+    if not queue_ref_mentions_pr(run.get("head_branch"), args.pr):
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            f"Merge-group queue ref '{run.get('head_branch')}' does not identify PR #{args.pr}.",
+        )
+    if not is_full_sha(run.get("head_sha")):
+        raise DeliveryStop(
+            "stop_merge_group_candidate_uncorrelatable",
+            f"Merge-group run {run['id']} has no full candidate SHA.",
+        )
+    return run
+
+
+def resolve_merge_group_candidate(repo, initial_pr, args):
+    if args.merge_group_run_id is not None:
+        return verify_merge_group_candidate(
+            fetch_actions_run(repo, args.merge_group_run_id), args
+        )
+
+    if not initial_pr["merged"] and not initial_pr["merge_queue_entry_id"]:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_absent",
+            f"PR #{args.pr} has no merge-queue entry and no exact merge-group run was supplied.",
+        )
+
+    matching = [
+        run
+        for run in list_merge_group_runs(repo)
+        if workflow_matches(run.get("workflow"), args.merge_group_workflow)
+        and queue_ref_mentions_pr(run.get("head_branch"), args.pr)
+    ]
+    if not matching:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_absent",
+            f"No {args.merge_group_workflow} merge-group candidate identifies PR #{args.pr}.",
+        )
+
+    valid = [verify_merge_group_candidate(run, args) for run in matching]
+    candidate_shas = {str(run["head_sha"]).lower() for run in valid}
+    if len(candidate_shas) != 1:
+        candidate_ids = sorted(int(run["id"]) for run in valid)
+        raise DeliveryStop(
+            "stop_merge_group_candidate_ambiguous",
+            f"PR #{args.pr} has multiple merge-group candidate SHAs across runs {candidate_ids}.",
+        )
+    return max(valid, key=lambda run: int(run["id"]))
+
+
+def parse_watcher_payload(stdout):
+    for line in reversed(stdout.splitlines()):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise GhCommandError("The blocking workflow watcher did not emit a JSON receipt.")
+
+
+def run_blocking_watcher(repo, target, args):
+    command = [
+        str(WATCHER_LAUNCHER),
+        "--repo",
+        repo,
+        "--target",
+        target,
+        "--watch-until-terminal",
+        "--poll-seconds",
+        str(args.poll_seconds),
+        "--appearance-timeout-seconds",
+        str(args.appearance_timeout_seconds),
+        "--retry-settle-seconds",
+        str(args.retry_settle_seconds),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    payload = parse_watcher_payload(result.stdout)
+    if result.returncode != 0:
+        raise GhCommandError("The blocking workflow watcher exited unsuccessfully.")
+    return payload
+
+
+def watcher_run(payload, stage):
+    targets = payload.get("targets") if isinstance(payload, dict) else None
+    if not isinstance(targets, list) or len(targets) != 1:
+        raise DeliveryStop(
+            f"stop_{stage}_watcher_receipt_invalid",
+            f"The {stage} watcher did not return exactly one target.",
+        )
+    run = targets[0].get("run") if isinstance(targets[0], dict) else None
+    if not isinstance(run, dict):
+        raise DeliveryStop(
+            f"stop_{stage}_watcher_receipt_invalid",
+            f"The {stage} watcher receipt has no resolved Actions run.",
+        )
+    return {
+        "run": compact_run(
+            {
+                "id": run.get("id"),
+                "attempt": run.get("attempt"),
+                "workflow": run.get("workflow_name"),
+                "url": run.get("url"),
+                "event": run.get("event"),
+                "head_branch": run.get("head_branch"),
+                "head_sha": run.get("head_sha"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+            }
+        ),
+        "failed_job": compact_failed_job(targets[0].get("failed_jobs")),
+        "actions": list(targets[0].get("actions") or []),
+    }
+
+
+def verify_watched_run(
+    watcher_receipt,
+    *,
+    stage,
+    expected_sha,
+    expected_run_id=None,
+    expected_event,
+    expected_branch,
+    expected_workflow,
+):
+    watched = watcher_run(watcher_receipt, stage)
+    run = watched["run"]
+    if expected_run_id is not None and int(run.get("id") or 0) != int(expected_run_id):
+        raise DeliveryStop(
+            f"stop_{stage}_run_id_mismatch",
+            f"The {stage} watcher returned run {run.get('id')}, not {expected_run_id}.",
+        )
+    if str(run.get("head_sha") or "").lower() != str(expected_sha).lower():
+        raise DeliveryStop(
+            f"stop_{stage}_run_sha_mismatch",
+            f"The {stage} watcher returned SHA {run.get('head_sha')}, not {expected_sha}.",
+        )
+    if run.get("event") != expected_event:
+        raise DeliveryStop(
+            f"stop_{stage}_run_identity_mismatch",
+            f"The {stage} run event is '{run.get('event')}', not '{expected_event}'.",
+        )
+    if run.get("head_branch") != expected_branch:
+        raise DeliveryStop(
+            f"stop_{stage}_run_identity_mismatch",
+            f"The {stage} run branch is '{run.get('head_branch')}', not '{expected_branch}'.",
+        )
+    if not workflow_matches(run.get("workflow"), expected_workflow):
+        raise DeliveryStop(
+            f"stop_{stage}_run_identity_mismatch",
+            f"The {stage} run workflow is '{run.get('workflow')}', not '{expected_workflow}'.",
+        )
+    watched["outcome"] = (
+        "success"
+        if run.get("status") == "completed" and run.get("conclusion") == "success"
+        else "failure"
+    )
+    return watched
+
+
+def assert_pr_identity(pr, args):
+    if pr.get("base_ref") != args.main_ref:
+        raise DeliveryStop(
+            "stop_pr_base_ref_mismatch",
+            f"PR #{args.pr} targets '{pr.get('base_ref')}', not '{args.main_ref}'.",
+        )
+    if str(pr.get("head_sha") or "").lower() != args.expected_head_sha.lower():
+        raise DeliveryStop(
+            "stop_pr_head_changed",
+            f"PR #{args.pr} head is {pr.get('head_sha')}, not {args.expected_head_sha}.",
+        )
+
+
+def fetch_ref_sha(repo, ref):
+    payload = gh_json(["api", f"repos/{repo}/git/ref/heads/{ref}"])
+    sha = (
+        str(((payload.get("object") or {}).get("sha")) or "")
+        if isinstance(payload, dict)
+        else ""
+    )
+    if not is_full_sha(sha):
+        raise GhCommandError(f"Branch '{ref}' did not return a full Git SHA.")
+    return sha
+
+
+def is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
+    if merge_commit_sha.lower() == main_head_sha.lower():
+        return True
+    payload = gh_json(
+        ["api", f"repos/{repo}/compare/{merge_commit_sha}...{main_head_sha}"]
+    )
+    return isinstance(payload, dict) and payload.get("status") in {
+        "behind",
+        "identical",
+    }
+
+
+def new_receipt(repo, args):
+    return {
+        "repo": repo,
+        "pr": {
+            "number": args.pr,
+            "expected_head_sha": args.expected_head_sha,
+            "main_ref": args.main_ref,
+        },
+        "merge_group": None,
+        "merge_commit": None,
+        "post_merge": None,
+        "actions": [],
+        "ts": int(time.time()),
+    }
+
+
+def execute_delivery(args):
+    repo = args.repo or detect_repo()
+    receipt = new_receipt(repo, args)
+    try:
+        initial_pr = fetch_pr(repo, args.pr)
+        assert_pr_identity(initial_pr, args)
+        receipt["pr"].update(
+            {
+                "observed_head_sha": initial_pr["head_sha"],
+                "merge_queue_entry_id": initial_pr["merge_queue_entry_id"],
+            }
+        )
+
+        candidate = resolve_merge_group_candidate(repo, initial_pr, args)
+        candidate_sha = candidate["head_sha"]
+        receipt["merge_group"] = {
+            "candidate_sha": candidate_sha,
+            "queue_ref": candidate["head_branch"],
+            "source": "exact_run_id"
+            if args.merge_group_run_id is not None
+            else "unique_discovery",
+        }
+        candidate_payload = run_blocking_watcher(
+            repo,
+            f"run-id={candidate['id']},head-sha={candidate_sha}",
+            args,
+        )
+        candidate_result = verify_watched_run(
+            candidate_payload,
+            stage="merge_group",
+            expected_sha=candidate_sha,
+            expected_run_id=candidate["id"],
+            expected_event="merge_group",
+            expected_branch=candidate["head_branch"],
+            expected_workflow=args.merge_group_workflow,
+        )
+        receipt["merge_group"].update(candidate_result)
+        if candidate_result["outcome"] != "success":
+            raise DeliveryStop(
+                "stop_merge_group_run_not_succeeded",
+                f"Merge-group run {candidate['id']} did not complete successfully.",
+            )
+
+        delivered_pr = fetch_pr(repo, args.pr)
+        assert_pr_identity(delivered_pr, args)
+        receipt["pr"]["post_merge_observed_head_sha"] = delivered_pr["head_sha"]
+        if not delivered_pr["merged"]:
+            if not delivered_pr["merge_queue_entry_id"]:
+                raise DeliveryStop(
+                    "stop_merge_queue_entry_disappeared_without_merge",
+                    f"PR #{args.pr} left the merge queue without a merge commit.",
+                )
+            raise DeliveryStop(
+                "stop_merge_not_observed",
+                f"PR #{args.pr} remains queued after the successful merge-group run.",
+            )
+        merge_commit_sha = delivered_pr["merge_commit_sha"]
+        if not is_full_sha(merge_commit_sha):
+            raise DeliveryStop(
+                "stop_merge_commit_uncorrelatable",
+                f"PR #{args.pr} is merged but GitHub did not return an exact merge commit SHA.",
+            )
+        main_head_sha = fetch_ref_sha(repo, args.main_ref)
+        if not is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
+            raise DeliveryStop(
+                "stop_merge_commit_uncorrelatable",
+                f"PR #{args.pr} merge commit {merge_commit_sha} is not reachable from {args.main_ref}.",
+            )
+        receipt["merge_commit"] = {
+            "sha": merge_commit_sha,
+            "main_ref": args.main_ref,
+            "observed_main_head_sha": main_head_sha,
+            "reachable_from_main": True,
+        }
+
+        post_merge_payload = run_blocking_watcher(
+            repo,
+            f"workflow={args.post_merge_workflow},ref={args.main_ref},head-sha={merge_commit_sha}",
+            args,
+        )
+        post_merge_result = verify_watched_run(
+            post_merge_payload,
+            stage="post_merge",
+            expected_sha=merge_commit_sha,
+            expected_event="push",
+            expected_branch=args.main_ref,
+            expected_workflow=args.post_merge_workflow,
+        )
+        receipt["post_merge"] = post_merge_result
+        if post_merge_result["outcome"] != "success":
+            raise DeliveryStop(
+                "stop_post_merge_run_not_succeeded",
+                f"Post-merge run {post_merge_result['run'].get('id')} did not complete successfully.",
+            )
+        final_pr = fetch_pr(repo, args.pr)
+        assert_pr_identity(final_pr, args)
+        receipt["pr"]["final_observed_head_sha"] = final_pr["head_sha"]
+        receipt["actions"] = ["stop_pr_delivery_proven"]
+        return receipt, 0
+    except DeliveryStop as error:
+        receipt["actions"] = [error.action]
+        receipt["error"] = str(error)
+        return receipt, 1
+    except GhCommandError as error:
+        receipt["actions"] = ["stop_operator_help_required"]
+        receipt["error"] = str(error)
+        return receipt, 1
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Prove one PR delivery across its exact head, merge-group candidate, and main commit."
+    )
+    parser.add_argument("--pr", type=int, required=True, help="Pull request number.")
+    parser.add_argument(
+        "--expected-head-sha",
+        required=True,
+        help="Required full 40-character PR head SHA; prefixes are rejected.",
+    )
+    parser.add_argument("--repo", help="Optional OWNER/REPO override.")
+    parser.add_argument(
+        "--main-ref", default="main", help="Protected target branch (default: main)."
+    )
+    parser.add_argument(
+        "--merge-group-run-id",
+        type=int,
+        help="Exact merge-group Actions run id. Recommended to avoid candidate discovery ambiguity.",
+    )
+    parser.add_argument(
+        "--merge-group-workflow",
+        default="blocking-ci",
+        help="Merge-group workflow name or file (default: blocking-ci).",
+    )
+    parser.add_argument(
+        "--post-merge-workflow",
+        default="postmerge-ci",
+        help="Main push workflow name or file (default: postmerge-ci).",
+    )
+    parser.add_argument(
+        "--poll-seconds", type=int, default=60, help="Blocking watcher poll interval."
+    )
+    parser.add_argument(
+        "--appearance-timeout-seconds",
+        type=int,
+        default=900,
+        help="How long the post-merge watcher waits for the exact main run to appear.",
+    )
+    parser.add_argument(
+        "--retry-settle-seconds",
+        type=int,
+        default=90,
+        help="Retry-settle window forwarded to the blocking workflow watcher.",
+    )
+    args = parser.parse_args()
+    if args.pr <= 0:
+        parser.error("--pr must be > 0")
+    if not is_full_sha(args.expected_head_sha):
+        parser.error("--expected-head-sha must be a full 40-character Git SHA")
+    args.expected_head_sha = args.expected_head_sha.lower()
+    if args.merge_group_run_id is not None and args.merge_group_run_id <= 0:
+        parser.error("--merge-group-run-id must be > 0")
+    if args.poll_seconds <= 0:
+        parser.error("--poll-seconds must be > 0")
+    if args.appearance_timeout_seconds < 0:
+        parser.error("--appearance-timeout-seconds must be >= 0")
+    if args.retry_settle_seconds < 0:
+        parser.error("--retry-settle-seconds must be >= 0")
+    return args
+
+
+def emit(receipt):
+    sys.stdout.write(json.dumps(receipt, sort_keys=True) + "\n")
+
+
+def main():
+    receipt, status = execute_delivery(parse_args())
+    emit(receipt)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())
