@@ -1270,21 +1270,49 @@ impl ThreadManager {
     /// Lists loaded thread-spawn descendants of one thread.
     ///
     /// The persisted graph determines ancestry so an unloaded intermediary cannot hide a loaded
-    /// nested agent. The live registry then limits the result to currently loaded, non-internal
-    /// threads.
+    /// nested agent. When that graph is temporarily unavailable, the live registry provides the
+    /// available ancestry instead. In both cases, the result includes only currently loaded,
+    /// non-internal threads.
     pub(crate) async fn list_live_thread_spawn_descendants(
         &self,
         ancestor_thread_id: ThreadId,
     ) -> CodexResult<Vec<ThreadId>> {
         let loaded_thread_ids: HashSet<ThreadId> =
             self.state.list_thread_ids().await.into_iter().collect();
-        let mut descendants = self
-            .list_agent_subtree_thread_ids(ancestor_thread_id)
-            .await?;
+        let mut descendants = match self.state.agent_graph_store() {
+            Some(agent_graph_store) => match agent_graph_store
+                .list_thread_spawn_descendants(ancestor_thread_id, /*status_filter*/ None)
+                .await
+            {
+                Ok(mut persisted_descendants) => {
+                    persisted_descendants.extend(
+                        self.state
+                            .list_live_thread_spawn_descendants(ancestor_thread_id)
+                            .await,
+                    );
+                    persisted_descendants
+                }
+                Err(err) => {
+                    warn!(
+                        "failed to load persisted thread-spawn descendants for \
+                         {ancestor_thread_id}; falling back to live descendants: {err}"
+                    );
+                    self.state
+                        .list_live_thread_spawn_descendants(ancestor_thread_id)
+                        .await
+                }
+            },
+            None => {
+                self.state
+                    .list_live_thread_spawn_descendants(ancestor_thread_id)
+                    .await
+            }
+        };
         descendants.retain(|thread_id| {
             *thread_id != ancestor_thread_id && loaded_thread_ids.contains(thread_id)
         });
         descendants.sort_by_key(|thread_id| thread_id.to_string());
+        descendants.dedup();
         Ok(descendants)
     }
 }
