@@ -69,6 +69,10 @@ jobs:
             # exec platform. The gnullvm path can leave their DLLs unloadable
             # by consumers, reported by rustc as missing proc-macro crates.
             --platforms=//:windows_x86_64_msvc
+            # The default linker preference selects the hermetic C++ driver,
+            # which cannot consume the MSVC arguments emitted for this target.
+            # Use Rust's bundled COFF linker for the MSVC exec toolchain.
+            --@rules_rust//rust/settings:toolchain_linker_preference=rust
             # Keep Rust action-cache isolation separate from the MSVC platform
             # selection above, without relaxing this health check's result.
             --modify_execution_info=Rustc=+no-remote-cache

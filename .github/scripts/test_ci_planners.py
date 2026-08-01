@@ -1118,6 +1118,10 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--platforms=//:windows_x86_64_msvc", native_test_run)
         self.assertIn("--windows-msvc-host-platform", native_test_run)
         self.assertIn(
+            "--@rules_rust//rust/settings:toolchain_linker_preference=rust",
+            native_test_run,
+        )
+        self.assertIn(
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
         )
