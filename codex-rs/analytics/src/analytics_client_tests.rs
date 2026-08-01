@@ -2522,6 +2522,148 @@ async fn item_lifecycle_notifications_publish_command_execution_event() {
 }
 
 #[tokio::test]
+async fn live_canonical_spawn_lifecycle_preserves_requested_analytics_attribution() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+
+    ingest_review_prerequisites(&mut reducer, &mut events).await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_started_notification(
+                "thread-1", "turn-1",
+            ))),
+            &mut events,
+        )
+        .await;
+
+    let spawn_item = |id: &str,
+                      status: CollabAgentToolCallStatus,
+                      model: Option<&str>,
+                      reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+                      requested_model: Option<&str>,
+                      requested_reasoning_effort: Option<
+        codex_protocol::openai_models::ReasoningEffort,
+    >| {
+        ThreadItem::CollabAgentToolCall {
+            id: id.to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status,
+            sender_thread_id: "thread-1".to_string(),
+            receiver_thread_ids: vec![format!("receiver-{id}")],
+            prompt: Some("inspect the repository".to_string()),
+            model: model.map(str::to_string),
+            reasoning_effort,
+            requested_model: requested_model.map(str::to_string),
+            requested_reasoning_effort,
+            agents_states: Default::default(),
+        }
+    };
+    let cases = [
+        (
+            "spawn-model-only",
+            Some("gpt-requested-model"),
+            None,
+            "gpt-effective-model",
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            Some("gpt-requested-model"),
+            None,
+        ),
+        (
+            "spawn-effort-only",
+            None,
+            Some(codex_protocol::openai_models::ReasoningEffort::High),
+            "gpt-effective-effort",
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            None,
+            Some("high"),
+        ),
+        (
+            "spawn-explicit-mismatch",
+            Some("gpt-requested-pair"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Ultra),
+            "gpt-effective-pair",
+            Some(codex_protocol::openai_models::ReasoningEffort::Low),
+            Some("gpt-requested-pair"),
+            Some("ultra"),
+        ),
+    ];
+
+    for (
+        id,
+        requested_model,
+        requested_reasoning_effort,
+        effective_model,
+        effective_reasoning_effort,
+        _,
+        _,
+    ) in &cases
+    {
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                    ItemStartedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        started_at_ms: 1_000,
+                        item: spawn_item(
+                            id,
+                            CollabAgentToolCallStatus::InProgress,
+                            *requested_model,
+                            requested_reasoning_effort.clone(),
+                            *requested_model,
+                            requested_reasoning_effort.clone(),
+                        ),
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                    ItemCompletedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        completed_at_ms: 1_025,
+                        item: spawn_item(
+                            id,
+                            CollabAgentToolCallStatus::Completed,
+                            Some(*effective_model),
+                            effective_reasoning_effort.clone(),
+                            None,
+                            None,
+                        ),
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    let payload = serde_json::to_value(&events).expect("serialize analytics events");
+    let events = payload.as_array().expect("analytics event array");
+    assert_eq!(events.len(), 3);
+    for (id, _, _, _, _, expected_model, expected_reasoning_effort) in &cases {
+        let event = events
+            .iter()
+            .find(|event| event["event_params"]["item_id"] == *id)
+            .expect("spawn analytics event");
+        assert_eq!(
+            event["event_type"],
+            json!("codex_collab_agent_tool_call_event")
+        );
+        assert_eq!(
+            event["event_params"]["requested_model"],
+            expected_model.map_or_else(|| json!(null), |model| json!(model))
+        );
+        assert_eq!(
+            event["event_params"]["requested_reasoning_effort"],
+            expected_reasoning_effort.map_or_else(|| json!(null), |effort| json!(effort))
+        );
+    }
+}
+
+#[tokio::test]
 async fn command_execution_approval_response_publishes_user_review_event() {
     let mut reducer = AnalyticsReducer::default();
     let mut events = Vec::new();

@@ -25,6 +25,7 @@ use crate::protocol::v2::UserInput;
 #[cfg(test)]
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
+use crate::protocol::v2::merge_spawn_request_provenance;
 use crate::protocol::v2::web_search_action_from_core;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::items::parse_hook_prompt_message;
@@ -292,6 +293,13 @@ impl ThreadHistoryBuilder {
             .filter(|turn| turn.id == turn_id)
             .map(Turn::from)
             .or_else(|| self.turns.iter().find(|turn| turn.id == turn_id).cloned())
+    }
+
+    /// Returns one materialized item in an exact turn. This is used by live
+    /// notification forwarding after canonical lifecycle state has been updated.
+    pub fn turn_item_snapshot(&self, turn_id: &str, item_id: &str) -> Option<ThreadItem> {
+        self.turn_snapshot(turn_id)
+            .and_then(|turn| turn.items.into_iter().find(|item| item.id() == item_id))
     }
 
     /// Returns the index of the active turn snapshot within the finished turn list.
@@ -592,17 +600,23 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_item_started(&mut self, payload: &ItemStartedEvent) {
-        self.handle_materialized_item_lifecycle(&payload.turn_id, &payload.item);
+        self.handle_materialized_item_lifecycle(&payload.turn_id, &payload.item, None);
     }
 
     fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
-        self.handle_materialized_item_lifecycle(&payload.turn_id, &payload.item);
+        let started_item = self.turn_item_snapshot(&payload.turn_id, payload.item.id());
+        self.handle_materialized_item_lifecycle(
+            &payload.turn_id,
+            &payload.item,
+            started_item.as_ref(),
+        );
     }
 
     fn handle_materialized_item_lifecycle(
         &mut self,
         turn_id: &str,
         item: &codex_protocol::items::TurnItem,
+        started_item: Option<&ThreadItem>,
     ) {
         let is_review_mode_item = matches!(
             item,
@@ -631,7 +645,10 @@ impl ThreadHistoryBuilder {
         };
 
         if should_upsert {
-            let item = ThreadItem::from(item.clone());
+            let mut item = ThreadItem::from(item.clone());
+            if let Some(started_item) = started_item {
+                merge_spawn_request_provenance(&mut item, started_item);
+            }
             if is_review_mode_item {
                 self.upsert_review_mode_item(Some(turn_id), item);
             } else {
@@ -1650,6 +1667,9 @@ mod tests {
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
     use codex_protocol::ThreadId;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
+    use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
+    use codex_protocol::items::CollabAgentToolCallItem as CoreCollabAgentToolCallItem;
+    use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
     use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
     use codex_protocol::items::EnteredReviewModeItem as CoreEnteredReviewModeItem;
@@ -1674,6 +1694,7 @@ mod tests {
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExitedReviewModeEvent;
+    use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
@@ -1693,6 +1714,26 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
+
+    fn canonical_spawn_item(
+        id: &str,
+        status: CoreCollabAgentToolCallStatus,
+        model: Option<&str>,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) -> CoreTurnItem {
+        CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
+            id: id.to_string(),
+            tool: CoreCollabAgentTool::SpawnAgent,
+            status,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the repository".to_string()),
+            model: model.map(str::to_string),
+            reasoning_effort,
+            agents_states: HashMap::new(),
+        })
+    }
 
     #[test]
     fn builds_multiple_turns_with_reasoning_items() {
@@ -4180,6 +4221,90 @@ mod tests {
             requested_reasoning_effort,
             &Some(codex_protocol::openai_models::ReasoningEffort::Ultra)
         );
+    }
+
+    #[test]
+    fn materializes_requested_spawn_provenance_from_canonical_lifecycle() {
+        let thread_id = ThreadId::new();
+        let turn_id = "turn-canonical";
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+
+        let cases = [
+            (
+                "spawn-model-only",
+                Some("gpt-requested-model"),
+                None,
+                "gpt-effective-model",
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            ),
+            (
+                "spawn-effort-only",
+                None,
+                Some(codex_protocol::openai_models::ReasoningEffort::High),
+                "gpt-effective-effort",
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            ),
+            (
+                "spawn-explicit-mismatch",
+                Some("gpt-requested-pair"),
+                Some(codex_protocol::openai_models::ReasoningEffort::Ultra),
+                "gpt-effective-pair",
+                Some(codex_protocol::openai_models::ReasoningEffort::Low),
+            ),
+        ];
+        for (id, requested_model, requested_effort, effective_model, effective_effort) in &cases {
+            builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: canonical_spawn_item(
+                    id,
+                    CoreCollabAgentToolCallStatus::InProgress,
+                    *requested_model,
+                    requested_effort.clone(),
+                ),
+                started_at_ms: 1,
+            }));
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: canonical_spawn_item(
+                    id,
+                    CoreCollabAgentToolCallStatus::Completed,
+                    Some(*effective_model),
+                    effective_effort.clone(),
+                ),
+                completed_at_ms: 2,
+            }));
+        }
+
+        let turn = builder.turn_snapshot(turn_id).expect("canonical turn");
+        for (id, requested_model, requested_effort, effective_model, effective_effort) in &cases {
+            let ThreadItem::CollabAgentToolCall {
+                model,
+                reasoning_effort,
+                requested_model: completed_requested_model,
+                requested_reasoning_effort: completed_requested_effort,
+                ..
+            } = turn
+                .items
+                .iter()
+                .find(|item| item.id() == *id)
+                .expect("completed spawn item")
+            else {
+                panic!("expected canonical collab spawn item");
+            };
+            assert_eq!(model.as_deref(), Some(*effective_model));
+            assert_eq!(reasoning_effort, effective_effort);
+            assert_eq!(completed_requested_model.as_deref(), *requested_model);
+            assert_eq!(completed_requested_effort, requested_effort);
+        }
     }
 
     #[test]
