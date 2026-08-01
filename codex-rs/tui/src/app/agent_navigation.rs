@@ -244,6 +244,14 @@ impl AgentNavigationState {
         created_at: Option<i64>,
         updated_at: Option<i64>,
     ) {
+        let stale_terminal_metadata = is_closed
+            && self
+                .terminal_lifecycle_watermarks
+                .get(&thread_id)
+                .is_some_and(|watermark| {
+                    matches!(watermark, TerminalLifecycleWatermark::Recovered { .. })
+                });
+        let is_closed = is_closed && !stale_terminal_metadata;
         if is_closed {
             self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
             self.system_error_epochs.remove(&thread_id);
@@ -281,6 +289,23 @@ impl AgentNavigationState {
     ) {
         self.remove_unknown_thread_status_provenance_tracking(thread_id);
         let existing = self.threads.get(&thread_id).cloned();
+        let stale_terminal_metadata = entry.is_closed
+            && self
+                .terminal_lifecycle_watermarks
+                .get(&thread_id)
+                .is_some_and(|watermark| {
+                    matches!(watermark, TerminalLifecycleWatermark::Recovered { .. })
+                });
+        if stale_terminal_metadata {
+            // A backfill has no watcher revision and cannot supersede a known recovery. Retain
+            // the visible liveness as well as the recovered watermark until a newer terminal
+            // status is accepted through the status-watch path.
+            entry.is_closed = false;
+            entry.is_running = existing.as_ref().is_some_and(|entry| entry.is_running);
+            entry.has_system_error = existing
+                .as_ref()
+                .is_some_and(|entry| entry.has_system_error);
+        }
         let preserves_terminal_closure = existing.as_ref().is_some_and(|entry| entry.is_closed)
             || self
                 .terminal_lifecycle_watermarks
@@ -1494,6 +1519,39 @@ mod tests {
                 .get(&thread_id)
                 .is_some_and(|entry| !entry.is_closed && entry.is_running)
         );
+    }
+
+    #[test]
+    fn terminal_metadata_closes_a_row_without_recovered_status_authority() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000117").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Current child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.mark_running(thread_id);
+
+        state.upsert(
+            thread_id,
+            Some("Current child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_closed && !entry.is_running && !entry.has_system_error
+        }));
+        assert!(matches!(
+            state.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Closed { .. })
+        ));
     }
 
     #[test]

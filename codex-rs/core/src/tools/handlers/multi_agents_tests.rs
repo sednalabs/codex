@@ -3743,13 +3743,19 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
 
 #[tokio::test]
 async fn spawn_agent_rejects_when_depth_limit_exceeded() {
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    Arc::get_mut(&mut session)
+        .expect("test session should not be shared yet")
+        .services
+        .agent_control = manager.agent_control();
 
     let max_depth = turn.config.agent_max_depth;
-    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: session.thread_id,
+    let session_thread_id = session.thread_id;
+    Arc::get_mut(&mut turn)
+        .expect("test turn should not be shared yet")
+        .session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: session_thread_id,
         depth: max_depth,
         agent_path: None,
         agent_nickname: None,
@@ -3760,7 +3766,11 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         Arc::new(session),
         Arc::new(turn),
         "spawn_agent",
-        function_payload(json!({"message": "hello"})),
+        function_payload(json!({
+            "message": "hello",
+            "model": "gpt-requested",
+            "reasoning_effort": "high",
+        })),
     );
     let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
         panic!("spawn should fail when depth limit exceeded");
@@ -3771,6 +3781,71 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
             "Agent depth limit reached. Solve the task yourself.".to_string()
         )
     );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("depth-limit spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.status, CollabAgentToolCallStatus::InProgress);
+    assert_eq!(started.prompt.as_deref(), Some("hello"));
+    assert_eq!(started.requested_model.as_deref(), Some("gpt-requested"));
+    assert_eq!(
+        started.requested_reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy depth-limit spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnBegin(legacy_begin) = legacy_begin.msg else {
+        panic!("expected legacy spawn start");
+    };
+    assert_eq!(legacy_begin.prompt, "hello");
+    assert_eq!(legacy_begin.model.as_deref(), Some("gpt-requested"));
+    assert_eq!(legacy_begin.reasoning_effort, Some(ReasoningEffort::High));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("depth-limit spawn failure completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+    assert_eq!(completed.prompt.as_deref(), Some("hello"));
+    assert_eq!(completed.model, None);
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model.as_deref(), Some("gpt-requested"));
+    assert_eq!(
+        completed.requested_reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy depth-limit spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert_eq!(legacy_end.model, None);
+    assert_eq!(legacy_end.reasoning_effort, None);
+    assert_eq!(legacy_end.status, AgentStatus::NotFound);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
 }
 
 #[tokio::test]
