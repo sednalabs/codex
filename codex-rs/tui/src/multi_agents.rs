@@ -2113,8 +2113,12 @@ mod tests {
             sender_thread_id: ThreadId::new().to_string(),
             receiver_thread_ids: vec![ThreadId::new().to_string()],
             prompt: None,
-            model: model.map(str::to_string),
-            reasoning_effort,
+            // V1 start events expose the request only. Keep test fixtures aligned with the wire
+            // contract so requested identity is never mistaken for role-resolved identity.
+            model: (!is_in_progress)
+                .then(|| model.map(str::to_string))
+                .flatten(),
+            reasoning_effort: (!is_in_progress).then_some(reasoning_effort).flatten(),
             requested_model,
             requested_reasoning_effort,
             agents_states: HashMap::new(),

@@ -33,6 +33,10 @@ use std::collections::VecDeque;
 /// Retain only recent close notifications that had no corresponding picker row. The picker still
 /// preserves tracked closed rows separately; this cap only bounds unmatched notification state.
 const CLOSED_THREAD_TOMBSTONE_LIMIT: usize = 256;
+/// Retain only recent accepted nonterminal statuses that did not create a picker row. Terminal
+/// status provenance is instead owned by [`Self::terminal_lifecycle_watermarks`], which keeps
+/// the status revision and activity boundary together through a close/recovery lifecycle.
+const UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT: usize = 256;
 /// Terminal lifecycle evidence also protects rows after cache removal. It has a larger, separate
 /// bound so tracked close notifications cannot evict an unrelated unmatched-close tombstone.
 const TERMINAL_LIFECYCLE_WATERMARK_LIMIT: usize = 1024;
@@ -66,6 +70,10 @@ pub(crate) struct AgentNavigationState {
     /// Kind and revision of the latest accepted status. The kind lets a terminal activity that
     /// arrives after an already-observed `SystemError` enter a confirmed error epoch directly.
     last_accepted_statuses: HashMap<ThreadId, AcceptedThreadStatus>,
+    /// FIFO ownership for status provenance that did not materialize a picker row and has no
+    /// terminal lifecycle watermark. Without this, a stream of unique status-only thread ids
+    /// would retain revision state for the lifetime of the TUI session.
+    unknown_thread_status_provenance_order: VecDeque<ThreadId>,
     /// Recent terminal statuses for threads that may not have created picker metadata yet. A late
     /// parent activity must not recreate an open row after the child was already closed.
     closed_thread_tombstones: HashMap<ThreadId, ClosedThreadTombstone>,
@@ -267,6 +275,7 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn upsert_with_path(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
+        self.remove_unknown_thread_status_provenance_tracking(thread_id);
         let existing = self.threads.get(&thread_id).cloned();
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
@@ -330,6 +339,7 @@ impl AgentNavigationState {
                 })
         });
         if !self.threads.contains_key(&activity.thread_id) {
+            self.remove_unknown_thread_status_provenance_tracking(activity.thread_id);
             self.order.push(activity.thread_id);
         }
         let entry =
@@ -570,6 +580,7 @@ impl AgentNavigationState {
         if accepts {
             self.record_accepted_status(thread_id, has_system_error, status_revision);
             self.advance_terminal_lifecycle_for_newer_status(thread_id, status_revision);
+            self.record_unknown_nonterminal_status_provenance(thread_id);
         }
         accepts
     }
@@ -606,6 +617,48 @@ impl AgentNavigationState {
                 .expect("tombstone order must contain every tombstone");
             self.closed_thread_tombstones.remove(&expired_thread_id);
         }
+    }
+
+    /// Records revision provenance for an accepted status-only thread while there is no picker
+    /// row or terminal lifecycle watermark to own it. A terminal status moves this provenance to
+    /// [`Self::terminal_lifecycle_watermarks`]; a later activity or metadata update moves it to
+    /// the tracked picker row. This leaves every unknown-thread path bounded.
+    fn record_unknown_nonterminal_status_provenance(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id)
+            || self.terminal_lifecycle_watermarks.contains_key(&thread_id)
+        {
+            return;
+        }
+
+        self.unknown_thread_status_provenance_order
+            .retain(|candidate| *candidate != thread_id);
+        self.unknown_thread_status_provenance_order
+            .push_back(thread_id);
+        while self.unknown_thread_status_provenance_order.len()
+            > UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT
+        {
+            let expired_thread_id = self
+                .unknown_thread_status_provenance_order
+                .pop_front()
+                .expect("unknown status provenance order must contain every tracked thread");
+            self.clear_unknown_thread_status_provenance(expired_thread_id);
+        }
+    }
+
+    fn remove_unknown_thread_status_provenance_tracking(&mut self, thread_id: ThreadId) {
+        self.unknown_thread_status_provenance_order
+            .retain(|candidate| *candidate != thread_id);
+    }
+
+    /// Removes status provenance only after the lifecycle evidence that owned an unknown thread
+    /// has expired. Never clear a visible row's revision state: it still rejects out-of-order
+    /// watcher updates for that live picker entry.
+    fn clear_unknown_thread_status_provenance(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id) {
+            return;
+        }
+        self.last_status_revisions.remove(&thread_id);
+        self.last_accepted_statuses.remove(&thread_id);
     }
 
     fn advance_terminal_lifecycle_for_newer_status(
@@ -645,6 +698,7 @@ impl AgentNavigationState {
         thread_id: ThreadId,
         status_revision: Option<u64>,
     ) {
+        self.remove_unknown_thread_status_provenance_tracking(thread_id);
         let existing = self.terminal_lifecycle_watermarks.get(&thread_id).cloned();
         let mut activity_ids = existing
             .as_ref()
@@ -707,6 +761,7 @@ impl AgentNavigationState {
                 .expect("terminal lifecycle watermark order must contain every watermark");
             self.terminal_lifecycle_watermarks
                 .remove(&expired_thread_id);
+            self.clear_unknown_thread_status_provenance(expired_thread_id);
         }
     }
 
@@ -806,6 +861,7 @@ impl AgentNavigationState {
         self.system_error_epochs.clear();
         self.last_status_revisions.clear();
         self.last_accepted_statuses.clear();
+        self.unknown_thread_status_provenance_order.clear();
         self.closed_thread_tombstones.clear();
         self.closed_thread_tombstone_order.clear();
         self.terminal_lifecycle_watermarks.clear();
@@ -1751,6 +1807,109 @@ mod tests {
             !state
                 .terminal_lifecycle_watermarks
                 .contains_key(&first_thread_id)
+        );
+    }
+
+    #[test]
+    fn terminal_unknown_status_provenance_expires_with_its_lifecycle_watermark() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ true,
+        ));
+
+        for _ in 0..TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            assert!(state.accepts_thread_status_change(
+                ThreadId::new(),
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ true,
+            ));
+        }
+
+        assert!(
+            !state
+                .terminal_lifecycle_watermarks
+                .contains_key(&first_thread_id),
+            "the terminal watermark owns and bounds unknown-close provenance"
+        );
+        assert!(
+            !state.last_status_revisions.contains_key(&first_thread_id)
+                && !state.last_accepted_statuses.contains_key(&first_thread_id),
+            "the evicted lifecycle must not leave status provenance behind"
+        );
+
+        // Once the bounded terminal evidence is gone, an older status is a new unknown stream,
+        // not a stale revision that the evicted record can falsely reject. It still cannot create
+        // a picker row without independent activity or metadata evidence.
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(7),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(
+            !state.accepts_thread_status_change(
+                first_thread_id,
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(6),
+                /*is_closed*/ false,
+            ),
+            "the newly accepted stream must again reject its own stale revision"
+        );
+    }
+
+    #[test]
+    fn unknown_nonterminal_status_provenance_is_fifo_bounded() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ false,
+        ));
+
+        for _ in 0..UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT {
+            assert!(state.accepts_thread_status_change(
+                ThreadId::new(),
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ false,
+            ));
+        }
+
+        assert_eq!(
+            state.unknown_thread_status_provenance_order.len(),
+            UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT
+        );
+        assert!(
+            !state.last_status_revisions.contains_key(&first_thread_id)
+                && !state.last_accepted_statuses.contains_key(&first_thread_id),
+            "evicting an unknown status-only thread must clear both revision and kind evidence"
+        );
+
+        // The evicted revision must not be retained as a false causal guard. Like the terminal
+        // case above, accepting a new unknown status cannot by itself resurrect a picker row.
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(7),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(
+            !state.accepts_thread_status_change(
+                first_thread_id,
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(6),
+                /*is_closed*/ false,
+            ),
+            "the fresh bounded record must still fail closed for its own stale revision"
         );
     }
 

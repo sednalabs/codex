@@ -83,10 +83,11 @@ async fn handle_spawn_agent(
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
                 prompt: Some(prompt.clone()),
-                // Preserve the caller's optional request. The resolved child configuration is
-                // reported by the completed item below.
-                model: requested_model.clone(),
-                reasoning_effort: requested_reasoning_effort.clone(),
+                // A V1 start event records only the caller's optional request. Role and profile
+                // resolution have not completed yet, so effective identity must remain unknown
+                // until the terminal lifecycle item below.
+                model: None,
+                reasoning_effort: None,
                 requested_model: requested_model.clone(),
                 requested_reasoning_effort: requested_reasoning_effort.clone(),
                 agents_states: Default::default(),

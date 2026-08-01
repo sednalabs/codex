@@ -1016,6 +1016,51 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     )),
                     "replay-only input must not emit turn, settings, or shell-command requests: {blocked_operations:?}"
                 );
+
+                // Goal slash actions dispatch straight to their app-server helpers instead of
+                // flowing through `submit_thread_op`. Exercise every write-shaped event after
+                // the channel becomes replay-only, along with the delayed directive that syncs
+                // git metadata, so neither path can write the saved transcript.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                for event in [
+                    AppEvent::SetThreadGoalObjective {
+                        thread_id: child_thread_id,
+                        objective: "blocked objective".to_string(),
+                        mode: crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
+                    },
+                    AppEvent::SetThreadGoalDraft {
+                        thread_id: child_thread_id,
+                        draft: crate::goal_files::GoalDraft {
+                            objective: "blocked draft".to_string(),
+                            ..Default::default()
+                        },
+                        mode: crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+                    },
+                    AppEvent::SetThreadGoalStatus {
+                        thread_id: child_thread_id,
+                        status: codex_app_server_protocol::ThreadGoalStatus::Paused,
+                    },
+                    AppEvent::ClearThreadGoal {
+                        thread_id: child_thread_id,
+                    },
+                    AppEvent::SyncThreadGitBranch {
+                        thread_id: child_thread_id,
+                        branch: "late-replay-only-branch".to_string(),
+                    },
+                ] {
+                    let control = Box::pin(app.handle_event(&mut tui, &mut app_server, event))
+                        .await?;
+                    assert!(matches!(control, AppRunControl::Continue));
+                }
+                let replay_only_write_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    replay_only_write_requests.iter().all(|method| !matches!(
+                        method.as_str(),
+                        "thread/goal/set" | "thread/goal/clear" | "thread/metadata/update"
+                    )),
+                    "replay-only goal and delayed metadata writes must be rejected before RPC dispatch: {replay_only_write_requests:?}"
+                );
                 app_server.shutdown().await?;
                 proxy.await??;
                 Ok(())
