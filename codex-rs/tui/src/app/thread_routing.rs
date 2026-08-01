@@ -208,6 +208,49 @@ impl App {
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
     }
 
+    /// Whether local state for this thread was deliberately discarded. A tombstone is stronger
+    /// than an absent channel: late server traffic must not recreate a notification buffer, nor
+    /// may an already-rendered action resolve an old request through the app-server.
+    pub(super) fn thread_is_discarded(&self, thread_id: ThreadId) -> bool {
+        self.discarded_thread_generations.contains_key(&thread_id)
+    }
+
+    pub(super) fn thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
+        self.thread_lifecycle_generations
+            .get(&thread_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub(super) fn thread_accepts_lifecycle_generation(
+        &self,
+        thread_id: ThreadId,
+        generation: u64,
+    ) -> bool {
+        !self.thread_is_discarded(thread_id)
+            && self.thread_lifecycle_generation(thread_id) == generation
+    }
+
+    /// Marks a session snapshot, resume, or explicit replay read as authoritative positive
+    /// lifecycle evidence. No passive notification or response is allowed to clear a tombstone.
+    pub(super) fn mark_thread_attached(&mut self, thread_id: ThreadId) {
+        let generation = self
+            .thread_lifecycle_generations
+            .entry(thread_id)
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        self.discarded_thread_generations.remove(&thread_id);
+    }
+
+    pub(super) fn mark_thread_discarded(&mut self, thread_id: ThreadId) {
+        let generation = self
+            .thread_lifecycle_generations
+            .entry(thread_id)
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        self.discarded_thread_generations.insert(thread_id, *generation);
+    }
+
     /// Rejects a thread-scoped write after its live session was replaced with a replay-only
     /// transcript. Keep this at the App-to-app-server boundary so delayed events and slash
     /// actions cannot bypass the ordinary command-submission guard.
@@ -229,6 +272,9 @@ impl App {
     /// result from writing metadata through the app-server boundary. A tracked side must also
     /// still belong to the active primary lineage.
     pub(super) fn thread_accepts_live_metadata_update(&self, thread_id: ThreadId) -> bool {
+        if self.thread_is_discarded(thread_id) {
+            return false;
+        }
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
             return false;
         };
@@ -514,6 +560,10 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping write for discarded thread lifecycle");
+            return Ok(());
+        }
         if replay_only_thread_op_targets_thread(&op)
             && self.reject_replay_only_thread_write(thread_id)
         {
@@ -548,6 +598,10 @@ impl App {
 
     /// Persist prompt text in the local cross-session message history.
     pub(super) fn append_message_history_entry(&self, thread_id: ThreadId, text: String) {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping history write for discarded thread lifecycle");
+            return;
+        }
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -572,6 +626,10 @@ impl App {
         offset: usize,
         log_id: u64,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            return Ok(());
+        }
+        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -589,6 +647,7 @@ impl App {
 
             app_event_tx.send(AppEvent::ThreadHistoryEntryResponse {
                 thread_id,
+                lifecycle_generation,
                 event: HistoryLookupResponse::Entry {
                     offset,
                     log_id,
@@ -606,6 +665,10 @@ impl App {
         cursor: codex_message_history::HistoryBatchCursor,
         log_id: u64,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            return Ok(());
+        }
+        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -643,7 +706,11 @@ impl App {
                 }
             };
 
-            app_event_tx.send(AppEvent::ThreadHistoryEntryResponse { thread_id, event });
+            app_event_tx.send(AppEvent::ThreadHistoryEntryResponse {
+                thread_id,
+                lifecycle_generation,
+                event,
+            });
         });
         Ok(())
     }
@@ -654,6 +721,13 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(
+                %thread_id,
+                "skipping app-server operation for discarded thread lifecycle"
+            );
+            return Ok(false);
+        }
         match op {
             AppCommand::Interrupt => {
                 let mut turn_id = self
@@ -957,6 +1031,10 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "skipping stale app-server request resolution");
+            return Ok(false);
+        }
         let Some(resolution) = self
             .pending_app_server_requests
             .take_resolution(op)
@@ -1037,6 +1115,10 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping notification for discarded thread lifecycle");
+            return Ok(());
+        }
         if matches!(notification, ServerNotification::ThreadSettingsUpdated(_))
             && self.primary_thread_id.is_some()
             && self.primary_thread_id != Some(thread_id)
@@ -1274,6 +1356,10 @@ impl App {
         thread_id: ThreadId,
         request: ServerRequest,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping request for discarded thread lifecycle");
+            return Ok(());
+        }
         let inactive_interactive_request = if self.active_thread_id != Some(thread_id) {
             self.interactive_request_for_thread_request(thread_id, &request)
                 .await?
@@ -1326,6 +1412,13 @@ impl App {
         thread_id: ThreadId,
         event: HistoryLookupResponse,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(
+                %thread_id,
+                "dropping history response for discarded thread lifecycle"
+            );
+            return Ok(());
+        }
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
@@ -1391,6 +1484,7 @@ impl App {
         presentation: ThreadAttachPresentation,
     ) -> Result<()> {
         let thread_id = session.thread_id;
+        self.mark_thread_attached(thread_id);
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
@@ -1527,6 +1621,7 @@ impl App {
         started: AppServerStartedThread,
         snapshot: &mut ThreadEventSnapshot,
     ) {
+        self.mark_thread_attached(thread_id);
         if started.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread_id);
         }

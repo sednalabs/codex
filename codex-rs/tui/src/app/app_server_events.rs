@@ -66,6 +66,16 @@ impl App {
         app_server_client: &AppServerSession,
         notification: ServerNotification,
     ) {
+        let thread_target = server_notification_thread_target(&notification);
+        if let ServerNotificationThreadTarget::Thread(thread_id) = &thread_target
+            && self.thread_is_discarded(*thread_id)
+        {
+            tracing::debug!(
+                %thread_id,
+                "dropping app-server notification for discarded thread lifecycle"
+            );
+            return;
+        }
         match &notification {
             ServerNotification::ServerRequestResolved(notification) => {
                 if let Some(request) = self
@@ -156,7 +166,7 @@ impl App {
             _ => {}
         }
 
-        match server_notification_thread_target(&notification) {
+        match thread_target {
             ServerNotificationThreadTarget::Thread(thread_id) => {
                 let result = if self.primary_thread_id == Some(thread_id)
                     || self.primary_thread_id.is_none()
@@ -197,6 +207,15 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        let thread_id = server_request_thread_id(&request);
+        if thread_id.is_some_and(|thread_id| self.thread_is_discarded(thread_id)) {
+            let thread_id = thread_id.expect("checked as present above");
+            tracing::debug!(
+                %thread_id,
+                "dropping app-server request for discarded thread lifecycle"
+            );
+            return;
+        }
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
             match handle_computer_use(params).await {
@@ -231,10 +250,13 @@ impl App {
             return;
         }
 
-        if let Some(unsupported) = self
-            .pending_app_server_requests
-            .note_server_request(&request)
-        {
+        let unsupported = if let Some(thread_id) = thread_id {
+            self.pending_app_server_requests
+                .note_thread_server_request(thread_id, &request)
+        } else {
+            self.pending_app_server_requests.note_server_request(&request)
+        };
+        if let Some(unsupported) = unsupported {
             tracing::warn!(
                 request_id = ?unsupported.request_id,
                 message = unsupported.message,
@@ -255,7 +277,7 @@ impl App {
             return;
         }
 
-        let Some(thread_id) = server_request_thread_id(&request) else {
+        let Some(thread_id) = thread_id else {
             tracing::warn!("ignoring threadless app-server request");
             return;
         };

@@ -571,6 +571,11 @@ pub(crate) struct App {
     windows_sandbox: WindowsSandboxState,
 
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
+    /// Monotonic local lifecycle generation for each thread presentation. Background responses
+    /// capture this value so an old discard-era response cannot enter a later reattachment.
+    thread_lifecycle_generations: HashMap<ThreadId, u64>,
+    /// A local discard tombstone. Only an authoritative attach/recovery may remove it.
+    discarded_thread_generations: HashMap<ThreadId, u64>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     side_threads: HashMap<ThreadId, SideThreadState>,
@@ -1069,6 +1074,8 @@ See the Codex keymap documentation for supported actions and examples."
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
+            thread_lifecycle_generations: HashMap::new(),
+            discarded_thread_generations: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),

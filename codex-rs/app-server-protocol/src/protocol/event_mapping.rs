@@ -79,8 +79,8 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
-            let requested_model = begin_event.model.clone();
-            let requested_reasoning_effort = begin_event.reasoning_effort.clone();
+            let (requested_model, requested_reasoning_effort) =
+                legacy_spawn_requested_identity(&begin_event);
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -502,6 +502,28 @@ pub fn item_event_to_server_notification(
     Some(notification)
 }
 
+/// V1 rollout history used an empty model plus the default effort as a sentinel for an
+/// omitted spawn override. Those two fields predate the requested/effective identity split;
+/// projecting the sentinel as requested identity would invent an override on replay.
+fn legacy_spawn_requested_identity(
+    begin_event: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
+) -> (
+    Option<String>,
+    Option<codex_protocol::openai_models::ReasoningEffort>,
+) {
+    if begin_event.model.as_deref() == Some("")
+        && begin_event.reasoning_effort
+            == Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+    {
+        (None, None)
+    } else {
+        (
+            begin_event.model.clone(),
+            begin_event.reasoning_effort.clone(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +627,65 @@ mod tests {
                     agents_states: HashMap::new(),
                 },
             },
+        );
+    }
+
+    #[test]
+    fn collab_spawn_begin_normalizes_the_v1_omitted_override_sentinel() {
+        let event = CollabAgentSpawnBeginEvent {
+            call_id: "call-spawn-v1-sentinel".to_string(),
+            started_at_ms: 123,
+            sender_thread_id: ThreadId::new(),
+            prompt: "inspect the persisted history".to_string(),
+            model: Some(String::new()),
+            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        };
+
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabAgentSpawnBegin(event.clone()),
+            "thread-1",
+            "turn-1",
+        );
+        assert_item_started_server_notification(
+            notification,
+            ItemStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                started_at_ms: event.started_at_ms,
+                item: ThreadItem::CollabAgentToolCall {
+                    id: event.call_id,
+                    tool: CollabAgentTool::SpawnAgent,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: event.sender_thread_id.to_string(),
+                    receiver_thread_ids: Vec::new(),
+                    prompt: Some(event.prompt),
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn collab_spawn_begin_preserves_a_real_legacy_requested_identity() {
+        let event = CollabAgentSpawnBeginEvent {
+            call_id: "call-spawn-legacy-override".to_string(),
+            started_at_ms: 123,
+            sender_thread_id: ThreadId::new(),
+            prompt: "use the requested identity".to_string(),
+            model: Some("gpt-requested".to_string()),
+            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        };
+
+        assert_eq!(
+            legacy_spawn_requested_identity(&event),
+            (
+                Some("gpt-requested".to_string()),
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            )
         );
     }
 

@@ -610,6 +610,13 @@ impl App {
         thread_id: ThreadId,
         event: FeedbackThreadEvent,
     ) {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(
+                %thread_id,
+                "dropping feedback response for discarded thread lifecycle"
+            );
+            return;
+        }
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
