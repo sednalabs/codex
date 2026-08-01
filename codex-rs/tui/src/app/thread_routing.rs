@@ -441,6 +441,16 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
+        if self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+        {
+            self.chat_widget
+                .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
+            return Ok(());
+        }
+
         crate::session_log::log_outbound_op(&op);
 
         if self

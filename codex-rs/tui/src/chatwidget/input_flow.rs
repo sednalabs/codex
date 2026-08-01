@@ -9,7 +9,22 @@ use super::*;
 impl ChatWidget {
     pub(crate) fn set_parent_owned_thread(&mut self) {
         self.blocks_direct_input = true;
+        self.replay_only = false;
         self.bottom_pane.set_parent_owned_thread();
+    }
+
+    pub(crate) fn set_replay_only_thread(&mut self) {
+        self.blocks_direct_input = true;
+        self.replay_only = true;
+        self.bottom_pane.set_replay_only_thread();
+    }
+
+    pub(super) fn direct_input_blocked_message(&self) -> &'static str {
+        if self.replay_only {
+            REPLAY_ONLY_INPUT_MESSAGE
+        } else {
+            PARENT_OWNED_INPUT_MESSAGE
+        }
     }
 
     pub(super) fn handle_composer_input_result(
@@ -69,7 +84,7 @@ impl ChatWidget {
                 self.handle_slash_command_with_args_dispatch(cmd, args, text_elements);
             }
             InputResult::ParentOwnedInputBlocked => {
-                self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+                self.add_error_message(self.direct_input_blocked_message().to_string());
             }
             InputResult::None => {}
         }
@@ -202,7 +217,7 @@ impl ChatWidget {
         mut collaboration_mode: CollaborationModeMask,
     ) {
         if self.blocks_direct_input {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            self.add_error_message(self.direct_input_blocked_message().to_string());
             return;
         }
         if collaboration_mode.mode == Some(ModeKind::Plan)

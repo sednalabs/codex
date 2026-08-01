@@ -509,6 +509,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_replay_only_thread(&mut self) {
+        self.composer.set_replay_only_thread();
+        self.request_redraw();
+    }
+
     /// Update the key hint shown next to queued messages so it matches the
     /// binding that `ChatWidget` actually listens for.
     pub(crate) fn set_queued_message_edit_binding(&mut self, binding: Option<KeyBinding>) {
