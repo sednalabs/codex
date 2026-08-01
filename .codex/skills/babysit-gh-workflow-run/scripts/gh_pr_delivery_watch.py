@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Prove selected workflow delivery for one merge-queue PR.
 
-This script deliberately does not poll GitHub itself.  It performs finite
-identity reads around two invocations of gh_workflow_run_watch, which owns the
-blocking waits for the exact merge-group and selected post-merge workflow runs.
-It does not claim that every post-merge workflow, or repository health overall,
-has passed.
+This script performs only a bounded, receipt-owned PR-delivery observation.
+The long workflow waits remain delegated to gh_workflow_run_watch for the exact
+merge-group and selected post-merge runs. It does not claim that every
+post-merge workflow, or repository health overall, has passed.
 """
 
 import argparse
@@ -507,6 +506,69 @@ def verify_selected_candidate_merged(repo, candidate_sha, merge_commit_sha):
     }
 
 
+def reassert_selected_candidate_identity(repo, candidate, args):
+    observed = verify_merge_group_candidate(
+        fetch_actions_run(repo, candidate["id"]), args
+    )
+    if (
+        str(observed["head_sha"]).lower() != str(candidate["head_sha"]).lower()
+        or observed["head_branch"] != candidate["head_branch"]
+    ):
+        raise DeliveryStop(
+            "stop_merge_group_candidate_changed",
+            f"Selected merge-group run {candidate['id']} no longer identifies the "
+            "same candidate SHA and queue ref.",
+        )
+    return observed
+
+
+def reassert_candidate_not_superseded(repo, candidate, args):
+    later_candidate_shas = {
+        str(run["head_sha"]).lower()
+        for run in (
+            verify_merge_group_candidate(run, args)
+            for run in list_merge_group_runs(repo)
+            if workflow_matches(run.get("workflow"), args.merge_group_workflow)
+            and queue_ref_mentions_pr(run.get("head_branch"), args.pr)
+        )
+        if int(run["id"]) > int(candidate["id"])
+    }
+    if later_candidate_shas - {str(candidate["head_sha"]).lower()}:
+        raise DeliveryStop(
+            "stop_merge_group_candidate_superseded",
+            f"A later merge-group candidate superseded selected run {candidate['id']}.",
+        )
+
+
+def wait_for_pr_delivery(repo, candidate, args):
+    deadline = time.monotonic() + args.merge_observation_timeout_seconds
+    latest_association = None
+    while True:
+        observed_pr = fetch_pr(repo, args.pr)
+        assert_pr_identity(observed_pr, args)
+        if observed_pr["merged"]:
+            return observed_pr, latest_association
+        if not observed_pr["merge_queue_entry_id"]:
+            raise DeliveryStop(
+                "stop_merge_queue_entry_disappeared_without_merge",
+                f"PR #{args.pr} left the merge queue without a merge commit.",
+            )
+        reassert_selected_candidate_identity(repo, candidate, args)
+        latest_association = verify_candidate_association(
+            repo, candidate["head_sha"], observed_pr, args
+        )
+        reassert_candidate_not_superseded(repo, candidate, args)
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise DeliveryStop(
+                "stop_merge_observation_timeout",
+                f"PR #{args.pr} did not merge within "
+                f"{args.merge_observation_timeout_seconds} seconds after its "
+                "successful merge-group run.",
+            )
+        time.sleep(min(args.poll_seconds, remaining_seconds))
+
+
 def is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
     return is_commit_ancestor(repo, merge_commit_sha, main_head_sha)
 
@@ -596,18 +658,15 @@ def execute_delivery(args):
                 f"Merge-group run {candidate['id']} did not complete successfully.",
             )
 
-        delivered_pr = fetch_pr(repo, args.pr)
+        delivered_pr, latest_association = wait_for_pr_delivery(repo, candidate, args)
         assert_pr_identity(delivered_pr, args)
+        if latest_association is not None:
+            receipt["merge_group"]["association"] = latest_association
         receipt["pr"]["post_merge_observed_head_sha"] = delivered_pr["head_sha"]
         if not delivered_pr["merged"]:
-            if not delivered_pr["merge_queue_entry_id"]:
-                raise DeliveryStop(
-                    "stop_merge_queue_entry_disappeared_without_merge",
-                    f"PR #{args.pr} left the merge queue without a merge commit.",
-                )
             raise DeliveryStop(
                 "stop_merge_not_observed",
-                f"PR #{args.pr} remains queued after the successful merge-group run.",
+                f"PR #{args.pr} remains queued after the delivery observation.",
             )
         merge_commit_sha = delivered_pr["merge_commit_sha"]
         if not is_full_sha(merge_commit_sha):
@@ -716,6 +775,15 @@ def parse_args(argv=None):
         help="How long the post-merge watcher waits for the exact main run to appear.",
     )
     parser.add_argument(
+        "--merge-observation-timeout-seconds",
+        type=int,
+        default=300,
+        help=(
+            "Bounded wait after a successful merge-group run for the PR merge "
+            "transition (default: 300)."
+        ),
+    )
+    parser.add_argument(
         "--retry-settle-seconds",
         type=int,
         default=90,
@@ -735,6 +803,10 @@ def parse_args(argv=None):
         raise ArgumentParseError("--poll-seconds must be > 0", args)
     if args.appearance_timeout_seconds < 0:
         raise ArgumentParseError("--appearance-timeout-seconds must be >= 0", args)
+    if args.merge_observation_timeout_seconds < 0:
+        raise ArgumentParseError(
+            "--merge-observation-timeout-seconds must be >= 0", args
+        )
     if args.retry_settle_seconds < 0:
         raise ArgumentParseError("--retry-settle-seconds must be >= 0", args)
     return args

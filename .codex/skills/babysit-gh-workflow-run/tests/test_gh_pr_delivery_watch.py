@@ -41,6 +41,7 @@ def make_args(**overrides):
         "post_merge_workflow": "postmerge-ci",
         "poll_seconds": 5,
         "appearance_timeout_seconds": 900,
+        "merge_observation_timeout_seconds": 300,
         "retry_settle_seconds": 0,
     }
     values.update(overrides)
@@ -163,6 +164,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
                 "fetch_pr",
                 side_effect=[
                     make_pr(),
+                    make_pr(),
                     make_pr(
                         merged=True,
                         queue_entry_id=None,
@@ -178,6 +180,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
             candidate_association(),
             patch.object(
                 MODULE,
@@ -187,6 +191,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(MODULE, "fetch_ref_sha", return_value=MERGE_COMMIT_SHA),
             patch.object(MODULE, "is_commit_reachable_from_main", return_value=True),
             candidate_merge_correlation(),
+            patch.object(MODULE.time, "sleep") as sleep,
         ):
             receipt, status = MODULE.execute_delivery(args)
 
@@ -213,7 +218,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["post_merge"]["run"]["id"], 902)
         self.assertEqual(receipt["post_merge"]["selected_workflow"], "postmerge-ci")
         self.assertEqual(watcher.call_count, 2)
-        self.assertEqual(fetch_pr.call_count, 3)
+        self.assertEqual(fetch_pr.call_count, 4)
+        sleep.assert_called_once_with(args.poll_seconds)
         self.assertEqual(
             watcher.call_args_list[0].args[1], f"run-id=901,head-sha={CANDIDATE_SHA}"
         )
@@ -391,6 +397,117 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(
             receipt["actions"], ["stop_merge_queue_entry_disappeared_without_merge"]
         )
+
+    def test_delivery_wait_observes_a_delayed_merge_after_queue_success(self):
+        args = make_args()
+        candidate = make_candidate()
+        association = {
+            "expected_pr_head_sha": EXPECTED_HEAD_SHA,
+            "expected_base_sha": CURRENT_BASE_SHA,
+            "candidate_contains_expected_head": True,
+            "candidate_contains_current_base": True,
+        }
+        merged_pr = make_pr(
+            merged=True,
+            queue_entry_id=None,
+            merge_commit_sha=MERGE_COMMIT_SHA,
+        )
+
+        with (
+            patch.object(MODULE, "fetch_pr", side_effect=[make_pr(), merged_pr]),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
+            patch.object(
+                MODULE, "verify_candidate_association", return_value=association
+            ),
+            patch.object(MODULE.time, "sleep") as sleep,
+        ):
+            observed_pr, observed_association = MODULE.wait_for_pr_delivery(
+                "owner/repo", candidate, args
+            )
+
+        self.assertEqual(observed_pr, merged_pr)
+        self.assertEqual(observed_association, association)
+        sleep.assert_called_once_with(args.poll_seconds)
+
+    def test_delivery_wait_times_out_with_a_stable_stop(self):
+        args = make_args(merge_observation_timeout_seconds=0)
+        candidate = make_candidate()
+        candidate_receipt = make_watcher_receipt(
+            run_id=901,
+            workflow="blocking-ci",
+            event="merge_group",
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+        with (
+            patch.object(MODULE, "fetch_pr", side_effect=[make_pr(), make_pr()]),
+            patch.object(
+                MODULE, "resolve_merge_group_candidate", return_value=candidate
+            ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
+            candidate_association(),
+            patch.object(
+                MODULE, "run_blocking_watcher", return_value=candidate_receipt
+            ),
+        ):
+            receipt, status = MODULE.execute_delivery(args)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_merge_observation_timeout"])
+        self.assertFalse(receipt["proof_scope"]["whole_repository_health_proven"])
+
+    def test_delivery_wait_rejects_a_later_candidate_as_superseded(self):
+        args = make_args()
+        candidate = make_candidate()
+        newer_candidate = make_candidate(run_id=902, candidate_sha=OTHER_SHA)
+        with (
+            patch.object(MODULE, "fetch_pr", return_value=make_pr()),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(
+                MODULE,
+                "list_merge_group_runs",
+                return_value=[candidate, newer_candidate],
+            ),
+            patch.object(MODULE, "verify_candidate_association", return_value={}),
+            self.assertRaisesRegex(MODULE.DeliveryStop, "superseded") as raised,
+        ):
+            MODULE.wait_for_pr_delivery("owner/repo", candidate, args)
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_superseded"
+        )
+
+    def test_delivery_wait_read_error_emits_an_operator_receipt(self):
+        args = make_args()
+        candidate = make_candidate()
+        candidate_receipt = make_watcher_receipt(
+            run_id=901,
+            workflow="blocking-ci",
+            event="merge_group",
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+        with (
+            patch.object(
+                MODULE,
+                "fetch_pr",
+                side_effect=[make_pr(), MODULE.GhCommandError("read failed")],
+            ),
+            patch.object(
+                MODULE, "resolve_merge_group_candidate", return_value=candidate
+            ),
+            candidate_association(),
+            patch.object(
+                MODULE, "run_blocking_watcher", return_value=candidate_receipt
+            ),
+        ):
+            receipt, status = MODULE.execute_delivery(args)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
+        self.assertIn("read failed", receipt["error"])
 
     def test_merged_pr_without_a_correlatable_commit_fails_closed(self):
         args = make_args()
@@ -685,6 +802,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("--expected-head-sha", result.stdout)
+        self.assertIn("--merge-observation-timeout-seconds", result.stdout)
 
     def test_launcher_accepts_the_workflow_watcher_python_override(self):
         launcher = (
