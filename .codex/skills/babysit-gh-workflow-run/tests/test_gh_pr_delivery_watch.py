@@ -192,6 +192,15 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(receipt["actions"], ["stop_pr_delivery_proven"])
+        self.assertEqual(
+            receipt["proof_scope"],
+            {
+                "kind": "selected_workflow_delivery",
+                "merge_group_workflow": "blocking-ci",
+                "selected_post_merge_workflows": ["postmerge-ci"],
+                "whole_repository_health_proven": False,
+            },
+        )
         self.assertEqual(receipt["pr"]["expected_head_sha"], EXPECTED_HEAD_SHA)
         self.assertEqual(receipt["merge_group"]["candidate_sha"], CANDIDATE_SHA)
         self.assertTrue(
@@ -202,6 +211,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["merge_group"]["run"]["id"], 901)
         self.assertEqual(receipt["merge_commit"]["sha"], MERGE_COMMIT_SHA)
         self.assertEqual(receipt["post_merge"]["run"]["id"], 902)
+        self.assertEqual(receipt["post_merge"]["selected_workflow"], "postmerge-ci")
         self.assertEqual(watcher.call_count, 2)
         self.assertEqual(fetch_pr.call_count, 3)
         self.assertEqual(
@@ -313,6 +323,18 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             MODULE.workflow_matches(".github/workflows/blocking-ci.yml", "Blocking CI")
         )
         self.assertTrue(MODULE.workflow_matches("postmerge-ci.yaml", "Postmerge CI"))
+
+    def test_receipt_scope_preserves_the_exact_selected_workflow_selector(self):
+        receipt = MODULE.new_receipt(
+            "owner/repo",
+            make_args(post_merge_workflow=".github/workflows/postmerge-ci.yml"),
+        )
+
+        self.assertEqual(
+            receipt["proof_scope"]["selected_post_merge_workflows"],
+            [".github/workflows/postmerge-ci.yml"],
+        )
+        self.assertFalse(receipt["proof_scope"]["whole_repository_health_proven"])
 
     def test_candidate_and_watched_run_accept_workflow_file_and_display_name(self):
         candidate = make_candidate()
