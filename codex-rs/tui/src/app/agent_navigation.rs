@@ -47,12 +47,14 @@ pub(crate) struct AgentNavigationState {
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
     /// Error activities that must see their matching status before a later status can recover
-    /// their picker row. The app-server status payload has no sequence number, so an activity and
-    /// a status watcher can otherwise race across independent notification streams.
+    /// their picker row. Activity and status notifications race across independent streams.
     system_error_epochs: HashMap<ThreadId, SystemErrorEpoch>,
     /// Latest accepted status revision per thread. Revisions are scoped to one app-server session
     /// and let the picker reject a status watcher message delivered out of order.
     last_status_revisions: HashMap<ThreadId, u64>,
+    /// Kind and revision of the latest accepted status. The kind lets a terminal activity that
+    /// arrives after an already-observed `SystemError` enter a confirmed error epoch directly.
+    last_accepted_statuses: HashMap<ThreadId, AcceptedThreadStatus>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
     /// Opaque continuation for the next bounded persisted-subagent page.
@@ -71,6 +73,13 @@ enum SystemErrorEpoch {
         /// Revision assigned to the matching `SystemError`, when the server supports it.
         status_revision: Option<u64>,
     },
+}
+
+/// The status observation most recently accepted for a picker thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AcceptedThreadStatus {
+    has_system_error: bool,
+    status_revision: Option<u64>,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -127,6 +136,7 @@ impl AgentNavigationState {
         if is_closed {
             self.system_error_epochs.remove(&thread_id);
             self.last_status_revisions.remove(&thread_id);
+            self.last_accepted_statuses.remove(&thread_id);
         }
         let previous_entry = self.threads.get(&thread_id);
         let previous_is_running = previous_entry.is_some_and(|entry| entry.is_running);
@@ -193,6 +203,16 @@ impl AgentNavigationState {
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
         let thread_id = activity.thread_id;
         let is_errored_activity = activity.has_system_error;
+        let error_epoch = is_errored_activity.then(|| {
+            self.last_accepted_statuses
+                .get(&thread_id)
+                .filter(|status| status.has_system_error)
+                .map_or(SystemErrorEpoch::AwaitingSystemError, |status| {
+                    SystemErrorEpoch::ConfirmedSystemError {
+                        status_revision: status.status_revision,
+                    }
+                })
+        });
         if !self.threads.contains_key(&activity.thread_id) {
             self.order.push(activity.thread_id);
         }
@@ -238,10 +258,10 @@ impl AgentNavigationState {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
         }
-        if is_errored_activity {
+        if let Some(error_epoch) = error_epoch {
             self.system_error_epochs
                 .entry(thread_id)
-                .or_insert(SystemErrorEpoch::AwaitingSystemError);
+                .or_insert(error_epoch);
         }
     }
 
@@ -307,6 +327,39 @@ impl AgentNavigationState {
         }
     }
 
+    /// Records an authoritative `SystemError` obtained during thread/read or persisted-thread
+    /// backfill. Those snapshots do not currently carry a status revision, but they do confirm
+    /// an activity-derived error epoch so a later revisioned status notification can recover it.
+    pub(crate) fn confirm_system_error_from_authoritative_status(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) {
+        if self
+            .threads
+            .get(&thread_id)
+            .is_none_or(|entry| entry.is_closed)
+        {
+            return;
+        }
+
+        self.record_accepted_status(thread_id, /*has_system_error*/ true, status_revision);
+        if let Some(epoch) = self.system_error_epochs.get_mut(&thread_id) {
+            match epoch {
+                SystemErrorEpoch::AwaitingSystemError => {
+                    *epoch = SystemErrorEpoch::ConfirmedSystemError { status_revision };
+                }
+                SystemErrorEpoch::ConfirmedSystemError {
+                    status_revision: error_revision,
+                } if error_revision.is_none() && status_revision.is_some() => {
+                    *error_revision = status_revision;
+                }
+                SystemErrorEpoch::ConfirmedSystemError { .. } => {}
+            }
+        }
+        self.set_system_error(thread_id, true);
+    }
+
     /// Returns whether a status-watch update can change the picker liveness for this thread.
     ///
     /// The V2 activity stream and the child status watcher are independent. An `Errored` activity
@@ -330,10 +383,11 @@ impl AgentNavigationState {
         }
 
         if is_closed {
-            if let Some(status_revision) = status_revision {
-                self.last_status_revisions
-                    .insert(thread_id, status_revision);
-            }
+            self.record_accepted_status(
+                thread_id,
+                /*has_system_error*/ false,
+                status_revision,
+            );
             return true;
         }
 
@@ -349,9 +403,16 @@ impl AgentNavigationState {
             Some(SystemErrorEpoch::ConfirmedSystemError {
                 status_revision: error_revision,
             }) if !has_system_error => {
-                if error_revision.is_some_and(|error_revision| {
-                    status_revision.is_some_and(|status_revision| status_revision > error_revision)
-                }) {
+                if match (error_revision, status_revision) {
+                    (Some(error_revision), Some(status_revision)) => {
+                        status_revision > error_revision
+                    }
+                    // A `thread/read` or backfill `SystemError` has no revision to compare, but
+                    // a subsequently delivered revisioned status is still explicit recovery
+                    // evidence. Revisionless status messages continue to fail closed.
+                    (None, Some(_)) => true,
+                    _ => false,
+                } {
                     self.system_error_epochs.remove(&thread_id);
                     true
                 } else {
@@ -372,11 +433,29 @@ impl AgentNavigationState {
             None => true,
         };
 
-        if accepts && let Some(status_revision) = status_revision {
+        if accepts {
+            self.record_accepted_status(thread_id, has_system_error, status_revision);
+        }
+        accepts
+    }
+
+    fn record_accepted_status(
+        &mut self,
+        thread_id: ThreadId,
+        has_system_error: bool,
+        status_revision: Option<u64>,
+    ) {
+        self.last_accepted_statuses.insert(
+            thread_id,
+            AcceptedThreadStatus {
+                has_system_error,
+                status_revision,
+            },
+        );
+        if let Some(status_revision) = status_revision {
             self.last_status_revisions
                 .insert(thread_id, status_revision);
         }
-        accepts
     }
 
     pub(crate) fn set_agent_path(&mut self, thread_id: ThreadId, agent_path: Option<String>) {
@@ -408,6 +487,7 @@ impl AgentNavigationState {
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
         self.system_error_epochs.remove(&thread_id);
         self.last_status_revisions.remove(&thread_id);
+        self.last_accepted_statuses.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
@@ -430,6 +510,7 @@ impl AgentNavigationState {
         self.stopped_threads.clear();
         self.system_error_epochs.clear();
         self.last_status_revisions.clear();
+        self.last_accepted_statuses.clear();
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.legacy_relation_fallback_checked = false;
@@ -471,6 +552,7 @@ impl AgentNavigationState {
         self.stopped_threads.remove(&thread_id);
         self.system_error_epochs.remove(&thread_id);
         self.last_status_revisions.remove(&thread_id);
+        self.last_accepted_statuses.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
     }
 
@@ -964,6 +1046,80 @@ mod tests {
             state.get(&thread_id).is_some_and(|entry| entry.is_closed
                 && !entry.has_system_error
                 && !entry.is_running)
+        );
+    }
+
+    #[test]
+    fn system_error_before_errored_activity_uses_its_revision_for_recovery() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000106").expect("valid thread");
+
+        // Status notifications can win the race with a terminal parent activity. Retain the
+        // SystemError revision so that the activity enters a confirmed, recoverable epoch.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, true);
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/status-first-failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, false);
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+    }
+
+    #[test]
+    fn hydrated_system_error_confirms_errored_activity_for_revisioned_recovery() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000107").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/hydrated-failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        // `thread/read` and persisted-thread backfill currently provide this authoritative error
+        // state without a comparable watcher revision.
+        state.confirm_system_error_from_authoritative_status(
+            thread_id, /*status_revision*/ None,
+        );
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, false);
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
         );
     }
 

@@ -809,6 +809,7 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
         Field(
             alias="statusRevision",
             description="Monotonically increasing revision for this thread's status notifications within the current app-server session. Older servers omit this field.",
+            ge=0,
         ),
     ] = None
 """,

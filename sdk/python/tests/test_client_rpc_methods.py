@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from openai_codex.client import CodexClient, _params_dict
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
@@ -135,6 +138,14 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     assert loaded_ack.ancestor_filter_applied is True
     assert thread_list_ack.ancestor_filter_applied is True
     assert status_changed.status_revision == 7
+    with pytest.raises(ValidationError):
+        ThreadStatusChangedNotification.model_validate(
+            {
+                "status": {"type": "idle"},
+                "statusRevision": -1,
+                "threadId": "child-thread-1",
+            }
+        )
     assert tool_call.model_dump(by_alias=True, exclude_none=True) == {
         "agentsStates": {},
         "id": "call-1",
