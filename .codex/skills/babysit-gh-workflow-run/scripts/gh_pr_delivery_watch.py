@@ -421,18 +421,15 @@ def watcher_run(payload, stage):
     }
 
 
-def verify_watched_run(
-    watcher_receipt,
+def verify_run_identity(
+    run,
     *,
     stage,
     expected_sha,
     expected_run_id=None,
-    expected_event,
     expected_branch,
     expected_workflow,
 ):
-    watched = watcher_run(watcher_receipt, stage)
-    run = watched["run"]
     if expected_run_id is not None and int(run.get("id") or 0) != int(expected_run_id):
         raise DeliveryStop(
             f"stop_{stage}_run_id_mismatch",
@@ -451,9 +448,56 @@ def verify_watched_run(
     if not workflow_matches(run.get("workflow"), expected_workflow):
         raise DeliveryStop(
             f"stop_{stage}_run_identity_mismatch",
-            f"The {stage} run workflow is '{run.get('workflow')}', not '{expected_workflow}'.",
+            f"The {stage} run workflow is '{run.get('workflow')}', not "
+            f"'{expected_workflow}'.",
         )
+
+
+def verify_watched_run(
+    watcher_receipt,
+    *,
+    repo=None,
+    stage,
+    expected_sha,
+    expected_run_id=None,
+    expected_event,
+    expected_branch,
+    expected_workflow,
+):
+    watched = watcher_run(watcher_receipt, stage)
+    run = watched["run"]
+    verify_run_identity(
+        run,
+        stage=stage,
+        expected_sha=expected_sha,
+        expected_run_id=expected_run_id,
+        expected_branch=expected_branch,
+        expected_workflow=expected_workflow,
+    )
     observed_event = run.get("event")
+    authoritative_post_merge_event_is_proven = False
+    if (
+        stage == "post_merge"
+        and observed_event in (None, "")
+        and repo
+        and is_positive_run_id(run.get("id"))
+    ):
+        authoritative_run = fetch_actions_run(repo, int(run["id"]))
+        verify_run_identity(
+            authoritative_run,
+            stage=stage,
+            expected_sha=expected_sha,
+            expected_run_id=run["id"],
+            expected_branch=expected_branch,
+            expected_workflow=expected_workflow,
+        )
+        observed_event = authoritative_run.get("event")
+        watched["event_binding"] = {
+            "source": "exact_actions_run",
+            "run_id": int(authoritative_run["id"]),
+            "event": observed_event,
+        }
+        authoritative_post_merge_event_is_proven = observed_event == expected_event
     missing_event_has_exact_identity = (
         observed_event in (None, "")
         and is_full_sha(expected_sha)
@@ -468,7 +512,7 @@ def verify_watched_run(
     missing_post_merge_event_is_independently_proven = (
         stage == "post_merge"
         and expected_event == "push"
-        and is_positive_run_id(run.get("id"))
+        and authoritative_post_merge_event_is_proven
     )
     missing_event_is_independently_proven = missing_event_has_exact_identity and (
         missing_merge_group_event_is_independently_proven
@@ -772,6 +816,7 @@ def execute_delivery(args):
         )
         candidate_result = verify_watched_run(
             candidate_payload,
+            repo=repo,
             stage="merge_group",
             expected_sha=candidate_sha,
             expected_run_id=candidate["id"],
@@ -831,6 +876,7 @@ def execute_delivery(args):
         )
         post_merge_result = verify_watched_run(
             post_merge_payload,
+            repo=repo,
             stage="post_merge",
             expected_sha=merge_commit_sha,
             expected_event="push",
