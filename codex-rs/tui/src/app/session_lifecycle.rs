@@ -7,12 +7,24 @@
 use super::*;
 use crate::app_server_session::source_agent_path;
 use crate::app_server_session::thread_blocks_direct_input;
+use crate::app::loaded_threads::find_loaded_subagent_threads_for_primary;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
+use crate::multi_agents::format_agent_picker_item_label;
 use crate::multi_agents::format_agent_picker_item_selected_description;
+use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadLoadedListParams;
+use codex_app_server_protocol::ThreadSortKey;
+use codex_app_server_protocol::ThreadSourceKind;
+use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::Thread;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
+
+const AGENT_PICKER_PAGE_SIZE: u32 = 50;
+const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
@@ -20,12 +32,32 @@ pub(super) enum ThreadAttachPresentation {
     PromptEdit,
 }
 
-/// Reports whether a loaded-thread backfill completed and which descendants already had their
-/// liveness metadata refreshed, allowing the picker to skip duplicate `thread/read` requests.
+/// Reports whether a bounded descendant backfill completed and which rows already carried fresh
+/// liveness metadata, allowing the picker to skip duplicate `thread/read` requests.
 #[derive(Default)]
 pub(super) struct LoadedSubagentBackfill {
     pub(super) completed: bool,
     pub(super) refreshed_thread_ids: HashSet<ThreadId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct AgentPickerThreadStatus {
+    pub(super) is_running: bool,
+    pub(super) is_closed: bool,
+    pub(super) has_system_error: bool,
+}
+
+/// Classifies the app-server status used by persisted descendant backfill and targeted liveness
+/// refreshes. `SystemError` remains selectable because it can still have a saved transcript.
+pub(super) fn agent_picker_thread_status(
+    status: &ThreadStatus,
+    has_live_channel: bool,
+) -> AgentPickerThreadStatus {
+    AgentPickerThreadStatus {
+        is_running: matches!(status, ThreadStatus::Active { .. }),
+        is_closed: !has_live_channel && matches!(status, ThreadStatus::NotLoaded),
+        has_system_error: matches!(status, ThreadStatus::SystemError),
+    }
 }
 
 impl App {
@@ -38,7 +70,7 @@ impl App {
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id)
             .into_iter()
-            .map(|(thread_id, _)| thread_id)
+            .filter_map(|(thread_id, entry)| (!entry.is_closed).then_some(thread_id))
             .collect();
         for thread_id in path_backed_thread_ids.iter().copied() {
             if let Some(channel) = self.thread_event_channels.get(&thread_id)
@@ -106,6 +138,10 @@ impl App {
             if path_backed_thread_ids.contains(&thread_id)
                 || self.side_threads.contains_key(&thread_id)
                 || backfill.refreshed_thread_ids.contains(&thread_id)
+                || self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .is_some_and(|entry| entry.is_closed)
             {
                 continue;
             }
@@ -249,6 +285,11 @@ impl App {
             .any(|cause| cause.to_string().contains("thread not loaded:"))
     }
 
+    fn is_invalid_thread_list_cursor_error(err: &color_eyre::Report) -> bool {
+        err.chain()
+            .any(|cause| cause.to_string().contains("invalid cursor:"))
+    }
+
     pub(super) fn closed_state_for_thread_read_error(
         err: &color_eyre::Report,
         existing_is_closed: Option<bool>,
@@ -337,13 +378,9 @@ impl App {
             Ok(thread) => {
                 let is_parent_owned = thread_blocks_direct_input(&thread);
                 let agent_path = source_agent_path(&thread.source);
-                let is_running = matches!(
-                    thread.status,
-                    codex_app_server_protocol::ThreadStatus::Active { .. }
-                );
-                let is_closed = matches!(
-                    thread.status,
-                    codex_app_server_protocol::ThreadStatus::NotLoaded
+                let status = agent_picker_thread_status(
+                    &thread.status,
+                    /*has_live_channel*/ false,
                 );
                 self.upsert_agent_picker_thread(
                     thread_id,
@@ -357,7 +394,7 @@ impl App {
                             .as_ref()
                             .and_then(|entry| entry.agent_role.clone())
                     }),
-                    is_closed,
+                    status.is_closed,
                 );
                 if is_parent_owned {
                     self.agent_navigation.mark_parent_owned(thread_id);
@@ -375,8 +412,10 @@ impl App {
                     Some(thread.created_at),
                     Some(thread.updated_at),
                 );
+                self.agent_navigation
+                    .set_system_error(thread_id, status.has_system_error);
                 self.sync_agent_picker_identity(thread_id);
-                if is_running {
+                if status.is_running {
                     self.agent_navigation.mark_running(thread_id);
                 } else {
                     self.agent_navigation
@@ -384,33 +423,60 @@ impl App {
                 }
                 true
             }
-            Err(err) => {
-                if Self::is_terminal_thread_read_error(&err) && !has_replay_channel {
-                    self.agent_navigation.remove(thread_id);
-                    return false;
-                }
-                let is_closed = Self::closed_state_for_thread_read_error(
-                    &err,
-                    existing_entry.as_ref().map(|entry| entry.is_closed),
-                );
-                if let Some(entry) = existing_entry {
-                    self.upsert_agent_picker_thread(
-                        thread_id,
-                        entry.agent_nickname,
-                        entry.agent_role,
-                        is_closed,
-                    );
-                } else {
-                    self.upsert_agent_picker_thread(
-                        thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed,
-                    );
-                }
-                self.agent_navigation
-                    .set_running(thread_id, /*is_running*/ false);
-                true
-            }
+            Err(err) => self.handle_agent_picker_thread_liveness_read_error(
+                thread_id,
+                has_replay_channel,
+                &err,
+            ),
         }
+    }
+
+    /// Keeps the last authoritative picker state on a non-terminal liveness-read failure.
+    ///
+    /// In particular, `upsert_agent_picker_thread` initializes a fresh status record. Preserve a
+    /// previously observed `SystemError` while the next `thread/read` is unavailable instead of
+    /// presenting a transient transport failure as a recovered agent.
+    pub(super) fn handle_agent_picker_thread_liveness_read_error(
+        &mut self,
+        thread_id: ThreadId,
+        has_replay_channel: bool,
+        err: &color_eyre::Report,
+    ) -> bool {
+        let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        let is_terminal = Self::is_terminal_thread_read_error(err);
+        if is_terminal && !has_replay_channel {
+            self.agent_navigation.remove(thread_id);
+            return false;
+        }
+        let is_closed = Self::closed_state_for_thread_read_error(
+            err,
+            existing_entry.as_ref().map(|entry| entry.is_closed),
+        );
+        // A terminal not-loaded read is authoritative closure, even when the replay channel keeps
+        // the row available for inspection. Do not let a previous SystemError shadow its `closed`
+        // search status; non-terminal reads still preserve the most recently known error state.
+        let has_system_error = !is_terminal
+            && existing_entry
+                .as_ref()
+                .is_some_and(|entry| entry.has_system_error);
+        if let Some(entry) = existing_entry {
+            self.upsert_agent_picker_thread(
+                thread_id,
+                entry.agent_nickname,
+                entry.agent_role,
+                is_closed,
+            );
+        } else {
+            self.upsert_agent_picker_thread(
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                is_closed,
+            );
+        }
+        self.agent_navigation
+            .set_system_error(thread_id, has_system_error);
+        self.agent_navigation
+            .set_running(thread_id, /*is_running*/ false);
+        true
     }
 
     /// Materializes a live thread into local replay state when the picker knows about it but the
@@ -618,12 +684,12 @@ impl App {
         Ok(())
     }
 
+    /// Returns whether selection still needs a channel materialized from the saved session.
+    ///
+    /// Closed and system-error descendants are intentionally included: their persisted rollouts
+    /// remain inspectable even though they cannot attach as live agents.
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
         !self.thread_event_channels.contains_key(&thread_id)
-            && self
-                .agent_navigation
-                .get(&thread_id)
-                .is_none_or(|entry| !entry.is_closed)
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -807,16 +873,7 @@ impl App {
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> Result<()> {
-        // Initial messages are for freshly attached primary threads only. Thread switches and
-        // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
-        // user turn by accident.
-        self.reset_thread_event_state();
-        let init = self.chatwidget_init_for_forked_or_resumed_thread(
-            tui,
-            self.config.clone(),
-            initial_user_message,
-        );
-        self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+        self.prepare_chat_widget_for_app_server_thread(tui, initial_user_message);
         if started.blocks_direct_input {
             self.mark_primary_thread_parent_owned(started.session.thread_id);
         }
@@ -829,100 +886,361 @@ impl App {
         Ok(())
     }
 
-    /// Fetches all loaded threads from the app server and registers descendants of the primary
-    /// thread in the navigation cache and chat widget metadata.
+    /// Clears thread-local state and installs a fresh widget before attaching an app-server
+    /// thread. Resume uses this setup independently so it can hydrate descendant identity before
+    /// replaying persisted primary turns.
+    fn prepare_chat_widget_for_app_server_thread(
+        &mut self,
+        tui: &mut tui::Tui,
+        initial_user_message: Option<crate::chatwidget::UserMessage>,
+    ) {
+        // Initial messages are for freshly attached primary threads only. Thread switches and
+        // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
+        // user turn by accident.
+        self.reset_thread_event_state();
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            tui,
+            self.config.clone(),
+            initial_user_message,
+        );
+        self.replace_chat_widget(ChatWidget::new_with_app_event(init));
+    }
+
+    /// Fetches one bounded page of persisted descendants from the app server and registers them
+    /// in the navigation cache and chat widget metadata.
     ///
     /// Called when opening the `/agent` picker and after resuming a thread so that the picker and
     /// keyboard navigation are pre-populated even if the TUI did not witness the original spawn
     /// events. Fresh and forked threads cannot have pre-existing descendants.
     ///
-    /// The loaded-thread list is fetched in full (no pagination) and the spawn tree is walked
-    /// by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is registered via
-    /// `upsert_agent_picker_thread`, which writes to both `AgentNavigationState` and the
-    /// `ChatWidget` metadata map.
+    /// The first page is deliberately small and relation-filtered at the app server so opening
+    /// `/agent` does not enumerate every loaded thread and then issue one `thread/read` request
+    /// per row. `render_agent_picker` exposes a continuation only under the `closed` filter;
+    /// active and idle descendants remain immediately visible while historical sidecars stay
+    /// bounded and on demand.
     pub(super) async fn backfill_loaded_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
+    ) -> LoadedSubagentBackfill {
+        self.backfill_agent_picker_page(app_server, /*cursor*/ None)
+            .await
+    }
+
+    async fn backfill_agent_picker_page(
+        &mut self,
+        app_server: &mut AppServerSession,
+        cursor: Option<String>,
     ) -> LoadedSubagentBackfill {
         let Some(primary_thread_id) = self.primary_thread_id else {
             return LoadedSubagentBackfill::default();
         };
 
+        let is_continuation = cursor.is_some();
+        let response = match app_server
+            .thread_list(ThreadListParams {
+                cursor,
+                limit: Some(AGENT_PICKER_PAGE_SIZE),
+                sort_key: Some(ThreadSortKey::UpdatedAt),
+                sort_direction: Some(SortDirection::Desc),
+                model_providers: None,
+                source_kinds: None,
+                thread_sources: None,
+                archived: Some(false),
+                is_pinned: None,
+                cwd: None,
+                // The state database carries the descendant relationship and current liveness,
+                // making this a bounded index query instead of a rollout scan plus per-id reads.
+                use_state_db_only: true,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: Some(primary_thread_id.to_string()),
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "failed to list persisted descendants for subagent backfill"
+                );
+                // A continuation cursor names a row in a relation set that may have shrunk since
+                // the picker was last opened. An invalid cursor cannot succeed on retry, so clear
+                // it rather than leaving a permanently clickable "Load more" item. Other errors
+                // remain retryable.
+                if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
+                    self.agent_navigation.set_next_picker_page_cursor(None);
+                }
+                return LoadedSubagentBackfill::default();
+            }
+        };
+
+        // A normal `/agent` reopen refreshes the first page for liveness but must not rewind an
+        // available cached continuation after the user has already loaded page two. A first page
+        // with no continuation is authoritative, though: it means the relation set has shrunk
+        // (or is exhausted), so clear any stale "Load more" action before the user can click it.
+        if is_continuation
+            || response.next_cursor.is_none()
+            || self.agent_navigation.next_picker_page_cursor().is_none()
+        {
+            self.agent_navigation
+                .set_next_picker_page_cursor(response.next_cursor.clone());
+        }
+
+        let mut refreshed_thread_ids = HashSet::new();
+        // The historical relation page is sorted by update time, so it can be filled with closed
+        // descendants. Merge one bounded page of currently loaded descendants first: open and
+        // idle sidecars stay visible and keyboard-reachable without making finished history part
+        // of the default picker view.
+        let loaded_priority_completed = if !is_continuation {
+            self.backfill_loaded_priority_subagent_threads(
+                app_server,
+                primary_thread_id,
+                &mut refreshed_thread_ids,
+            )
+            .await
+        } else {
+            true
+        };
+        for thread in response.data {
+            self.register_agent_picker_thread_from_backend(
+                primary_thread_id,
+                thread,
+                &mut refreshed_thread_ids,
+            );
+        }
+        let legacy_fallback_completed = if !is_continuation
+            && self.agent_navigation.needs_legacy_relation_fallback_check()
+        {
+            let completed = self
+                .backfill_loaded_legacy_subagent_threads(
+                    app_server,
+                    primary_thread_id,
+                    &mut refreshed_thread_ids,
+                )
+                .await;
+            if loaded_priority_completed && completed {
+                self.agent_navigation.mark_legacy_relation_fallback_checked();
+            }
+            completed
+        } else {
+            true
+        };
+        self.sync_active_agent_label();
+
+        LoadedSubagentBackfill {
+            completed: loaded_priority_completed && legacy_fallback_completed,
+            refreshed_thread_ids,
+        }
+    }
+
+    /// Applies one app-server thread row to picker state while preserving any attached live channel.
+    fn register_agent_picker_thread_from_backend(
+        &mut self,
+        primary_thread_id: ThreadId,
+        thread: Thread,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) {
+        let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+            tracing::warn!("ignoring persisted descendant with invalid id during subagent backfill");
+            return;
+        };
+        if thread_id == primary_thread_id {
+            return;
+        }
+
+        let has_live_channel = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+        let status = agent_picker_thread_status(&thread.status, has_live_channel);
+        if thread_blocks_direct_input(&thread) {
+            self.agent_navigation.mark_parent_owned(thread_id);
+        }
+        self.upsert_agent_picker_thread(
+            thread_id,
+            thread.agent_nickname,
+            thread.agent_role,
+            status.is_closed,
+        );
+        self.agent_navigation
+            .set_agent_path(thread_id, source_agent_path(&thread.source));
+        self.agent_navigation.update_identity(
+            thread_id,
+            thread.model,
+            thread.reasoning_effort,
+            Some(thread.model_provider),
+            thread.name,
+        );
+        self.agent_navigation.set_timestamps(
+            thread_id,
+            Some(thread.created_at),
+            Some(thread.updated_at),
+        );
+        self.agent_navigation
+            .set_system_error(thread_id, status.has_system_error);
+        self.sync_agent_picker_identity(thread_id);
+        // A live channel can have an empty store after a successful spawn. Only apply server
+        // status for channels that would otherwise need another liveness read.
+        if !has_live_channel {
+            if status.is_running {
+                self.agent_navigation.mark_running(thread_id);
+            } else {
+                self.agent_navigation
+                    .set_running(thread_id, /*is_running*/ false);
+            }
+            refreshed_thread_ids.insert(thread_id);
+        }
+    }
+
+    /// Merges one bounded page of currently loaded descendants ahead of historical picker rows.
+    ///
+    /// The app-server applies the spawn-tree relationship before the page limit, so closed
+    /// history cannot consume this live/open priority budget. Re-registration is idempotent and
+    /// preserves first-seen navigation order.
+    async fn backfill_loaded_priority_subagent_threads(
+        &mut self,
+        app_server: &mut AppServerSession,
+        primary_thread_id: ThreadId,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) -> bool {
         let loaded_thread_ids = match app_server
             .thread_loaded_list(ThreadLoadedListParams {
                 cursor: None,
-                limit: None,
+                limit: Some(AGENT_PICKER_PAGE_SIZE),
+                ancestor_thread_id: Some(primary_thread_id.to_string()),
             })
             .await
         {
             Ok(response) => response.data,
             Err(err) => {
-                tracing::warn!(%err, "failed to list loaded threads for subagent backfill");
-                return LoadedSubagentBackfill::default();
+                tracing::debug!(
+                    %err,
+                    "loaded descendant priority lookup was unavailable"
+                );
+                return false;
             }
         };
-
-        let mut threads = Vec::new();
-        let mut had_read_error = false;
+        let mut loaded_metadata_completed = true;
+        let mut loaded_threads = Vec::with_capacity(loaded_thread_ids.len());
         for thread_id in loaded_thread_ids {
             let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
-                tracing::warn!("ignoring loaded thread with invalid id during subagent backfill");
+                loaded_metadata_completed = false;
                 continue;
             };
-
-            if thread_id == primary_thread_id {
-                continue;
-            }
-
-            match app_server
-                .thread_read(thread_id, /*include_turns*/ false)
-                .await
-            {
-                Ok(thread) => threads.push(thread),
+            match app_server.thread_read(thread_id, /*include_turns*/ false).await {
+                Ok(thread) => loaded_threads.push(thread),
                 Err(err) => {
-                    had_read_error = true;
-                    tracing::warn!(thread_id = %thread_id, %err, "failed to read loaded thread");
+                    // A listed thread whose metadata cannot be read has not been covered by this
+                    // priority pass. Leave it incomplete so the next first-page refresh retries
+                    // this exact bounded page while legacy scan-and-repair still runs below.
+                    loaded_metadata_completed = false;
+                    tracing::debug!(
+                        %err,
+                        %thread_id,
+                        "loaded descendant priority metadata read failed"
+                    );
                 }
             }
         }
-
-        let mut refreshed_thread_ids = HashSet::new();
-        for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
-            let agent_path = thread.agent_path;
-            let has_live_channel = self
-                .thread_event_channels
-                .get(&thread.thread_id)
-                .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-            let is_closed = !has_live_channel && thread.is_closed;
-            if thread.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(thread.thread_id);
-            }
-            self.upsert_agent_picker_thread(
-                thread.thread_id,
-                thread.agent_nickname,
-                thread.agent_role,
-                is_closed,
+        let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
+            loaded_threads.clone(),
+            primary_thread_id,
+        )
+        .into_iter()
+        .map(|thread| thread.thread_id)
+        .collect::<HashSet<_>>();
+        if !descendant_thread_ids.is_empty() {
+            tracing::debug!(
+                descendants = descendant_thread_ids.len(),
+                "used bounded loaded-descendant priority page for subagent metadata"
             );
-            self.agent_navigation
-                .set_agent_path(thread.thread_id, agent_path);
-            // A live channel can have an empty store after a successful spawn. Only apply server
-            // status for channels that would otherwise need another liveness read.
-            if !has_live_channel {
-                if thread.is_running {
-                    self.agent_navigation.mark_running(thread.thread_id);
-                } else {
-                    self.agent_navigation
-                        .set_running(thread.thread_id, /*is_running*/ false);
+            for thread in loaded_threads {
+                let is_descendant = ThreadId::from_string(&thread.id)
+                    .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
+                if is_descendant {
+                    self.register_agent_picker_thread_from_backend(
+                        primary_thread_id,
+                        thread,
+                        refreshed_thread_ids,
+                    );
                 }
-                refreshed_thread_ids.insert(thread.thread_id);
             }
         }
-        self.sync_active_agent_label();
 
-        LoadedSubagentBackfill {
-            completed: !had_read_error,
-            refreshed_thread_ids,
+        loaded_metadata_completed
+    }
+
+    /// Handles pre-index legacy sessions that may only be visible through rollout repair.
+    ///
+    /// The normal path is the state-db descendant query above, complemented once per picker
+    /// session by one bounded subagent-only scan-and-repair page. The separate loaded-descendant
+    /// priority path runs on every first-page refresh, so current open/idle descendants are not
+    /// obscured by finished history while legacy repair remains bounded and retryable.
+    async fn backfill_loaded_legacy_subagent_threads(
+        &mut self,
+        app_server: &mut AppServerSession,
+        primary_thread_id: ThreadId,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) -> bool {
+        // A saved rollout predating spawn-edge persistence can be absent from the loaded-thread
+        // priority page. Run this one bounded, subagent-only scan-and-repair page so
+        // mixed-generation history gets a chance to repair every recent edge, then apply just
+        // the descendants of this primary thread.
+        let scanned_threads = match app_server
+            .thread_list(ThreadListParams {
+                cursor: None,
+                limit: Some(AGENT_PICKER_PAGE_SIZE),
+                sort_key: Some(ThreadSortKey::UpdatedAt),
+                sort_direction: Some(SortDirection::Desc),
+                model_providers: None,
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                thread_sources: None,
+                archived: Some(false),
+                is_pinned: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+            })
+            .await
+        {
+            Ok(response) => response.data,
+            Err(err) => {
+                tracing::debug!(
+                    %err,
+                    "legacy rollout scan-and-repair compatibility lookup was unavailable"
+                );
+                return false;
+            }
+        };
+        let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
+            scanned_threads.clone(),
+            primary_thread_id,
+        )
+        .into_iter()
+        .map(|thread| thread.thread_id)
+        .collect::<HashSet<_>>();
+        if descendant_thread_ids.is_empty() {
+            return true;
         }
+
+        tracing::debug!(
+            descendants = descendant_thread_ids.len(),
+            "used bounded rollout scan-and-repair fallback for legacy subagent metadata"
+        );
+        for thread in scanned_threads {
+            let is_descendant = ThreadId::from_string(&thread.id)
+                .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
+            if is_descendant {
+                self.register_agent_picker_thread_from_backend(
+                    primary_thread_id,
+                    thread,
+                    refreshed_thread_ids,
+                );
+            }
+        }
+        true
     }
 
     /// Returns the adjacent thread id for keyboard navigation, backfilling from the server if the
@@ -930,9 +1248,9 @@ impl App {
     ///
     /// Tries the fast path first: ask `AgentNavigationState` directly. If it returns `None` (no
     /// adjacent entry exists, typically because the cache was never populated with remote
-    /// subagents), performs a full `backfill_loaded_subagent_threads` and retries. This ensures the
-    /// first next/previous keypress in a resumed remote session discovers subagents on demand
-    /// without requiring the user to wait for a proactive fetch.
+    /// subagents), fetches the first bounded descendant page and retries. This ensures the first
+    /// next/previous keypress in a resumed remote session discovers recent subagents on demand
+    /// without requiring an unbounded preload.
     pub(super) async fn adjacent_thread_id_with_backfill(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1088,17 +1406,33 @@ impl App {
                 );
                 self.file_search
                     .update_search_dir(self.config.cwd.to_path_buf());
+                // `replay_thread_turns` stores rendered lines. Seed the primary entry, then
+                // hydrate descendant metadata before it renders historical Spawn/Wait cells so
+                // their friendly paths and effective identities are retained in the new widget.
+                self.prepare_chat_widget_for_app_server_thread(
+                    tui,
+                    /*initial_user_message*/ None,
+                );
+                self.primary_thread_id = Some(resumed_thread_id);
+                self.upsert_agent_picker_thread(
+                    resumed_thread_id,
+                    /*agent_nickname*/ None,
+                    /*agent_role*/ None,
+                    /*is_closed*/ false,
+                );
+                if resumed.blocks_direct_input {
+                    self.mark_primary_thread_parent_owned(resumed_thread_id);
+                }
+                self.backfill_loaded_subagent_threads(app_server).await;
                 match self
-                    .replace_chat_widget_with_app_server_thread(
-                        tui,
-                        resumed,
+                    .enqueue_primary_thread_session_with_presentation(
+                        resumed.session,
+                        resumed.turns,
                         ThreadAttachPresentation::SessionLineage,
-                        /*initial_user_message*/ None,
                     )
                     .await
                 {
                     Ok(()) => {
-                        self.backfill_loaded_subagent_threads(app_server).await;
                         if let Some(summary) = summary {
                             let mut lines: Vec<Line<'static>> = Vec::new();
                             if let Some(usage_line) = summary.usage_line {

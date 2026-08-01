@@ -121,6 +121,7 @@ impl AgentNavigationState {
                 task_name: None,
                 is_running: previous_is_running && !is_closed,
                 is_closed,
+                has_system_error: false,
                 created_at,
                 updated_at,
             },
@@ -182,10 +183,12 @@ impl AgentNavigationState {
                     task_name: None,
                     is_running: false,
                     is_closed: false,
+                    has_system_error: false,
                     created_at: None,
                     updated_at: None,
                 });
         entry.agent_path = Some(activity.agent_path);
+        entry.has_system_error = false;
         if activity.model.is_some() {
             entry.model = activity.model;
         }
@@ -237,6 +240,9 @@ impl AgentNavigationState {
             return;
         }
         self.stopped_threads.remove(&thread_id);
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.has_system_error = false;
+        }
         self.set_running(thread_id, /*is_running*/ true);
     }
 
@@ -248,6 +254,17 @@ impl AgentNavigationState {
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
+        }
+    }
+
+    /// Records the app-server's current error state without hiding a replayable saved thread.
+    pub(crate) fn set_system_error(&mut self, thread_id: ThreadId, has_system_error: bool) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.has_system_error = has_system_error;
+            if has_system_error {
+                entry.is_running = false;
+                self.stopped_threads.insert(thread_id);
+            }
         }
     }
 
@@ -281,6 +298,7 @@ impl AgentNavigationState {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
+            entry.has_system_error = false;
         } else {
             self.upsert(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
@@ -726,6 +744,7 @@ mod tests {
                 task_name: None,
                 is_running: true,
                 is_closed: false,
+                has_system_error: false,
                 created_at: Some(1),
                 updated_at: Some(3),
             })
@@ -751,6 +770,7 @@ mod tests {
                 task_name: None,
                 is_running: false,
                 is_closed: true,
+                has_system_error: false,
                 created_at: Some(1),
                 updated_at: Some(4),
             })
