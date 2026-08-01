@@ -643,6 +643,7 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_chatgpt_account_email(out_path)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
+    _preserve_subagent_activity_kind_enum(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
 
@@ -755,6 +756,31 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
         return member
 """
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
+
+
+def _preserve_subagent_activity_kind_enum(out_path: Path) -> None:
+    """Keep the public terminal sub-agent activity value across pinned-runtime regeneration."""
+    source = out_path.read_text()
+    class_start = source.find("class SubAgentActivityKind(Enum):")
+    if class_start == -1:
+        raise RuntimeError("Generated SDK is missing SubAgentActivityKind")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    errored_member = '    errored = "errored"'
+    if errored_member in class_source:
+        return
+    interrupted_member = '    interrupted = "interrupted"'
+    if interrupted_member not in class_source:
+        raise RuntimeError("Generated SubAgentActivityKind is missing the interrupted member")
+    class_source = class_source.replace(
+        interrupted_member,
+        f"{interrupted_member}\n{errored_member}",
+        1,
+    )
+    out_path.write_text(source[:class_start] + class_source + source[class_end:])
 
 
 def _notification_specs(schema_dir: Path) -> list[tuple[str, str]]:

@@ -257,12 +257,35 @@ async fn spawn_agent_outcome_preserves_committed_child_when_initial_input_fails(
         AgentStatus::Errored(message) if message.contains("initial input delivery failed")
     );
     assert_eq!(agent.metadata.agent_id, Some(agent.thread_id));
+    assert_eq!(
+        harness.control.get_status(agent.thread_id).await,
+        agent.status
+    );
 
     let child_thread = harness
         .manager
         .get_thread(agent.thread_id)
         .await
         .expect("child should remain registered after delivery fails");
+    assert_eq!(child_thread.agent_status().await, agent.status);
+    let inventory = harness
+        .control
+        .get_live_agent_inventory_info(agent.thread_id)
+        .await
+        .expect("committed child should remain present in the live inventory");
+    assert_eq!(inventory.status, agent.status);
+    let listed_agents = harness
+        .control
+        .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+        .await
+        .expect("committed child should be listed with its terminal status");
+    assert_eq!(
+        listed_agents
+            .iter()
+            .find(|listed| listed.agent_name == agent.thread_id.to_string())
+            .map(|listed| listed.agent_status.clone()),
+        Some(agent.status.clone())
+    );
     let child_config = child_thread.config_snapshot().await;
     assert_eq!(agent.effective_model, child_config.model);
     assert_eq!(

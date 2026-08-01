@@ -616,7 +616,8 @@
       "enum": [
         "started",
         "interacted",
-        "interrupted"
+        "interrupted",
+        "errored"
       ],
       "type": "string"
     },

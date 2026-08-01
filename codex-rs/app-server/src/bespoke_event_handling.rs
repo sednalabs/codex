@@ -1421,7 +1421,10 @@ async fn apply_canonical_item_completed_side_effects(
                 .remove(&item.id);
         }
         CoreTurnItem::SubAgentActivity(activity)
-            if activity.kind == SubAgentActivityKind::Interrupted =>
+            if matches!(
+                activity.kind,
+                SubAgentActivityKind::Interrupted | SubAgentActivityKind::Errored
+            ) =>
         {
             remove_missing_thread_watch(
                 thread_manager,
@@ -3505,8 +3508,10 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+    async fn assert_terminal_subagent_activity_removes_missing_thread_watch(
+        kind: SubAgentActivityKind,
+        expected_kind: codex_app_server_protocol::SubAgentActivityKind,
+    ) -> Result<()> {
         let codex_home = TempDir::new()?;
         let config = load_default_config_for_test(&codex_home).await;
         let thread_manager = Arc::new(
@@ -3550,7 +3555,7 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     item: CoreTurnItem::SubAgentActivity(SubAgentActivityItem {
                         id: "activity-1".to_string(),
-                        kind: SubAgentActivityKind::Interrupted,
+                        kind,
                         agent_thread_id: child_thread_id,
                         agent_path: AgentPath::try_from("/root/worker")
                             .expect("agent path should parse"),
@@ -3587,7 +3592,7 @@ mod tests {
             ItemCompletedNotification {
                 item: ThreadItem::SubAgentActivity {
                     id: "activity-1".to_string(),
-                    kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+                    kind: expected_kind,
                     agent_thread_id: child_thread_id_string,
                     agent_path: "/root/worker".to_string(),
                     model: None,
@@ -3599,6 +3604,24 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+        assert_terminal_subagent_activity_removes_missing_thread_watch(
+            SubAgentActivityKind::Interrupted,
+            codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn errored_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+        assert_terminal_subagent_activity_removes_missing_thread_watch(
+            SubAgentActivityKind::Errored,
+            codex_app_server_protocol::SubAgentActivityKind::Errored,
+        )
+        .await
     }
 
     #[tokio::test]
