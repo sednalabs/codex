@@ -101,6 +101,56 @@ async fn thread_loaded_list_paginates() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_loaded_list_omitted_limit_uses_bounded_page_and_continuation() -> Result<()> {
+    const DEFAULT_PAGE_SIZE: usize = 100;
+
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let mut expected = Vec::with_capacity(DEFAULT_PAGE_SIZE + 1);
+    for _ in 0..=DEFAULT_PAGE_SIZE {
+        expected.push(start_thread(&mut mcp).await?);
+    }
+    expected.sort();
+
+    // Omitting `limit` intentionally uses the protocol's bounded 100-id default rather than
+    // the historical unbounded form. The continuation makes the remaining loaded id reachable.
+    let list_id = mcp
+        .send_thread_loaded_list_request(ThreadLoadedListParams::default())
+        .await?;
+    let ThreadLoadedListResponse {
+        data: first_page,
+        next_cursor,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+    assert_eq!(first_page, expected[..DEFAULT_PAGE_SIZE].to_vec());
+    assert_eq!(next_cursor, Some(expected[DEFAULT_PAGE_SIZE - 1].clone()));
+
+    let list_id = mcp
+        .send_thread_loaded_list_request(ThreadLoadedListParams {
+            cursor: next_cursor,
+            limit: None,
+            ancestor_thread_id: None,
+        })
+        .await?;
+    let ThreadLoadedListResponse {
+        data: second_page,
+        next_cursor,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+    assert_eq!(second_page, expected[DEFAULT_PAGE_SIZE..].to_vec());
+    assert_eq!(next_cursor, None);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;

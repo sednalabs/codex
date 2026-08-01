@@ -29,9 +29,12 @@ const AGENT_PICKER_PAGE_SIZE: u32 = 50;
 /// older `thread/list.ancestorThreadId` filter. The app server clamps a single list request at
 /// 100 rows, and this path never performs a per-id metadata sweep.
 const AGENT_PICKER_UNACKNOWLEDGED_RELATION_PAGE_SIZE: u32 = 100;
-/// Keep the loaded-descendant priority pass finite too. The list protocol now caps this request,
+/// Keep every loaded-descendant priority request finite. The list protocol now caps this request,
 /// but an explicit client value makes the picker bound clear and compatible with older servers.
 const AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE: u32 = 100;
+/// Consume at most two loaded-list continuation pages before the picker opens. This makes up to
+/// 200 current descendants visible without turning the priority path into an unbounded scan.
+const AGENT_PICKER_LOADED_PRIORITY_MAX_PAGES: usize = 2;
 const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
@@ -1392,85 +1395,105 @@ impl App {
     /// Merges every currently loaded descendant ahead of historical picker rows.
     ///
     /// The app-server confirms that it filtered by the spawn-tree relationship before these ids
-    /// are trusted. This is deliberately one finite page: a picker open must not traverse every
-    /// loaded candidate or the primary's persisted historical subtree. Re-registration is
-    /// idempotent and preserves first-seen navigation order.
+    /// are trusted. This deliberately consumes only a small, fixed number of finite loaded-list
+    /// pages: a picker open must not traverse every loaded candidate or the primary's persisted
+    /// historical subtree. Re-registration is idempotent and preserves first-seen navigation
+    /// order.
     async fn backfill_loaded_priority_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
         primary_thread_id: ThreadId,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) -> bool {
-        let response = match app_server
-            .thread_loaded_list(ThreadLoadedListParams {
-                cursor: None,
-                limit: Some(AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE),
-                ancestor_thread_id: Some(primary_thread_id.to_string()),
-            })
-            .await
-        {
-            Ok(response) => response,
-            Err(err) => {
-                tracing::debug!(
-                    %err,
-                    "loaded descendant priority lookup was unavailable"
-                );
-                return false;
-            }
-        };
-        if !response.ancestor_filter_applied {
-            // Older servers silently ignore an unknown ancestorThreadId and return every loaded
-            // thread. Do not turn that global id list into an unbounded thread/read sweep. The
-            // bounded persisted and legacy relation paths below remain responsible for old-server
-            // discovery, and an unrelated metadata failure must not make this primary retry.
-            tracing::debug!(
-                "loaded descendant response did not acknowledge the ancestor filter; \
-                 skipping untrusted global metadata reads"
-            );
-            return true;
-        }
-
-        let loaded_thread_ids = response.data;
         let mut loaded_metadata_completed = true;
         let mut loaded_descendant_count = 0;
-        for thread_id in loaded_thread_ids {
-            let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
-                loaded_metadata_completed = false;
-                continue;
-            };
-            match app_server
-                .thread_read(thread_id, /*include_turns*/ false)
+        let mut cursor = None;
+        let mut pages_consumed = 0;
+
+        while pages_consumed < AGENT_PICKER_LOADED_PRIORITY_MAX_PAGES {
+            let response = match app_server
+                .thread_loaded_list(ThreadLoadedListParams {
+                    cursor,
+                    limit: Some(AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE),
+                    ancestor_thread_id: Some(primary_thread_id.to_string()),
+                })
                 .await
             {
-                Ok(thread) => {
-                    // The app server acknowledged the requested ancestor relation. Do not
-                    // reconstruct it from only the loaded metadata here: an unloaded
-                    // intermediary would otherwise hide a returned loaded nested descendant.
-                    self.register_agent_picker_thread_from_backend(
-                        primary_thread_id,
-                        thread,
-                        refreshed_thread_ids,
-                    );
-                    loaded_descendant_count += 1;
-                }
+                Ok(response) => response,
                 Err(err) => {
-                    // A listed thread whose metadata cannot be read has not been covered by this
-                    // priority pass. Leave it incomplete so the next first-page refresh retries
-                    // this bounded loaded relation page while legacy scan-and-repair still runs
-                    // below.
-                    loaded_metadata_completed = false;
                     tracing::debug!(
                         %err,
-                        %thread_id,
-                        "loaded descendant priority metadata read failed"
+                        "loaded descendant priority lookup was unavailable"
                     );
+                    return false;
                 }
+            };
+            if !response.ancestor_filter_applied {
+                // Older servers silently ignore an unknown ancestorThreadId and return every
+                // loaded thread. Do not turn that global id list into an unbounded thread/read
+                // sweep. The bounded persisted and legacy relation paths below remain
+                // responsible for old-server discovery, and an unrelated metadata failure must
+                // not make this primary retry.
+                tracing::debug!(
+                    "loaded descendant response did not acknowledge the ancestor filter; \
+                     skipping untrusted global metadata reads"
+                );
+                return true;
+            }
+
+            for thread_id in response.data {
+                let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
+                    loaded_metadata_completed = false;
+                    continue;
+                };
+                match app_server
+                    .thread_read(thread_id, /*include_turns*/ false)
+                    .await
+                {
+                    Ok(thread) => {
+                        // The app server acknowledged the requested ancestor relation. Do not
+                        // reconstruct it from only the loaded metadata here: an unloaded
+                        // intermediary would otherwise hide a returned loaded nested descendant.
+                        self.register_agent_picker_thread_from_backend(
+                            primary_thread_id,
+                            thread,
+                            refreshed_thread_ids,
+                        );
+                        loaded_descendant_count += 1;
+                    }
+                    Err(err) => {
+                        // A listed thread whose metadata cannot be read has not been covered by
+                        // this priority pass. Leave it incomplete so the next first-page refresh
+                        // retries this bounded loaded relation page while legacy scan-and-repair
+                        // still runs below.
+                        loaded_metadata_completed = false;
+                        tracing::debug!(
+                            %err,
+                            %thread_id,
+                            "loaded descendant priority metadata read failed"
+                        );
+                    }
+                }
+            }
+
+            pages_consumed += 1;
+            cursor = response.next_cursor;
+            if cursor.is_none() {
+                break;
             }
         }
         if loaded_descendant_count > 0 {
             tracing::debug!(
                 descendants = loaded_descendant_count,
-                "used bounded loaded-descendant priority page for subagent metadata"
+                pages = pages_consumed,
+                "used bounded loaded-descendant priority pages for subagent metadata"
+            );
+        }
+        if cursor.is_some() {
+            tracing::debug!(
+                pages = AGENT_PICKER_LOADED_PRIORITY_MAX_PAGES,
+                page_size = AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE,
+                "left additional loaded descendants for a later bounded picker refresh"
             );
         }
 

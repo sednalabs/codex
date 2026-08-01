@@ -1342,8 +1342,9 @@ pub struct ThreadLoadedListParams {
     /// Opaque pagination cursor returned by a previous call.
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
-    /// Optional page size. The server applies a finite default and maximum so a list request
-    /// cannot materialize an unbounded set of loaded sessions.
+    /// Optional page size. When omitted, the server returns its bounded default of 100 sessions.
+    /// Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to
+    /// continue when more loaded sessions remain.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
     /// Optional loaded thread-spawn ancestor. When set, returns only currently loaded
@@ -1364,9 +1365,9 @@ pub struct ThreadLoadedListResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional)]
     pub ancestor_filter_applied: bool,
-    /// Opaque cursor to pass to the next call. It resumes after the bounded candidate window
-    /// inspected by the server, which can include loaded sessions that did not match an ancestor
-    /// filter. If None, there are no more items to return.
+    /// Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate
+    /// window inspected by the server, which can include loaded sessions that did not match an
+    /// ancestor filter. If None, there are no more items to return.
     pub next_cursor: Option<String>,
 }
 

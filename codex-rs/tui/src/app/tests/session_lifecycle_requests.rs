@@ -1118,41 +1118,31 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     "rejecting a replay-only thread write must not undo the current global selection"
                 );
 
-                // Ctrl+C routes through `shutdown_current_thread`; selected saved sidecars have
-                // no live operation or app-server subscription to tear down, so that path must
-                // stay entirely local.
+                // Switching away routes through `select_agent_thread_and_discard_side`. A
+                // selected saved sidecar has no live operation or app-server subscription to
+                // tear down, so this direct cleanup path must remain entirely local too.
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
-                Box::pin(app.shutdown_current_thread(&mut app_server)).await;
-                let shutdown_requests =
-                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
-                assert!(
-                    !shutdown_requests
-                        .iter()
-                        .any(|method| matches!(method.as_str(), "thread/unsubscribe" | "turn/interrupt")),
-                    "shutting down a replay-only side selection must stay local: {shutdown_requests:?}"
-                );
-
-                // A fresh-thread transition performs a second unsubscribe sweep after shutdown.
-                // Keep only the replay-only child in this focused assertion: live parent cleanup
-                // remains separately valid, while this saved transcript must never produce an
-                // unsubscribe RPC in either transition phase.
-                app.thread_event_channels.remove(&root_thread_id);
-                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
-                let control = Box::pin(app.handle_event(
+                Box::pin(app.select_agent_thread_and_discard_side(
                     &mut tui,
                     &mut app_server,
-                    AppEvent::NewSession { name: None },
+                    root_thread_id,
                 ))
                 .await?;
-                assert!(matches!(control, AppRunControl::Continue));
-                let transition_requests =
+                let switch_requests =
                     std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 assert!(
-                    !transition_requests
+                    !switch_requests
                         .iter()
                         .any(|method| matches!(method.as_str(), "thread/unsubscribe" | "turn/interrupt")),
-                    "a new-thread transition must not interrupt or unsubscribe the replay-only child: {transition_requests:?}"
+                    "switching away from a replay-only side selection must not interrupt or unsubscribe it: {switch_requests:?}"
                 );
+                assert!(
+                    app.active_thread_id == Some(root_thread_id),
+                    "switching away from the saved sidecar should activate its live parent"
+                );
+                assert!(!app.side_threads.contains_key(&child_thread_id));
+                assert!(!app.thread_event_channels.contains_key(&child_thread_id));
+                assert_eq!(app.agent_navigation.get(&child_thread_id), None);
                 app_server.shutdown().await?;
                 proxy.await??;
                 Ok(())
@@ -1851,7 +1841,9 @@ fn agent_picker_keeps_the_forward_page_after_reopen() -> Result<()> {
 
 #[test]
 fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()> {
-    const LOADED_DESCENDANT_COUNT: usize = 51;
+    // This crosses the 100-item loaded-list page boundary: the picker must consume its bounded
+    // continuation page before it falls back to persisted closed history.
+    const LOADED_DESCENDANT_COUNT: usize = 102;
     const CLOSED_DESCENDANT_COUNT: usize = 50;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1864,7 +1856,7 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                 .build()?;
             runtime.block_on(async {
                 let mut app = make_test_app().await;
-                // The root plus 51 descendants is a supported V2 concurrency configuration.
+                // The root plus 102 descendants is a supported V2 concurrency configuration.
                 app.config.multi_agent_v2.max_concurrent_threads_per_session =
                     LOADED_DESCENDANT_COUNT + 1;
                 let codex_home = tempdir()?;
@@ -1946,7 +1938,7 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                     start_recording_app_server(&app.config).await?;
                 // Populate the persisted relationship index exactly as a modern session would.
                 // The first persisted page then contains the 50 newer closed descendants, while
-                // the 51 older loaded children must all come from the priority path.
+                // the 102 older loaded children must all come from the priority path.
                 let mut repair_cursor = None;
                 loop {
                     let repair_page = app_server

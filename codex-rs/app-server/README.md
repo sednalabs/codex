@@ -434,12 +434,13 @@ Enable `capabilities.experimentalApi` during initialization, then use `thread/li
 
 ### Example: List loaded threads
 
-`thread/loaded/list` returns thread ids currently loaded in memory. This is useful when you want to check which sessions are active without scanning rollouts on disk.
+`thread/loaded/list` returns thread ids currently loaded in memory. This is useful when you want to check which sessions are active without scanning rollouts on disk. The server returns at most 100 ids when `limit` is omitted (and clamps supplied values to 1 through 100). This is an intentional compatible migration from the historical unbounded omission: clients that need more ids must pass the returned `nextCursor` as `cursor` on the next call.
 
 ```json
-{ "method": "thread/loaded/list", "id": 21 }
+{ "method": "thread/loaded/list", "id": 21, "params": { "limit": 100 } }
 { "id": 21, "result": {
-    "data": ["thr_123", "thr_456"]
+    "data": ["thr_123", "thr_456"],
+    "nextCursor": null
 } }
 ```
 

@@ -8,7 +8,9 @@ export type ThreadLoadedListParams = {
  */
 cursor?: string | null,
 /**
- * Optional page size; defaults to no limit.
+ * Optional page size. When omitted, the server returns its bounded default of 100 sessions.
+ * Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to
+ * continue when more loaded sessions remain.
  */
 limit?: number | null,
 /**
