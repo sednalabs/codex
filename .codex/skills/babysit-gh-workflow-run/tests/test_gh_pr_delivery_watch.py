@@ -826,6 +826,54 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
         self.assertIn("Unable to execute", receipt["error"])
 
+    def test_explicit_repo_rejects_command_line_like_value_before_execution(self):
+        with patch.object(MODULE.subprocess, "run") as run:
+            receipt, status = MODULE.execute_delivery(
+                make_args(repo="owner/repo --hostname attacker.example")
+            )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
+        self.assertIn("Repository must use OWNER/REPO", receipt["error"])
+        run.assert_not_called()
+
+    def test_configured_repo_rejects_command_line_like_value_before_execution(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"GH_PR_DELIVERY_WATCH_REPO": "owner/repo --paginate"},
+                clear=True,
+            ),
+            patch.object(MODULE.subprocess, "run") as run,
+            self.assertRaisesRegex(
+                MODULE.GhCommandError, "Repository must use OWNER/REPO"
+            ),
+        ):
+            MODULE.detect_repo()
+
+        run.assert_not_called()
+
+    def test_gh_process_pins_the_github_cli_executable(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="{}")
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            result = MODULE.run_gh_process(["api", "repos/owner/repo"])
+
+        self.assertIs(result, completed)
+        self.assertEqual(run.call_args.args[0], ["gh", "api", "repos/owner/repo"])
+        self.assertFalse(run.call_args.kwargs["shell"])
+
+    def test_watcher_process_pins_the_checked_in_launcher(self):
+        completed = types.SimpleNamespace(returncode=0, stdout="{}")
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            result = MODULE.run_watcher_process(["--repo", "owner/repo"])
+
+        self.assertIs(result, completed)
+        self.assertEqual(
+            run.call_args.args[0],
+            [str(MODULE.WATCHER_LAUNCHER), "--repo", "owner/repo"],
+        )
+        self.assertFalse(run.call_args.kwargs["shell"])
+
     def test_repo_autodetection_failure_returns_a_compact_operator_receipt(self):
         failed_lookup = types.SimpleNamespace(returncode=1, stdout="")
         with patch.object(MODULE.subprocess, "run", return_value=failed_lookup):
