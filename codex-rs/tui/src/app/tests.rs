@@ -1663,6 +1663,58 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
 }
 
 #[tokio::test]
+async fn thread_status_changes_update_errored_agent_picker_liveness() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/status-watched-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::SystemError,
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+    );
+
+    // An app-server child-watch status is newer than stale picker metadata and explicitly
+    // recovers the row when the child becomes active again.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: Vec::new(),
+                },
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(

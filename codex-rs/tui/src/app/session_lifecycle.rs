@@ -407,6 +407,37 @@ impl App {
         self.sync_active_agent_label();
     }
 
+    /// Applies a pushed app-server status transition, which is newer than a later picker backfill
+    /// read and can therefore explicitly recover or close a row that was marked failed by an
+    /// errored activity.
+    pub(super) fn apply_agent_picker_thread_status_change(
+        &mut self,
+        thread_id: ThreadId,
+        thread_status: &ThreadStatus,
+    ) {
+        if self.agent_navigation.get(&thread_id).is_none() {
+            return;
+        }
+        let has_live_channel = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+        let status = agent_picker_thread_status(thread_status, has_live_channel);
+        if status.is_closed {
+            self.mark_agent_picker_thread_closed(thread_id);
+            return;
+        }
+
+        self.agent_navigation
+            .set_system_error(thread_id, status.has_system_error);
+        if status.is_running {
+            self.agent_navigation.mark_running(thread_id);
+        } else {
+            self.agent_navigation
+                .set_running(thread_id, /*is_running*/ false);
+        }
+    }
+
     pub(super) fn sync_agent_picker_identity(&mut self, thread_id: ThreadId) {
         let Some(entry) = self.agent_navigation.get(&thread_id).cloned() else {
             return;
@@ -486,10 +517,15 @@ impl App {
                     Some(thread.created_at),
                     Some(thread.updated_at),
                 );
-                self.agent_navigation
-                    .set_system_error(thread_id, status.has_system_error);
+                if status.has_system_error {
+                    self.agent_navigation.set_system_error(thread_id, true);
+                }
                 self.sync_agent_picker_identity(thread_id);
-                if status.is_running {
+                let keeps_system_error = self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .is_some_and(|entry| entry.has_system_error);
+                if status.is_running && !keeps_system_error {
                     self.agent_navigation.mark_running(thread_id);
                 } else {
                     self.agent_navigation
@@ -1271,13 +1307,18 @@ impl App {
             Some(thread.created_at),
             Some(thread.updated_at),
         );
-        self.agent_navigation
-            .set_system_error(thread_id, status.has_system_error);
+        if status.has_system_error {
+            self.agent_navigation.set_system_error(thread_id, true);
+        }
         self.sync_agent_picker_identity(thread_id);
         // A live channel can have an empty store after a successful spawn. Only apply server
         // status for channels that would otherwise need another liveness read.
         if !has_live_channel {
-            if status.is_running {
+            let keeps_system_error = self
+                .agent_navigation
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error);
+            if status.is_running && !keeps_system_error {
                 self.agent_navigation.mark_running(thread_id);
             } else {
                 self.agent_navigation

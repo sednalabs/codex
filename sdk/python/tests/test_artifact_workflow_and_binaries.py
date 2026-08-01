@@ -461,6 +461,49 @@ def test_generate_v2_all_uses_titles_for_generated_names() -> None:
     assert "ruff-format" in source
 
 
+def test_generation_preserves_current_agent_picker_protocol_fields(tmp_path: Path) -> None:
+    """Pinned runtimes must not erase newer ancestor and spawn-request fields."""
+    script = _load_update_script_module()
+    generated = tmp_path / "v2_all.py"
+    generated.write_text(
+        """class CollabAgentToolCallThreadItem(BaseModel):
+    model: Annotated[str | None, Field(description="Model requested for the spawned agent, when applicable.")]
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(description="Reasoning effort requested for the spawned agent, when applicable.")]
+    receiver_thread_ids: Annotated[
+
+
+class ThreadLoadedListParams(BaseModel):
+    cursor: Annotated[
+
+
+class ThreadLoadedListResponse(BaseModel):
+    data: Annotated[
+
+
+class ThreadListResponse(BaseModel):
+    backwards_cursor: Annotated[
+"""
+    )
+
+    script._preserve_current_protocol_fields(generated)
+    once = generated.read_text()
+    script._preserve_current_protocol_fields(generated)
+
+    assert generated.read_text() == once
+    for field in (
+        "requested_model",
+        "requested_reasoning_effort",
+        "ancestor_thread_id",
+        "ancestor_filter_applied",
+    ):
+        assert field in once
+    assert "alias=\"requestedModel\"" in once
+    assert "alias=\"requestedReasoningEffort\"" in once
+    assert once.count("alias=\"ancestorFilterApplied\"") == 2
+    assert "Effective model selected for the spawned agent" in once
+    assert "Effective reasoning effort selected for the spawned agent" in once
+
+
 def test_generated_chatgpt_account_email_is_required_nullable() -> None:
     from openai_codex.generated.v2_all import ChatgptAccount
 

@@ -988,6 +988,12 @@ impl App {
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let thread_status_change = match &notification {
+            ServerNotification::ThreadStatusChanged(notification) => {
+                Some(notification.status.clone())
+            }
+            _ => None,
+        };
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
@@ -1020,6 +1026,9 @@ impl App {
                 turn_stopped,
             )
         };
+        if let Some(status) = thread_status_change {
+            self.apply_agent_picker_thread_status_change(thread_id, &status);
+        }
         if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
         } else if turn_stopped {

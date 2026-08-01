@@ -8,12 +8,16 @@ from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
+    CollabAgentToolCallThreadItem,
     ReasoningEffort,
     ReasoningEffortOption,
     SubAgentActivityKind,
     SubAgentActivityThreadItem,
     ThreadForkParams,
+    ThreadLoadedListParams,
+    ThreadLoadedListResponse,
     ThreadListParams,
+    ThreadListResponse,
     ThreadResumeResponse,
     ThreadStartParams,
     ThreadTokenUsageUpdatedNotification,
@@ -68,6 +72,70 @@ def test_subagent_activity_errored_kind_matches_json_schema() -> None:
         "interrupted",
         "errored",
     ]
+
+
+def test_agent_picker_protocol_models_match_current_schema() -> None:
+    """Keep ancestor-filter and spawned-agent request fields across SDK regeneration."""
+    ancestor_params = ThreadLoadedListParams(ancestor_thread_id="root-thread-1")
+    loaded_ack = ThreadLoadedListResponse.model_validate(
+        {"data": ["child-thread-1"], "ancestorFilterApplied": True}
+    )
+    thread_list_ack = ThreadListResponse.model_validate(
+        {"data": [], "ancestorFilterApplied": True}
+    )
+    tool_call = CollabAgentToolCallThreadItem.model_validate(
+        {
+            "agentsStates": {},
+            "id": "call-1",
+            "receiverThreadIds": ["child-thread-1"],
+            "requestedModel": "gpt-5.6",
+            "requestedReasoningEffort": "high",
+            "senderThreadId": "root-thread-1",
+            "status": "completed",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+    )
+    schema_bundle = json.loads(
+        (
+            ROOT.parents[1]
+            / "codex-rs"
+            / "app-server-protocol"
+            / "schema"
+            / "json"
+            / "codex_app_server_protocol.v2.schemas.json"
+        ).read_text()
+    )
+    collab_properties = next(
+        variant["properties"]
+        for variant in schema_bundle["definitions"]["ThreadItem"]["oneOf"]
+        if variant.get("title") == "CollabAgentToolCallThreadItem"
+    )
+
+    assert _params_dict(ancestor_params) == {"ancestorThreadId": "root-thread-1"}
+    assert loaded_ack.ancestor_filter_applied is True
+    assert thread_list_ack.ancestor_filter_applied is True
+    assert tool_call.model_dump(by_alias=True, exclude_none=True) == {
+        "agentsStates": {},
+        "id": "call-1",
+        "receiverThreadIds": ["child-thread-1"],
+        "requestedModel": "gpt-5.6",
+        "requestedReasoningEffort": "high",
+        "senderThreadId": "root-thread-1",
+        "status": "completed",
+        "tool": "spawnAgent",
+        "type": "collabAgentToolCall",
+    }
+    assert {
+        "ancestorThreadId",
+    } <= schema_bundle["definitions"]["ThreadLoadedListParams"]["properties"].keys()
+    assert {
+        "ancestorFilterApplied",
+    } <= schema_bundle["definitions"]["ThreadLoadedListResponse"]["properties"].keys()
+    assert {
+        "ancestorFilterApplied",
+    } <= schema_bundle["definitions"]["ThreadListResponse"]["properties"].keys()
+    assert {"requestedModel", "requestedReasoningEffort"} <= collab_properties.keys()
 
 
 def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:
