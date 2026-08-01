@@ -983,11 +983,12 @@ impl App {
     /// keyboard navigation are pre-populated even if the TUI did not witness the original spawn
     /// events. Fresh and forked threads cannot have pre-existing descendants.
     ///
-    /// The first page is deliberately small and relation-filtered at the app server so opening
-    /// `/agent` does not enumerate every loaded thread and then issue one `thread/read` request
-    /// per row. `render_agent_picker` exposes a continuation only under the `closed` filter;
-    /// active and idle descendants remain immediately visible while historical sidecars stay
-    /// bounded and on demand.
+    /// The historical page is deliberately small and relation-filtered at the app server so
+    /// opening `/agent` does not enumerate every saved descendant and then issue one
+    /// `thread/read` request per row. The loaded-descendant priority query is deliberately
+    /// unpaginated within its loaded-session relation: active and idle descendants remain
+    /// immediately visible, while historical sidecars stay bounded and on demand under the
+    /// `closed` filter.
     pub(super) async fn backfill_loaded_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1058,9 +1059,9 @@ impl App {
 
         let mut refreshed_thread_ids = HashSet::new();
         // The historical relation page is sorted by update time, so it can be filled with closed
-        // descendants. Merge one bounded page of currently loaded descendants first: open and
-        // idle sidecars stay visible and keyboard-reachable without making finished history part
-        // of the default picker view.
+        // descendants. Merge every currently loaded descendant first: open and idle sidecars
+        // stay visible and keyboard-reachable without making finished history part of the default
+        // picker view.
         let loaded_priority_completed = if !is_continuation {
             self.backfill_loaded_priority_subagent_threads(
                 app_server,
@@ -1162,11 +1163,13 @@ impl App {
         }
     }
 
-    /// Merges one bounded page of currently loaded descendants ahead of historical picker rows.
+    /// Merges every currently loaded descendant ahead of historical picker rows.
     ///
-    /// The app-server applies the spawn-tree relationship before the page limit, so closed
-    /// history cannot consume this live/open priority budget. Re-registration is idempotent and
-    /// preserves first-seen navigation order.
+    /// The app-server filters by the spawn-tree relationship before returning ids. `limit: None`
+    /// is intentionally the protocol's no-limit mode, bounded by the currently loaded sessions
+    /// for this one primary thread rather than its unbounded saved history. That keeps every
+    /// effective V2 concurrency slot reachable even when it exceeds the historical page size.
+    /// Re-registration is idempotent and preserves first-seen navigation order.
     async fn backfill_loaded_priority_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
@@ -1176,7 +1179,7 @@ impl App {
         let loaded_thread_ids = match app_server
             .thread_loaded_list(ThreadLoadedListParams {
                 cursor: None,
-                limit: Some(AGENT_PICKER_PAGE_SIZE),
+                limit: None,
                 ancestor_thread_id: Some(primary_thread_id.to_string()),
             })
             .await
@@ -1202,7 +1205,7 @@ impl App {
                 Err(err) => {
                     // A listed thread whose metadata cannot be read has not been covered by this
                     // priority pass. Leave it incomplete so the next first-page refresh retries
-                    // this exact bounded page while legacy scan-and-repair still runs below.
+                    // this complete loaded relation while legacy scan-and-repair still runs below.
                     loaded_metadata_completed = false;
                     tracing::debug!(
                         %err,
@@ -1222,7 +1225,7 @@ impl App {
         if !descendant_thread_ids.is_empty() {
             tracing::debug!(
                 descendants = descendant_thread_ids.len(),
-                "used bounded loaded-descendant priority page for subagent metadata"
+                "used complete loaded-descendant priority set for subagent metadata"
             );
             for thread in loaded_threads {
                 let is_descendant = ThreadId::from_string(&thread.id)
