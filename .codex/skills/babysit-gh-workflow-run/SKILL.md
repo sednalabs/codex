@@ -114,6 +114,10 @@ existing `gh_workflow_run_watch --watch-until-terminal` helper.
 - Supplying `--merge-group-run-id` is preferred. Without it, a single discovery
   read is accepted only when exactly one `blocking-ci` queue candidate names the
   PR; absent or multiple candidate SHAs stop the receipt.
+- A queue ref that names the PR is only a discovery selector. Before waiting,
+  the candidate must be proven by GitHub commit ancestry to contain both the
+  exact expected PR head and the PR's current base SHA; an older or otherwise
+  uncorrelatable candidate stops the receipt.
 - The defaults require a successful `blocking-ci` `merge_group` run and a
   successful `postmerge-ci` `push` run on the exact merge commit. Override the
   workflow names only for a repository with different entrypoints.

@@ -23,9 +23,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 EXPECTED_HEAD_SHA = "a" * 40
-CANDIDATE_SHA = "b" * 40
-MERGE_COMMIT_SHA = "c" * 40
-OTHER_SHA = "d" * 40
+CURRENT_BASE_SHA = "b" * 40
+CANDIDATE_SHA = "c" * 40
+MERGE_COMMIT_SHA = "d" * 40
+OTHER_SHA = "e" * 40
+STALE_CANDIDATE_SHA = "f" * 40
 
 
 def make_args(**overrides):
@@ -48,6 +50,7 @@ def make_args(**overrides):
 def make_pr(
     *,
     head_sha=EXPECTED_HEAD_SHA,
+    base_sha=CURRENT_BASE_SHA,
     merged=False,
     queue_entry_id="entry",
     merge_commit_sha="",
@@ -56,10 +59,24 @@ def make_pr(
         "number": 17,
         "head_sha": head_sha,
         "base_ref": "main",
+        "base_sha": base_sha,
         "merged": merged,
         "merge_queue_entry_id": queue_entry_id,
         "merge_commit_sha": merge_commit_sha,
     }
+
+
+def candidate_association():
+    return patch.object(
+        MODULE,
+        "verify_candidate_association",
+        return_value={
+            "expected_pr_head_sha": EXPECTED_HEAD_SHA,
+            "expected_base_sha": CURRENT_BASE_SHA,
+            "candidate_contains_expected_head": True,
+            "candidate_contains_current_base": True,
+        },
+    )
 
 
 def make_candidate(*, run_id=901, candidate_sha=CANDIDATE_SHA):
@@ -149,6 +166,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            candidate_association(),
             patch.object(
                 MODULE,
                 "run_blocking_watcher",
@@ -196,6 +214,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
             ),
@@ -233,6 +252,44 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             raised.exception.action, "stop_merge_group_candidate_ambiguous"
         )
 
+    def test_candidate_for_stale_head_is_rejected_against_current_head_and_base(self):
+        args = make_args()
+        current_pr = make_pr(head_sha=EXPECTED_HEAD_SHA, base_sha=CURRENT_BASE_SHA)
+        # The candidate represents a previous H1/base queue attempt: H2 is not
+        # an ancestor, although the current base still is.
+        with (
+            patch.object(
+                MODULE,
+                "fetch_pr",
+                return_value=current_pr,
+            ),
+            patch.object(
+                MODULE,
+                "resolve_merge_group_candidate",
+                return_value=make_candidate(candidate_sha=STALE_CANDIDATE_SHA),
+            ),
+            patch.object(
+                MODULE,
+                "is_commit_ancestor",
+                side_effect=[False, True],
+            ),
+            patch.object(MODULE, "run_blocking_watcher") as watcher,
+        ):
+            receipt, status = MODULE.execute_delivery(args)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_merge_group_candidate_stale"])
+        self.assertEqual(receipt["merge_group"]["candidate_sha"], STALE_CANDIDATE_SHA)
+        watcher.assert_not_called()
+
+    def test_commit_ancestor_accepts_ahead_compare_status(self):
+        with patch.object(MODULE, "gh_json", return_value={"status": "ahead"}):
+            self.assertTrue(
+                MODULE.is_commit_ancestor(
+                    "owner/repo", EXPECTED_HEAD_SHA, CANDIDATE_SHA
+                )
+            )
+
     def test_queue_entry_disappearing_without_merge_is_a_distinct_stop(self):
         args = make_args()
         candidate = make_candidate()
@@ -252,6 +309,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
             ),
@@ -282,6 +340,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
             ),
@@ -324,6 +383,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            candidate_association(),
             patch.object(
                 MODULE,
                 "run_blocking_watcher",
@@ -354,6 +414,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
             ),
@@ -363,6 +424,50 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(receipt["actions"], ["stop_merge_group_run_not_succeeded"])
         self.assertEqual(receipt["merge_group"]["failed_job"]["name"], "CI required")
+
+    def test_missing_gh_returns_a_compact_operator_receipt(self):
+        with patch.object(MODULE.subprocess, "run", side_effect=FileNotFoundError):
+            receipt, status = MODULE.execute_delivery(make_args())
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["repo"], "owner/repo")
+        self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
+        self.assertIn("Unable to execute", receipt["error"])
+
+    def test_repo_autodetection_failure_returns_a_compact_operator_receipt(self):
+        failed_lookup = types.SimpleNamespace(returncode=1, stdout="")
+        with patch.object(MODULE.subprocess, "run", return_value=failed_lookup):
+            receipt, status = MODULE.execute_delivery(make_args(repo=None))
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["repo"], "unknown")
+        self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
+        self.assertIn("Unable to determine OWNER/REPO", receipt["error"])
+
+    def test_missing_gh_launcher_emits_a_compact_json_receipt(self):
+        launcher = (
+            Path(__file__).resolve().parents[1] / "scripts" / "gh_pr_delivery_watch"
+        )
+        result = subprocess.run(
+            [
+                str(launcher),
+                "--repo",
+                "owner/repo",
+                "--pr",
+                "17",
+                "--expected-head-sha",
+                EXPECTED_HEAD_SHA,
+            ],
+            env={"PATH": "", "GH_PR_DELIVERY_WATCH_PYTHON": sys.executable},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 1, msg=result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["repo"], "owner/repo")
+        self.assertEqual(receipt["actions"], ["stop_operator_help_required"])
 
     def test_blocking_watcher_invocation_uses_the_existing_terminal_helper(self):
         args = make_args()
