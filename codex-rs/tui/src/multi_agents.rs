@@ -262,9 +262,7 @@ fn format_agent_picker_item_description_at(
     }
     match (entry.is_running, entry.has_system_error, entry.is_closed) {
         (true, _, _) => parts.push("live active open".to_string()),
-        (false, true, _) => {
-            parts.push("system error failed inspect saved transcript".to_string())
-        }
+        (false, true, _) => parts.push("system error failed inspect saved transcript".to_string()),
         (false, false, true) => parts.push("closed stale finished".to_string()),
         (false, false, false) => parts.push("idle inactive open".to_string()),
     }
@@ -1012,13 +1010,10 @@ fn friendly_agent_name(thread_id: ThreadId, metadata: &AgentMetadata) -> String 
         .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty());
-    let mut name = nickname
-        .or(path)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| {
-            let rendered = thread_id.to_string();
-            rendered.get(..8).unwrap_or(&rendered).to_string()
-        });
+    let mut name = nickname.or(path).map(ToOwned::to_owned).unwrap_or_else(|| {
+        let rendered = thread_id.to_string();
+        rendered.get(..8).unwrap_or(&rendered).to_string()
+    });
     if let Some(role) = metadata
         .agent_role
         .as_deref()

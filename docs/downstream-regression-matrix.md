@@ -96,6 +96,31 @@ Validation workflow reference:
 
 - `docs/validation_workflow.md`
 
+### PR #574 agent visibility and provenance follow-up
+
+The combined draft update must retain requested/effective provenance when an
+immediate child snapshot is unavailable, preserve unknown effective reasoning
+effort, keep loaded descendants visible, and reject observed old picker
+activity after terminal removal or recovery without blocking a distinct fresh
+start. Its planned hosted proof is:
+
+- `codex.core-subagent-model-pinning-targeted` for
+  `spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effort`
+  and `multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model`.
+- `codex.tui-agent-picker-targeted` for
+  `remove_records_terminal_guard_for_every_cleanup_path`,
+  `recovered_lifecycle_blocks_all_prior_activity_ids_but_allows_a_fresh_start`,
+  `terminal_lifecycle_activity_history_is_bounded`, and
+  `terminal_lifecycle_watermarks_evict_the_oldest_thread`.
+- `sdk/python` RPC coverage for
+  `test_agent_picker_protocol_models_match_current_schema`, which asserts the
+  JSON-mode Pydantic object written by the client rather than Python Enum
+  instances.
+
+No hosted result is claimed for this combined update until these checks run on
+its exact pushed head; formatter and static checks are not substitutes for
+that proof.
+
 Wine-backed executor note:
 
 - `unified_exec_runs_on_all_platforms` is a host-native command-shell smoke and

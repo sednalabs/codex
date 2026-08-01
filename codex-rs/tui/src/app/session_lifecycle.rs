@@ -5,9 +5,9 @@
 //! cache used for multi-agent navigation.
 
 use super::*;
+use crate::app::loaded_threads::find_loaded_subagent_threads_for_primary;
 use crate::app_server_session::source_agent_path;
 use crate::app_server_session::thread_blocks_direct_input;
-use crate::app::loaded_threads::find_loaded_subagent_threads_for_primary;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_label;
@@ -163,10 +163,7 @@ impl App {
 
     /// Loads one continuation page of persisted descendants without widening
     /// the list request or dropping the user's current `closed` filter.
-    pub(super) async fn load_more_agent_picker_page(
-        &mut self,
-        app_server: &mut AppServerSession,
-    ) {
+    pub(super) async fn load_more_agent_picker_page(&mut self, app_server: &mut AppServerSession) {
         let Some(cursor) = self.agent_navigation.next_picker_page_cursor() else {
             return;
         };
@@ -494,10 +491,8 @@ impl App {
             Ok(thread) => {
                 let is_parent_owned = thread_blocks_direct_input(&thread);
                 let agent_path = source_agent_path(&thread.source);
-                let status = agent_picker_thread_status(
-                    &thread.status,
-                    /*has_live_channel*/ false,
-                );
+                let status =
+                    agent_picker_thread_status(&thread.status, /*has_live_channel*/ false);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -592,8 +587,7 @@ impl App {
             );
         } else {
             self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                is_closed,
+                thread_id, /*agent_nickname*/ None, /*agent_role*/ None, is_closed,
             );
         }
         self.agent_navigation
@@ -1286,7 +1280,9 @@ impl App {
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) {
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
-            tracing::warn!("ignoring persisted descendant with invalid id during subagent backfill");
+            tracing::warn!(
+                "ignoring persisted descendant with invalid id during subagent backfill"
+            );
             return;
         };
         if thread_id == primary_thread_id {
@@ -1478,13 +1474,11 @@ impl App {
                 return false;
             }
         };
-        let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
-            scanned_threads.clone(),
-            primary_thread_id,
-        )
-        .into_iter()
-        .map(|thread| thread.thread_id)
-        .collect::<HashSet<_>>();
+        let descendant_thread_ids =
+            find_loaded_subagent_threads_for_primary(scanned_threads.clone(), primary_thread_id)
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<HashSet<_>>();
         if descendant_thread_ids.is_empty() {
             return true;
         }
@@ -1674,8 +1668,7 @@ impl App {
                 // hydrate descendant metadata before it renders historical Spawn/Wait cells so
                 // their friendly paths and effective identities are retained in the new widget.
                 self.prepare_chat_widget_for_app_server_thread(
-                    tui,
-                    /*initial_user_message*/ None,
+                    tui, /*initial_user_message*/ None,
                 );
                 self.primary_thread_id = Some(resumed_thread_id);
                 self.upsert_agent_picker_thread(

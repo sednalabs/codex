@@ -146,7 +146,9 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
                 "threadId": "child-thread-1",
             }
         )
-    assert tool_call.model_dump(by_alias=True, exclude_none=True) == {
+    # The RPC client converts models through `_params_dict` in Pydantic JSON mode before writing
+    # the JSON-RPC payload. Assert that wire object rather than Python-mode Enum instances.
+    assert _params_dict(tool_call) == {
         "agentsStates": {},
         "id": "call-1",
         "receiverThreadIds": ["child-thread-1"],
