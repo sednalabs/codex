@@ -21,8 +21,10 @@ impl App {
             self.discard_side_thread(app_server, side_thread_id).await;
         }
         if let Some(thread_id) = self.chat_widget.thread_id() {
-            if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
-                tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
+            if !self.thread_is_replay_only(thread_id) {
+                if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+                    tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
+                }
             }
             self.abort_thread_event_listener(thread_id);
         }

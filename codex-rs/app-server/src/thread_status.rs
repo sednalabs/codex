@@ -9,11 +9,16 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_protocol::ThreadId;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+
+/// Keep recent unloaded-thread revisions long enough to preserve notification ordering if a
+/// thread is reloaded, without retaining one revision entry per historical thread forever.
+const RETIRED_STATUS_REVISION_LIMIT: usize = 1024;
 
 #[derive(Clone)]
 pub(crate) struct ThreadWatchManager {
@@ -303,6 +308,7 @@ pub(crate) fn resolve_thread_status(
 struct ThreadWatchState {
     runtime_by_thread_id: HashMap<String, RuntimeFacts>,
     status_revision_by_thread_id: HashMap<String, u64>,
+    retired_status_revision_order: VecDeque<String>,
     status_watcher_by_thread_id: HashMap<String, watch::Sender<ThreadStatus>>,
 }
 
@@ -312,6 +318,7 @@ impl ThreadWatchState {
         thread_id: String,
         emit_notification: bool,
     ) -> Option<ThreadStatusChangedNotification> {
+        self.remove_retired_status_revision_tracking(&thread_id);
         let previous_status = self.status_for(&thread_id);
         let runtime = self
             .runtime_by_thread_id
@@ -330,15 +337,20 @@ impl ThreadWatchState {
         let previous_status = self.status_for(thread_id);
         self.runtime_by_thread_id.remove(thread_id);
         self.update_status_watcher(thread_id, &ThreadStatus::NotLoaded);
-        if previous_status.is_some() && previous_status != Some(ThreadStatus::NotLoaded) {
-            Some(ThreadStatusChangedNotification {
-                thread_id: thread_id.to_string(),
-                status: ThreadStatus::NotLoaded,
-                status_revision: Some(self.next_status_revision(thread_id)),
-            })
-        } else {
-            None
+        let notification =
+            if previous_status.is_some() && previous_status != Some(ThreadStatus::NotLoaded) {
+                Some(ThreadStatusChangedNotification {
+                    thread_id: thread_id.to_string(),
+                    status: ThreadStatus::NotLoaded,
+                    status_revision: Some(self.next_status_revision(thread_id)),
+                })
+            } else {
+                None
+            };
+        if notification.is_some() {
+            self.retain_retired_status_revision(thread_id);
         }
+        notification
     }
 
     fn update_runtime<F>(
@@ -349,6 +361,7 @@ impl ThreadWatchState {
     where
         F: FnOnce(&mut RuntimeFacts),
     {
+        self.remove_retired_status_revision_tracking(thread_id);
         let previous_status = self.status_for(thread_id);
         let runtime = self
             .runtime_by_thread_id
@@ -431,6 +444,26 @@ impl ThreadWatchState {
             .or_default();
         *revision = revision.saturating_add(1);
         *revision
+    }
+
+    fn remove_retired_status_revision_tracking(&mut self, thread_id: &str) {
+        self.retired_status_revision_order
+            .retain(|candidate| candidate != thread_id);
+    }
+
+    fn retain_retired_status_revision(&mut self, thread_id: &str) {
+        self.remove_retired_status_revision_tracking(thread_id);
+        self.retired_status_revision_order
+            .push_back(thread_id.to_string());
+        while self.retired_status_revision_order.len() > RETIRED_STATUS_REVISION_LIMIT {
+            let expired_thread_id = self
+                .retired_status_revision_order
+                .pop_front()
+                .expect("retired revision order must contain every retained revision");
+            // Entries leave this FIFO only after `remove_thread` has dropped their runtime.
+            // A thread that was reloaded removes itself from the FIFO before it can expire.
+            self.status_revision_by_thread_id.remove(&expired_thread_id);
+        }
     }
 }
 
@@ -740,6 +773,63 @@ mod tests {
                 status: ThreadStatus::NotLoaded,
                 status_revision: Some(3),
             },
+        );
+    }
+
+    #[tokio::test]
+    async fn retired_thread_status_revisions_are_bounded_and_preserve_recent_reload_order() {
+        let manager = ThreadWatchManager::new();
+        let retained_thread_id = "retained-thread";
+
+        manager.upsert_thread(retained_thread_id).await;
+        manager.remove_thread(retained_thread_id).await;
+        for index in 0..RETIRED_STATUS_REVISION_LIMIT - 1 {
+            let thread_id = format!("retired-thread-{index}");
+            manager.upsert_thread(&thread_id).await;
+            manager.remove_thread(&thread_id).await;
+        }
+
+        {
+            let state = manager.state.lock().await;
+            assert_eq!(
+                state.status_revision_by_thread_id.len(),
+                RETIRED_STATUS_REVISION_LIMIT
+            );
+            assert_eq!(
+                state.status_revision_by_thread_id.get(retained_thread_id),
+                Some(&2),
+                "a recent reload must continue the prior status-revision sequence"
+            );
+        }
+
+        manager.upsert_thread(retained_thread_id).await;
+        {
+            let state = manager.state.lock().await;
+            assert_eq!(
+                state.status_revision_by_thread_id.get(retained_thread_id),
+                Some(&3),
+                "reloading inside the retention window must not reset revision ordering"
+            );
+        }
+        manager.remove_thread(retained_thread_id).await;
+
+        for index in 0..RETIRED_STATUS_REVISION_LIMIT {
+            let thread_id = format!("later-retired-thread-{index}");
+            manager.upsert_thread(&thread_id).await;
+            manager.remove_thread(&thread_id).await;
+        }
+
+        let state = manager.state.lock().await;
+        assert_eq!(
+            state.status_revision_by_thread_id.len(),
+            RETIRED_STATUS_REVISION_LIMIT,
+            "unloading many distinct threads must not grow revision state without bound"
+        );
+        assert!(
+            !state
+                .status_revision_by_thread_id
+                .contains_key(retained_thread_id),
+            "the oldest retired revision should be evicted after the bounded window"
         );
     }
 
