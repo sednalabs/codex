@@ -8,6 +8,12 @@ export type ThreadLoadedListResponse = {
  */
 data: Array<string>,
 /**
+ * True only when the server applied the requested `ancestorThreadId` filter.
+ *
+ * Older servers omit this field. Clients must treat an omitted acknowledgement as false.
+ */
+ancestorFilterApplied?: boolean,
+/**
  * Opaque cursor to pass to the next call to continue after the last item.
  * if None, there are no more items to return.
  */

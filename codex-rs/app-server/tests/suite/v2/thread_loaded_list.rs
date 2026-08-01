@@ -41,6 +41,7 @@ async fn thread_loaded_list_returns_loaded_thread_ids() -> Result<()> {
     let ThreadLoadedListResponse {
         mut data,
         next_cursor,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     data.sort();
     assert_eq!(data, vec![thread_id]);
@@ -76,6 +77,7 @@ async fn thread_loaded_list_paginates() -> Result<()> {
     let ThreadLoadedListResponse {
         data: first_page,
         next_cursor,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(first_page, vec![expected[0].clone()]);
     assert_eq!(next_cursor, Some(expected[0].clone()));
@@ -90,6 +92,7 @@ async fn thread_loaded_list_paginates() -> Result<()> {
     let ThreadLoadedListResponse {
         data: second_page,
         next_cursor,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(second_page, vec![expected[1].clone()]);
     assert_eq!(next_cursor, None);
@@ -228,13 +231,17 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
             ancestor_thread_id: Some(root_thread_id),
         })
         .await?;
-    let ThreadLoadedListResponse { data, next_cursor } =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+    let ThreadLoadedListResponse {
+        data,
+        next_cursor,
+        ancestor_filter_applied,
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(data, vec![grandchild_thread_id]);
     assert!(!data.contains(&child_thread_id));
     assert!(!data.contains(&unrelated_root_thread_id));
     assert!(!data.contains(&unrelated_child_thread_id));
     assert_eq!(next_cursor, None);
+    assert!(ancestor_filter_applied);
 
     Ok(())
 }
@@ -362,6 +369,7 @@ async fn thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_quer
     let ThreadLoadedListResponse {
         data: first_page,
         next_cursor,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(first_page, vec![expected[0].clone()]);
     assert_eq!(next_cursor, Some(expected[0].clone()));
@@ -376,6 +384,7 @@ async fn thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_quer
     let ThreadLoadedListResponse {
         data: second_page,
         next_cursor,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(second_page, vec![expected[1].clone()]);
     assert_eq!(next_cursor, None);

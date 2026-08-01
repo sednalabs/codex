@@ -1091,6 +1091,10 @@ async fn thread_list_relation_filters_read_spawn_graph_from_state_db() -> Result
         ]
     );
     assert_eq!(descendants.next_cursor, None);
+    assert!(
+        descendants.ancestor_filter_applied,
+        "the descendant relation response must acknowledge the applied ancestor filter"
+    );
     Ok(())
 }
 

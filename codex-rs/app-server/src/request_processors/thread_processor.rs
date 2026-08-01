@@ -2068,6 +2068,7 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
+        let ancestor_filter_applied = ancestor_thread_id.is_some();
         let cwd_filters = normalize_thread_list_cwd_filters(cwd)?;
         let relation_filter = match (parent_thread_id, ancestor_thread_id) {
             (Some(_), Some(_)) => {
@@ -2152,6 +2153,7 @@ impl ThreadRequestProcessor {
         }
         Ok(ThreadListResponse {
             data,
+            ancestor_filter_applied,
             next_cursor,
             backwards_cursor,
         })
@@ -2303,6 +2305,7 @@ impl ThreadRequestProcessor {
             limit,
             ancestor_thread_id,
         } = params;
+        let ancestor_filter_applied = ancestor_thread_id.is_some();
         let loaded_thread_ids = match ancestor_thread_id {
             Some(ancestor_thread_id) => {
                 let ancestor_thread_id = ThreadId::from_string(&ancestor_thread_id)
@@ -2326,6 +2329,7 @@ impl ThreadRequestProcessor {
         if data.is_empty() {
             return Ok(ThreadLoadedListResponse {
                 data,
+                ancestor_filter_applied,
                 next_cursor: None,
             });
         }
@@ -2353,6 +2357,7 @@ impl ThreadRequestProcessor {
 
         Ok(ThreadLoadedListResponse {
             data: page,
+            ancestor_filter_applied,
             next_cursor,
         })
     }

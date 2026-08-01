@@ -1244,6 +1244,12 @@ pub enum SortDirection {
 #[ts(export_to = "v2/")]
 pub struct ThreadListResponse {
     pub data: Vec<Thread>,
+    /// True only when the server applied the requested `ancestorThreadId` filter.
+    ///
+    /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
+    pub ancestor_filter_applied: bool,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
@@ -1351,6 +1357,12 @@ pub struct ThreadLoadedListParams {
 pub struct ThreadLoadedListResponse {
     /// Thread ids for sessions currently loaded in memory.
     pub data: Vec<String>,
+    /// True only when the server applied the requested `ancestorThreadId` filter.
+    ///
+    /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
+    pub ancestor_filter_applied: bool,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,

@@ -1095,46 +1095,76 @@ impl App {
             }
         };
 
+        let ancestor_filter_applied = response.ancestor_filter_applied;
+
         // A normal `/agent` reopen refreshes the first page for liveness but must not rewind an
         // available cached continuation after the user has already loaded page two. A first page
         // with no continuation is authoritative, though: it means the relation set has shrunk
         // (or is exhausted), so clear any stale "Load more" action before the user can click it.
-        if is_continuation
-            || response.next_cursor.is_none()
-            || self.agent_navigation.next_picker_page_cursor().is_none()
+        if ancestor_filter_applied
+            && (is_continuation
+                || response.next_cursor.is_none()
+                || self.agent_navigation.next_picker_page_cursor().is_none())
         {
             self.agent_navigation
                 .set_next_picker_page_cursor(response.next_cursor.clone());
+        } else if !ancestor_filter_applied {
+            // An older server can silently ignore an unknown ancestorThreadId. Its cursor names
+            // an unfiltered global list, so do not present it as a descendant continuation.
+            self.agent_navigation.set_next_picker_page_cursor(None);
         }
 
         // The historical relation page is sorted by update time, so it can be filled with closed
         // descendants. The loaded priority set was already merged above, so open and idle
         // sidecars stay visible and keyboard-reachable without making finished history part of
         // the default picker view.
-        for thread in response.data {
-            self.register_agent_picker_thread_from_backend(
-                primary_thread_id,
-                thread,
-                &mut refreshed_thread_ids,
-            );
-        }
-        let legacy_fallback_completed = if !is_continuation
-            && self.agent_navigation.needs_legacy_relation_fallback_check()
-        {
-            let completed = self
-                .backfill_loaded_legacy_subagent_threads(
-                    app_server,
+        if ancestor_filter_applied {
+            for thread in response.data {
+                self.register_agent_picker_thread_from_backend(
                     primary_thread_id,
+                    thread,
                     &mut refreshed_thread_ids,
-                )
-                .await;
-            if loaded_priority_completed && completed {
-                self.agent_navigation.mark_legacy_relation_fallback_checked();
+                );
             }
-            completed
         } else {
-            true
-        };
+            tracing::debug!(
+                "persisted descendant response did not acknowledge the ancestor filter; \
+                 locally verifying returned threads"
+            );
+            let descendant_thread_ids =
+                find_loaded_subagent_threads_for_primary(response.data.clone(), primary_thread_id)
+                    .into_iter()
+                    .map(|thread| thread.thread_id)
+                    .collect::<HashSet<_>>();
+            for thread in response.data {
+                let is_descendant = ThreadId::from_string(&thread.id)
+                    .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
+                if is_descendant {
+                    self.register_agent_picker_thread_from_backend(
+                        primary_thread_id,
+                        thread,
+                        &mut refreshed_thread_ids,
+                    );
+                }
+            }
+        }
+        let legacy_fallback_completed =
+            if !is_continuation && self.agent_navigation.needs_legacy_relation_fallback_check() {
+                let completed = self
+                    .backfill_loaded_legacy_subagent_threads(
+                        app_server,
+                        primary_thread_id,
+                        &mut refreshed_thread_ids,
+                    )
+                    .await;
+                if loaded_priority_completed && completed {
+                    self.agent_navigation
+                        .mark_legacy_relation_fallback_checked();
+                }
+                completed
+            } else {
+                true
+            };
         self.sync_active_agent_label();
 
         LoadedSubagentBackfill {
@@ -1215,7 +1245,7 @@ impl App {
         primary_thread_id: ThreadId,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) -> bool {
-        let loaded_thread_ids = match app_server
+        let response = match app_server
             .thread_loaded_list(ThreadLoadedListParams {
                 cursor: None,
                 limit: None,
@@ -1223,7 +1253,7 @@ impl App {
             })
             .await
         {
-            Ok(response) => response.data,
+            Ok(response) => response,
             Err(err) => {
                 tracing::debug!(
                     %err,
@@ -1232,8 +1262,11 @@ impl App {
                 return false;
             }
         };
+        let ancestor_filter_applied = response.ancestor_filter_applied;
+        let loaded_thread_ids = response.data;
         let mut loaded_metadata_completed = true;
         let mut loaded_descendant_count = 0;
+        let mut unproven_loaded_threads = Vec::new();
         for thread_id in loaded_thread_ids {
             let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
                 loaded_metadata_completed = false;
@@ -1243,16 +1276,20 @@ impl App {
                 .thread_read(thread_id, /*include_turns*/ false)
                 .await
             {
-                // The app server already applied the requested ancestor relation. Do not
-                // reconstruct it from only the loaded metadata here: an unloaded intermediary
-                // would otherwise hide a returned loaded nested descendant.
                 Ok(thread) => {
-                    self.register_agent_picker_thread_from_backend(
-                        primary_thread_id,
-                        thread,
-                        refreshed_thread_ids,
-                    );
-                    loaded_descendant_count += 1;
+                    if ancestor_filter_applied {
+                        // The app server acknowledged the requested ancestor relation. Do not
+                        // reconstruct it from only the loaded metadata here: an unloaded
+                        // intermediary would otherwise hide a returned loaded nested descendant.
+                        self.register_agent_picker_thread_from_backend(
+                            primary_thread_id,
+                            thread,
+                            refreshed_thread_ids,
+                        );
+                        loaded_descendant_count += 1;
+                    } else {
+                        unproven_loaded_threads.push(thread);
+                    }
                 }
                 Err(err) => {
                     // A listed thread whose metadata cannot be read has not been covered by this
@@ -1264,6 +1301,31 @@ impl App {
                         %thread_id,
                         "loaded descendant priority metadata read failed"
                     );
+                }
+            }
+        }
+        if !ancestor_filter_applied {
+            tracing::debug!(
+                "loaded descendant response did not acknowledge the ancestor filter; \
+                 locally verifying returned threads"
+            );
+            let descendant_thread_ids = find_loaded_subagent_threads_for_primary(
+                unproven_loaded_threads.clone(),
+                primary_thread_id,
+            )
+            .into_iter()
+            .map(|thread| thread.thread_id)
+            .collect::<HashSet<_>>();
+            for thread in unproven_loaded_threads {
+                let is_descendant = ThreadId::from_string(&thread.id)
+                    .is_ok_and(|thread_id| descendant_thread_ids.contains(&thread_id));
+                if is_descendant {
+                    self.register_agent_picker_thread_from_backend(
+                        primary_thread_id,
+                        thread,
+                        refreshed_thread_ids,
+                    );
+                    loaded_descendant_count += 1;
                 }
             }
         }
