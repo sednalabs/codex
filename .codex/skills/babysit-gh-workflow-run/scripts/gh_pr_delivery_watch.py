@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 QUEUE_PR_COMPONENT_RE = re.compile(r"(?:^|/)pr-(\d+)(?:-|$)")
 WATCHER_LAUNCHER = Path(__file__).with_name("gh_workflow_run_watch")
 
@@ -122,7 +123,7 @@ def compact_failed_job(failed_jobs):
     } or None
 
 
-def run_process(command, *, env=None, timeout_seconds=None):
+def subprocess_kwargs(*, env=None, timeout_seconds=None):
     kwargs = {
         "capture_output": True,
         "text": True,
@@ -130,23 +131,44 @@ def run_process(command, *, env=None, timeout_seconds=None):
     }
     if timeout_seconds is not None:
         kwargs["timeout"] = timeout_seconds
+    return kwargs
+
+
+def run_gh_process(args, *, timeout_seconds=None):
     try:
-        return subprocess.run(command, check=False, **kwargs)
+        return subprocess.run(
+            ["gh", *args],
+            check=False,
+            shell=False,
+            **subprocess_kwargs(timeout_seconds=timeout_seconds),
+        )
     except subprocess.TimeoutExpired as err:
-        executable = str(command[0]) if command else "required command"
         raise GhCommandDeadlineExceeded(
-            f"{executable!r} exceeded the delivery observation deadline."
+            "The GitHub CLI exceeded the delivery observation deadline."
         ) from err
     except OSError as err:
-        executable = str(command[0]) if command else "required command"
-        raise GhCommandError(f"Unable to execute {executable!r}.") from err
+        raise GhCommandError("Unable to execute the GitHub CLI.") from err
+
+
+def run_watcher_process(args, *, env=None):
+    try:
+        return subprocess.run(
+            [str(WATCHER_LAUNCHER), *args],
+            check=False,
+            shell=False,
+            **subprocess_kwargs(env=env),
+        )
+    except OSError as err:
+        raise GhCommandError(
+            "Unable to execute the blocking workflow watcher."
+        ) from err
 
 
 def gh_json(args, *, timeout_seconds=None):
     if timeout_seconds is None:
-        result = run_process(["gh", *args])
+        result = run_gh_process(args)
     else:
-        result = run_process(["gh", *args], timeout_seconds=timeout_seconds)
+        result = run_gh_process(args, timeout_seconds=timeout_seconds)
     if result.returncode != 0:
         raise GhCommandError(
             f"GitHub CLI command failed with exit status {result.returncode}."
@@ -162,22 +184,29 @@ def detect_repo():
         "GH_REPO"
     )
     if configured:
-        return configured
-    result = run_process(
-        ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+        return validate_repo(configured)
+    result = run_gh_process(
+        ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
     )
     if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
+        return validate_repo(result.stdout.strip())
     raise GhCommandError(
         "Unable to determine OWNER/REPO. Pass --repo or set GH_PR_DELIVERY_WATCH_REPO."
     )
 
 
 def split_repo(repo):
-    owner, separator, name = str(repo or "").partition("/")
-    if not separator or not owner or not name:
-        raise GhCommandError("Repository must use OWNER/REPO form.")
-    return owner, name
+    validated_repo = validate_repo(repo)
+    return validated_repo.split("/", 1)
+
+
+def validate_repo(repo):
+    normalized = str(repo or "").strip()
+    if not REPOSITORY_RE.fullmatch(normalized):
+        raise GhCommandError(
+            "Repository must use OWNER/REPO form with only letters, digits, dots, underscores, and hyphens."
+        )
+    return normalized
 
 
 def fetch_pr(repo, pr_number, *, timeout_seconds=None):
@@ -329,8 +358,7 @@ def parse_watcher_payload(stdout):
 
 
 def run_blocking_watcher(repo, target, args):
-    command = [
-        str(WATCHER_LAUNCHER),
+    watcher_args = [
         "--repo",
         repo,
         "--target",
@@ -347,7 +375,7 @@ def run_blocking_watcher(repo, target, args):
     selected_python = watcher_env.get("GH_PR_DELIVERY_WATCH_PYTHON")
     if selected_python:
         watcher_env["GH_WORKFLOW_RUN_WATCH_PYTHON"] = selected_python
-    result = run_process(command, env=watcher_env)
+    result = run_watcher_process(watcher_args, env=watcher_env)
     payload = parse_watcher_payload(result.stdout)
     if result.returncode != 0:
         raise GhCommandError("The blocking workflow watcher exited unsuccessfully.")
@@ -698,7 +726,7 @@ def new_argument_error_receipt(error):
 def execute_delivery(args):
     receipt = new_receipt(args.repo or "unknown", args)
     try:
-        repo = args.repo or detect_repo()
+        repo = validate_repo(args.repo) if args.repo else detect_repo()
         receipt["repo"] = repo
         initial_pr = fetch_pr(repo, args.pr)
         assert_pr_identity(initial_pr, args)
