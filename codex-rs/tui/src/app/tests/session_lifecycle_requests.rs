@@ -1195,6 +1195,7 @@ fn agent_picker_keeps_the_forward_page_after_reopen() -> Result<()> {
 
 #[test]
 fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()> {
+    const LOADED_DESCENDANT_COUNT: usize = 51;
     const CLOSED_DESCENDANT_COUNT: usize = 50;
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -1207,6 +1208,9 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                 .build()?;
             runtime.block_on(async {
                 let mut app = make_test_app().await;
+                // The root plus 51 descendants is a supported V2 concurrency configuration.
+                app.config.multi_agent_v2.max_concurrent_threads_per_session =
+                    LOADED_DESCENDANT_COUNT + 1;
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
@@ -1221,31 +1225,40 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                     )
                     .expect("create root rollout"),
                 )?;
-                let idle_child_thread_id = ThreadId::from_string(
-                    &create_fake_parented_rollout_with_source(
+                let mut loaded_child_thread_ids = Vec::with_capacity(LOADED_DESCENDANT_COUNT);
+                for index in 0..LOADED_DESCENDANT_COUNT {
+                    let seconds_from_start = index + 1;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    let timestamp = format!("2026-01-07T00-{minute:02}-{second:02}");
+                    let created_at = format!("2026-01-07T00:{minute:02}:{second:02}Z");
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
                         codex_home.path(),
-                        "2026-01-07T00-00-01",
-                        "2026-01-07T00:00:01Z",
-                        "Saved idle child message",
+                        &timestamp,
+                        &created_at,
+                        &format!("Saved loaded child message {index}"),
                         Some(app.config.model_provider_id.as_str()),
                         /*git_info*/ None,
                         RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                             parent_thread_id: root_thread_id,
                             depth: 1,
                             agent_path: Some(
-                                AgentPath::try_from("/root/idle-worker")
-                                    .expect("valid idle agent path"),
+                                AgentPath::try_from(format!("/root/loaded-worker-{index}"))
+                                    .expect("valid loaded agent path"),
                             ),
-                            agent_nickname: Some("idle-worker".to_string()),
+                            agent_nickname: Some(format!("loaded-worker-{index}")),
                             agent_role: Some("worker".to_string()),
                         }),
                         root_thread_id.into(),
                         root_thread_id,
                     )
-                    .expect("create idle child rollout"),
-                )?;
+                    .expect("create loaded child rollout"),
+                    )?;
+                    loaded_child_thread_ids.push(child_thread_id);
+                }
                 for index in 0..CLOSED_DESCENDANT_COUNT {
-                    let seconds_from_start = index + 2;
+                    let seconds_from_start = LOADED_DESCENDANT_COUNT + index + 1;
                     let minute = seconds_from_start / 60;
                     let second = seconds_from_start % 60;
                     let timestamp = format!("2026-01-07T00-{minute:02}-{second:02}");
@@ -1277,7 +1290,7 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                     start_recording_app_server(&app.config).await?;
                 // Populate the persisted relationship index exactly as a modern session would.
                 // The first persisted page then contains the 50 newer closed descendants, while
-                // the older child below remains loaded and must come from the priority path.
+                // the 51 older loaded children must all come from the priority path.
                 let mut repair_cursor = None;
                 loop {
                     let repair_page = app_server
@@ -1310,35 +1323,79 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                         app.resume_model_settings(),
                     )
                     .await?;
-                let _idle_child = app_server
-                    .resume_thread(
+                for child_thread_id in loaded_child_thread_ids.iter().copied() {
+                    let _loaded_child = app_server
+                        .resume_thread(
                         app.config.clone(),
-                        idle_child_thread_id,
+                        child_thread_id,
                         app.resume_model_settings(),
                     )
                     .await?;
+                }
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
                 Box::pin(app.open_agent_picker(&mut app_server)).await;
 
-                let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
-                assert!(
-                    rendered.contains("Subagent: idle-worker [worker] · /root/idle-worker"),
-                    "the unfiltered picker must show the older loaded idle child ahead of closed history"
+                let expected_loaded_thread_ids = loaded_child_thread_ids
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::HashSet<_>>();
+                let visible_loaded_thread_ids = app
+                    .agent_navigation
+                    .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                    .into_iter()
+                    .filter_map(|(thread_id, entry)| (!entry.is_closed).then_some(thread_id))
+                    .collect::<std::collections::HashSet<_>>();
+                assert_eq!(
+                    visible_loaded_thread_ids, expected_loaded_thread_ids,
+                    "every loaded descendant must be visible before historical fallback"
                 );
+
+                let rendered = super::render_bottom_popup(&app.chat_widget, /*width*/ 100);
                 assert!(
                     !rendered.contains("closed-worker-49"),
                     "closed history must remain hidden from the default picker view"
                 );
+                let mut current_thread_id = root_thread_id;
+                let mut keyboard_reachable_loaded_thread_ids =
+                    std::collections::HashSet::with_capacity(LOADED_DESCENDANT_COUNT);
+                for _ in 0..LOADED_DESCENDANT_COUNT {
+                    app.active_thread_id = Some(current_thread_id);
+                    let next_thread_id = app
+                        .adjacent_thread_id_with_backfill(
+                            &mut app_server,
+                            AgentNavigationDirection::Next,
+                        )
+                        .await
+                        .expect("every loaded child should be reachable by keyboard navigation");
+                    assert!(
+                        expected_loaded_thread_ids.contains(&next_thread_id),
+                        "closed history must not appear before every loaded descendant"
+                    );
+                    assert!(
+                        keyboard_reachable_loaded_thread_ids.insert(next_thread_id),
+                        "keyboard navigation must not repeat a loaded descendant before covering the set"
+                    );
+                    current_thread_id = next_thread_id;
+                }
                 assert_eq!(
-                    app.adjacent_thread_id_with_backfill(
+                    keyboard_reachable_loaded_thread_ids, expected_loaded_thread_ids,
+                    "keyboard navigation must cover every loaded descendant before closed history"
+                );
+                app.active_thread_id = Some(current_thread_id);
+                let first_closed_thread_id = app
+                    .adjacent_thread_id_with_backfill(
                         &mut app_server,
                         AgentNavigationDirection::Next,
                     )
-                    .await,
-                    Some(idle_child_thread_id),
-                    "the loaded idle child must be reachable by next-agent keyboard navigation"
+                    .await
+                    .expect("the first persisted closed descendant should follow loaded children");
+                assert!(
+                    app.agent_navigation
+                        .get(&first_closed_thread_id)
+                        .is_some_and(|entry| entry.is_closed),
+                    "closed history should follow, not precede, the loaded descendant priority set"
                 );
 
                 app_server.shutdown().await?;
