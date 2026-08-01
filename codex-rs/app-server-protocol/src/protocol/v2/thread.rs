@@ -1339,6 +1339,10 @@ pub struct ThreadLoadedListParams {
     /// Optional page size; defaults to no limit.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// Optional loaded thread-spawn ancestor. When set, returns only currently loaded
+    /// descendants of that thread.
+    #[ts(optional = nullable)]
+    pub ancestor_thread_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

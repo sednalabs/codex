@@ -2298,11 +2298,24 @@ impl ThreadRequestProcessor {
         &self,
         params: ThreadLoadedListParams,
     ) -> Result<ThreadLoadedListResponse, JSONRPCErrorError> {
-        let ThreadLoadedListParams { cursor, limit } = params;
-        let mut data: Vec<String> = self
-            .thread_manager
-            .list_thread_ids()
-            .await
+        let ThreadLoadedListParams {
+            cursor,
+            limit,
+            ancestor_thread_id,
+        } = params;
+        let loaded_thread_ids = match ancestor_thread_id {
+            Some(ancestor_thread_id) => {
+                let ancestor_thread_id = ThreadId::from_string(&ancestor_thread_id)
+                    .map_err(|err| {
+                        invalid_request(format!("invalid ancestor thread id: {err}"))
+                    })?;
+                self.thread_manager
+                    .list_live_thread_spawn_descendants(ancestor_thread_id)
+                    .await
+            }
+            None => self.thread_manager.list_thread_ids().await,
+        };
+        let mut data: Vec<String> = loaded_thread_ids
             .into_iter()
             .map(|thread_id| thread_id.to_string())
             .collect();
