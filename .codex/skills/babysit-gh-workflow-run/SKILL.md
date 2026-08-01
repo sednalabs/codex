@@ -99,8 +99,9 @@ Optional:
 Use `scripts/gh_pr_delivery_watch` when one pull request must be proved through
 all three delivery identities: its expected full head SHA, the synthetic
 `merge_group` candidate, and the resulting merge commit on `main`. It performs
-only finite PR/queue/commit reads itself; both long waits are delegated to the
-existing `gh_workflow_run_watch --watch-until-terminal` helper.
+one bounded, receipt-owned PR-delivery observation after the merge-group run;
+both long workflow waits remain delegated to the existing
+`gh_workflow_run_watch --watch-until-terminal` helper.
 
 ```bash
 .codex/skills/babysit-gh-workflow-run/scripts/gh_pr_delivery_watch \
@@ -130,6 +131,15 @@ existing `gh_workflow_run_watch --watch-until-terminal` helper.
   superseding queue candidate fails closed instead of borrowing the earlier
   success. `GH_PR_DELIVERY_WATCH_PYTHON` is forwarded to the nested watcher as
   `GH_WORKFLOW_RUN_WATCH_PYTHON` when an explicit interpreter is required.
+- After the merge-group run succeeds, the helper waits for the normal GitHub
+  queue-to-merged transition for at most
+  `--merge-observation-timeout-seconds` (default: 300). It uses the existing
+  `--poll-seconds` interval (default: 60), caps the final sleep at the deadline,
+  and is cancellable with the normal process interrupt. This is receipt-owned
+  bounded observation, not a model or operator polling loop. Every still-queued
+  poll reasserts the exact PR head/base, selected run identity, candidate
+  ancestry, and absence of a newer candidate SHA; timeout emits
+  `stop_merge_observation_timeout` and changed invariants fail closed.
 - Standard output is one compact JSON receipt. A non-zero status still emits a
   receipt with a stable `stop_*` action and the first failed job when available.
 
