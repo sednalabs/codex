@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Prove one merge-queue PR delivery with exact GitHub identities.
+"""Prove selected workflow delivery for one merge-queue PR.
 
 This script deliberately does not poll GitHub itself.  It performs finite
 identity reads around two invocations of gh_workflow_run_watch, which owns the
-blocking waits for the exact merge-group and post-merge workflow runs.
+blocking waits for the exact merge-group and selected post-merge workflow runs.
+It does not claim that every post-merge workflow, or repository health overall,
+has passed.
 """
 
 import argparse
@@ -505,6 +507,12 @@ def new_receipt(repo, args):
         "merge_group": None,
         "merge_commit": None,
         "post_merge": None,
+        "proof_scope": {
+            "kind": "selected_workflow_delivery",
+            "merge_group_workflow": args.merge_group_workflow,
+            "selected_post_merge_workflows": [args.post_merge_workflow],
+            "whole_repository_health_proven": False,
+        },
         "actions": [],
         "ts": int(time.time()),
     }
@@ -610,6 +618,7 @@ def execute_delivery(args):
             expected_branch=args.main_ref,
             expected_workflow=args.post_merge_workflow,
         )
+        post_merge_result["selected_workflow"] = args.post_merge_workflow
         receipt["post_merge"] = post_merge_result
         if post_merge_result["outcome"] != "success":
             raise DeliveryStop(
@@ -662,7 +671,10 @@ def parse_args():
     parser.add_argument(
         "--post-merge-workflow",
         default="postmerge-ci",
-        help="Main push workflow name or file (default: postmerge-ci).",
+        help=(
+            "One main-push workflow name or file to prove (default: postmerge-ci); "
+            "this does not prove all post-merge workflows or repository health."
+        ),
     )
     parser.add_argument(
         "--poll-seconds", type=int, default=60, help="Blocking watcher poll interval."

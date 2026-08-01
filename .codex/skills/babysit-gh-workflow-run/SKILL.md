@@ -121,9 +121,10 @@ existing `gh_workflow_run_watch --watch-until-terminal` helper.
 - Workflow inputs accept a display name, file basename, or a
   `.github/workflows/*.yml` / `.yaml` path. They are compared by their
   normalized workflow basename, so `Blocking CI` matches `blocking-ci.yml`.
-- The defaults require a successful `blocking-ci` `merge_group` run and a
-  successful `postmerge-ci` `push` run on the exact merge commit. Override the
-  workflow names only for a repository with different entrypoints.
+- The defaults require a successful `blocking-ci` `merge_group` run and one
+  selected `postmerge-ci` `push` run on the exact merge commit. The singular
+  `--post-merge-workflow` selector is deliberately not an inventory of every
+  workflow that a merge may independently trigger.
 - A successful candidate proves delivery only when GitHub ancestry establishes
   that the selected candidate SHA reaches the eventual merge commit. A later
   superseding queue candidate fails closed instead of borrowing the earlier
@@ -131,6 +132,25 @@ existing `gh_workflow_run_watch --watch-until-terminal` helper.
   `GH_WORKFLOW_RUN_WATCH_PYTHON` when an explicit interpreter is required.
 - Standard output is one compact JSON receipt. A non-zero status still emits a
   receipt with a stable `stop_*` action and the first failed job when available.
+
+`stop_pr_delivery_proven` means the selected-workflow delivery proof succeeded:
+the exact merge-group candidate and the receipt's
+`proof_scope.selected_post_merge_workflows` each matched the expected identity.
+It does **not** mean every independently triggered post-merge workflow passed,
+and it does **not** establish whole-repository health. The receipt makes that
+boundary machine-readable with `proof_scope.whole_repository_health_proven:
+false` and records the selector also at `post_merge.selected_workflow`.
+
+For a relevant merge where `Native Windows Bazel health` is required evidence,
+a separate exact-main-SHA watch is mandatory after this receipt succeeds; it is
+outside the default `postmerge-ci` proof:
+
+```bash
+.codex/skills/babysit-gh-workflow-run/scripts/gh_workflow_run_watch \
+  --repo sednalabs/codex \
+  --target "workflow=Native Windows Bazel health,ref=main,head-sha=<merge-commit-sha>" \
+  --watch-until-terminal
+```
 
 The helper fails closed if the PR head changes, a queue entry disappears without
 a merge, the merge commit cannot be correlated to `main`, or either watched run
