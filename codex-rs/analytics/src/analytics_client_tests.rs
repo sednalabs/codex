@@ -4571,6 +4571,8 @@ async fn turn_event_counts_completed_tool_items() {
             prompt: Some("help".to_string()),
             model: Some("gpt-5".to_string()),
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: Default::default(),
         },
         ThreadItem::SubAgentActivity {

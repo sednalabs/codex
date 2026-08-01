@@ -891,6 +891,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: payload.model.clone(),
             reasoning_effort: payload.reasoning_effort.clone(),
+            requested_model: payload.model.clone(),
+            requested_reasoning_effort: payload.reasoning_effort.clone(),
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -917,6 +919,24 @@ impl ThreadHistoryBuilder {
             }
             None => (Vec::new(), HashMap::new()),
         };
+        let (requested_model, requested_reasoning_effort) = self
+            .current_turn
+            .as_ref()
+            .and_then(|turn| {
+                turn.items.iter().find_map(|item| match item {
+                    ThreadItem::CollabAgentToolCall {
+                        id,
+                        tool: CollabAgentTool::SpawnAgent,
+                        requested_model,
+                        requested_reasoning_effort,
+                        ..
+                    } if id == &payload.call_id => {
+                        Some((requested_model.clone(), requested_reasoning_effort.clone()))
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
@@ -926,6 +946,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
+            requested_model,
+            requested_reasoning_effort,
             agents_states,
         });
     }
@@ -943,6 +965,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -967,6 +991,8 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
         });
     }
@@ -1002,6 +1028,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1037,6 +1065,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states,
         });
     }
@@ -1054,6 +1084,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1080,6 +1112,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states,
         });
     }
@@ -1097,6 +1131,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1126,6 +1162,8 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states,
         });
     }
@@ -3911,6 +3949,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -3971,6 +4011,8 @@ mod tests {
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -3981,6 +4023,162 @@ mod tests {
                 .into_iter()
                 .collect(),
             }
+        );
+    }
+
+    #[test]
+    fn reconstructs_completed_collab_spawns_with_requested_overrides() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "spawn agents".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                call_id: "spawn-model-only".into(),
+                started_at_ms: 0,
+                sender_thread_id: sender_thread_id.clone(),
+                prompt: "inspect model".into(),
+                model: Some("gpt-requested-model".into()),
+                reasoning_effort: None,
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-model-only".into(),
+                completed_at_ms: 1,
+                sender_thread_id: sender_thread_id.clone(),
+                new_thread_id: Some(
+                    ThreadId::try_from("00000000-0000-0000-0000-000000000011")
+                        .expect("valid receiver thread id"),
+                ),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect model".into(),
+                model: "gpt-effective-model".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                status: AgentStatus::Running,
+            }),
+            EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                call_id: "spawn-effort-only".into(),
+                started_at_ms: 2,
+                sender_thread_id: sender_thread_id.clone(),
+                prompt: "inspect effort".into(),
+                model: None,
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-effort-only".into(),
+                completed_at_ms: 3,
+                sender_thread_id: sender_thread_id.clone(),
+                new_thread_id: Some(
+                    ThreadId::try_from("00000000-0000-0000-0000-000000000012")
+                        .expect("valid receiver thread id"),
+                ),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect effort".into(),
+                model: "gpt-effective-effort".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                status: AgentStatus::Running,
+            }),
+            EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
+                call_id: "spawn-explicit-mismatch".into(),
+                started_at_ms: 4,
+                sender_thread_id: sender_thread_id.clone(),
+                prompt: "inspect mismatch".into(),
+                model: Some("gpt-requested-pair".into()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Ultra),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "spawn-explicit-mismatch".into(),
+                completed_at_ms: 5,
+                sender_thread_id,
+                new_thread_id: Some(
+                    ThreadId::try_from("00000000-0000-0000-0000-000000000013")
+                        .expect("valid receiver thread id"),
+                ),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect mismatch".into(),
+                model: "gpt-effective-pair".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Low,
+                status: AgentStatus::Running,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 4);
+
+        let [_, model_only, effort_only, explicit_mismatch] = turns[0].items.as_slice() else {
+            panic!("expected one user message and three completed spawn items");
+        };
+        let ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } = model_only
+        else {
+            panic!("expected model-only completed spawn item");
+        };
+        assert_eq!(model.as_deref(), Some("gpt-effective-model"));
+        assert_eq!(
+            reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(requested_model.as_deref(), Some("gpt-requested-model"));
+        assert_eq!(requested_reasoning_effort, &None);
+
+        let ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } = effort_only
+        else {
+            panic!("expected effort-only completed spawn item");
+        };
+        assert_eq!(model.as_deref(), Some("gpt-effective-effort"));
+        assert_eq!(
+            reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(requested_model, &None);
+        assert_eq!(
+            requested_reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+
+        let ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } = explicit_mismatch
+        else {
+            panic!("expected explicit-mismatch completed spawn item");
+        };
+        assert_eq!(model.as_deref(), Some("gpt-effective-pair"));
+        assert_eq!(
+            reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Low)
+        );
+        assert_eq!(requested_model.as_deref(), Some("gpt-requested-pair"));
+        assert_eq!(
+            requested_reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Ultra)
         );
     }
 
@@ -4043,6 +4241,8 @@ mod tests {
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: [(
                     receiver.to_string(),
                     CollabAgentState {

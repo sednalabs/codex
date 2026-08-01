@@ -1993,8 +1993,8 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
             status,
             sender_thread_id,
             receiver_thread_ids,
-            model,
-            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
             agents_states,
             ..
         } => {
@@ -2026,8 +2026,8 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
                         sender_thread_id: sender_thread_id.clone(),
                         receiver_thread_count: usize_to_u64(receiver_thread_ids.len()),
                         receiver_thread_ids: Some(receiver_thread_ids.clone()),
-                        requested_model: model.clone(),
-                        requested_reasoning_effort: reasoning_effort
+                        requested_model: requested_model.clone(),
+                        requested_reasoning_effort: requested_reasoning_effort
                             .as_ref()
                             .and_then(serialize_enum_as_string),
                         agent_state_count: Some(usize_to_u64(agents_states.len())),

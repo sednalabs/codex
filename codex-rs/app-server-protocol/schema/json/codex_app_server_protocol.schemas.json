@@ -18838,7 +18838,7 @@
                 "type": "string"
               },
               "model": {
-                "description": "Model requested for the spawned agent, when applicable.",
+                "description": "Effective model selected for the spawned agent, when available.",
                 "type": [
                   "string",
                   "null"
@@ -18860,7 +18860,25 @@
                     "type": "null"
                   }
                 ],
-                "description": "Reasoning effort requested for the spawned agent, when applicable."
+                "description": "Effective reasoning effort selected for the spawned agent, when available."
+              },
+              "requestedModel": {
+                "description": "Caller-provided model override for a spawned agent, when one was supplied.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requestedReasoningEffort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Caller-provided reasoning-effort override for a spawned agent, when one was supplied."
               },
               "receiverThreadIds": {
                 "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation,\nthis corresponds to the newly spawned agent.",

@@ -79,6 +79,8 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
+            let requested_model = begin_event.model.clone();
+            let requested_reasoning_effort = begin_event.reasoning_effort.clone();
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -88,6 +90,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(begin_event.prompt),
                 model: begin_event.model,
                 reasoning_effort: begin_event.reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -127,6 +131,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(end_event.prompt),
                 model: Some(end_event.model),
                 reasoning_effort: Some(end_event.reasoning_effort),
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -147,6 +153,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(begin_event.prompt),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -175,6 +183,8 @@ pub fn item_event_to_server_notification(
                 prompt: Some(end_event.prompt),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: [(receiver_id, received_status)].into_iter().collect(),
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -215,6 +225,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -256,6 +268,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -275,6 +289,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -308,6 +324,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -327,6 +345,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -360,6 +380,8 @@ pub fn item_event_to_server_notification(
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
@@ -575,6 +597,8 @@ mod tests {
                     prompt: Some(event.prompt),
                     model: Some("gpt-caller".to_string()),
                     reasoning_effort: None,
+                    requested_model: Some("gpt-caller".to_string()),
+                    requested_reasoning_effort: None,
                     agents_states: HashMap::new(),
                 },
             },
@@ -612,6 +636,8 @@ mod tests {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
                     agents_states: HashMap::new(),
                 },
             },
@@ -651,6 +677,8 @@ mod tests {
                     prompt: None,
                     model: None,
                     reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
                     agents_states: [(
                         receiver_id,
                         CollabAgentState::from(codex_protocol::protocol::AgentStatus::NotFound),

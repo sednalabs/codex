@@ -505,6 +505,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
                 agents_states: HashMap::new(),
             },
         }),
@@ -524,6 +526,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {
@@ -1003,6 +1007,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1026,6 +1032,8 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([
                     (
                         receiver_thread_id.to_string(),
@@ -1077,6 +1085,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
                 agents_states: HashMap::new(),
             },
         }),
@@ -1097,6 +1107,8 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {
@@ -1118,6 +1130,91 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
         combined
     );
+}
+
+#[tokio::test]
+async fn fresh_tui_renders_requested_overrides_from_completed_spawn_history() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+    let model_only_receiver = ThreadId::new();
+    let effort_only_receiver = ThreadId::new();
+    let explicit_mismatch_receiver = ThreadId::new();
+
+    let completed_spawn =
+        |id: &str,
+         receiver_thread_id: &ThreadId,
+         model: &str,
+         reasoning_effort: ReasoningEffortConfig,
+         requested_model: Option<&str>,
+         requested_reasoning_effort: Option<ReasoningEffortConfig>| {
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
+                item: AppServerThreadItem::CollabAgentToolCall {
+                    id: id.to_string(),
+                    tool: AppServerCollabAgentTool::SpawnAgent,
+                    status: AppServerCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender_thread_id.to_string(),
+                    receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                    prompt: Some("Explore the repo".to_string()),
+                    model: Some(model.to_string()),
+                    reasoning_effort: Some(reasoning_effort),
+                    requested_model: requested_model.map(str::to_string),
+                    requested_reasoning_effort,
+                    agents_states: HashMap::new(),
+                },
+            })
+        };
+
+    chat.handle_server_notification(
+        completed_spawn(
+            "spawn-model-only",
+            &model_only_receiver,
+            "gpt-effective-model",
+            ReasoningEffortConfig::Medium,
+            Some("gpt-requested-model"),
+            None,
+        ),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        completed_spawn(
+            "spawn-effort-only",
+            &effort_only_receiver,
+            "gpt-effective-effort",
+            ReasoningEffortConfig::Medium,
+            None,
+            Some(ReasoningEffortConfig::High),
+        ),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        completed_spawn(
+            "spawn-explicit-mismatch",
+            &explicit_mismatch_receiver,
+            "gpt-effective-pair",
+            ReasoningEffortConfig::Low,
+            Some("gpt-requested-pair"),
+            Some(ReasoningEffortConfig::Ultra),
+        ),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("effective: gpt-effective-model medium"));
+    assert!(rendered.contains("requested: gpt-requested-model"));
+    assert!(!rendered.contains("requested: gpt-requested-model medium"));
+    assert!(rendered.contains("effective: gpt-effective-effort medium"));
+    assert!(rendered.contains("requested: high"));
+    assert!(!rendered.contains("requested: gpt-effective-effort high"));
+    assert!(rendered.contains("effective: gpt-effective-pair low"));
+    assert!(rendered.contains("requested: gpt-requested-pair ultra"));
 }
 
 #[tokio::test]

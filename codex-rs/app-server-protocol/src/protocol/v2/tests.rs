@@ -2890,6 +2890,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {
