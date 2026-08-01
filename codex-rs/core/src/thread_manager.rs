@@ -1267,14 +1267,25 @@ impl ThreadManager {
         self.state.list_live_thread_spawn_edges().await
     }
 
-    /// Lists currently loaded thread-spawn descendants of one thread.
+    /// Lists loaded thread-spawn descendants of one thread.
+    ///
+    /// The persisted graph determines ancestry so an unloaded intermediary cannot hide a loaded
+    /// nested agent. The live registry then limits the result to currently loaded, non-internal
+    /// threads.
     pub(crate) async fn list_live_thread_spawn_descendants(
         &self,
         ancestor_thread_id: ThreadId,
-    ) -> Vec<ThreadId> {
-        self.state
-            .list_live_thread_spawn_descendants(ancestor_thread_id)
-            .await
+    ) -> CodexResult<Vec<ThreadId>> {
+        let loaded_thread_ids: HashSet<ThreadId> =
+            self.state.list_thread_ids().await.into_iter().collect();
+        let mut descendants = self
+            .list_agent_subtree_thread_ids(ancestor_thread_id)
+            .await?;
+        descendants.retain(|thread_id| {
+            *thread_id != ancestor_thread_id && loaded_thread_ids.contains(thread_id)
+        });
+        descendants.sort_by_key(|thread_id| thread_id.to_string());
+        Ok(descendants)
     }
 }
 

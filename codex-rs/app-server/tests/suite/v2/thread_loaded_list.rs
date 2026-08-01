@@ -13,6 +13,9 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_state::StateRuntime;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -170,13 +173,39 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
         unrelated_root_thread_uuid,
     )?;
 
+    let state_db = StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+        "mock_provider".into(),
+    )
+    .await?;
+    for (parent_thread_id, child_thread_id) in [
+        (root_thread_uuid, child_thread_uuid),
+        (
+            child_thread_uuid,
+            ThreadId::from_string(&grandchild_thread_id)?,
+        ),
+        (
+            unrelated_root_thread_uuid,
+            ThreadId::from_string(&unrelated_child_thread_id)?,
+        ),
+    ] {
+        state_db
+            .upsert_thread_spawn_edge(
+                parent_thread_id,
+                child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await?;
+    }
+
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
         .await?;
+    // Only the nested descendant is resumed from the target subtree. The durable root -> child
+    // edge must still establish that the loaded grandchild belongs below root.
     for thread_id in [
         &root_thread_id,
-        &child_thread_id,
         &grandchild_thread_id,
         &unrelated_root_thread_id,
         &unrelated_child_thread_id,

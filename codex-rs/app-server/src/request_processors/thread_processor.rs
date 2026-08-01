@@ -2306,12 +2306,15 @@ impl ThreadRequestProcessor {
         let loaded_thread_ids = match ancestor_thread_id {
             Some(ancestor_thread_id) => {
                 let ancestor_thread_id = ThreadId::from_string(&ancestor_thread_id)
-                    .map_err(|err| {
-                        invalid_request(format!("invalid ancestor thread id: {err}"))
-                    })?;
+                    .map_err(|err| invalid_request(format!("invalid ancestor thread id: {err}")))?;
                 self.thread_manager
                     .list_live_thread_spawn_descendants(ancestor_thread_id)
                     .await
+                    .map_err(|err| {
+                        internal_error(format!(
+                            "failed to list loaded spawned descendants for thread id {ancestor_thread_id}: {err}"
+                        ))
+                    })?
             }
             None => self.thread_manager.list_thread_ids().await,
         };
