@@ -1372,6 +1372,22 @@ impl BottomPane {
             .and_then(|view| view.active_tab_id())
     }
 
+    /// Returns the active list filter so a refresh can rebuild the same view
+    /// without widening the user's result set.
+    pub(crate) fn search_query_for_active_view(&self, view_id: &'static str) -> Option<String> {
+        self.view_stack
+            .last()
+            .filter(|view| view.view_id() == Some(view_id))
+            .and_then(|view| view.search_query())
+            .map(ToOwned::to_owned)
+    }
+
+    pub(crate) fn is_selection_view_active(&self, view_id: &'static str) -> bool {
+        self.view_stack
+            .last()
+            .is_some_and(|view| view.view_id() == Some(view_id))
+    }
+
     pub(crate) fn dismiss_active_view_if_id(&mut self, view_id: &'static str) -> bool {
         let is_match = self
             .view_stack

@@ -153,6 +153,27 @@ impl App {
             }
         }
 
+        self.render_agent_picker().await;
+    }
+
+    /// Loads one continuation page of persisted descendants without widening
+    /// the list request or dropping the user's current `closed` filter.
+    pub(super) async fn load_more_agent_picker_page(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) {
+        let Some(cursor) = self.agent_navigation.next_picker_page_cursor() else {
+            return;
+        };
+        let backfill = self
+            .backfill_agent_picker_page(app_server, Some(cursor))
+            .await;
+        if backfill.completed || self.agent_navigation.next_picker_page_cursor().is_none() {
+            self.render_agent_picker().await;
+        }
+    }
+
+    async fn render_agent_picker(&mut self) {
         let has_non_primary_agent_thread = self
             .agent_navigation
             .has_non_primary_thread(self.primary_thread_id);
@@ -167,8 +188,12 @@ impl App {
             return;
         }
 
+        let prior_search_query = self
+            .chat_widget
+            .selection_view_search_query(AGENT_PICKER_VIEW_ID);
         let mut initial_selected_idx = None;
         let mut items = Vec::new();
+        let mut closed_agent_count = 0;
         for (idx, (thread_id, entry)) in self
             .agent_navigation
             .ordered_threads()
@@ -180,39 +205,39 @@ impl App {
             }
             let id = thread_id;
             let is_primary = self.primary_thread_id == Some(thread_id);
-            let name = entry
-                .agent_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|agent_path| !is_primary && !agent_path.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| {
-                    format_agent_picker_item_name(
-                        entry.agent_nickname.as_deref(),
-                        entry.agent_role.as_deref(),
-                        is_primary,
-                    )
-                });
+            let name = format_agent_picker_item_label(
+                entry.agent_nickname.as_deref(),
+                entry.agent_role.as_deref(),
+                entry.agent_path.as_deref(),
+                is_primary,
+            );
             let usage = self.agent_picker_thread_usage(thread_id, entry).await;
             let description = format_agent_picker_item_description(thread_id, entry, &usage);
             let selected_description =
                 format_agent_picker_item_selected_description(thread_id, entry, &usage);
-            let status_terms = if entry.is_running {
-                "live active open"
-            } else {
-                "closed stale inactive finished"
+            let status_terms = match (entry.is_running, entry.has_system_error, entry.is_closed) {
+                (true, _, _) => "live active open",
+                (false, true, _) => "system error failed inspect replay",
+                (false, false, true) => {
+                    if !is_primary {
+                        closed_agent_count += 1;
+                    }
+                    "closed stale finished"
+                }
+                (false, false, false) => "idle inactive open",
             };
             let search_value =
                 format!("{name} {description} {selected_description} {status_terms}");
             items.push(SelectionItem {
                 name,
-                name_prefix_spans: agent_picker_status_dot_spans(entry.is_closed),
+                name_prefix_spans: agent_picker_status_dot_spans(
+                    entry.is_closed,
+                    entry.has_system_error,
+                ),
                 description: Some(description),
                 selected_description: Some(selected_description),
                 is_current: self.active_thread_id == Some(thread_id),
-                hidden_when_unfiltered: !is_primary
-                    && self.active_thread_id != Some(thread_id)
-                    && !entry.is_running,
+                hidden_when_unfiltered: !is_primary && entry.is_closed,
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::SelectAgentThread(id));
                 })],
@@ -222,16 +247,61 @@ impl App {
             });
         }
 
-        self.chat_widget.show_selection_view(SelectionViewParams {
-            title: Some("Subagents".to_string()),
-            subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(standard_popup_hint_line()),
-            is_searchable: true,
-            search_placeholder: Some("Search agents or type 'closed'".to_string()),
-            items,
-            initial_selected_idx,
-            ..Default::default()
-        });
+        let has_more_closed_agents = self.agent_navigation.next_picker_page_cursor().is_some();
+        if has_more_closed_agents {
+            items.push(SelectionItem {
+                name: "Load more historical sidecars".to_string(),
+                description: Some(
+                    "Load the next bounded page, including older finished subagents.".to_string(),
+                ),
+                selected_description: Some(
+                    "Load the next bounded page without clearing this filter.".to_string(),
+                ),
+                hidden_when_unfiltered: true,
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::LoadMoreAgentPickerPage);
+                })],
+                // Continuation refreshes the active picker instead of selecting a thread, so it
+                // must keep the modal and its search query open.
+                dismiss_on_select: false,
+                search_value: Some("closed stale finished historical older more page".to_string()),
+                ..Default::default()
+            });
+        }
+
+        let closed_suffix = if closed_agent_count == 1 {
+            "sidecar"
+        } else {
+            "sidecars"
+        };
+        let closed_page_hint = if has_more_closed_agents {
+            " More are available in the next page."
+        } else {
+            ""
+        };
+        let subtitle = if closed_agent_count == 0 && !has_more_closed_agents {
+            AgentNavigationState::picker_subtitle()
+        } else {
+            format!(
+                "{} {closed_agent_count} closed {closed_suffix} cached.{closed_page_hint}",
+                AgentNavigationState::picker_subtitle()
+            )
+        };
+        self.chat_widget.replace_or_show_selection_view(
+            AGENT_PICKER_VIEW_ID,
+            SelectionViewParams {
+                view_id: Some(AGENT_PICKER_VIEW_ID),
+                title: Some("Subagents".to_string()),
+                subtitle: Some(subtitle),
+                footer_hint: Some(standard_popup_hint_line()),
+                is_searchable: true,
+                initial_search_query: prior_search_query,
+                search_placeholder: Some("Search agents or type 'closed'".to_string()),
+                items,
+                initial_selected_idx,
+                ..Default::default()
+            },
+        );
     }
 
     async fn agent_picker_thread_usage(
