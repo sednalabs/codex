@@ -1344,6 +1344,7 @@ pub enum SubAgentActivityKind {
     Started,
     Interacted,
     Interrupted,
+    Errored,
 }
 
 impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
@@ -1352,6 +1353,7 @@ impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
             CoreSubAgentActivityKind::Started => SubAgentActivityKind::Started,
             CoreSubAgentActivityKind::Interacted => SubAgentActivityKind::Interacted,
             CoreSubAgentActivityKind::Interrupted => SubAgentActivityKind::Interrupted,
+            CoreSubAgentActivityKind::Errored => SubAgentActivityKind::Errored,
         }
     }
 }

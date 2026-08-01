@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
+use crate::agent::control::SpawnAgentOutcome;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent_communication::AgentCommunicationContext;
@@ -120,7 +121,7 @@ async fn handle_spawn_agent(
         session
             .services
             .agent_control
-            .spawn_agent_with_communication(
+            .spawn_agent_with_communication_outcome(
                 config,
                 communication,
                 context,
@@ -133,8 +134,27 @@ async fn handle_spawn_agent(
                 },
             ),
     )
-    .await
-    .map_err(collab_spawn_error)?;
+    .await;
+    let spawned_agent = match spawned_agent {
+        Ok(SpawnAgentOutcome::Spawned(agent)) => agent,
+        Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }) => {
+            emit_sub_agent_activity(
+                &session,
+                &turn,
+                SubAgentActivityItem {
+                    id: call_id,
+                    agent_thread_id: agent.thread_id,
+                    agent_path: new_agent_path,
+                    model: Some(agent.effective_model),
+                    reasoning_effort: agent.effective_reasoning_effort,
+                    kind: SubAgentActivityKind::Errored,
+                },
+            )
+            .await;
+            return Err(collab_spawn_error(error));
+        }
+        Err(error) => return Err(collab_spawn_error(error)),
+    };
     let new_thread_id = spawned_agent.thread_id;
     let agent_snapshot = session
         .services
@@ -209,6 +229,10 @@ async fn handle_spawn_agent(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
     }
 }
 

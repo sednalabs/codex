@@ -299,14 +299,34 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        Box::pin(self.spawn_agent_with_communication_outcome(
+            config,
+            communication,
+            context,
+            session_source,
+            options,
+        ))
+        .await?
+        .into_result()
+    }
+
+    /// Spawn an agent with an initial communication while preserving a committed child if the
+    /// communication cannot be delivered.
+    pub(crate) async fn spawn_agent_with_communication_outcome(
+        &self,
+        config: Config,
+        communication: InterAgentCommunication,
+        context: AgentCommunicationContext,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<SpawnAgentOutcome> {
         Box::pin(self.spawn_agent_internal(
             config,
             SpawnInitialInput::InterAgentCommunication(communication, context),
             session_source,
             options,
         ))
-        .await?
-        .into_result()
+        .await
     }
 
     pub(crate) async fn ensure_v2_agent_loaded(
