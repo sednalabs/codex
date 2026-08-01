@@ -428,14 +428,30 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
     match item {
         ThreadItem::CollabAgentToolCall {
             tool: CollabAgentTool::SpawnAgent,
-            status: CollabAgentToolCallStatus::InProgress,
+            status,
             model,
             reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
             ..
-        } => Some(SpawnRequestSummary {
-            model: model.clone(),
-            reasoning_effort: reasoning_effort.clone(),
-        }),
+        } => {
+            let (model, reasoning_effort) = match status {
+                CollabAgentToolCallStatus::InProgress => (
+                    requested_model.as_ref().or(model).cloned(),
+                    requested_reasoning_effort
+                        .as_ref()
+                        .or(reasoning_effort)
+                        .cloned(),
+                ),
+                CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed => {
+                    (requested_model.clone(), requested_reasoning_effort.clone())
+                }
+            };
+            (model.is_some() || reasoning_effort.is_some()).then_some(SpawnRequestSummary {
+                model,
+                reasoning_effort,
+            })
+        }
         _ => None,
     }
 }
@@ -472,10 +488,12 @@ pub(crate) fn tool_call_history_cell(
                 let spawn_request = cached_spawn_request.or(fallback_spawn_request.as_ref());
                 return Some(spawn_begin(prompt, spawn_request));
             }
+            let fallback_spawn_request = spawn_request_summary(item);
+            let spawn_request = cached_spawn_request.or(fallback_spawn_request.as_ref());
             Some(spawn_end(
                 first_receiver,
                 prompt,
-                cached_spawn_request,
+                spawn_request,
                 model.as_deref(),
                 reasoning_effort.as_ref(),
                 &mut agent_metadata,
@@ -1488,6 +1506,8 @@ mod tests {
             prompt: None,
             model: Some("gpt-5.4".to_string()),
             reasoning_effort: Some(ReasoningEffortConfig::High),
+            requested_model: Some("gpt-5.4".to_string()),
+            requested_reasoning_effort: Some(ReasoningEffortConfig::High),
             agents_states: HashMap::new(),
         };
 
@@ -1525,17 +1545,18 @@ mod tests {
             prompt: None,
             model: Some("gpt-5.4".to_string()),
             reasoning_effort: Some(ReasoningEffortConfig::High),
+            requested_model: Some("gpt-5".to_string()),
+            requested_reasoning_effort: Some(ReasoningEffortConfig::Medium),
             agents_states: HashMap::new(),
         };
-        let requested = SpawnRequestSummary {
-            model: Some("gpt-5".to_string()),
-            reasoning_effort: Some(ReasoningEffortConfig::Medium),
-        };
-
         let rendered = cell_to_text(
-            &tool_call_history_cell(&item, Some(&requested), |_thread_id| AgentMetadata {
-                ..AgentMetadata::default()
-            })
+            &tool_call_history_cell(
+                &item,
+                /*cached_spawn_request*/ None,
+                |_thread_id| AgentMetadata {
+                    ..AgentMetadata::default()
+                },
+            )
             .expect("spawn item renders"),
         );
 
@@ -1745,6 +1766,8 @@ mod tests {
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1765,6 +1788,8 @@ mod tests {
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
@@ -1785,6 +1810,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
             /*cached_spawn_request*/ None,
@@ -1802,6 +1829,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
@@ -1828,6 +1857,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
@@ -1970,6 +2001,8 @@ mod tests {
                 prompt: Some(String::new()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -2014,6 +2047,8 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),
@@ -2057,6 +2092,10 @@ mod tests {
         model: Option<&str>,
         reasoning_effort: Option<ReasoningEffortConfig>,
     ) -> ThreadItem {
+        let is_in_progress = matches!(&status, CollabAgentToolCallStatus::InProgress);
+        let requested_model = is_in_progress.then(|| model.map(str::to_string)).flatten();
+        let requested_reasoning_effort =
+            is_in_progress.then_some(reasoning_effort.clone()).flatten();
         ThreadItem::CollabAgentToolCall {
             id: "call-spawn".to_string(),
             tool: CollabAgentTool::SpawnAgent,
@@ -2066,6 +2105,8 @@ mod tests {
             prompt: None,
             model: model.map(str::to_string),
             reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
             agents_states: HashMap::new(),
         }
     }

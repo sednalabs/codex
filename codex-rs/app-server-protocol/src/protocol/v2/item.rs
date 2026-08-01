@@ -375,10 +375,18 @@ pub enum ThreadItem {
         receiver_thread_ids: Vec<String>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
-        /// Model requested for the spawned agent, when applicable.
+        /// Effective model selected for the spawned agent, when available.
         model: Option<String>,
-        /// Reasoning effort requested for the spawned agent, when applicable.
+        /// Effective reasoning effort selected for the spawned agent, when available.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Caller-provided model override for a spawned agent, when one was supplied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        requested_model: Option<String>,
+        /// Caller-provided reasoning-effort override for a spawned agent, when one was supplied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        requested_reasoning_effort: Option<ReasoningEffort>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },
@@ -953,25 +961,35 @@ impl From<CoreTurnItem> for ThreadItem {
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
             },
-            CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
-                id: call.id,
-                tool: call.tool.into(),
-                status: call.status.into(),
-                sender_thread_id: call.sender_thread_id.to_string(),
-                receiver_thread_ids: call
-                    .receiver_thread_ids
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-                prompt: call.prompt,
-                model: call.model,
-                reasoning_effort: call.reasoning_effort,
-                agents_states: call
-                    .agents_states
-                    .into_iter()
-                    .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
-                    .collect(),
-            },
+            CoreTurnItem::CollabAgentToolCall(call) => {
+                let is_spawn_begin = matches!(&call.tool, CoreCollabAgentTool::SpawnAgent)
+                    && matches!(&call.status, CoreCollabAgentToolCallStatus::InProgress);
+                let requested_model = is_spawn_begin.then(|| call.model.clone()).flatten();
+                let requested_reasoning_effort = is_spawn_begin
+                    .then(|| call.reasoning_effort.clone())
+                    .flatten();
+                ThreadItem::CollabAgentToolCall {
+                    id: call.id,
+                    tool: call.tool.into(),
+                    status: call.status.into(),
+                    sender_thread_id: call.sender_thread_id.to_string(),
+                    receiver_thread_ids: call
+                        .receiver_thread_ids
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    prompt: call.prompt,
+                    model: call.model,
+                    reasoning_effort: call.reasoning_effort,
+                    requested_model,
+                    requested_reasoning_effort,
+                    agents_states: call
+                        .agents_states
+                        .into_iter()
+                        .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
+                        .collect(),
+                }
+            }
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 id: activity.id,
                 kind: activity.kind.into(),
