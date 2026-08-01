@@ -16,12 +16,24 @@ use codex_app_server_protocol::WarningNotification;
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
+        let selected_thread_id = self.chat_widget.thread_id();
+        let selected_thread_is_replay_only =
+            selected_thread_id.is_some_and(|thread_id| self.thread_is_replay_only(thread_id));
+        let selected_thread_is_side_thread =
+            selected_thread_id.is_some_and(|thread_id| self.side_threads.contains_key(&thread_id));
         let side_thread_ids: Vec<ThreadId> = self.side_threads.keys().copied().collect();
         for side_thread_id in side_thread_ids {
-            self.discard_side_thread(app_server, side_thread_id).await;
+            if self.thread_is_replay_only(side_thread_id) {
+                // Saved side transcripts have no live app-server attachment. Keep shutdown local
+                // so a replay-only selection cannot issue a startup or turn interrupt while the
+                // next session is being created.
+                self.discard_thread_local_state(side_thread_id).await;
+            } else {
+                self.discard_side_thread(app_server, side_thread_id).await;
+            }
         }
-        if let Some(thread_id) = self.chat_widget.thread_id() {
-            if !self.thread_is_replay_only(thread_id) {
+        if let Some(thread_id) = selected_thread_id {
+            if !selected_thread_is_replay_only && !selected_thread_is_side_thread {
                 if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                     tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
                 }
@@ -50,6 +62,19 @@ impl App {
         self.thread_event_channels
             .entry(thread_id)
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
+    }
+
+    /// Buffers an unsolicited thread notification without claiming a live app-server attachment.
+    /// A later real resume/fork/session response promotes the same channel to `Live`.
+    fn ensure_thread_notification_channel(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> &mut ThreadEventChannel {
+        self.thread_event_channels
+            .entry(thread_id)
+            .or_insert_with(|| {
+                ThreadEventChannel::new_notification_buffer(THREAD_EVENT_CHANNEL_CAPACITY)
+            })
     }
 
     pub(super) async fn set_thread_active(&mut self, thread_id: ThreadId, active: bool) {
@@ -1002,6 +1027,13 @@ impl App {
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
+        // `ensure_thread_channel` creates a local buffer for unknown notifications. It is not
+        // evidence that the app-server has attached this child live, so capture liveness before
+        // allocating the synthetic channel for a status-first `NotLoaded` transition.
+        let had_live_channel = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(ThreadEventChannel::has_live_attachment);
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
         let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
         let thread_status_change = match &notification {
@@ -1010,7 +1042,7 @@ impl App {
         };
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
-            let channel = self.ensure_thread_channel(thread_id);
+            let channel = self.ensure_thread_notification_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
         let (notification, pending_status, turn_stopped) = {
@@ -1041,16 +1073,24 @@ impl App {
             )
         };
         if let Some(notification) = thread_status_change {
-            self.apply_agent_picker_thread_status_change(thread_id, &notification);
+            self.apply_agent_picker_thread_status_change_with_liveness(
+                thread_id,
+                &notification,
+                had_live_channel,
+            );
         }
-        if is_thread_closed
-            && self.primary_thread_id != Some(thread_id)
-            && self.agent_navigation.get(&thread_id).is_some()
-        {
+        if is_thread_closed && self.primary_thread_id != Some(thread_id) {
             // Inactive child channels buffer this notification and never reach the active-thread
             // shutdown handler. `ThreadClosed` is still terminal liveness, regardless of whether
-            // the retained channel is live or the transcript is replayed later.
-            self.mark_agent_picker_thread_closed(thread_id);
+            // the retained channel is live or the transcript is replayed later. When picker
+            // metadata has not arrived yet, keep only bounded terminal evidence so delayed
+            // activity cannot materialize a ghost closed child.
+            if self.agent_navigation.get(&thread_id).is_some() {
+                self.mark_agent_picker_thread_closed(thread_id);
+            } else {
+                self.agent_navigation
+                    .record_unmatched_thread_closed(thread_id);
+            }
         } else if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
         } else if turn_stopped {
@@ -1326,6 +1366,7 @@ impl App {
             /*is_closed*/ false,
         );
         let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_live();
         {
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
@@ -1458,7 +1499,8 @@ impl App {
             self.agent_navigation.mark_parent_owned(thread_id);
         }
         let AppServerStartedThread { session, turns, .. } = started;
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+        if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.mark_live();
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();

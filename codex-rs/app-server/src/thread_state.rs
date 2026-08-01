@@ -22,6 +22,7 @@ use codex_rollout::state_db::StateDbHandle;
 use codex_utils_path_uri::LegacyAppPathString;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::Weak;
@@ -32,6 +33,16 @@ use tokio::sync::watch;
 use tracing::error;
 
 type PendingInterruptQueue = Vec<ConnectionRequestId>;
+
+/// Late canonical item completions may be ordered after their enclosing turn terminal event.
+/// Keep only a finite set of reducers with unmatched starts so that those completions can still
+/// merge their requested provenance into the effective completion item.
+const TERMINAL_TURN_HISTORY_LIMIT: usize = 256;
+
+struct RetainedTerminalTurnHistory {
+    history: ThreadHistoryBuilder,
+    pending_item_ids: HashSet<String>,
+}
 
 pub(crate) struct PendingThreadResumeRequest {
     pub(crate) request_id: ConnectionRequestId,
@@ -100,6 +111,11 @@ pub(crate) struct ThreadState {
     last_thread_settings: Option<ThreadSettings>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
+    current_turn_started_item_ids: HashMap<String, HashSet<String>>,
+    terminal_turn_histories: HashMap<String, RetainedTerminalTurnHistory>,
+    terminal_turn_history_order: VecDeque<String>,
+    terminal_turn_item_snapshots: HashMap<(String, String), ThreadItem>,
+    terminal_turn_item_snapshot_order: VecDeque<(String, String)>,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -137,6 +153,11 @@ impl ThreadState {
         }
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.current_turn_started_item_ids.clear();
+        self.terminal_turn_histories.clear();
+        self.terminal_turn_history_order.clear();
+        self.terminal_turn_item_snapshots.clear();
+        self.terminal_turn_item_snapshot_order.clear();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
     }
@@ -158,8 +179,18 @@ impl ThreadState {
     /// Returns a canonical lifecycle item's materialized snapshot after it has
     /// passed through the per-thread history reducer.
     pub(crate) fn turn_item_snapshot(&self, turn_id: &str, item_id: &str) -> Option<ThreadItem> {
-        self.current_turn_history
-            .turn_item_snapshot(turn_id, item_id)
+        self.terminal_turn_item_snapshots
+            .get(&(turn_id.to_string(), item_id.to_string()))
+            .cloned()
+            .or_else(|| {
+                self.terminal_turn_histories
+                    .get(turn_id)
+                    .and_then(|retained| retained.history.turn_item_snapshot(turn_id, item_id))
+            })
+            .or_else(|| {
+                self.current_turn_history
+                    .turn_item_snapshot(turn_id, item_id)
+            })
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
@@ -176,11 +207,115 @@ impl ThreadState {
             self.turn_summary.last_agent_message =
                 Some(ThreadItem::from(CoreTurnItem::AgentMessage(item.clone())));
         }
+
+        if let EventMsg::ItemStarted(payload) = event {
+            self.current_turn_started_item_ids
+                .entry(payload.turn_id.clone())
+                .or_default()
+                .insert(payload.item.id());
+        }
+
+        if let EventMsg::ItemCompleted(payload) = event {
+            let item_id = payload.item.id();
+            if let Some(retained) = self.terminal_turn_histories.get_mut(&payload.turn_id) {
+                let (snapshot, finished) = {
+                    retained.history.handle_event(event);
+                    let snapshot = retained
+                        .history
+                        .turn_item_snapshot(&payload.turn_id, &item_id);
+                    retained.pending_item_ids.remove(&item_id);
+                    (snapshot, retained.pending_item_ids.is_empty())
+                };
+                if let Some(snapshot) = snapshot {
+                    self.insert_terminal_turn_item_snapshot(
+                        payload.turn_id.clone(),
+                        item_id,
+                        snapshot,
+                    );
+                }
+                if finished {
+                    self.remove_terminal_turn_history(&payload.turn_id);
+                }
+                return;
+            }
+
+            self.current_turn_started_item_ids
+                .get_mut(&payload.turn_id)
+                .map(|item_ids| item_ids.remove(&item_id));
+            if self.last_terminal_turn_id.as_deref() == Some(payload.turn_id.as_str()) {
+                // This completion has no retained canonical start, so forwarding its native
+                // payload is correct. Do not reopen a finished reducer just to materialize it.
+                return;
+            }
+        }
+
         self.current_turn_history.handle_event(event);
-        if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_)) {
-            self.last_terminal_turn_id = Some(event_turn_id.to_string());
-            if !self.current_turn_history.has_active_turn() {
+        let terminal_turn_id = match event {
+            EventMsg::TurnComplete(payload) => Some(payload.turn_id.as_str()),
+            EventMsg::TurnAborted(payload) => payload.turn_id.as_deref().or(Some(event_turn_id)),
+            _ => None,
+        };
+        if let Some(terminal_turn_id) = terminal_turn_id {
+            self.last_terminal_turn_id = Some(terminal_turn_id.to_string());
+            let pending_item_ids = self
+                .current_turn_started_item_ids
+                .remove(terminal_turn_id)
+                .unwrap_or_default();
+            if pending_item_ids.is_empty() {
                 self.current_turn_history.reset();
+            } else {
+                self.insert_terminal_turn_history(
+                    terminal_turn_id.to_string(),
+                    std::mem::take(&mut self.current_turn_history),
+                    pending_item_ids,
+                );
+            }
+        }
+    }
+
+    fn insert_terminal_turn_history(
+        &mut self,
+        turn_id: String,
+        history: ThreadHistoryBuilder,
+        pending_item_ids: HashSet<String>,
+    ) {
+        self.remove_terminal_turn_history(&turn_id);
+        self.terminal_turn_histories.insert(
+            turn_id.clone(),
+            RetainedTerminalTurnHistory {
+                history,
+                pending_item_ids,
+            },
+        );
+        self.terminal_turn_history_order.push_back(turn_id);
+        while self.terminal_turn_history_order.len() > TERMINAL_TURN_HISTORY_LIMIT {
+            if let Some(expired_turn_id) = self.terminal_turn_history_order.pop_front() {
+                self.terminal_turn_histories.remove(&expired_turn_id);
+            }
+        }
+    }
+
+    fn remove_terminal_turn_history(&mut self, turn_id: &str) {
+        self.terminal_turn_histories.remove(turn_id);
+        self.terminal_turn_history_order
+            .retain(|existing_turn_id| existing_turn_id != turn_id);
+    }
+
+    fn insert_terminal_turn_item_snapshot(
+        &mut self,
+        turn_id: String,
+        item_id: String,
+        item: ThreadItem,
+    ) {
+        let key = (turn_id, item_id);
+        self.terminal_turn_item_snapshots.remove(&key);
+        self.terminal_turn_item_snapshot_order
+            .retain(|existing_key| existing_key != &key);
+        self.terminal_turn_item_snapshots.insert(key.clone(), item);
+        self.terminal_turn_item_snapshot_order.push_back(key);
+        while self.terminal_turn_item_snapshot_order.len() > TERMINAL_TURN_HISTORY_LIMIT {
+            if let Some(expired_key) = self.terminal_turn_item_snapshot_order.pop_front() {
+                self.terminal_turn_item_snapshots.remove(&expired_key);
             }
         }
     }
@@ -233,6 +368,15 @@ mod tests {
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::Settings;
+    use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
+    use codex_protocol::items::CollabAgentToolCallItem as CoreCollabAgentToolCallItem;
+    use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::ItemCompletedEvent;
+    use codex_protocol::protocol::ItemStartedEvent;
+    use codex_protocol::protocol::TurnAbortReason;
+    use codex_protocol::protocol::TurnAbortedEvent;
+    use codex_protocol::protocol::TurnCompleteEvent;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
 
@@ -250,6 +394,142 @@ mod tests {
         ];
 
         assert_eq!(results, vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn terminal_turn_retains_spawn_start_for_late_completion() {
+        for terminal_event in [
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                started_at: None,
+                last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                turn_id: Some("turn-1".to_string()),
+                started_at: None,
+                reason: TurnAbortReason::Interrupted,
+                provider_usage: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        ] {
+            let mut state = ThreadState::default();
+            let thread_id = ThreadId::new();
+            state.track_current_turn_event(
+                "turn-1",
+                &EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: canonical_spawn_item(
+                        "spawn-1",
+                        CoreCollabAgentToolCallStatus::InProgress,
+                        None,
+                        Some("gpt-requested"),
+                        Some(ReasoningEffort::High),
+                    ),
+                    started_at_ms: 0,
+                }),
+            );
+            let terminal_event_id = if matches!(&terminal_event, EventMsg::TurnAborted(_)) {
+                "abort-envelope-id"
+            } else {
+                "turn-1"
+            };
+            state.track_current_turn_event(terminal_event_id, &terminal_event);
+            state.track_current_turn_event(
+                "turn-1",
+                &EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: canonical_spawn_item(
+                        "spawn-1",
+                        CoreCollabAgentToolCallStatus::Completed,
+                        Some("gpt-effective"),
+                        None,
+                        None,
+                    ),
+                    completed_at_ms: 1,
+                }),
+            );
+
+            let Some(ThreadItem::CollabAgentToolCall {
+                status,
+                model,
+                reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
+                ..
+            }) = state.turn_item_snapshot("turn-1", "spawn-1")
+            else {
+                panic!("late spawn completion should have a materialized item");
+            };
+            assert_eq!(
+                status,
+                codex_app_server_protocol::CollabAgentToolCallStatus::Completed
+            );
+            assert_eq!(model.as_deref(), Some("gpt-effective"));
+            assert_eq!(reasoning_effort, Some(ReasoningEffort::Low));
+            assert_eq!(requested_model.as_deref(), Some("gpt-requested"));
+            assert_eq!(requested_reasoning_effort, Some(ReasoningEffort::High));
+        }
+    }
+
+    #[test]
+    fn terminal_turn_history_retention_is_bounded() {
+        let mut state = ThreadState::default();
+        for index in 0..=TERMINAL_TURN_HISTORY_LIMIT {
+            state.insert_terminal_turn_history(
+                format!("turn-{index}"),
+                ThreadHistoryBuilder::new(),
+                HashSet::from([format!("item-{index}")]),
+            );
+        }
+
+        assert_eq!(
+            state.terminal_turn_histories.len(),
+            TERMINAL_TURN_HISTORY_LIMIT
+        );
+        assert!(!state.terminal_turn_histories.contains_key("turn-0"));
+        assert!(
+            state
+                .terminal_turn_histories
+                .contains_key(&format!("turn-{TERMINAL_TURN_HISTORY_LIMIT}"))
+        );
+    }
+
+    fn canonical_spawn_item(
+        id: &str,
+        status: CoreCollabAgentToolCallStatus,
+        model: Option<&str>,
+        requested_model: Option<&str>,
+        requested_reasoning_effort: Option<ReasoningEffort>,
+    ) -> CoreTurnItem {
+        CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
+            id: id.to_string(),
+            tool: CoreCollabAgentTool::SpawnAgent,
+            status,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the repository".to_string()),
+            model: model.map(str::to_string),
+            reasoning_effort: match status {
+                CoreCollabAgentToolCallStatus::InProgress => None,
+                CoreCollabAgentToolCallStatus::Completed
+                | CoreCollabAgentToolCallStatus::Failed => Some(ReasoningEffort::Low),
+            },
+            requested_model: requested_model.map(str::to_string),
+            requested_reasoning_effort,
+            agents_states: HashMap::new(),
+        })
     }
 
     fn thread_settings(model: &str) -> ThreadSettings {

@@ -71,6 +71,16 @@ impl codex_agent_graph_store::AgentGraphStore for FakeAgentGraphStore {
         Box::pin(async { panic!("unexpected direct-child listing") })
     }
 
+    fn is_thread_spawn_descendant(
+        &self,
+        ancestor_thread_id: ThreadId,
+        candidate_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, bool> {
+        assert_eq!(ancestor_thread_id, self.root_thread_id);
+        let is_descendant = self.descendant_thread_ids.contains(&candidate_thread_id);
+        Box::pin(async move { Ok(is_descendant) })
+    }
+
     fn list_thread_spawn_descendants(
         &self,
         root_thread_id: ThreadId,

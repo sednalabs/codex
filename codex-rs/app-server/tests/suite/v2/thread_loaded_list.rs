@@ -227,7 +227,7 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
     let list_id = mcp
         .send_thread_loaded_list_request(ThreadLoadedListParams {
             cursor: None,
-            limit: None,
+            limit: Some(1),
             ancestor_thread_id: Some(root_thread_id),
         })
         .await?;

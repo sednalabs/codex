@@ -1315,6 +1315,81 @@ impl ThreadManager {
         descendants.dedup();
         Ok(descendants)
     }
+
+    /// Returns one stable page of loaded descendants without materializing the ancestor's full
+    /// persisted subtree. Persisted ancestry keeps an unloaded intermediary visible; the live
+    /// registry remains a narrow fallback for graph outages and just-created edges.
+    pub(crate) async fn list_live_thread_spawn_descendants_page(
+        &self,
+        ancestor_thread_id: ThreadId,
+        cursor: Option<ThreadId>,
+        limit: usize,
+    ) -> CodexResult<(Vec<ThreadId>, Option<ThreadId>)> {
+        let limit = limit.max(1);
+        let cursor = cursor.map(|thread_id| thread_id.to_string());
+        let mut candidates = self.state.list_thread_ids().await;
+        candidates.sort_by_key(std::string::ToString::to_string);
+        let graph_store = self.state.agent_graph_store();
+        let mut page_with_probe = Vec::with_capacity(limit.saturating_add(1));
+
+        for candidate_thread_id in candidates {
+            if candidate_thread_id == ancestor_thread_id
+                || cursor
+                    .as_ref()
+                    .is_some_and(|cursor| candidate_thread_id.to_string() <= *cursor)
+            {
+                continue;
+            }
+            let is_descendant = match graph_store.as_ref() {
+                Some(graph_store) => match graph_store
+                    .is_thread_spawn_descendant(ancestor_thread_id, candidate_thread_id)
+                    .await
+                {
+                    Ok(true) => true,
+                    Ok(false) => {
+                        self.state
+                            .is_live_thread_spawn_descendant(
+                                ancestor_thread_id,
+                                candidate_thread_id,
+                            )
+                            .await
+                    }
+                    Err(err) => {
+                        warn!(
+                            "failed to resolve persisted thread-spawn ancestry for \
+                             {candidate_thread_id}; falling back to live ancestry: {err}"
+                        );
+                        self.state
+                            .is_live_thread_spawn_descendant(
+                                ancestor_thread_id,
+                                candidate_thread_id,
+                            )
+                            .await
+                    }
+                },
+                None => {
+                    self.state
+                        .is_live_thread_spawn_descendant(ancestor_thread_id, candidate_thread_id)
+                        .await
+                }
+            };
+            if is_descendant {
+                page_with_probe.push(candidate_thread_id);
+                if page_with_probe.len() > limit {
+                    break;
+                }
+            }
+        }
+
+        let has_more = page_with_probe.len() > limit;
+        page_with_probe.truncate(limit);
+        let next_cursor = has_more.then(|| {
+            *page_with_probe
+                .last()
+                .expect("a page with a probe always contains a returned row")
+        });
+        Ok((page_with_probe, next_cursor))
+    }
 }
 
 impl ThreadManagerState {
@@ -1352,6 +1427,74 @@ impl ThreadManagerState {
                 }
             })
             .collect()
+    }
+
+    /// Lists at most `limit` direct loaded children in stable thread-id order without building a
+    /// full parent-child graph. Tree inspection requests one extra child when it needs an exact
+    /// truncation signal.
+    pub(crate) async fn list_live_thread_spawn_children(
+        &self,
+        parent_thread_id: ThreadId,
+        limit: usize,
+    ) -> Vec<ThreadId> {
+        if limit == 0 {
+            return Vec::new();
+        }
+
+        let threads = self.threads.read().await;
+        let mut children = Vec::with_capacity(limit);
+        for (thread_id, thread) in threads.iter() {
+            let is_child = matches!(
+                &thread.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: thread_parent_id,
+                    ..
+                }) if *thread_parent_id == parent_thread_id
+            );
+            if thread.session_source.is_internal() || !is_child {
+                continue;
+            }
+
+            let insertion_index = children
+                .binary_search_by(|candidate: &ThreadId| {
+                    candidate.to_string().cmp(&thread_id.to_string())
+                })
+                .unwrap_or_else(|index| index);
+            if insertion_index < limit {
+                children.insert(insertion_index, *thread_id);
+                if children.len() > limit {
+                    children.pop();
+                }
+            }
+        }
+        children
+    }
+
+    /// Tests one loaded thread's parent chain without creating a full live edge graph.
+    pub(crate) async fn is_live_thread_spawn_descendant(
+        &self,
+        ancestor_thread_id: ThreadId,
+        candidate_thread_id: ThreadId,
+    ) -> bool {
+        const MAX_THREAD_SPAWN_ANCESTRY_DEPTH: usize = 512;
+        let threads = self.threads.read().await;
+        let mut current_thread_id = candidate_thread_id;
+        for _ in 0..MAX_THREAD_SPAWN_ANCESTRY_DEPTH {
+            let Some(thread) = threads.get(&current_thread_id) else {
+                return false;
+            };
+            let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) = &thread.session_source
+            else {
+                return false;
+            };
+            if *parent_thread_id == ancestor_thread_id {
+                return true;
+            }
+            current_thread_id = *parent_thread_id;
+        }
+        false
     }
 
     /// Lists currently loaded thread-spawn descendants of one thread.

@@ -2306,6 +2306,48 @@ impl ThreadRequestProcessor {
             ancestor_thread_id,
         } = params;
         let ancestor_filter_applied = ancestor_thread_id.is_some();
+        let cursor = cursor
+            .map(|cursor| {
+                ThreadId::from_string(&cursor)
+                    .map(|thread_id| thread_id.to_string())
+                    .map_err(|_| invalid_request(format!("invalid cursor: {cursor}")))
+            })
+            .transpose()?;
+
+        // An ancestor-filtered page used to materialize every persisted descendant before its
+        // ordinary pagination step. Resolve ancestry only for sorted loaded candidates until the
+        // requested page plus one probe row is known instead.
+        if let (Some(ancestor_thread_id), Some(limit)) = (ancestor_thread_id.as_deref(), limit) {
+            let ancestor_thread_id = ThreadId::from_string(ancestor_thread_id)
+                .map_err(|err| invalid_request(format!("invalid ancestor thread id: {err}")))?;
+            let cursor = cursor
+                .as_deref()
+                .map(ThreadId::from_string)
+                .transpose()
+                .map_err(|err| invalid_request(format!("invalid cursor: {err}")))?;
+            let (data, next_cursor) = self
+                .thread_manager
+                .list_live_thread_spawn_descendants_page(
+                    ancestor_thread_id,
+                    cursor,
+                    limit.max(1) as usize,
+                )
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to list loaded spawned descendants for thread id {ancestor_thread_id}: {err}"
+                    ))
+                })?;
+            return Ok(ThreadLoadedListResponse {
+                data: data
+                    .into_iter()
+                    .map(|thread_id| thread_id.to_string())
+                    .collect(),
+                ancestor_filter_applied,
+                next_cursor: next_cursor.map(|thread_id| thread_id.to_string()),
+            });
+        }
+
         let loaded_thread_ids = match ancestor_thread_id {
             Some(ancestor_thread_id) => {
                 let ancestor_thread_id = ThreadId::from_string(&ancestor_thread_id)
@@ -2337,16 +2379,10 @@ impl ThreadRequestProcessor {
         data.sort();
         let total = data.len();
         let start = match cursor {
-            Some(cursor) => {
-                let cursor = match ThreadId::from_string(&cursor) {
-                    Ok(id) => id.to_string(),
-                    Err(_) => return Err(invalid_request(format!("invalid cursor: {cursor}"))),
-                };
-                match data.binary_search(&cursor) {
-                    Ok(idx) => idx + 1,
-                    Err(idx) => idx,
-                }
-            }
+            Some(cursor) => match data.binary_search(&cursor) {
+                Ok(idx) => idx + 1,
+                Err(idx) => idx,
+            },
             None => 0,
         };
 

@@ -818,38 +818,53 @@ impl AgentControl {
             }
         }
 
-        let live_children_by_parent = if matches!(scope, AgentTreeScope::Stale) {
-            None
-        } else {
-            Some(self.live_thread_spawn_children().await?)
-        };
         let mut queue = VecDeque::from([(tree_root_thread_id, tree_root_session_state, 0usize)]);
         let mut depth_by_thread_id = HashMap::<ThreadId, usize>::new();
         let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
         let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
+        let mut traversal_truncated = false;
 
         while let Some((thread_id, session_state, depth)) = queue.pop_front() {
             if tree_records.contains_key(&thread_id) {
                 continue;
+            }
+            if tree_records.len() >= max_agents {
+                traversal_truncated = true;
+                break;
             }
 
             let record = self
                 .load_agent_tree_record(&state, state_db_ctx.as_ref(), thread_id, session_state)
                 .await?;
             depth_by_thread_id.insert(thread_id, depth);
+            tree_records.insert(thread_id, record);
 
+            // Keep the queue and every direct-child query bounded by the remaining output
+            // capacity, plus one probe row that makes truncation explicit.
+            let remaining_queue_capacity = max_agents
+                .saturating_sub(tree_records.len())
+                .saturating_sub(queue.len());
             let child_states = self
                 .tree_child_session_states(
-                    live_children_by_parent.as_ref(),
+                    &state,
                     state_db_ctx.as_ref(),
                     thread_id,
                     scope,
+                    remaining_queue_capacity.saturating_add(1),
                 )
                 .await?;
             let mut child_ids = child_states.keys().copied().collect::<Vec<_>>();
             child_ids.sort_by_key(std::string::ToString::to_string);
+            if depth >= max_depth {
+                traversal_truncated |= !child_ids.is_empty();
+                tree_children.insert(thread_id, Vec::new());
+                continue;
+            }
+            if child_ids.len() > remaining_queue_capacity {
+                traversal_truncated = true;
+            }
+            child_ids.truncate(remaining_queue_capacity);
             tree_children.insert(thread_id, child_ids.clone());
-            tree_records.insert(thread_id, record);
 
             for child_id in child_ids {
                 if let Some(child_state) = child_states.get(&child_id).copied() {
@@ -936,22 +951,9 @@ impl AgentControl {
             }
         }
 
-        let filtered_count = filtered_thread_ids.len();
-        let within_depth = filtered_thread_ids
+        let truncated = traversal_truncated;
+        let agents = filtered_thread_ids
             .into_iter()
-            .filter(|thread_id| {
-                depth_by_thread_id
-                    .get(thread_id)
-                    .copied()
-                    .unwrap_or_default()
-                    <= max_depth
-            })
-            .collect::<Vec<_>>();
-        let within_depth_count = within_depth.len();
-        let truncated = filtered_count > within_depth_count || within_depth_count > max_agents;
-        let agents = within_depth
-            .into_iter()
-            .take(max_agents)
             .filter_map(|thread_id| {
                 let record = tree_records.get(&thread_id)?;
                 Some(AgentTreeNode {
@@ -1387,30 +1389,32 @@ impl AgentControl {
 
     async fn tree_child_session_states(
         &self,
-        live_children_by_parent: Option<&HashMap<ThreadId, Vec<(ThreadId, AgentMetadata)>>>,
+        state: &Arc<ThreadManagerState>,
         state_db_ctx: Option<&state_db::StateDbHandle>,
         parent_thread_id: ThreadId,
         scope: AgentTreeScope,
+        limit: usize,
     ) -> CodexResult<HashMap<ThreadId, AgentSessionState>> {
         let mut child_states = HashMap::<ThreadId, AgentSessionState>::new();
 
-        if !matches!(scope, AgentTreeScope::Stale)
-            && let Some(live_children_by_parent) = live_children_by_parent
-            && let Some(children) = live_children_by_parent.get(&parent_thread_id)
-        {
-            for (child_thread_id, _) in children {
-                child_states.insert(*child_thread_id, AgentSessionState::Live);
+        if !matches!(scope, AgentTreeScope::Stale) {
+            for child_thread_id in state
+                .list_live_thread_spawn_children(parent_thread_id, limit)
+                .await
+            {
+                child_states.insert(child_thread_id, AgentSessionState::Live);
             }
         }
 
-        if !matches!(scope, AgentTreeScope::Live) {
+        if !matches!(scope, AgentTreeScope::Live) && child_states.len() < limit {
             let Some(state_db_ctx) = state_db_ctx else {
                 return Err(inspect_agent_tree_state_db_unavailable());
             };
             let closed_children = state_db_ctx
-                .list_thread_spawn_children_with_status(
+                .list_thread_spawn_children_with_status_limit(
                     parent_thread_id,
                     DirectionalThreadSpawnEdgeStatus::Closed,
+                    limit.saturating_sub(child_states.len()),
                 )
                 .await
                 .map_err(|err| {

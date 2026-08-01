@@ -15,6 +15,8 @@ use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+pub const INSPECT_AGENT_TREE_MAX_DEPTH: usize = 8;
+pub const INSPECT_AGENT_TREE_MAX_AGENTS: usize = 100;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
@@ -369,17 +371,21 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
         ),
         (
             "max_depth".to_string(),
-            JsonSchema::number(Some(
+            JsonSchema::integer(Some(
                 "Optional maximum descendant depth to return, counted from the inspected subtree root."
                     .to_string(),
-            )),
+            ))
+            .with_minimum(1)
+            .with_maximum(INSPECT_AGENT_TREE_MAX_DEPTH as u64),
         ),
         (
             "max_agents".to_string(),
-            JsonSchema::number(Some(
+            JsonSchema::integer(Some(
                 "Optional maximum number of rows to return after tree ordering is applied."
                     .to_string(),
-            )),
+            ))
+            .with_minimum(1)
+            .with_maximum(INSPECT_AGENT_TREE_MAX_AGENTS as u64),
         ),
     ]);
 
@@ -733,7 +739,7 @@ fn inspect_agent_tree_output_schema() -> Value {
             },
             "truncated": {
                 "type": "boolean",
-                "description": "Whether the returned tree rows were truncated."
+                "description": "Whether traversal stopped at a depth or row boundary; when true, summary counts cover only the materialized rows."
             },
             "summary": {
                 "type": "object",

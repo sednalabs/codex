@@ -569,6 +569,8 @@ pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, source: &Threa
         source_id,
         source_tool,
         source_status,
+        source_model,
+        source_reasoning_effort,
         source_requested_model,
         source_requested_reasoning_effort,
     ) = match source {
@@ -576,6 +578,8 @@ pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, source: &Threa
             id,
             tool,
             status,
+            model,
+            reasoning_effort,
             requested_model,
             requested_reasoning_effort,
             ..
@@ -583,6 +587,8 @@ pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, source: &Threa
             id,
             tool,
             status,
+            model,
+            reasoning_effort,
             requested_model,
             requested_reasoning_effort,
         ),
@@ -602,9 +608,24 @@ pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, source: &Threa
 
     if completed_requested_model.is_none() {
         completed_requested_model.clone_from(source_requested_model);
+        if completed_requested_model.is_none()
+            && matches!(*source_status, CollabAgentToolCallStatus::InProgress)
+        {
+            // Canonical lifecycle records written before request provenance had dedicated
+            // fields stored the caller's spawn override in the start snapshot's legacy effective
+            // slots. Only an in-progress start has that interpretation: a terminal snapshot's
+            // `model` and `reasoning_effort` are confirmed effective values and must not be
+            // reclassified as a request.
+            completed_requested_model.clone_from(source_model);
+        }
     }
     if completed_requested_reasoning_effort.is_none() {
         completed_requested_reasoning_effort.clone_from(source_requested_reasoning_effort);
+        if completed_requested_reasoning_effort.is_none()
+            && matches!(*source_status, CollabAgentToolCallStatus::InProgress)
+        {
+            completed_requested_reasoning_effort.clone_from(source_reasoning_effort);
+        }
     }
 }
 

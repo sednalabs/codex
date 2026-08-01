@@ -144,8 +144,20 @@ use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionG
 use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
 use sha1::Digest;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Item completion can be delivered after its enclosing turn terminal notification. Keep those
+/// lifecycles long enough to emit the tool analytics event, but bound terminal-turn retention so
+/// interrupted or disconnected streams cannot retain them for the process lifetime.
+pub(crate) const TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT: usize = 256;
+/// Every started tool item is retained until its completion, even when the enclosing turn has not
+/// reached a terminal notification. Bound that global queue as well: an interrupted connection
+/// can otherwise emit an unbounded started-only stream before `TurnCompleted` has a chance to
+/// apply its per-turn cleanup.
+pub(crate) const PENDING_TOOL_ITEM_LIFECYCLE_LIMIT: usize = 1_024;
 
 #[derive(Default)]
 pub(crate) struct AnalyticsReducer {
@@ -155,6 +167,9 @@ pub(crate) struct AnalyticsReducer {
     threads: HashMap<String, ThreadAnalyticsState>,
     tool_items_started_at_ms: HashMap<ToolItemKey, u64>,
     spawn_item_starts: HashMap<ToolItemKey, ThreadItem>,
+    pending_tool_item_lifecycle_order: VecDeque<ToolItemKey>,
+    terminal_turn_item_lifecycles: HashSet<(String, String)>,
+    terminal_turn_item_lifecycle_order: VecDeque<(String, String)>,
     pending_reviews: HashMap<RequestId, PendingReviewState>,
     item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
 }
@@ -376,7 +391,7 @@ struct TurnState {
     tool_counts: TurnToolCounts,
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 struct ToolItemKey {
     thread_id: String,
     turn_id: String,
@@ -1243,7 +1258,9 @@ impl AnalyticsReducer {
                     self.spawn_item_starts
                         .insert(key.clone(), notification.item);
                 }
-                self.tool_items_started_at_ms.insert(key, started_at_ms);
+                self.tool_items_started_at_ms
+                    .insert(key.clone(), started_at_ms);
+                self.retain_pending_tool_item_lifecycle(key);
             }
             ServerNotification::ItemCompleted(mut notification) => {
                 if matches!(notification.item, ThreadItem::SubAgentActivity { .. }) {
@@ -1268,6 +1285,8 @@ impl AnalyticsReducer {
                 };
                 let started_spawn_item = self.spawn_item_starts.remove(&key);
                 let started_at_ms = self.tool_items_started_at_ms.remove(&key);
+                self.remove_pending_tool_item_lifecycle(&key);
+                self.remove_terminal_turn_item_lifecycle_if_drained(&key.thread_id, &key.turn_id);
                 if let Some(started_spawn_item) = started_spawn_item.as_ref() {
                     merge_spawn_request_provenance(&mut notification.item, started_spawn_item);
                 }
@@ -1352,7 +1371,7 @@ impl AnalyticsReducer {
                 });
                 let thread_id = notification.thread_id;
                 let turn_id = notification.turn.id;
-                self.clear_terminal_turn_item_lifecycle(&thread_id, &turn_id);
+                self.retain_terminal_turn_item_lifecycle(&thread_id, &turn_id);
                 self.maybe_emit_turn_event(&turn_id, out).await;
             }
             _ => {}
@@ -1628,11 +1647,82 @@ impl AnalyticsReducer {
         summary.requested_network_access |= pending_review.requested_network_access;
     }
 
+    fn retain_terminal_turn_item_lifecycle(&mut self, thread_id: &str, turn_id: &str) {
+        if !self.has_pending_tool_item_lifecycle(thread_id, turn_id) {
+            return;
+        }
+
+        let lifecycle = (thread_id.to_string(), turn_id.to_string());
+        if self.terminal_turn_item_lifecycles.insert(lifecycle.clone()) {
+            self.terminal_turn_item_lifecycle_order.push_back(lifecycle);
+        }
+
+        while self.terminal_turn_item_lifecycles.len() > TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT {
+            let (expired_thread_id, expired_turn_id) = self
+                .terminal_turn_item_lifecycle_order
+                .pop_front()
+                .expect("terminal-turn item lifecycle order must contain every retained turn");
+            self.terminal_turn_item_lifecycles
+                .remove(&(expired_thread_id.clone(), expired_turn_id.clone()));
+            self.clear_terminal_turn_item_lifecycle(&expired_thread_id, &expired_turn_id);
+        }
+    }
+
+    fn retain_pending_tool_item_lifecycle(&mut self, key: ToolItemKey) {
+        self.pending_tool_item_lifecycle_order
+            .retain(|candidate| candidate != &key);
+        self.pending_tool_item_lifecycle_order.push_back(key);
+
+        while self.pending_tool_item_lifecycle_order.len() > PENDING_TOOL_ITEM_LIFECYCLE_LIMIT {
+            let expired = self
+                .pending_tool_item_lifecycle_order
+                .pop_front()
+                .expect("pending tool-item lifecycle order must contain every retained item");
+            let expired_thread_id = expired.thread_id.clone();
+            let expired_turn_id = expired.turn_id.clone();
+            self.tool_items_started_at_ms.remove(&expired);
+            self.spawn_item_starts.remove(&expired);
+            self.remove_terminal_turn_item_lifecycle_if_drained(
+                &expired_thread_id,
+                &expired_turn_id,
+            );
+        }
+    }
+
+    fn remove_pending_tool_item_lifecycle(&mut self, key: &ToolItemKey) {
+        self.pending_tool_item_lifecycle_order
+            .retain(|candidate| candidate != key);
+    }
+
+    fn remove_terminal_turn_item_lifecycle_if_drained(&mut self, thread_id: &str, turn_id: &str) {
+        if self.has_pending_tool_item_lifecycle(thread_id, turn_id) {
+            return;
+        }
+
+        let lifecycle = (thread_id.to_string(), turn_id.to_string());
+        if self.terminal_turn_item_lifecycles.remove(&lifecycle) {
+            self.terminal_turn_item_lifecycle_order
+                .retain(|candidate| candidate != &lifecycle);
+        }
+    }
+
+    fn has_pending_tool_item_lifecycle(&self, thread_id: &str, turn_id: &str) -> bool {
+        self.tool_items_started_at_ms
+            .keys()
+            .any(|key| key.thread_id == thread_id && key.turn_id == turn_id)
+            || self
+                .spawn_item_starts
+                .keys()
+                .any(|key| key.thread_id == thread_id && key.turn_id == turn_id)
+    }
+
     fn clear_terminal_turn_item_lifecycle(&mut self, thread_id: &str, turn_id: &str) {
         self.tool_items_started_at_ms
             .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
         self.spawn_item_starts
             .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
+        self.pending_tool_item_lifecycle_order
+            .retain(|key| key.thread_id != thread_id || key.turn_id != turn_id);
     }
 
     async fn maybe_emit_turn_event(&mut self, turn_id: &str, out: &mut Vec<TrackEventRequest>) {
