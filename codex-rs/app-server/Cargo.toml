@@ -137,6 +137,7 @@ rmcp = { workspace = true, default-features = false, features = [
 serial_test = { workspace = true }
 sha2 = { workspace = true }
 shlex = { workspace = true }
+sqlx = { workspace = true }
 tar = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing-opentelemetry = { workspace = true }
