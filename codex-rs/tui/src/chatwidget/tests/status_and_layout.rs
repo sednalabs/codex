@@ -2127,6 +2127,7 @@ fn assert_goal_paused_event(
         Ok(AppEvent::SetThreadGoalStatus {
             thread_id: event_thread_id,
             status: AppThreadGoalStatus::Paused,
+            ..
         }) if event_thread_id == thread_id
     );
 }

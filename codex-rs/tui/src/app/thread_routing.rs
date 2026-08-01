@@ -27,7 +27,7 @@ impl App {
                 // Saved side transcripts have no live app-server attachment. Keep shutdown local
                 // so a replay-only selection cannot issue a startup or turn interrupt while the
                 // next session is being created.
-                self.discard_thread_local_state(side_thread_id).await;
+                self.discard_thread_local_state(app_server, side_thread_id).await;
             } else {
                 self.discard_side_thread(app_server, side_thread_id).await;
             }
@@ -271,8 +271,12 @@ impl App {
     /// current channel, a live attachment, and a nonterminal picker lifecycle keeps that stale
     /// result from writing metadata through the app-server boundary. A tracked side must also
     /// still belong to the active primary lineage.
-    pub(super) fn thread_accepts_live_metadata_update(&self, thread_id: ThreadId) -> bool {
-        if self.thread_is_discarded(thread_id) {
+    pub(super) fn thread_accepts_live_metadata_update(
+        &self,
+        thread_id: ThreadId,
+        lifecycle_generation: u64,
+    ) -> bool {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
             return false;
         }
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
@@ -1485,6 +1489,8 @@ impl App {
     ) -> Result<()> {
         let thread_id = session.thread_id;
         self.mark_thread_attached(thread_id);
+        self.chat_widget
+            .set_thread_lifecycle_generation(self.thread_lifecycle_generation(thread_id));
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
@@ -1721,6 +1727,9 @@ impl App {
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
         if let Some(session) = snapshot.session {
+            self.chat_widget.set_thread_lifecycle_generation(
+                self.thread_lifecycle_generation(session.thread_id),
+            );
             if session.reasoning_effort != Some(ReasoningEffortConfig::Ultra) {
                 self.chat_widget
                     .set_plan_mode_reasoning_effort(self.config.plan_mode_reasoning_effort.clone());
@@ -1889,7 +1898,8 @@ impl App {
         {
             self.mark_agent_picker_thread_closed(closed_thread_id);
             if self.side_threads.contains_key(&closed_thread_id) {
-                self.discard_closed_side_thread(closed_thread_id).await;
+                self.discard_closed_side_thread(app_server, closed_thread_id)
+                    .await;
                 self.select_agent_thread(tui, app_server, primary_thread_id)
                     .await?;
             } else {

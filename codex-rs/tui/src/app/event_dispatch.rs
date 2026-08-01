@@ -486,8 +486,12 @@ impl App {
             AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
                 self.append_message_history_entry(thread_id, text);
             }
-            AppEvent::SyncThreadGitBranch { thread_id, branch } => {
-                if self.thread_accepts_live_metadata_update(thread_id) {
+            AppEvent::SyncThreadGitBranch {
+                thread_id,
+                lifecycle_generation,
+                branch,
+            } => {
+                if self.thread_accepts_live_metadata_update(thread_id, lifecycle_generation) {
                     if let Err(err) = app_server
                         .thread_metadata_update_branch(thread_id, branch)
                         .await
@@ -890,20 +894,30 @@ impl App {
             AppEvent::RefreshStatusLineWorkspaceHeadline { request_id } => {
                 self.refresh_status_line_workspace_headline(app_server, request_id);
             }
-            AppEvent::OpenThreadGoalMenu { thread_id } => {
-                self.open_thread_goal_menu(app_server, thread_id).await;
+            AppEvent::OpenThreadGoalMenu {
+                thread_id,
+                lifecycle_generation,
+            } => {
+                self.open_thread_goal_menu(app_server, thread_id, lifecycle_generation)
+                    .await;
             }
-            AppEvent::OpenThreadGoalEditor { thread_id } => {
-                self.open_thread_goal_editor(app_server, thread_id).await;
+            AppEvent::OpenThreadGoalEditor {
+                thread_id,
+                lifecycle_generation,
+            } => {
+                self.open_thread_goal_editor(app_server, thread_id, lifecycle_generation)
+                    .await;
             }
             AppEvent::SetThreadGoalObjective {
                 thread_id,
+                lifecycle_generation,
                 objective,
                 mode,
             } => {
                 self.set_thread_goal_draft(
                     app_server,
                     thread_id,
+                    lifecycle_generation,
                     crate::goal_files::GoalDraft {
                         objective,
                         ..Default::default()
@@ -914,18 +928,33 @@ impl App {
             }
             AppEvent::SetThreadGoalDraft {
                 thread_id,
+                lifecycle_generation,
                 draft,
                 mode,
             } => {
-                self.set_thread_goal_draft(app_server, thread_id, draft, mode)
+                self.set_thread_goal_draft(
+                    app_server,
+                    thread_id,
+                    lifecycle_generation,
+                    draft,
+                    mode,
+                )
+                .await;
+            }
+            AppEvent::SetThreadGoalStatus {
+                thread_id,
+                lifecycle_generation,
+                status,
+            } => {
+                self.set_thread_goal_status(app_server, thread_id, lifecycle_generation, status)
                     .await;
             }
-            AppEvent::SetThreadGoalStatus { thread_id, status } => {
-                self.set_thread_goal_status(app_server, thread_id, status)
+            AppEvent::ClearThreadGoal {
+                thread_id,
+                lifecycle_generation,
+            } => {
+                self.clear_thread_goal(app_server, thread_id, lifecycle_generation)
                     .await;
-            }
-            AppEvent::ClearThreadGoal { thread_id } => {
-                self.clear_thread_goal(app_server, thread_id).await;
             }
             AppEvent::SendAddCreditsNudgeEmail { credit_type } => {
                 if self

@@ -212,8 +212,25 @@ impl App {
             let thread_id = thread_id.expect("checked as present above");
             tracing::debug!(
                 %thread_id,
-                "dropping app-server request for discarded thread lifecycle"
+                request_id = ?request.id(),
+                "rejecting app-server request for discarded thread lifecycle"
             );
+            if let Err(err) = self
+                .reject_app_server_request(
+                    app_server_client,
+                    request.id().clone(),
+                    format!(
+                        "The TUI discarded thread {thread_id} before this request could be handled."
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %thread_id,
+                    error = %err,
+                    "failed to reject discarded app-server request"
+                );
+            }
             return;
         }
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {

@@ -2362,7 +2362,10 @@ async fn request_first_not_loaded_keeps_synthetic_buffer_non_live_across_backfil
             .is_some_and(|entry| entry.is_closed && !entry.is_running)
     );
     assert!(
-        !app.thread_accepts_live_metadata_update(thread_id),
+        !app.thread_accepts_live_metadata_update(
+            thread_id,
+            app.thread_lifecycle_generation(thread_id),
+        ),
         "a request-first child classified NotLoaded must follow the replay path, not write through a synthetic channel"
     );
 
@@ -5634,8 +5637,11 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
 }
 
 #[tokio::test]
-async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
+async fn discard_closed_side_thread_removes_local_state_and_rejects_pending_requests() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await
+            .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
     let side_thread_id = ThreadId::new();
     app.active_thread_id = Some(side_thread_id);
@@ -5663,7 +5669,7 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
         None
     );
 
-    app.discard_closed_side_thread(side_thread_id).await;
+    app.discard_closed_side_thread(&app_server, side_thread_id).await;
 
     assert_eq!(app.active_thread_id, None);
     assert!(!app.side_threads.contains_key(&side_thread_id));
@@ -5716,8 +5722,9 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
 async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
+    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
-    app.discard_closed_side_thread(thread_id).await;
+    app.discard_closed_side_thread(&app_server, thread_id).await;
     assert!(app.thread_is_discarded(thread_id));
 
     app.enqueue_primary_thread_session(
@@ -6182,11 +6189,13 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     let thread_id = started.session.thread_id;
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
+    let lifecycle_generation = app.thread_lifecycle_generation(thread_id);
     let objective = "x".repeat(MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1);
 
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: objective.clone(),
             ..Default::default()
@@ -6243,6 +6252,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         paste_draft.clone(),
         crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
     )
@@ -6265,6 +6275,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         paste_draft,
         crate::app_event::ThreadGoalSetMode::ReplaceExisting,
     )
@@ -6286,6 +6297,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: "small goal".to_string(),
             pending_pastes: vec![stale_paste],
@@ -6303,6 +6315,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: whitespace_placeholder.to_string(),
             text_elements: vec![TextElement::new(
@@ -6336,6 +6349,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: format!("Describe {image_placeholder}"),
             text_elements: vec![TextElement::new(
@@ -6379,6 +6393,7 @@ async fn replace_goal_confirmation_snapshot() {
     let mut app = make_test_app().await;
     app.show_replace_thread_goal_confirmation(
         ThreadId::new(),
+        0,
         goal_files::GoalDraft {
             objective: "New goal".to_string(),
             ..Default::default()

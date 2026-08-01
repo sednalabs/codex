@@ -406,7 +406,7 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
 }
 
 #[test]
-fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<()> {
+fn switching_away_from_inactive_closed_side_keeps_lifecycle_generations_isolated() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
@@ -439,6 +439,7 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                         &mut app_server,
                         AppEvent::SyncThreadGitBranch {
                             thread_id: root_thread_id,
+                            lifecycle_generation: app.thread_lifecycle_generation(root_thread_id),
                             branch: "live-branch".to_string(),
                         },
                     )
@@ -464,6 +465,8 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                     ThreadEventAttachment::Live,
                     "the regression requires an inactive retained live side channel"
                 );
+                let stale_side_generation =
+                    app.thread_lifecycle_generation(closed_side_thread_id);
                 app.agent_navigation.upsert(
                     closed_side_thread_id,
                     Some("Closed side".to_string()),
@@ -507,9 +510,16 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                 assert!(!app.thread_event_channels.contains_key(&closed_side_thread_id));
                 assert_eq!(app.agent_navigation.get(&closed_side_thread_id), None);
 
-                // This event represents the result of a branch lookup begun while the side
-                // channel was live. The side was discarded before the result reached the event
-                // loop, so it must not revive the removed lifecycle with an app-server write.
+                // An authoritative recovery can reattach the same server thread id. Delayed work
+                // from the discarded presentation must still be rejected by its captured
+                // generation rather than being accepted merely because this new channel is live.
+                app.mark_thread_attached(closed_side_thread_id);
+                app.ensure_thread_channel(closed_side_thread_id).mark_live();
+                app.active_thread_id = Some(closed_side_thread_id);
+                let reattached_generation =
+                    app.thread_lifecycle_generation(closed_side_thread_id);
+                assert_ne!(stale_side_generation, reattached_generation);
+
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 let control = app
                     .handle_event(
@@ -517,6 +527,7 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                         &mut app_server,
                         AppEvent::SyncThreadGitBranch {
                             thread_id: closed_side_thread_id,
+                            lifecycle_generation: stale_side_generation,
                             branch: "discarded-side-branch".to_string(),
                         },
                     )
@@ -529,6 +540,59 @@ fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<
                         .iter()
                         .any(|method| method == "thread/metadata/update"),
                     "a branch result delivered after side discard must not issue metadata RPC: {delayed_branch_requests:?}"
+                );
+
+                let control = app
+                    .handle_event(
+                        &mut tui,
+                        &mut app_server,
+                        AppEvent::SetThreadGoalStatus {
+                            thread_id: closed_side_thread_id,
+                            lifecycle_generation: stale_side_generation,
+                            status: codex_app_server_protocol::ThreadGoalStatus::Paused,
+                        },
+                    )
+                    .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                app.send_thread_settings_update_for_lifecycle(
+                    &mut app_server,
+                    codex_app_server_protocol::ThreadSettingsUpdateParams {
+                        thread_id: closed_side_thread_id.to_string(),
+                        model: Some("stale-model".to_string()),
+                        ..Default::default()
+                    },
+                    stale_side_generation,
+                )
+                .await;
+                let stale_goal_and_settings_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    stale_goal_and_settings_requests.iter().all(|method| !matches!(
+                        method.as_str(),
+                        "thread/goal/set" | "thread/settings/update"
+                    )),
+                    "stale goal and settings work must not write into a reattached lifecycle: {stale_goal_and_settings_requests:?}"
+                );
+
+                let control = app
+                    .handle_event(
+                        &mut tui,
+                        &mut app_server,
+                        AppEvent::SyncThreadGitBranch {
+                            thread_id: closed_side_thread_id,
+                            lifecycle_generation: reattached_generation,
+                            branch: "reattached-side-branch".to_string(),
+                        },
+                    )
+                    .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                assert!(
+                    requests
+                        .lock()
+                        .expect("request recorder lock")
+                        .iter()
+                        .any(|method| method == "thread/metadata/update"),
+                    "a branch result from the current reattached lifecycle must reach the app server"
                 );
 
                 app_server.shutdown().await?;
@@ -1181,11 +1245,13 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 for event in [
                     AppEvent::SetThreadGoalObjective {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                         objective: "blocked objective".to_string(),
                         mode: crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
                     },
                     AppEvent::SetThreadGoalDraft {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                         draft: crate::goal_files::GoalDraft {
                             objective: "blocked draft".to_string(),
                             ..Default::default()
@@ -1194,13 +1260,16 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     },
                     AppEvent::SetThreadGoalStatus {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                         status: codex_app_server_protocol::ThreadGoalStatus::Paused,
                     },
                     AppEvent::ClearThreadGoal {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                     },
                     AppEvent::SyncThreadGitBranch {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                         branch: "late-replay-only-branch".to_string(),
                     },
                 ] {

@@ -68,6 +68,17 @@ pub(crate) enum ResolvedAppServerRequest {
     },
 }
 
+/// A request removed from a discarded thread's local UI state.
+///
+/// Keep the original JSON-RPC id alongside the UI identity. The id is required to terminate the
+/// pending server request after its prompt has been removed, without keeping a discarded thread
+/// reachable through the normal response path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ClearedAppServerRequest {
+    pub(super) request_id: AppServerRequestId,
+    pub(super) request: ResolvedAppServerRequest,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PendingAppServerRequests {
     exec_approvals: HashMap<String, AppServerRequestId>,
@@ -198,10 +209,9 @@ impl PendingAppServerRequests {
     }
 
     /// Removes every locally pending interaction belonging to `thread_id` and returns their UI
-    /// identities so the caller can dismiss any visible prompt. This intentionally does not
-    /// send an RPC response: discard is a local lifecycle transition and must not revive a
-    /// detached thread merely to answer an old request.
-    pub(super) fn clear_thread(&mut self, thread_id: ThreadId) -> Vec<ResolvedAppServerRequest> {
+    /// identities and server request ids so the caller can dismiss visible prompts and reject
+    /// each server request after the local ownership index is gone.
+    pub(super) fn clear_thread(&mut self, thread_id: ThreadId) -> Vec<ClearedAppServerRequest> {
         let request_ids = self
             .request_threads
             .iter()
@@ -211,7 +221,13 @@ impl PendingAppServerRequests {
             .collect::<Vec<_>>();
         request_ids
             .into_iter()
-            .filter_map(|request_id| self.resolve_notification(&request_id))
+            .filter_map(|request_id| {
+                self.resolve_notification(&request_id)
+                    .map(|request| ClearedAppServerRequest {
+                        request_id,
+                        request,
+                    })
+            })
             .collect()
     }
 
@@ -483,6 +499,7 @@ struct McpRequestKey {
 #[cfg(test)]
 mod tests {
     use super::PendingAppServerRequests;
+    use super::ClearedAppServerRequest;
     use super::ResolvedAppServerRequest;
     use super::UnsupportedAppServerRequest;
     use crate::app_command::AppCommand as Op;
@@ -595,8 +612,11 @@ mod tests {
 
         assert_eq!(
             pending.clear_thread(discarded_thread_id),
-            vec![ResolvedAppServerRequest::ExecApproval {
-                id: "discarded-approval".to_string(),
+            vec![ClearedAppServerRequest {
+                request_id: AppServerRequestId::Integer(41),
+                request: ResolvedAppServerRequest::ExecApproval {
+                    id: "discarded-approval".to_string(),
+                },
             }]
         );
         assert!(

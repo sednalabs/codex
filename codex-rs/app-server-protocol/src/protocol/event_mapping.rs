@@ -2,6 +2,7 @@ use crate::protocol::common::ServerNotification;
 use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::convert_patch_changes;
+use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
 use crate::protocol::v2::AgentMessageDeltaNotification;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
@@ -80,7 +81,10 @@ pub fn item_event_to_server_notification(
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
             let (requested_model, requested_reasoning_effort) =
-                legacy_spawn_requested_identity(&begin_event);
+                normalize_legacy_spawn_requested_identity(
+                    begin_event.model.clone(),
+                    begin_event.reasoning_effort.clone(),
+                );
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -502,28 +506,6 @@ pub fn item_event_to_server_notification(
     Some(notification)
 }
 
-/// V1 rollout history used an empty model plus the default effort as a sentinel for an
-/// omitted spawn override. Those two fields predate the requested/effective identity split;
-/// projecting the sentinel as requested identity would invent an override on replay.
-fn legacy_spawn_requested_identity(
-    begin_event: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
-) -> (
-    Option<String>,
-    Option<codex_protocol::openai_models::ReasoningEffort>,
-) {
-    if begin_event.model.as_deref() == Some("")
-        && begin_event.reasoning_effort
-            == Some(codex_protocol::openai_models::ReasoningEffort::Medium)
-    {
-        (None, None)
-    } else {
-        (
-            begin_event.model.clone(),
-            begin_event.reasoning_effort.clone(),
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,7 +663,10 @@ mod tests {
         };
 
         assert_eq!(
-            legacy_spawn_requested_identity(&event),
+            normalize_legacy_spawn_requested_identity(
+                event.model.clone(),
+                event.reasoning_effort.clone(),
+            ),
             (
                 Some("gpt-requested".to_string()),
                 Some(codex_protocol::openai_models::ReasoningEffort::Medium),

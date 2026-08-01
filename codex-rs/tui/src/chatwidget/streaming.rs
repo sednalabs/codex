@@ -339,12 +339,17 @@ impl ChatWidget {
             && let Some(runner) = self.workspace_command_runner.clone()
         {
             let cwd = PathBuf::from(cwd);
+            let lifecycle_generation = self.thread_lifecycle_generation;
             let tx = self.app_event_tx.clone();
             tokio::spawn(async move {
                 if let Some(branch) =
                     crate::branch_summary::current_branch_name(runner.as_ref(), &cwd).await
                 {
-                    tx.send(AppEvent::SyncThreadGitBranch { thread_id, branch });
+                    tx.send(AppEvent::SyncThreadGitBranch {
+                        thread_id,
+                        lifecycle_generation,
+                        branch,
+                    });
                 }
             });
         }
