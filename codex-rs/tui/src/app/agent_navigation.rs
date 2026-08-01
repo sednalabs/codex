@@ -21,7 +21,7 @@
 
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
-use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::format_agent_picker_item_label;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
 use codex_protocol::ThreadId;
@@ -48,6 +48,10 @@ pub(crate) struct AgentNavigationState {
     stopped_threads: HashSet<ThreadId>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    /// Opaque continuation for the next bounded persisted-subagent page.
+    next_picker_page_cursor: Option<String>,
+    /// Whether this session has completed the bounded legacy relation repair fallback.
+    legacy_relation_fallback_checked: bool,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -294,6 +298,33 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
+        self.next_picker_page_cursor = None;
+        self.legacy_relation_fallback_checked = false;
+    }
+
+    /// Stores the server continuation after a bounded `/agent` backfill.
+    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) {
+        self.next_picker_page_cursor = next_cursor;
+    }
+
+    /// Returns the next persisted-subagent page when one exists.
+    pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {
+        self.next_picker_page_cursor.clone()
+    }
+
+    /// Returns whether the bounded legacy relation fallback still needs a successful pass.
+    ///
+    /// Callers must mark it complete only after both compatibility probes and every listed
+    /// loaded-thread metadata read have returned successfully. This keeps a temporary app-server
+    /// failure from making legacy descendants permanently undiscoverable for the rest of the
+    /// picker session.
+    pub(crate) fn needs_legacy_relation_fallback_check(&self) -> bool {
+        !self.legacy_relation_fallback_checked
+    }
+
+    /// Records a successful bounded legacy relation fallback pass.
+    pub(crate) fn mark_legacy_relation_fallback_checked(&mut self) {
+        self.legacy_relation_fallback_checked = true;
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
@@ -409,23 +440,19 @@ impl AgentNavigationState {
             self.threads
                 .get(&thread_id)
                 .map(|entry| {
-                    if !is_primary
-                        && let Some(agent_path) = entry
-                            .agent_path
-                            .as_deref()
-                            .filter(|agent_path| !agent_path.trim().is_empty())
-                    {
-                        return format!("`{agent_path}`");
-                    }
-                    format_agent_picker_item_name(
+                    format_agent_picker_item_label(
                         entry.agent_nickname.as_deref(),
                         entry.agent_role.as_deref(),
+                        entry.agent_path.as_deref(),
                         is_primary,
                     )
                 })
                 .unwrap_or_else(|| {
-                    format_agent_picker_item_name(
-                        /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
+                    format_agent_picker_item_label(
+                        /*agent_nickname*/ None,
+                        /*agent_role*/ None,
+                        /*agent_path*/ None,
+                        is_primary,
                     )
                 }),
         )
@@ -774,12 +801,27 @@ mod tests {
     }
 
     #[test]
+    fn clear_drops_picker_page_cursor() {
+        let mut state = AgentNavigationState::default();
+        state.set_next_picker_page_cursor(Some("opaque-cursor".to_string()));
+        assert!(state.needs_legacy_relation_fallback_check());
+        state.mark_legacy_relation_fallback_checked();
+        assert!(!state.needs_legacy_relation_fallback_check());
+
+        state.clear();
+
+        assert_eq!(state.next_picker_page_cursor(), None);
+        assert!(state.needs_legacy_relation_fallback_check());
+    }
+
+    #[test]
     fn active_agent_label_tracks_current_thread() {
-        let (state, main_thread_id, first_agent_id, _) = populated_state();
+        let (mut state, main_thread_id, first_agent_id, _) = populated_state();
+        state.set_agent_path(first_agent_id, Some("/root/explorer".to_string()));
 
         assert_eq!(
             state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
-            Some("Subagent: Robie [explorer]".to_string())
+            Some("Subagent: Robie [explorer] · /root/explorer".to_string())
         );
         assert_eq!(
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
