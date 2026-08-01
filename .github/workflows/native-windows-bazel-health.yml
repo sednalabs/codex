@@ -28,7 +28,7 @@ jobs:
   test-windows-native-main:
     timeout-minutes: 40
     runs-on: windows-2022
-    name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native health)
+    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)
     environment:
       name: bazel
       deployment: false
@@ -43,9 +43,9 @@ jobs:
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
         with:
-          target: x86_64-pc-windows-msvc
-          # Keep the former job identity in the scope; the MSVC target keeps
-          # this repository-cache key separate from the prior gnullvm lane.
+          target: x86_64-pc-windows-gnullvm
+          # Keep the former job identity in the scope so post-merge restores
+          # continue to use the existing native repository-cache key.
           cache-scope: bazel-${{ github.job }}
 
       - name: bazel test //...
@@ -65,16 +65,8 @@ jobs:
 
           bazel_test_args=(
             test
-            # Native proc macros must use the hosted Windows MSVC target and
-            # exec platform. The gnullvm path can leave their DLLs unloadable
-            # by consumers, reported by rustc as missing proc-macro crates.
-            --platforms=//:windows_x86_64_msvc
-            # The default linker preference selects the hermetic C++ driver,
-            # which cannot consume the MSVC arguments emitted for this target.
-            # Use Rust's bundled COFF linker for the MSVC exec toolchain.
-            --@rules_rust//rust/settings:toolchain_linker_preference=rust
-            # Keep Rust action-cache isolation separate from the MSVC platform
-            # selection above, without relaxing this health check's result.
+            # Native gnullvm proc macros require the matching gnullvm Rust
+            # execution toolchain so their DLL runtime remains loadable.
             --modify_execution_info=Rustc=+no-remote-cache
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
@@ -85,7 +77,6 @@ jobs:
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
             --print-failed-test-logs \
-            --windows-msvc-host-platform \
             -- \
             "${bazel_test_args[@]}" \
             -- \
@@ -106,7 +97,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-msvc
+          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 

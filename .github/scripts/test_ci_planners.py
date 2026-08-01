@@ -1069,7 +1069,7 @@ class RouteSelectionTests(unittest.TestCase):
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
 
-    def test_bazel_windows_native_main_uses_msvc_proc_macro_platform(self) -> None:
+    def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
 
@@ -1096,7 +1096,7 @@ class RouteSelectionTests(unittest.TestCase):
         native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
         self.assertEqual(
             native_job.get("name"),
-            "Bazel test on windows-latest for x86_64-pc-windows-msvc (native health)",
+            "Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)",
         )
         native_steps = native_job.get("steps") or []
         prepare_step = next(
@@ -1106,7 +1106,7 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
         self.assertEqual(
             (prepare_step.get("with") or {}).get("target"),
-            "x86_64-pc-windows-msvc",
+            "x86_64-pc-windows-gnullvm",
         )
         native_step = next(
             (step for step in native_steps if step.get("name") == "bazel test //..."),
@@ -1115,12 +1115,9 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
         self.assertNotIn("continue-on-error", native_step)
         native_test_run = native_step.get("run") or ""
-        self.assertIn("--platforms=//:windows_x86_64_msvc", native_test_run)
-        self.assertIn("--windows-msvc-host-platform", native_test_run)
-        self.assertIn(
-            "--@rules_rust//rust/settings:toolchain_linker_preference=rust",
-            native_test_run,
-        )
+        self.assertNotIn("--platforms=", native_test_run)
+        self.assertNotIn("--windows-msvc-host-platform", native_test_run)
+        self.assertNotIn("toolchain_linker_preference=rust", native_test_run)
         self.assertIn(
             "--modify_execution_info=Rustc=+no-remote-cache",
             native_test_run,
@@ -1128,15 +1125,23 @@ class RouteSelectionTests(unittest.TestCase):
 
         module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
         self.assertIn(
-            '"//patches:rules_rs_windows_msvc_rust_lld.patch"',
+            '"//patches:rules_rs_windows_gnullvm_exec_toolchain.patch"',
             module_bazel,
         )
-        msvc_linker_patch = (
-            REPO_ROOT / "patches/rules_rs_windows_msvc_rust_lld.patch"
+        gnullvm_exec_patch = (
+            REPO_ROOT / "patches/rules_rs_windows_gnullvm_exec_toolchain.patch"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            '"@llvm//constraints/windows/abi:msvc": "{}rust-lld".format(rustc_repo_label)',
-            msvc_linker_patch,
+            "SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [",
+            gnullvm_exec_patch,
+        )
+        self.assertIn(
+            '"x86_64-pc-windows-gnullvm",',
+            gnullvm_exec_patch,
+        )
+        self.assertIn(
+            "exec_compatible_with = triple_to_rust_constraint_set(triple)",
+            gnullvm_exec_patch,
         )
 
         execution_logs_upload = next(
@@ -1144,7 +1149,7 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(
             (execution_logs_upload.get("with") or {}).get("name"),
-            "bazel-execution-logs-test-windows-native-x86_64-pc-windows-msvc",
+            "bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm",
         )
 
         diagnostics_step = next(
