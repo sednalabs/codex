@@ -86,7 +86,7 @@ async fn throttled_receiver_flushes_pending_on_shutdown() {
     assert_eq!(closed, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn debounced_receiver_coalesces_each_event_batch() {
     let (tx, rx) = watch_channel();
     let mut debounced = DebouncedWatchReceiver::new(rx, TEST_THROTTLE_INTERVAL);
