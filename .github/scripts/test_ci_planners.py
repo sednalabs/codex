@@ -5439,7 +5439,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         checkout = next(
             step
             for step in steps
-            if step.get("uses") == "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+            if step.get("uses") == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
         )
         self.assertEqual((checkout.get("with") or {}).get("fetch-depth"), "1")
 
@@ -5633,7 +5633,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         steps = lint_job.get("steps") or []
         checkout = steps[0]
         self.assertEqual(
-            checkout.get("uses"), "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+            checkout.get("uses"), "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
         )
         self.assertEqual((checkout.get("with") or {}).get("persist-credentials"), "false")
         lint_step = next(
