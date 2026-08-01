@@ -85,6 +85,7 @@ use crate::facts::TurnSteerRequestError;
 use crate::facts::TurnTokenUsageFact;
 use crate::reducer::AnalyticsReducer;
 use crate::reducer::PENDING_TOOL_ITEM_LIFECYCLE_LIMIT;
+use crate::reducer::PENDING_TOOL_ITEMS_PER_TURN_LIMIT;
 use crate::reducer::TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT;
 use crate::reducer::normalize_path_for_skill_id;
 use crate::reducer::skill_id_for_local_skill;
@@ -2894,11 +2895,11 @@ async fn terminal_turn_item_lifecycle_retention_is_bounded() {
 }
 
 #[tokio::test]
-async fn pending_tool_item_lifecycle_is_bounded_before_turn_completion() {
+async fn pending_tool_item_lifecycle_is_bounded_per_turn_before_turn_completion() {
     let mut reducer = AnalyticsReducer::default();
     let mut events = Vec::new();
 
-    for index in 0..=PENDING_TOOL_ITEM_LIFECYCLE_LIMIT {
+    for index in 0..=PENDING_TOOL_ITEMS_PER_TURN_LIMIT {
         let item_id = format!("started-only-{index}");
         reducer
             .ingest(
@@ -2912,6 +2913,75 @@ async fn pending_tool_item_lifecycle_is_bounded_before_turn_completion() {
                             tool: CollabAgentTool::SpawnAgent,
                             status: CollabAgentToolCallStatus::InProgress,
                             sender_thread_id: "thread-started-only".to_string(),
+                            receiver_thread_ids: Vec::new(),
+                            prompt: None,
+                            model: None,
+                            reasoning_effort: None,
+                            requested_model: None,
+                            requested_reasoning_effort: None,
+                            agents_states: Default::default(),
+                        },
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    assert_eq!(
+        reducer.tool_items_started_at_ms.len(),
+        PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+    );
+    assert_eq!(
+        reducer.spawn_item_starts.len(),
+        PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+    );
+    assert_eq!(
+        reducer.pending_tool_item_lifecycle_order.len(),
+        PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .all(|key| key.item_id != "started-only-0")
+    );
+    assert!(
+        reducer
+            .spawn_item_starts
+            .keys()
+            .all(|key| key.item_id != "started-only-0")
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .any(|key| key.item_id == format!("started-only-{PENDING_TOOL_ITEMS_PER_TURN_LIMIT}"))
+    );
+}
+
+#[tokio::test]
+async fn pending_tool_item_lifecycle_is_bounded_globally_across_turns() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+
+    // One started item per distinct turn avoids the per-turn cap, isolating global eviction.
+    for index in 0..=PENDING_TOOL_ITEM_LIFECYCLE_LIMIT {
+        let thread_id = format!("thread-started-only-{index}");
+        let turn_id = format!("turn-never-completes-{index}");
+        let item_id = format!("started-only-{index}");
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                    ItemStartedNotification {
+                        thread_id: thread_id.clone(),
+                        turn_id,
+                        started_at_ms: 1_000,
+                        item: ThreadItem::CollabAgentToolCall {
+                            id: item_id,
+                            tool: CollabAgentTool::SpawnAgent,
+                            status: CollabAgentToolCallStatus::InProgress,
+                            sender_thread_id: thread_id,
                             receiver_thread_ids: Vec::new(),
                             prompt: None,
                             model: None,

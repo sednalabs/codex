@@ -426,6 +426,14 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
+        // A replay-only channel is a saved transcript, not an app-server subscription. Every
+        // caller (including the switch-away path) must discard its local presentation state
+        // without attempting a thread-scoped interrupt or unsubscribe.
+        if self.thread_is_replay_only(thread_id) {
+            self.discard_thread_local_state(thread_id).await;
+            return true;
+        }
+
         if let Err(message) = self.interrupt_side_thread(app_server, thread_id).await {
             tracing::warn!("{message}");
             self.chat_widget.add_error_message(message);

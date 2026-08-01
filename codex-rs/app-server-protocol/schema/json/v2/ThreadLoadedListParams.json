@@ -16,7 +16,7 @@
       ]
     },
     "limit": {
-      "description": "Optional page size; defaults to no limit.",
+      "description": "Optional page size. When omitted, the server returns its bounded default of 100 sessions.\nProvided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to\ncontinue when more loaded sessions remain.",
       "format": "uint32",
       "minimum": 0,
       "type": [
