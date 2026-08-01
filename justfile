@@ -193,6 +193,7 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_backfill_combines_indexed_and_legacy_descendants --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_retries_legacy_fallback_after_transient_scan_failure --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_loaded_descendants_when_persisted_list_fails --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_the_forward_page_after_reopen --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_descendant_over_closed_history --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_next_page --lib -- --exact --test-threads=1
