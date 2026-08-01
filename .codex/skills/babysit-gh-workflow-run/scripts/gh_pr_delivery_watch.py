@@ -41,6 +41,10 @@ class GhCommandError(RuntimeError):
     """Raised when an authoritative GitHub read cannot be completed."""
 
 
+class GhCommandDeadlineExceeded(GhCommandError):
+    """Raised when one bounded observation read exhausts its deadline."""
+
+
 class DeliveryStop(RuntimeError):
     """A fail-closed delivery-proof stop with a stable receipt action."""
 
@@ -118,22 +122,31 @@ def compact_failed_job(failed_jobs):
     } or None
 
 
-def run_process(command, *, env=None):
+def run_process(command, *, env=None, timeout_seconds=None):
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "env": env,
+    }
+    if timeout_seconds is not None:
+        kwargs["timeout"] = timeout_seconds
     try:
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env,
-        )
+        return subprocess.run(command, check=False, **kwargs)
+    except subprocess.TimeoutExpired as err:
+        executable = str(command[0]) if command else "required command"
+        raise GhCommandDeadlineExceeded(
+            f"{executable!r} exceeded the delivery observation deadline."
+        ) from err
     except OSError as err:
         executable = str(command[0]) if command else "required command"
         raise GhCommandError(f"Unable to execute {executable!r}.") from err
 
 
-def gh_json(args):
-    result = run_process(["gh", *args])
+def gh_json(args, *, timeout_seconds=None):
+    if timeout_seconds is None:
+        result = run_process(["gh", *args])
+    else:
+        result = run_process(["gh", *args], timeout_seconds=timeout_seconds)
     if result.returncode != 0:
         raise GhCommandError(
             f"GitHub CLI command failed with exit status {result.returncode}."
@@ -167,7 +180,7 @@ def split_repo(repo):
     return owner, name
 
 
-def fetch_pr(repo, pr_number):
+def fetch_pr(repo, pr_number, *, timeout_seconds=None):
     owner, name = split_repo(repo)
     payload = gh_json(
         [
@@ -181,7 +194,8 @@ def fetch_pr(repo, pr_number):
             f"name={name}",
             "-F",
             f"number={int(pr_number)}",
-        ]
+        ],
+        timeout_seconds=timeout_seconds,
     )
     data = payload.get("data") if isinstance(payload, dict) else None
     repository = data.get("repository") if isinstance(data, dict) else None
@@ -199,16 +213,20 @@ def fetch_pr(repo, pr_number):
     }
 
 
-def fetch_actions_run(repo, run_id):
-    payload = gh_json(["api", f"repos/{repo}/actions/runs/{int(run_id)}"])
+def fetch_actions_run(repo, run_id, *, timeout_seconds=None):
+    payload = gh_json(
+        ["api", f"repos/{repo}/actions/runs/{int(run_id)}"],
+        timeout_seconds=timeout_seconds,
+    )
     if not isinstance(payload, dict):
         raise GhCommandError(f"Actions run {run_id} returned an unexpected payload.")
     return normalize_actions_run(payload)
 
 
-def list_merge_group_runs(repo):
+def list_merge_group_runs(repo, *, timeout_seconds=None):
     payload = gh_json(
-        ["api", f"repos/{repo}/actions/runs?event=merge_group&per_page=100"]
+        ["api", f"repos/{repo}/actions/runs?event=merge_group&per_page=100"],
+        timeout_seconds=timeout_seconds,
     )
     runs = payload.get("workflow_runs") if isinstance(payload, dict) else None
     if not isinstance(runs, list):
@@ -438,11 +456,12 @@ def fetch_ref_sha(repo, ref):
     return sha
 
 
-def is_commit_ancestor(repo, ancestor_sha, descendant_sha):
+def is_commit_ancestor(repo, ancestor_sha, descendant_sha, *, timeout_seconds=None):
     if ancestor_sha.lower() == descendant_sha.lower():
         return True
     payload = gh_json(
-        ["api", f"repos/{repo}/compare/{ancestor_sha}...{descendant_sha}"]
+        ["api", f"repos/{repo}/compare/{ancestor_sha}...{descendant_sha}"],
+        timeout_seconds=timeout_seconds,
     )
     return isinstance(payload, dict) and payload.get("status") in {
         "ahead",
@@ -450,7 +469,23 @@ def is_commit_ancestor(repo, ancestor_sha, descendant_sha):
     }
 
 
-def verify_candidate_association(repo, candidate_sha, pr, args):
+def observation_timeout_stop(args):
+    return DeliveryStop(
+        "stop_merge_observation_timeout",
+        f"PR #{args.pr} did not merge within "
+        f"{args.merge_observation_timeout_seconds} seconds after its "
+        "successful merge-group run.",
+    )
+
+
+def remaining_observation_seconds(deadline, args):
+    remaining_seconds = deadline - time.monotonic()
+    if remaining_seconds <= 0:
+        raise observation_timeout_stop(args)
+    return remaining_seconds
+
+
+def verify_candidate_association(repo, candidate_sha, pr, args, *, deadline=None):
     expected_base_sha = str(pr.get("base_sha") or "")
     if not is_full_sha(expected_base_sha):
         raise DeliveryStop(
@@ -459,11 +494,27 @@ def verify_candidate_association(repo, candidate_sha, pr, args):
         )
     try:
         includes_expected_head = is_commit_ancestor(
-            repo, args.expected_head_sha, candidate_sha
+            repo,
+            args.expected_head_sha,
+            candidate_sha,
+            timeout_seconds=(
+                remaining_observation_seconds(deadline, args)
+                if deadline is not None
+                else None
+            ),
         )
         includes_current_base = is_commit_ancestor(
-            repo, expected_base_sha, candidate_sha
+            repo,
+            expected_base_sha,
+            candidate_sha,
+            timeout_seconds=(
+                remaining_observation_seconds(deadline, args)
+                if deadline is not None
+                else None
+            ),
         )
+    except GhCommandDeadlineExceeded as err:
+        raise observation_timeout_stop(args) from err
     except GhCommandError as err:
         raise DeliveryStop(
             "stop_merge_group_candidate_uncorrelatable",
@@ -506,9 +557,14 @@ def verify_selected_candidate_merged(repo, candidate_sha, merge_commit_sha):
     }
 
 
-def reassert_selected_candidate_identity(repo, candidate, args):
+def reassert_selected_candidate_identity(repo, candidate, args, *, deadline):
     observed = verify_merge_group_candidate(
-        fetch_actions_run(repo, candidate["id"]), args
+        fetch_actions_run(
+            repo,
+            candidate["id"],
+            timeout_seconds=remaining_observation_seconds(deadline, args),
+        ),
+        args,
     )
     if (
         str(observed["head_sha"]).lower() != str(candidate["head_sha"]).lower()
@@ -522,12 +578,15 @@ def reassert_selected_candidate_identity(repo, candidate, args):
     return observed
 
 
-def reassert_candidate_not_superseded(repo, candidate, args):
+def reassert_candidate_not_superseded(repo, candidate, args, *, deadline):
     later_candidate_shas = {
         str(run["head_sha"]).lower()
         for run in (
             verify_merge_group_candidate(run, args)
-            for run in list_merge_group_runs(repo)
+            for run in list_merge_group_runs(
+                repo,
+                timeout_seconds=remaining_observation_seconds(deadline, args),
+            )
             if workflow_matches(run.get("workflow"), args.merge_group_workflow)
             and queue_ref_mentions_pr(run.get("head_branch"), args.pr)
         )
@@ -540,33 +599,46 @@ def reassert_candidate_not_superseded(repo, candidate, args):
         )
 
 
-def wait_for_pr_delivery(repo, candidate, args):
-    deadline = time.monotonic() + args.merge_observation_timeout_seconds
+def wait_for_pr_delivery(repo, candidate, initial_pr, args):
     latest_association = None
-    while True:
-        observed_pr = fetch_pr(repo, args.pr)
-        assert_pr_identity(observed_pr, args)
-        if observed_pr["merged"]:
-            return observed_pr, latest_association
-        if not observed_pr["merge_queue_entry_id"]:
-            raise DeliveryStop(
-                "stop_merge_queue_entry_disappeared_without_merge",
-                f"PR #{args.pr} left the merge queue without a merge commit.",
+    try:
+        deadline = time.monotonic() + args.merge_observation_timeout_seconds
+        while True:
+            observed_pr = fetch_pr(
+                repo,
+                args.pr,
+                timeout_seconds=remaining_observation_seconds(deadline, args),
             )
-        reassert_selected_candidate_identity(repo, candidate, args)
-        latest_association = verify_candidate_association(
-            repo, candidate["head_sha"], observed_pr, args
-        )
-        reassert_candidate_not_superseded(repo, candidate, args)
-        remaining_seconds = deadline - time.monotonic()
-        if remaining_seconds <= 0:
-            raise DeliveryStop(
-                "stop_merge_observation_timeout",
-                f"PR #{args.pr} did not merge within "
-                f"{args.merge_observation_timeout_seconds} seconds after its "
-                "successful merge-group run.",
+            assert_pr_identity(observed_pr, args)
+            reassert_selected_candidate_identity(
+                repo, candidate, args, deadline=deadline
             )
-        time.sleep(min(args.poll_seconds, remaining_seconds))
+            association_pr = initial_pr if observed_pr["merged"] else observed_pr
+            latest_association = verify_candidate_association(
+                repo,
+                candidate["head_sha"],
+                association_pr,
+                args,
+                deadline=deadline,
+            )
+            reassert_candidate_not_superseded(repo, candidate, args, deadline=deadline)
+            if observed_pr["merged"]:
+                return observed_pr, latest_association
+            if not observed_pr["merge_queue_entry_id"]:
+                raise DeliveryStop(
+                    "stop_merge_queue_entry_disappeared_without_merge",
+                    f"PR #{args.pr} left the merge queue without a merge commit.",
+                )
+            time.sleep(
+                min(args.poll_seconds, remaining_observation_seconds(deadline, args))
+            )
+    except GhCommandDeadlineExceeded as err:
+        raise observation_timeout_stop(args) from err
+    except KeyboardInterrupt as err:
+        raise DeliveryStop(
+            "stop_merge_observation_interrupted",
+            "PR delivery observation was interrupted before merge completion.",
+        ) from err
 
 
 def is_commit_reachable_from_main(repo, merge_commit_sha, main_head_sha):
@@ -658,7 +730,9 @@ def execute_delivery(args):
                 f"Merge-group run {candidate['id']} did not complete successfully.",
             )
 
-        delivered_pr, latest_association = wait_for_pr_delivery(repo, candidate, args)
+        delivered_pr, latest_association = wait_for_pr_delivery(
+            repo, candidate, initial_pr, args
+        )
         assert_pr_identity(delivered_pr, args)
         if latest_association is not None:
             receipt["merge_group"]["association"] = latest_association
@@ -779,8 +853,8 @@ def parse_args(argv=None):
         type=int,
         default=300,
         help=(
-            "Bounded wait after a successful merge-group run for the PR merge "
-            "transition (default: 300)."
+            "Hard deadline after a successful merge-group run for the PR merge "
+            "transition and its GitHub reads (default: 300)."
         ),
     )
     parser.add_argument(

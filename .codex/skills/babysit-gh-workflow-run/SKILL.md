@@ -135,11 +135,16 @@ both long workflow waits remain delegated to the existing
   queue-to-merged transition for at most
   `--merge-observation-timeout-seconds` (default: 300). It uses the existing
   `--poll-seconds` interval (default: 60), caps the final sleep at the deadline,
-  and is cancellable with the normal process interrupt. This is receipt-owned
-  bounded observation, not a model or operator polling loop. Every still-queued
-  poll reasserts the exact PR head/base, selected run identity, candidate
-  ancestry, and absence of a newer candidate SHA; timeout emits
-  `stop_merge_observation_timeout` and changed invariants fail closed.
+  and applies the shrinking remaining deadline to every GitHub read in this
+  observation. A hung read therefore stops with
+  `stop_merge_observation_timeout` rather than exceeding the requested bound.
+  This is receipt-owned bounded observation, not a model or operator polling
+  loop. Every poll, including one whose first PR read is already merged,
+  reasserts the selected run identity, candidate association, and absence of a
+  newer candidate SHA; still-queued polls also reassert the current exact PR
+  head/base. Changed invariants fail closed. A normal process interrupt returns
+  the scoped `stop_merge_observation_interrupted` receipt; it does not change
+  the selected-workflow proof scope.
 - Standard output is one compact JSON receipt. A non-zero status still emits a
   receipt with a stable `stop_*` action and the first failed job when available.
 

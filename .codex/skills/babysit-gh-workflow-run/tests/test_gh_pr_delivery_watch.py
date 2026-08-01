@@ -386,6 +386,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
             candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
@@ -423,7 +425,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(MODULE.time, "sleep") as sleep,
         ):
             observed_pr, observed_association = MODULE.wait_for_pr_delivery(
-                "owner/repo", candidate, args
+                "owner/repo", candidate, make_pr(), args
             )
 
         self.assertEqual(observed_pr, merged_pr)
@@ -473,11 +475,112 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(MODULE, "verify_candidate_association", return_value={}),
             self.assertRaisesRegex(MODULE.DeliveryStop, "superseded") as raised,
         ):
-            MODULE.wait_for_pr_delivery("owner/repo", candidate, args)
+            MODULE.wait_for_pr_delivery("owner/repo", candidate, make_pr(), args)
 
         self.assertEqual(
             raised.exception.action, "stop_merge_group_candidate_superseded"
         )
+
+    def test_first_merged_observation_rejects_a_later_candidate(self):
+        args = make_args()
+        candidate = make_candidate()
+        newer_candidate = make_candidate(run_id=902, candidate_sha=OTHER_SHA)
+        initial_pr = make_pr()
+        merged_pr = make_pr(
+            merged=True,
+            queue_entry_id=None,
+            merge_commit_sha=MERGE_COMMIT_SHA,
+        )
+        with (
+            patch.object(MODULE, "fetch_pr", return_value=merged_pr),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(
+                MODULE,
+                "list_merge_group_runs",
+                return_value=[candidate, newer_candidate],
+            ),
+            patch.object(
+                MODULE, "verify_candidate_association", return_value={}
+            ) as association,
+            self.assertRaisesRegex(MODULE.DeliveryStop, "superseded") as raised,
+        ):
+            MODULE.wait_for_pr_delivery("owner/repo", candidate, initial_pr, args)
+
+        self.assertEqual(
+            raised.exception.action, "stop_merge_group_candidate_superseded"
+        )
+        self.assertIs(association.call_args.args[2], initial_pr)
+        self.assertIn("deadline", association.call_args.kwargs)
+
+    def test_delivery_observation_process_timeout_uses_the_remaining_deadline(self):
+        args = make_args(merge_observation_timeout_seconds=7)
+        candidate = make_candidate()
+        with (
+            patch.object(MODULE.time, "monotonic", side_effect=[100, 100]),
+            patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["gh"], 7),
+            ) as run,
+            self.assertRaisesRegex(
+                MODULE.DeliveryStop, "did not merge within"
+            ) as raised,
+        ):
+            MODULE.wait_for_pr_delivery("owner/repo", candidate, make_pr(), args)
+
+        self.assertEqual(raised.exception.action, "stop_merge_observation_timeout")
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
+    def test_association_refreshes_the_remaining_deadline_for_each_read(self):
+        args = make_args()
+        completed = types.SimpleNamespace(
+            returncode=0, stdout=json.dumps({"status": "ahead"})
+        )
+        with (
+            patch.object(MODULE.time, "monotonic", side_effect=[100, 102]),
+            patch.object(MODULE.subprocess, "run", return_value=completed) as run,
+        ):
+            association = MODULE.verify_candidate_association(
+                "owner/repo",
+                CANDIDATE_SHA,
+                make_pr(),
+                args,
+                deadline=110,
+            )
+
+        self.assertTrue(association["candidate_contains_expected_head"])
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in run.call_args_list], [10, 8]
+        )
+
+    def test_delivery_observation_interrupt_emits_a_scoped_receipt(self):
+        args = make_args()
+        candidate = make_candidate()
+        candidate_receipt = make_watcher_receipt(
+            run_id=901,
+            workflow="blocking-ci",
+            event="merge_group",
+            branch=candidate["head_branch"],
+            sha=CANDIDATE_SHA,
+        )
+        with (
+            patch.object(MODULE, "fetch_pr", side_effect=[make_pr(), make_pr()]),
+            patch.object(
+                MODULE, "resolve_merge_group_candidate", return_value=candidate
+            ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
+            candidate_association(),
+            patch.object(
+                MODULE, "run_blocking_watcher", return_value=candidate_receipt
+            ),
+            patch.object(MODULE.time, "sleep", side_effect=KeyboardInterrupt),
+        ):
+            receipt, status = MODULE.execute_delivery(args)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(receipt["actions"], ["stop_merge_observation_interrupted"])
+        self.assertFalse(receipt["proof_scope"]["whole_repository_health_proven"])
 
     def test_delivery_wait_read_error_emits_an_operator_receipt(self):
         args = make_args()
@@ -528,6 +631,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
             candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
@@ -564,6 +669,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
             candidate_association(),
             patch.object(
                 MODULE, "run_blocking_watcher", return_value=candidate_receipt
@@ -615,6 +722,8 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
             patch.object(
                 MODULE, "resolve_merge_group_candidate", return_value=candidate
             ),
+            patch.object(MODULE, "fetch_actions_run", return_value=candidate),
+            patch.object(MODULE, "list_merge_group_runs", return_value=[candidate]),
             candidate_association(),
             patch.object(
                 MODULE,
@@ -768,6 +877,7 @@ class PullRequestDeliveryWatchTests(unittest.TestCase):
         self.assertEqual(command[0], str(MODULE.WATCHER_LAUNCHER))
         self.assertIn("--watch-until-terminal", command)
         self.assertIn(f"run-id=901,head-sha={CANDIDATE_SHA}", command)
+        self.assertNotIn("timeout", run.call_args.kwargs)
 
     def test_blocking_watcher_forwards_the_delivery_python_override(self):
         args = make_args()
