@@ -383,92 +383,6 @@ jobs:
             exit 1
           fi
 
-  test-windows-native-main:
-    # Native Windows Bazel tests are slower and frequently approach the
-    # 30-minute PR budget. Run this for post-merge commits to main or an
-    # explicit hosted-validation dispatch, and give it a larger timeout.
-    needs: plan
-    if: >-
-      ${{ needs.plan.outputs.run_bazel == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
-    timeout-minutes: 40
-    runs-on: windows-2022
-    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native main)
-    environment:
-      name: bazel
-      deployment: false
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-
-      - name: Prepare Bazel CI
-        id: prepare_bazel
-        uses: ./.github/actions/prepare-bazel-ci
-        with:
-          target: x86_64-pc-windows-gnullvm
-          cache-scope: bazel-${{ github.job }}
-
-      - name: bazel test //...
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        shell: bash
-        run: |
-          bazel_targets=(
-            //...
-            # Keep standalone V8 library targets out of the ordinary Bazel CI
-            # path. V8 consumers under `//codex-rs/...` still participate
-            # transitively through `//...`.
-            -//third_party/v8:all
-            -//codex-rs/v8-poc:v8-poc-unit-tests
-          )
-
-          bazel_test_args=(
-            test
-            # Hosted Windows image changes can make cached Rust proc-macro DLLs
-            # unloadable even when Bazel fully materializes them. Rebuild only
-            # Rust actions locally while retaining remote cache reuse elsewhere.
-            --modify_execution_info=Rustc=+no-remote-cache
-            --test_tag_filters=-argument-comment-lint
-            --test_verbose_timeout_warnings
-            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
-            --build_metadata=TAG_windows_native_main=true
-          )
-
-          ./.github/scripts/run-bazel-ci.sh \
-            --print-failed-action-summary \
-            --print-failed-test-logs \
-            -- \
-            "${bazel_test_args[@]}" \
-            -- \
-            "${bazel_targets[@]}"
-
-      - name: Upload Bazel execution logs
-        if: always() && !cancelled()
-        continue-on-error: true
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm
-          path: ${{ runner.temp }}/bazel-execution-logs
-          if-no-files-found: ignore
-
-      # Save the job-scoped Bazel repository cache after cache misses. Keep the
-      # upload non-fatal so cache service issues never fail the job itself.
-      - name: Save bazel repository cache
-        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true' && steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'
-        continue-on-error: true
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
-          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
-
-      - name: Check for a clean worktree
-        if: always() && !cancelled()
-        uses: ./.github/actions/check-clean-worktree
-
   clippy:
     needs: plan
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
@@ -708,7 +622,6 @@ jobs:
       - test
       - test-windows-shard
       - test-windows
-      - test-windows-native-main
       - clippy
       - verify-release-build
     if: ${{ always() }}
@@ -718,8 +631,6 @@ jobs:
         shell: bash
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
         run: |
           python3 - <<'PY'
           import json
@@ -740,7 +651,6 @@ jobs:
               "test",
               "test-windows-shard",
               "test-windows",
-              "test-windows-native-main",
               "clippy",
               "verify-release-build",
           ]
@@ -758,10 +668,6 @@ jobs:
                   "verify-release-build",
               ]:
                   require(job, "success")
-              native_is_expected = os.environ["EVENT_NAME"] == "workflow_dispatch" or (
-                  os.environ["EVENT_NAME"] == "push" and os.environ["REF"] == "refs/heads/main"
-              )
-              require("test-windows-native-main", "success" if native_is_expected else "skipped")
           else:
               print(f"unsupported Bazel CI mode: {mode!r}", file=sys.stderr)
               raise SystemExit(1)
