@@ -689,6 +689,15 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
         .expect("inspect_agent_tree should use object params");
     assert!(properties.contains_key("scope"));
     assert!(properties.contains_key("agent_roots"));
+    let max_depth = properties.get("max_depth").expect("max_depth property");
+    assert_eq!(max_depth.minimum, Some(1));
+    assert_eq!(max_depth.maximum, Some(INSPECT_AGENT_TREE_MAX_DEPTH as u64));
+    let max_agents = properties.get("max_agents").expect("max_agents property");
+    assert_eq!(max_agents.minimum, Some(1));
+    assert_eq!(
+        max_agents.maximum,
+        Some(INSPECT_AGENT_TREE_MAX_AGENTS as u64)
+    );
     let output_schema = output_schema.expect("inspect_agent_tree output schema");
     assert_eq!(
         output_schema["properties"]["agents"]["items"]["required"],

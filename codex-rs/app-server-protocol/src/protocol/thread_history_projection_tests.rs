@@ -235,6 +235,62 @@ fn projects_completed_canonical_spawns_with_requested_provenance() {
 }
 
 #[test]
+fn projects_legacy_canonical_spawn_start_provenance_without_reclassifying_completion() {
+    let thread_id = ThreadId::default();
+    let turn_id = "turn-legacy-canonical";
+    let mut projector = ThreadHistoryProjector::default();
+
+    let started = projector.project_rollout_line(&rollout_line(RolloutItem::EventMsg(
+        EventMsg::ItemStarted(ItemStartedEvent {
+            thread_id,
+            turn_id: turn_id.to_string(),
+            item: legacy_canonical_spawn_start_item(
+                "legacy-spawn",
+                Some("gpt-requested-model"),
+                Some(codex_protocol::openai_models::ReasoningEffort::High),
+            ),
+            started_at_ms: 1,
+        }),
+    )));
+    assert_eq!(started.changed_items.len(), 1);
+
+    let completed = projector.project_rollout_line(&rollout_line(RolloutItem::EventMsg(
+        EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id,
+            turn_id: turn_id.to_string(),
+            item: canonical_spawn_item(
+                "legacy-spawn",
+                CoreCollabAgentToolCallStatus::Completed,
+                Some("gpt-effective-model"),
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            ),
+            completed_at_ms: 2,
+        }),
+    )));
+
+    let ThreadItem::CollabAgentToolCall {
+        model,
+        reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = &completed.changed_items[0].item
+    else {
+        panic!("expected completed spawn projection");
+    };
+    assert_eq!(model.as_deref(), Some("gpt-effective-model"));
+    assert_eq!(
+        reasoning_effort,
+        &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+    );
+    assert_eq!(requested_model.as_deref(), Some("gpt-requested-model"));
+    assert_eq!(
+        requested_reasoning_effort,
+        &Some(codex_protocol::openai_models::ReasoningEffort::High)
+    );
+}
+
+#[test]
 fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
     let aborted = project(RolloutItem::EventMsg(EventMsg::TurnAborted(
         TurnAbortedEvent {
@@ -330,4 +386,25 @@ fn canonical_spawn_item(
         requested_reasoning_effort: is_start.then_some(reasoning_effort).flatten(),
         agents_states: Default::default(),
     })
+}
+
+/// Older canonical ItemStarted records used `model` and `reasoning_effort` for caller intent,
+/// before the dedicated `requested_*` fields were persisted.
+fn legacy_canonical_spawn_start_item(
+    id: &str,
+    model: Option<&str>,
+    reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+) -> TurnItem {
+    let mut item = canonical_spawn_item(
+        id,
+        CoreCollabAgentToolCallStatus::InProgress,
+        model,
+        reasoning_effort,
+    );
+    let TurnItem::CollabAgentToolCall(item) = &mut item else {
+        unreachable!("canonical spawn helper must build a collab call");
+    };
+    item.requested_model = None;
+    item.requested_reasoning_effort = None;
+    item
 }

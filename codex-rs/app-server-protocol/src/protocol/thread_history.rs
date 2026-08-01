@@ -1739,6 +1739,27 @@ mod tests {
         })
     }
 
+    /// Older canonical ItemStarted records used `model` and `reasoning_effort` for caller intent,
+    /// before the dedicated `requested_*` fields were persisted.
+    fn legacy_canonical_spawn_start_item(
+        id: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    ) -> CoreTurnItem {
+        let mut item = canonical_spawn_item(
+            id,
+            CoreCollabAgentToolCallStatus::InProgress,
+            model,
+            reasoning_effort,
+        );
+        let CoreTurnItem::CollabAgentToolCall(item) = &mut item else {
+            unreachable!("canonical spawn helper must build a collab call");
+        };
+        item.requested_model = None;
+        item.requested_reasoning_effort = None;
+        item
+    }
+
     #[test]
     fn builds_multiple_turns_with_reasoning_items() {
         let events = vec![
@@ -4403,6 +4424,102 @@ mod tests {
             assert_eq!(completed_requested_model.as_deref(), *requested_model);
             assert_eq!(completed_requested_effort, requested_effort);
         }
+    }
+
+    #[test]
+    fn materializes_legacy_canonical_spawn_start_provenance_without_reclassifying_completion() {
+        let thread_id = ThreadId::new();
+        let turn_id = "turn-legacy-canonical";
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+        builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
+            thread_id,
+            turn_id: turn_id.to_string(),
+            item: legacy_canonical_spawn_start_item(
+                "legacy-spawn",
+                Some("gpt-requested-model"),
+                Some(codex_protocol::openai_models::ReasoningEffort::High),
+            ),
+            started_at_ms: 1,
+        }));
+        builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id,
+            turn_id: turn_id.to_string(),
+            item: canonical_spawn_item(
+                "legacy-spawn",
+                CoreCollabAgentToolCallStatus::Completed,
+                Some("gpt-effective-model"),
+                Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            ),
+            completed_at_ms: 2,
+        }));
+
+        let turn = builder
+            .turn_snapshot(turn_id)
+            .expect("legacy canonical turn");
+        let [ThreadItem::CollabAgentToolCall(spawn)] = turn.items.as_slice() else {
+            panic!("expected a completed legacy canonical spawn");
+        };
+        assert_eq!(spawn.model.as_deref(), Some("gpt-effective-model"));
+        assert_eq!(
+            spawn.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(
+            spawn.requested_model.as_deref(),
+            Some("gpt-requested-model")
+        );
+        assert_eq!(
+            spawn.requested_reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+    }
+
+    #[test]
+    fn duplicate_terminal_spawn_snapshot_does_not_become_request_provenance() {
+        let thread_id = ThreadId::new();
+        let turn_id = "turn-terminal-duplicate";
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+        for completed_at_ms in [1, 2] {
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: canonical_spawn_item(
+                    "terminal-duplicate",
+                    CoreCollabAgentToolCallStatus::Completed,
+                    Some("gpt-effective-model"),
+                    Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                ),
+                completed_at_ms,
+            }));
+        }
+
+        let turn = builder
+            .turn_snapshot(turn_id)
+            .expect("terminal duplicate turn");
+        let [ThreadItem::CollabAgentToolCall(spawn)] = turn.items.as_slice() else {
+            panic!("expected a completed terminal duplicate spawn");
+        };
+        assert_eq!(spawn.model.as_deref(), Some("gpt-effective-model"));
+        assert_eq!(
+            spawn.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(spawn.requested_model, None);
+        assert_eq!(spawn.requested_reasoning_effort, None);
     }
 
     #[test]

@@ -64,6 +64,9 @@ pub(crate) struct AgentNavigationState {
     /// Error activities that must see their matching status before a later status can recover
     /// their picker row. Activity and status notifications race across independent streams.
     system_error_epochs: HashMap<ThreadId, SystemErrorEpoch>,
+    /// Monotonic error observations per thread. A successful asynchronous `thread/read` may
+    /// clear an error only when no newer activity or status observed error evidence in flight.
+    system_error_observation_generations: HashMap<ThreadId, u64>,
     /// Latest accepted status revision per thread. Revisions are scoped to one app-server session
     /// and let the picker reject a status watcher message delivered out of order.
     last_status_revisions: HashMap<ThreadId, u64>,
@@ -74,8 +77,8 @@ pub(crate) struct AgentNavigationState {
     /// terminal lifecycle watermark. Without this, a stream of unique status-only thread ids
     /// would retain revision state for the lifetime of the TUI session.
     unknown_thread_status_provenance_order: VecDeque<ThreadId>,
-    /// Recent terminal statuses for threads that may not have created picker metadata yet. A late
-    /// parent activity must not recreate an open row after the child was already closed.
+    /// Recent terminal notifications for threads that may not have created picker metadata yet.
+    /// A late parent activity must not recreate an open row after the child was already closed.
     closed_thread_tombstones: HashMap<ThreadId, ClosedThreadTombstone>,
     /// FIFO eviction order for [`Self::closed_thread_tombstones`].
     closed_thread_tombstone_order: VecDeque<ThreadId>,
@@ -114,7 +117,7 @@ struct AcceptedThreadStatus {
     status_revision: Option<u64>,
 }
 
-/// Revision evidence retained for an accepted terminal `NotLoaded` status.
+/// Revision evidence retained for a terminal notification when it carries a status revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ClosedThreadTombstone {
     status_revision: Option<u64>,
@@ -443,6 +446,9 @@ impl AgentNavigationState {
                 .entry(thread_id)
                 .or_insert(error_epoch);
         }
+        if is_errored_activity {
+            self.record_system_error_observation(thread_id);
+        }
         self.record_active_activity_id(thread_id, activity.activity_id);
     }
 
@@ -496,6 +502,7 @@ impl AgentNavigationState {
 
     /// Records the app-server's current error state without hiding a replayable saved thread.
     pub(crate) fn set_system_error(&mut self, thread_id: ThreadId, has_system_error: bool) {
+        let mut observed_system_error = false;
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             if entry.is_closed {
                 return;
@@ -504,8 +511,44 @@ impl AgentNavigationState {
             if has_system_error {
                 entry.is_running = false;
                 self.stopped_threads.insert(thread_id);
+                observed_system_error = true;
             }
         }
+        if observed_system_error {
+            self.record_system_error_observation(thread_id);
+        }
+    }
+
+    /// Captures the error-observation generation before an asynchronous authoritative liveness
+    /// read begins.
+    pub(crate) fn system_error_observation_generation(&self, thread_id: ThreadId) -> u64 {
+        self.system_error_observation_generations
+            .get(&thread_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Clears stale error display state from a successful authoritative read only when no newer
+    /// activity or status error observation arrived while that read was in flight.
+    pub(crate) fn clear_system_error_from_authoritative_read(
+        &mut self,
+        thread_id: ThreadId,
+        observed_generation: u64,
+    ) -> bool {
+        if self.system_error_observation_generation(thread_id) != observed_generation {
+            return false;
+        }
+        self.system_error_epochs.remove(&thread_id);
+        self.set_system_error(thread_id, false);
+        true
+    }
+
+    fn record_system_error_observation(&mut self, thread_id: ThreadId) {
+        let generation = self
+            .system_error_observation_generations
+            .entry(thread_id)
+            .or_default();
+        *generation = generation.saturating_add(1);
     }
 
     /// Records an authoritative `SystemError` obtained during thread/read or persisted-thread
@@ -548,6 +591,9 @@ impl AgentNavigationState {
     /// watcher reports the matching `SystemError`. Once confirmed, only a strictly newer status
     /// revision may recover the row. A tracked close moves its causal revision into a terminal
     /// lifecycle watermark, so revisionless older servers also fail closed after terminal state.
+    /// In particular, there is intentionally no inferred `NotLoaded`-to-`Active` recovery for a
+    /// revisionless watcher: independent streams provide no positive correlation proving that the
+    /// `Active` observation belongs to a lifecycle newer than the terminal one.
     pub(crate) fn accepts_thread_status_change(
         &mut self,
         thread_id: ThreadId,
@@ -555,6 +601,18 @@ impl AgentNavigationState {
         status_revision: Option<u64>,
         is_closed: bool,
     ) -> bool {
+        if is_closed
+            && let Some(TerminalLifecycleWatermark::Recovered {
+                status_revision: recovered_revision,
+                ..
+            }) = self.terminal_lifecycle_watermarks.get(&thread_id)
+            && status_revision.is_none_or(|status_revision| status_revision <= *recovered_revision)
+        {
+            // A recovered watermark is a stronger causal boundary than a delayed or legacy
+            // terminal notification. Only a strictly newer terminal revision may close this row.
+            return false;
+        }
+
         if let Some(status_revision) = status_revision
             && let Some(latest_revision) = self.last_status_revisions.get(&thread_id).copied()
             && status_revision <= latest_revision
@@ -603,6 +661,16 @@ impl AgentNavigationState {
             return true;
         }
 
+        // A status watcher can observe `SystemError` and its newer recovery before a parent
+        // activity has materialized a picker row. Retire that status-only error lifecycle now so
+        // a delayed old `Errored` activity cannot create an unconfirmable AwaitingSystemError
+        // epoch after the child is already healthy again.
+        let recovered_status_first_system_error = !has_system_error
+            && self.system_error_epochs.get(&thread_id).is_none()
+            && self
+                .last_accepted_statuses
+                .get(&thread_id)
+                .is_some_and(|status| status.has_system_error);
         let mut recovered_system_error_lifecycle = false;
         let accepts = match self.system_error_epochs.get(&thread_id).copied() {
             Some(SystemErrorEpoch::AwaitingSystemError) if !has_system_error => false,
@@ -650,7 +718,7 @@ impl AgentNavigationState {
         if accepts {
             self.record_accepted_status(thread_id, has_system_error, status_revision);
             self.advance_terminal_lifecycle_for_newer_status(thread_id, status_revision);
-            if recovered_system_error_lifecycle {
+            if recovered_system_error_lifecycle || recovered_status_first_system_error {
                 self.record_recovered_system_error_lifecycle(thread_id, status_revision);
             }
             self.record_unknown_nonterminal_status_provenance(thread_id);
@@ -690,6 +758,17 @@ impl AgentNavigationState {
                 .expect("tombstone order must contain every tombstone");
             self.closed_thread_tombstones.remove(&expired_thread_id);
         }
+    }
+
+    /// Retains terminal liveness for a child whose `ThreadClosed` notification arrived before
+    /// picker metadata. This deliberately does not create a visible closed row: only a later
+    /// revisioned recovery plus a distinct Started activity may establish a new lifecycle.
+    pub(crate) fn record_unmatched_thread_closed(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id) {
+            return;
+        }
+        self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
+        self.record_closed_tombstone(thread_id, /*status_revision*/ None);
     }
 
     /// Records revision provenance for an accepted status-only thread while there is no picker
@@ -811,6 +890,8 @@ impl AgentNavigationState {
         if let Some(active_activity_ids) = self.active_lifecycle_activity_ids.get(&thread_id) {
             activity_ids.extend(active_activity_ids);
         }
+        self.active_lifecycle_activity_ids.remove(&thread_id);
+        self.system_error_observation_generations.remove(&thread_id);
         let status_revision = match (
             existing
                 .as_ref()
@@ -864,6 +945,10 @@ impl AgentNavigationState {
                 .pop_front()
                 .expect("terminal lifecycle watermark order must contain every watermark");
             self.terminal_lifecycle_watermarks
+                .remove(&expired_thread_id);
+            self.active_lifecycle_activity_ids
+                .remove(&expired_thread_id);
+            self.system_error_observation_generations
                 .remove(&expired_thread_id);
             self.clear_unknown_thread_status_provenance(expired_thread_id);
         }
@@ -980,6 +1065,7 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.system_error_epochs.clear();
+        self.system_error_observation_generations.clear();
         self.last_status_revisions.clear();
         self.last_accepted_statuses.clear();
         self.unknown_thread_status_provenance_order.clear();
@@ -1555,6 +1641,89 @@ mod tests {
     }
 
     #[test]
+    fn authoritative_read_error_clear_rejects_newer_error_observation() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000119").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Current child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.set_system_error(thread_id, true);
+        let read_generation = state.system_error_observation_generation(thread_id);
+
+        // This activity arrives while the read is in flight. Its newer causal observation must
+        // keep the row failed even though the older authoritative response says Idle/Active.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-119-newer-error".to_string(),
+            thread_id,
+            agent_path: "/root/current-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(!state.clear_system_error_from_authoritative_read(thread_id, read_generation));
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error)
+        );
+
+        // A subsequent read that starts after the latest error observation is current enough to
+        // clear the stale error epoch and allow its non-error status to set liveness.
+        let current_generation = state.system_error_observation_generation(thread_id);
+        assert!(state.clear_system_error_from_authoritative_read(thread_id, current_generation));
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error)
+        );
+        assert!(!state.system_error_epochs.contains_key(&thread_id));
+    }
+
+    #[test]
+    fn terminal_transfer_releases_active_activity_history_with_bounded_watermarks() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        state.record_active_activity_id(first_thread_id, "activity-first".to_string());
+        state.record_terminal_lifecycle_closed(first_thread_id, /*status_revision*/ None);
+        assert!(
+            !state
+                .active_lifecycle_activity_ids
+                .contains_key(&first_thread_id),
+            "terminal transfer must move activity identities out of the active-lifecycle map"
+        );
+        assert!(
+            state
+                .terminal_lifecycle_watermarks
+                .get(&first_thread_id)
+                .is_some_and(|watermark| watermark.activity_ids().contains("activity-first"))
+        );
+
+        for _ in 0..TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            let thread_id = ThreadId::new();
+            state.record_active_activity_id(thread_id, "activity-bounded".to_string());
+            state.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
+        }
+        assert!(state.active_lifecycle_activity_ids.is_empty());
+        assert_eq!(
+            state.terminal_lifecycle_watermarks.len(),
+            TERMINAL_LIFECYCLE_WATERMARK_LIMIT
+        );
+        assert!(
+            !state
+                .terminal_lifecycle_watermarks
+                .contains_key(&first_thread_id),
+            "watermark eviction must leave no parallel active-lifecycle history behind"
+        );
+    }
+
+    #[test]
     fn errored_activity_stays_failed_across_stale_upserts_until_recovery_or_closure() {
         let mut state = AgentNavigationState::default();
         let thread_id =
@@ -1698,6 +1867,86 @@ mod tests {
                 .get(&thread_id)
                 .is_some_and(|entry| entry.has_system_error && !entry.is_running)
         );
+    }
+
+    #[test]
+    fn status_first_system_error_recovery_retires_late_errored_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000118").expect("valid thread");
+
+        // Both status changes arrive before a parent activity creates a picker row. The newer
+        // Active is the recovery boundary for the earlier SystemError, even though no activity
+        // epoch exists yet.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(2),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(matches!(
+            state.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Recovered {
+                status_revision: 2,
+                ..
+            })
+        ));
+
+        // The independently delivered old Errored activity cannot create an AwaitingSystemError
+        // epoch after that recovery; otherwise every subsequent non-error status would be
+        // rejected forever.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-118-late-errored".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-recovered-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+        assert!(!state.system_error_epochs.contains_key(&thread_id));
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(!state.system_error_epochs.contains_key(&thread_id));
+        assert!(matches!(
+            state.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Recovered {
+                status_revision: 3,
+                ..
+            })
+        ));
+
+        // A distinct Started activity after the newer status is a genuine new lifecycle and may
+        // create the picker row.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-118-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_running
+                && !entry.is_closed
+                && !entry.has_system_error
+                && entry.agent_path.as_deref() == Some("/root/status-first-fresh-child")
+        }));
     }
 
     #[test]

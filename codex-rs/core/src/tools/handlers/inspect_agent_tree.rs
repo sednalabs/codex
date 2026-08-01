@@ -7,6 +7,8 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::multi_agents_common::tool_output_code_mode_result;
 use crate::tools::handlers::multi_agents_common::tool_output_json_text;
 use crate::tools::handlers::multi_agents_common::tool_output_response_item;
+use crate::tools::handlers::multi_agents_spec::INSPECT_AGENT_TREE_MAX_AGENTS;
+use crate::tools::handlers::multi_agents_spec::INSPECT_AGENT_TREE_MAX_DEPTH;
 use crate::tools::handlers::multi_agents_spec::create_inspect_agent_tree_tool;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
@@ -61,9 +63,19 @@ impl InspectAgentTreeHandler {
                 "max_depth must be greater than zero".to_string(),
             ));
         }
+        if max_depth > INSPECT_AGENT_TREE_MAX_DEPTH {
+            return Err(crate::function_tool::FunctionCallError::RespondToModel(
+                format!("max_depth must be at most {INSPECT_AGENT_TREE_MAX_DEPTH}"),
+            ));
+        }
         if max_agents == 0 {
             return Err(crate::function_tool::FunctionCallError::RespondToModel(
                 "max_agents must be greater than zero".to_string(),
+            ));
+        }
+        if max_agents > INSPECT_AGENT_TREE_MAX_AGENTS {
+            return Err(crate::function_tool::FunctionCallError::RespondToModel(
+                format!("max_agents must be at most {INSPECT_AGENT_TREE_MAX_AGENTS}"),
             ));
         }
 

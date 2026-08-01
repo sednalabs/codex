@@ -173,6 +173,20 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
             .await
     }
 
+    /// List at most `limit` direct spawned children with one parent and lifecycle status.
+    ///
+    /// Callers that need to expose a bounded tree request one extra row to determine whether the
+    /// result is truncated, without materializing the parent's full persisted child set.
+    pub async fn list_thread_spawn_children_with_status_limit(
+        &self,
+        parent_thread_id: ThreadId,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ThreadId>> {
+        self.list_thread_spawn_children_matching_limited(parent_thread_id, Some(status), limit)
+            .await
+    }
+
     /// List all direct spawned children of `parent_thread_id`.
     pub async fn list_thread_spawn_children(
         &self,
@@ -180,6 +194,49 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
     ) -> anyhow::Result<Vec<ThreadId>> {
         self.list_thread_spawn_children_matching(parent_thread_id, /*status*/ None)
             .await
+    }
+
+    /// Returns whether a candidate's bounded persisted parent chain reaches `ancestor_thread_id`.
+    ///
+    /// The graph has one incoming edge per child, so this walks only that chain rather than the
+    /// ancestor's whole subtree. The depth cap protects the query from malformed historical
+    /// topology while remaining far beyond supported agent nesting.
+    pub async fn is_thread_spawn_descendant(
+        &self,
+        ancestor_thread_id: ThreadId,
+        candidate_thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        const MAX_THREAD_SPAWN_ANCESTRY_DEPTH: i64 = 512;
+        let is_descendant = sqlx::query_scalar::<_, i64>(
+            r#"
+WITH RECURSIVE ancestors(thread_id, visited_thread_ids, depth) AS (
+    SELECT
+        parent_thread_id,
+        ',' || child_thread_id || ',' || parent_thread_id || ',',
+        1
+    FROM thread_spawn_edges
+    WHERE child_thread_id = ?
+    UNION ALL
+    SELECT
+        edge.parent_thread_id,
+        ancestors.visited_thread_ids || edge.parent_thread_id || ',',
+        ancestors.depth + 1
+    FROM thread_spawn_edges AS edge
+    JOIN ancestors ON edge.child_thread_id = ancestors.thread_id
+    WHERE ancestors.depth < ?
+      AND instr(ancestors.visited_thread_ids, ',' || edge.parent_thread_id || ',') = 0
+)
+SELECT EXISTS(
+    SELECT 1 FROM ancestors WHERE thread_id = ?
+)
+            "#,
+        )
+        .bind(candidate_thread_id.to_string())
+        .bind(MAX_THREAD_SPAWN_ANCESTRY_DEPTH)
+        .bind(ancestor_thread_id.to_string())
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        Ok(is_descendant != 0)
     }
 
     /// List spawned descendants of `root_thread_id` whose edges match `status`.
@@ -237,14 +294,15 @@ LIMIT 2
     ) -> anyhow::Result<Option<ThreadId>> {
         let rows = sqlx::query(
             r#"
-WITH RECURSIVE subtree(child_thread_id) AS (
-    SELECT child_thread_id
+WITH RECURSIVE subtree(child_thread_id, visited_thread_ids) AS (
+    SELECT child_thread_id, ',' || parent_thread_id || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id = ?
     UNION ALL
-    SELECT edge.child_thread_id
+    SELECT edge.child_thread_id, subtree.visited_thread_ids || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited_thread_ids, ',' || edge.child_thread_id || ',') = 0
 )
 SELECT threads.id
 FROM subtree
@@ -266,6 +324,19 @@ LIMIT 2
         parent_thread_id: ThreadId,
         status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
     ) -> anyhow::Result<Vec<ThreadId>> {
+        self.list_thread_spawn_children_matching_limited(parent_thread_id, status, usize::MAX)
+            .await
+    }
+
+    async fn list_thread_spawn_children_matching_limited(
+        &self,
+        parent_thread_id: ThreadId,
+        status: Option<crate::DirectionalThreadSpawnEdgeStatus>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ThreadId>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let mut builder = QueryBuilder::<Sqlite>::new(
             "SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id = ",
         );
@@ -273,7 +344,9 @@ LIMIT 2
         if let Some(status) = status {
             builder.push(" AND status = ").push_bind(status.to_string());
         }
-        builder.push(" ORDER BY child_thread_id");
+        builder
+            .push(" ORDER BY child_thread_id LIMIT ")
+            .push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
 
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
         rows.into_iter()
@@ -290,8 +363,8 @@ LIMIT 2
     ) -> anyhow::Result<Vec<ThreadId>> {
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-WITH RECURSIVE subtree(child_thread_id, depth) AS (
-    SELECT child_thread_id, 1
+WITH RECURSIVE subtree(child_thread_id, depth, visited_thread_ids) AS (
+    SELECT child_thread_id, 1, ',' || parent_thread_id || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id =
             "#,
@@ -303,20 +376,24 @@ WITH RECURSIVE subtree(child_thread_id, depth) AS (
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id, subtree.depth + 1, subtree.visited_thread_ids || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE status =
+    WHERE edge.status =
                 "#,
             );
             builder.push_bind(status);
+            builder.push(
+                " AND instr(subtree.visited_thread_ids, ',' || edge.child_thread_id || ',') = 0",
+            );
         } else {
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT edge.child_thread_id, subtree.depth + 1, subtree.visited_thread_ids || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited_thread_ids, ',' || edge.child_thread_id || ',') = 0
                 "#,
             );
         }
@@ -325,7 +402,8 @@ WITH RECURSIVE subtree(child_thread_id, depth) AS (
 )
 SELECT child_thread_id
 FROM subtree
-ORDER BY depth ASC, child_thread_id ASC
+GROUP BY child_thread_id
+ORDER BY MIN(depth) ASC, child_thread_id ASC
             "#,
         );
 
@@ -1220,8 +1298,8 @@ fn push_list_threads_query(
     if let Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) = relation_filter {
         builder.push(
             r#"
-WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
-    SELECT child_thread_id, parent_thread_id
+WITH RECURSIVE subtree(child_thread_id, parent_thread_id, visited_thread_ids) AS (
+    SELECT child_thread_id, parent_thread_id, ',' || parent_thread_id || ',' || child_thread_id || ','
     FROM thread_spawn_edges
     WHERE parent_thread_id =
 "#,
@@ -1229,10 +1307,11 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         builder.push_bind(ancestor_thread_id.to_string());
         builder.push(
             r#"
-    UNION
-    SELECT edge.child_thread_id, edge.parent_thread_id
+    UNION ALL
+    SELECT edge.child_thread_id, edge.parent_thread_id, subtree.visited_thread_ids || edge.child_thread_id || ','
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE instr(subtree.visited_thread_ids, ',' || edge.child_thread_id || ',') = 0
 )
 "#,
         );
@@ -2196,7 +2275,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_threads_by_relation_filters_spawn_graph_with_keyset_pagination() {
+    async fn list_threads_by_relation_filters_spawn_graph_with_keyset_pagination_and_cycle_safety()
+    {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -2391,6 +2471,16 @@ mod tests {
                 .map(|item| item.id)
                 .collect::<Vec<_>>(),
             vec![grandchild_id, second_child_id, first_child_id]
+        );
+        assert_eq!(
+            cyclic_descendants.parent_thread_ids,
+            [
+                (grandchild_id, first_child_id),
+                (second_child_id, parent_id),
+                (first_child_id, parent_id),
+            ]
+            .into(),
+            "the loaded-list path must enumerate each finite descendant without following the cycle back to its ancestor"
         );
     }
 

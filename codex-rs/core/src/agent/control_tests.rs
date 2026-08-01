@@ -479,6 +479,53 @@ async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
     );
 }
 
+#[tokio::test]
+async fn inspect_agent_tree_stops_at_depth_and_agent_bound_before_materializing_fanout() {
+    const HUGE_CHILD_COUNT: usize = 128;
+
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    for _ in 0..HUGE_CHILD_COUNT {
+        harness
+            .manager
+            .start_thread(StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                environments: Some(Vec::new()),
+                ..StartThreadOptions::new(harness.config.clone())
+            })
+            .await
+            .expect("start fanout child");
+    }
+
+    let inspection = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Live,
+            /*max_depth*/ 1,
+            /*max_agents*/ 1,
+        )
+        .await
+        .expect("bounded inspection should succeed");
+
+    assert_eq!(inspection.agents.len(), 1);
+    assert_eq!(inspection.agents[0].depth, 0);
+    assert!(inspection.truncated);
+    assert_eq!(inspection.summary.total_agents, 1);
+}
+
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
     match manager.get_thread(thread_id).await {
         Err(err) => match err.details() {

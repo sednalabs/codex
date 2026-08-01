@@ -51,6 +51,10 @@ pub struct JsonSchema {
     #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
     pub enum_values: Option<Vec<JsonValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<JsonSchema>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<BTreeMap<String, JsonSchema>>,
@@ -126,6 +130,16 @@ impl JsonSchema {
 
     pub fn integer(description: Option<String>) -> Self {
         Self::typed(JsonSchemaPrimitiveType::Integer, description)
+    }
+
+    pub fn with_minimum(mut self, minimum: u64) -> Self {
+        self.minimum = Some(minimum);
+        self
+    }
+
+    pub fn with_maximum(mut self, maximum: u64) -> Self {
+        self.maximum = Some(maximum);
+        self
     }
 
     pub fn null(description: Option<String>) -> Self {

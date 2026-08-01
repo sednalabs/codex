@@ -34,6 +34,9 @@ pub(super) struct FeedbackThreadEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ThreadEventAttachment {
+    /// A local queue created while routing a notification for a thread that has not yet been
+    /// attached by `thread/resume`, fork, or another authoritative live-session response.
+    NotificationBuffer,
     Live,
     ReplayOnly,
 }
@@ -326,13 +329,30 @@ pub(super) struct ThreadEventChannel {
 
 impl ThreadEventChannel {
     pub(super) fn new(capacity: usize) -> Self {
+        Self::new_with_attachment(capacity, ThreadEventAttachment::Live)
+    }
+
+    /// Creates a local notification queue without claiming that the app server has attached this
+    /// thread live. Status snapshots may arrive before a resume/fork response, and treating this
+    /// buffer as live would let a later `NotLoaded` status reopen a terminal child.
+    pub(super) fn new_notification_buffer(capacity: usize) -> Self {
+        Self::new_with_attachment(capacity, ThreadEventAttachment::NotificationBuffer)
+    }
+
+    fn new_with_attachment(capacity: usize, attachment: ThreadEventAttachment) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
         Self {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
-            attachment: ThreadEventAttachment::Live,
+            attachment,
         }
+    }
+
+    /// Records an actual live app-server attachment after a successful resume, fork, or primary
+    /// session start has populated this channel.
+    pub(super) fn mark_live(&mut self) {
+        self.attachment = ThreadEventAttachment::Live;
     }
 
     pub(super) fn mark_replay_only(&mut self) {
@@ -341,6 +361,10 @@ impl ThreadEventChannel {
 
     pub(super) fn attachment(&self) -> ThreadEventAttachment {
         self.attachment
+    }
+
+    pub(super) fn has_live_attachment(&self) -> bool {
+        self.attachment == ThreadEventAttachment::Live
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

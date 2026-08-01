@@ -1881,6 +1881,25 @@ async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<
             .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
     );
 
+    // A revisionless watcher cannot positively correlate this Active status to a lifecycle newer
+    // than the terminal one. Preserve the closed row rather than resurrecting it from a delayed
+    // legacy-server observation.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: None,
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
     // The terminal watermark rejects an older nonterminal status even though closing the visible
     // row cleared its ordinary per-row revision cache.
     app.apply_agent_picker_thread_status_change(
@@ -1951,6 +1970,22 @@ async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<
             thread_id: thread_id.to_string(),
             status: ThreadStatus::NotLoaded,
             status_revision: Some(7),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+
+    // A legacy terminal notification with no revision is equally unable to supersede the proven
+    // rev-8 recovery. Accepting it would make a delayed close overwrite fresh liveness.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::NotLoaded,
+            status_revision: None,
         },
     );
     assert!(
@@ -2130,6 +2165,234 @@ async fn inactive_live_child_thread_closed_marks_picker_closed_and_hides_default
         render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/inactive-live-child"),
         "the closed filter must retain the terminal child for transcript inspection"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn status_first_not_loaded_keeps_notification_buffer_non_live_across_backfill() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let thread_id = ThreadId::new();
+
+    // Routing must allocate a buffer for this unknown child, but that synthetic buffer is not
+    // positive proof of a live app-server attachment. Treat status-first NotLoaded as terminal.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(1),
+            },
+        ),
+    )
+    .await?;
+    assert!(app.agent_navigation.is_empty());
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::NotificationBuffer),
+        "the synthetic notification buffer must not advertise a live attachment"
+    );
+
+    // A later status snapshot must continue to observe the same notification buffer as non-live;
+    // otherwise the second snapshot would silently reopen the closed lifecycle evidence.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(2),
+            },
+        ),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::NotificationBuffer),
+        "a repeated status must not promote a notification-only queue to live"
+    );
+
+    // A persisted backfill sees the same non-live attachment and keeps the child closed. This
+    // covers the status-plus-backfill path, rather than only the initial status notification.
+    app.primary_thread_id = Some(primary_thread_id);
+    let mut refreshed_thread_ids = std::collections::HashSet::new();
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: primary_thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: Some(primary_thread_id.to_string()),
+            preview: "saved child".to_string(),
+            ephemeral: false,
+            is_pinned: false,
+            history_mode: Default::default(),
+            model_provider: "test-provider".to_string(),
+            model: None,
+            reasoning_effort: None,
+            created_at: 1,
+            updated_at: 2,
+            recency_at: Some(2),
+            status: ThreadStatus::NotLoaded,
+            path: None,
+            cwd: test_path_buf("/tmp/status-first-not-loaded").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Unknown,
+            can_accept_direct_input: None,
+            thread_source: None,
+            agent_nickname: Some("Saved worker".to_string()),
+            agent_role: Some("worker".to_string()),
+            git_info: None,
+            name: Some("saved child".to_string()),
+            turns: Vec::new(),
+        },
+        &mut refreshed_thread_ids,
+    );
+    assert!(refreshed_thread_ids.contains(&thread_id));
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running)
+    );
+
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "status-first-not-loaded-late-start".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-not-loaded".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running),
+        "a delayed Started activity cannot reopen a closed child after status-first NotLoaded"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn actual_live_channel_keeps_not_loaded_status_nonterminal() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    // `new` models a channel created by a real live-session attach, not a notification buffer.
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "actual-live-not-loaded".to_string(),
+            thread_id,
+            agent_path: "/root/actual-live".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(1),
+            },
+        ),
+    )
+    .await?;
+
+    assert!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(ThreadEventChannel::has_live_attachment)
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.is_running)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_child_thread_closed_before_picker_row_rejects_late_activity() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+
+    // The child channel exists before parent activity provides the picker metadata. Closing it
+    // must keep a bounded causal guard without inventing a visible closed row.
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+    assert!(app.agent_navigation.is_empty());
+
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-before-row-late-start".to_string(),
+            thread_id,
+            agent_path: "/root/closed-before-row".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+    assert!(
+        app.agent_navigation.is_empty(),
+        "a late Started activity from the closed lifecycle must not materialize a picker ghost"
+    );
+
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-before-row-late-error".to_string(),
+            thread_id,
+            agent_path: "/root/closed-before-row".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+    assert!(
+        app.agent_navigation.is_empty(),
+        "late activity from the closed lifecycle must not materialize a picker ghost"
+    );
+
+    // A newer watcher status then a distinct Started activity establishes a legitimate new
+    // lifecycle. This also proves the unmatched close did not leave a stale stopped hint.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(1),
+        },
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-before-row-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-after-close".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+    assert!(app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/fresh-after-close")
+    }));
     Ok(())
 }
 
@@ -2638,6 +2901,40 @@ async fn transient_liveness_failure_preserves_known_system_error_status() {
 }
 
 #[tokio::test]
+async fn successful_liveness_read_clears_a_prior_system_error_without_newer_evidence() -> Result<()>
+{
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let thread_id = started.session.thread_id;
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Recovered worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation.set_system_error(thread_id, true);
+
+    assert!(Box::pin(app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)).await);
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.has_system_error)
+    );
+
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_matches_closed_filter()
  {
     let mut app = make_test_app().await;
@@ -2859,6 +3156,146 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
 
     assert_eq!(app.active_thread_id, None);
     assert_eq!(app.agent_navigation.get(&thread_id), None);
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn select_live_agent_thread_rebases_buffered_transcript_before_snapshot_replay() -> Result<()>
+{
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.config.clone();
+    let thread_id = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            config.codex_home.as_path(),
+            "2026-08-02T10-00-00",
+            "2026-08-02T10:00:00Z",
+            "authoritative child transcript",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create child rollout"),
+    )?;
+    let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+
+    // Make this a live resume target without letting its notifications reach the TUI. The
+    // synthetic child channel below must therefore attach via `thread/resume` at selection time.
+    app_server
+        .resume_thread(
+            config,
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Scout".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.enqueue_thread_notification(
+        thread_id,
+        buffered_agent_message_completion(thread_id, "authoritative child transcript"),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .expect("buffered child channel")
+            .attachment(),
+        ThreadEventAttachment::NotificationBuffer
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+        .await?;
+
+    let snapshot = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("attached child channel")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert!(snapshot.events.is_empty());
+    let rendered = collect_rendered_history_cells(&mut app_event_rx);
+    assert_eq!(
+        rendered.matches("authoritative child transcript").count(),
+        1
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn select_closed_agent_thread_rebases_buffered_transcript_before_snapshot_replay()
+-> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.config.clone();
+    let thread_id = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            config.codex_home.as_path(),
+            "2026-08-02T10-01-00",
+            "2026-08-02T10:01:00Z",
+            "authoritative closed transcript",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create closed child rollout"),
+    )?;
+    let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Archivist".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.enqueue_thread_notification(
+        thread_id,
+        buffered_agent_message_completion(thread_id, "authoritative closed transcript"),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .expect("buffered closed child channel")
+            .attachment(),
+        ThreadEventAttachment::NotificationBuffer
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    // No `thread/resume` occurred, so liveness turns this saved rollout into a replay-only
+    // selection. Its authoritative `thread/read(includeTurns)` snapshot must similarly win.
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+        .await?;
+
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+    );
+    let snapshot = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("replay child channel")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert!(snapshot.events.is_empty());
+    let rendered = collect_rendered_history_cells(&mut app_event_rx);
+    assert_eq!(
+        rendered.matches("authoritative closed transcript").count(),
+        1
+    );
     app_server.shutdown().await?;
     Ok(())
 }
@@ -6176,6 +6613,34 @@ fn agent_message_delta_notification(
         item_id: item_id.to_string(),
         delta: delta.to_string(),
     })
+}
+
+fn buffered_agent_message_completion(thread_id: ThreadId, text: &str) -> ServerNotification {
+    ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "buffered-turn".to_string(),
+        completed_at_ms: 0,
+        item: ThreadItem::AgentMessage {
+            id: "buffered-agent-message".to_string(),
+            text: text.to_string(),
+            phase: None,
+            memory_citation: None,
+        },
+    })
+}
+
+fn collect_rendered_history_cells(
+    app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> String {
+    std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn exec_approval_request(

@@ -838,6 +838,11 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     Some(ThreadEventAttachment::ReplayOnly),
                     "closed sidecars must be represented by a replay-only channel"
                 );
+                // Model the saved child as the selected side thread as well. Shutdown must
+                // discard its replay-local state, rather than sending live-thread interrupts
+                // or subscription teardown requests.
+                app.side_threads
+                    .insert(child_thread_id, SideThreadState::new(root_thread_id));
                 let loaded = app_server
                     .thread_loaded_list(ThreadLoadedListParams {
                         cursor: None,
@@ -1113,8 +1118,9 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     "rejecting a replay-only thread write must not undo the current global selection"
                 );
 
-                // Ctrl+C routes through `shutdown_current_thread`; saved-only transcripts have
-                // no app-server subscription to tear down, so that path must stay local.
+                // Ctrl+C routes through `shutdown_current_thread`; selected saved sidecars have
+                // no live operation or app-server subscription to tear down, so that path must
+                // stay entirely local.
                 let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
                 Box::pin(app.shutdown_current_thread(&mut app_server)).await;
                 let shutdown_requests =
@@ -1122,8 +1128,8 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 assert!(
                     !shutdown_requests
                         .iter()
-                        .any(|method| method == "thread/unsubscribe"),
-                    "shutting down a replay-only selection must not unsubscribe it: {shutdown_requests:?}"
+                        .any(|method| matches!(method.as_str(), "thread/unsubscribe" | "turn/interrupt")),
+                    "shutting down a replay-only side selection must stay local: {shutdown_requests:?}"
                 );
 
                 // A fresh-thread transition performs a second unsubscribe sweep after shutdown.
@@ -1144,8 +1150,8 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                 assert!(
                     !transition_requests
                         .iter()
-                        .any(|method| method == "thread/unsubscribe"),
-                    "a new-thread transition must not unsubscribe the replay-only child: {transition_requests:?}"
+                        .any(|method| matches!(method.as_str(), "thread/unsubscribe" | "turn/interrupt")),
+                    "a new-thread transition must not interrupt or unsubscribe the replay-only child: {transition_requests:?}"
                 );
                 app_server.shutdown().await?;
                 proxy.await??;

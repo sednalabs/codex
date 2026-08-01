@@ -79,7 +79,7 @@ impl App {
             .collect();
         for thread_id in path_backed_thread_ids.iter().copied() {
             if let Some(channel) = self.thread_event_channels.get(&thread_id)
-                && channel.attachment() == ThreadEventAttachment::Live
+                && channel.has_live_attachment()
             {
                 let (has_active_turn, has_terminal_snapshot) = {
                     let store = channel.store.lock().await;
@@ -416,7 +416,23 @@ impl App {
         let has_live_channel = self
             .thread_event_channels
             .get(&thread_id)
-            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+            .is_some_and(ThreadEventChannel::has_live_attachment);
+        self.apply_agent_picker_thread_status_change_with_liveness(
+            thread_id,
+            notification,
+            has_live_channel,
+        );
+    }
+
+    /// Applies a watcher status using liveness observed before any notification-local channel was
+    /// allocated. This keeps a synthetic buffering channel from falsely proving `NotLoaded` is
+    /// still live.
+    pub(super) fn apply_agent_picker_thread_status_change_with_liveness(
+        &mut self,
+        thread_id: ThreadId,
+        notification: &ThreadStatusChangedNotification,
+        has_live_channel: bool,
+    ) {
         let status = agent_picker_thread_status(&notification.status, has_live_channel);
         if !self.agent_navigation.accepts_thread_status_change(
             thread_id,
@@ -484,6 +500,9 @@ impl App {
         thread_id: ThreadId,
     ) -> bool {
         let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        let error_observation_generation = self
+            .agent_navigation
+            .system_error_observation_generation(thread_id);
         let has_replay_channel = self.thread_event_channels.contains_key(&thread_id);
         match app_server
             .thread_read(thread_id, /*include_turns*/ false)
@@ -528,6 +547,12 @@ impl App {
                     self.agent_navigation
                         .confirm_system_error_from_authoritative_status(
                             thread_id, /*status_revision*/ None,
+                        );
+                } else if !status.is_closed {
+                    self.agent_navigation
+                        .clear_system_error_from_authoritative_read(
+                            thread_id,
+                            error_observation_generation,
                         );
                 }
                 self.sync_agent_picker_identity(thread_id);
@@ -609,7 +634,13 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> Result<bool> {
-        if self.thread_event_channels.contains_key(&thread_id) {
+        if self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| {
+                channel.attachment() != ThreadEventAttachment::NotificationBuffer
+            })
+        {
             return Ok(true);
         }
 
@@ -660,11 +691,17 @@ impl App {
             }
         };
         let channel = self.ensure_thread_channel(thread_id);
-        if !live_attached {
+        if live_attached {
+            channel.mark_live();
+        } else {
             channel.mark_replay_only();
         }
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
+        // The authoritative resume/read snapshot already contains ordinary lifecycle and
+        // transcript state. Keep only request-like state that the snapshot cannot replace
+        // before the picker replays this channel into a fresh ChatWidget.
+        store.rebase_buffer_after_session_refresh();
         Ok(live_attached)
     }
 
@@ -687,6 +724,9 @@ impl App {
         channel.mark_replay_only();
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
+        // `thread/read(includeTurns)` is authoritative for a closed transcript too. Avoid
+        // replaying its pre-attach notification buffer on top of the returned turns.
+        store.rebase_buffer_after_session_refresh();
         Ok(())
     }
 
@@ -838,7 +878,9 @@ impl App {
     /// Closed and system-error descendants are intentionally included: their persisted rollouts
     /// remain inspectable even though they cannot attach as live agents.
     pub(super) fn should_attach_live_thread_for_selection(&self, thread_id: ThreadId) -> bool {
-        !self.thread_event_channels.contains_key(&thread_id)
+        self.thread_event_channels
+            .get(&thread_id)
+            .is_none_or(|channel| channel.attachment() == ThreadEventAttachment::NotificationBuffer)
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1277,7 +1319,7 @@ impl App {
     }
 
     /// Applies one app-server thread row to picker state while preserving any attached live channel.
-    fn register_agent_picker_thread_from_backend(
+    pub(super) fn register_agent_picker_thread_from_backend(
         &mut self,
         primary_thread_id: ThreadId,
         thread: Thread,
@@ -1296,7 +1338,7 @@ impl App {
         let has_live_channel = self
             .thread_event_channels
             .get(&thread_id)
-            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+            .is_some_and(ThreadEventChannel::has_live_attachment);
         let status = agent_picker_thread_status(&thread.status, has_live_channel);
         if thread_blocks_direct_input(&thread) {
             self.agent_navigation.mark_parent_owned(thread_id);
