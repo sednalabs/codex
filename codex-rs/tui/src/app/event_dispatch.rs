@@ -172,6 +172,11 @@ impl App {
                 return Ok(self.delete_current_thread(app_server).await);
             }
             AppEvent::ForkCurrentSession => {
+                if let Some(thread_id) = self.chat_widget.thread_id()
+                    && self.reject_replay_only_thread_write(thread_id)
+                {
+                    return Ok(AppRunControl::Continue);
+                }
                 self.session_telemetry.counter(
                     "codex.thread.fork",
                     /*inc*/ 1,

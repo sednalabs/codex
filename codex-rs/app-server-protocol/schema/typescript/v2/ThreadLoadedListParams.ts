@@ -4,7 +4,7 @@
 
 export type ThreadLoadedListParams = {
 /**
- * Opaque pagination cursor returned by a previous call.
+ * Opaque pagination cursor returned as `nextCursor` by a previous call.
  */
 cursor?: string | null,
 /**

@@ -9,7 +9,9 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -401,6 +403,93 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
         requests,
         proxy,
     ))
+}
+
+#[test]
+fn switching_away_from_inactive_closed_side_discards_it_without_rpc() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-inactive-closed-side-discard".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                let root = app_server.start_thread(&app.config).await?;
+                let root_thread_id = root.session.thread_id;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                let unrelated = app_server.start_thread(&app.config).await?;
+                let unrelated_thread_id = unrelated.session.thread_id;
+                let closed_side_thread_id = ThreadId::new();
+                app.side_threads.insert(
+                    closed_side_thread_id,
+                    SideThreadState::new(root_thread_id),
+                );
+                assert_eq!(
+                    app.ensure_thread_channel(closed_side_thread_id).attachment(),
+                    ThreadEventAttachment::Live,
+                    "the regression requires an inactive retained live side channel"
+                );
+                app.agent_navigation.upsert(
+                    closed_side_thread_id,
+                    Some("Closed side".to_string()),
+                    Some("side".to_string()),
+                    /*is_closed*/ false,
+                    /*created_at*/ None,
+                    /*updated_at*/ None,
+                );
+                app.enqueue_thread_notification(
+                    closed_side_thread_id,
+                    ServerNotification::ThreadClosed(ThreadClosedNotification {
+                        thread_id: closed_side_thread_id.to_string(),
+                    }),
+                )
+                .await?;
+                assert!(
+                    app.agent_navigation
+                        .get(&closed_side_thread_id)
+                        .is_some_and(|entry| entry.is_closed),
+                    "the inactive ThreadClosed notification must record terminal liveness"
+                );
+
+                let mut tui = crate::tui::test_support::make_test_tui()?;
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                app.select_agent_thread_and_discard_side(
+                    &mut tui,
+                    &mut app_server,
+                    unrelated_thread_id,
+                )
+                .await?;
+                let switch_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+
+                assert_eq!(app.active_thread_id, Some(unrelated_thread_id));
+                assert!(
+                    !switch_requests
+                        .iter()
+                        .any(|method| matches!(method.as_str(), "turn/interrupt" | "thread/unsubscribe")),
+                    "switching away must not interrupt or unsubscribe an already closed inactive side: {switch_requests:?}"
+                );
+                assert!(!app.side_threads.contains_key(&closed_side_thread_id));
+                assert!(!app.thread_event_channels.contains_key(&closed_side_thread_id));
+                assert_eq!(app.agent_navigation.get(&closed_side_thread_id), None);
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("inactive closed side discard test thread")
 }
 
 #[test]
@@ -1116,6 +1205,43 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     app.chat_widget.config_ref().personality,
                     Some(codex_protocol::config_types::Personality::Pragmatic),
                     "rejecting a replay-only thread write must not undo the current global selection"
+                );
+
+                // `/fork` dispatches directly to `app_server.fork_thread`, so it needs the same
+                // replay-only boundary as other write-shaped events. It must surface the
+                // read-only guidance before any fork RPC is sent.
+                let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                while app_event_rx.try_recv().is_ok() {}
+                let control = Box::pin(app.handle_event(
+                    &mut tui,
+                    &mut app_server,
+                    AppEvent::ForkCurrentSession,
+                ))
+                .await?;
+                assert!(matches!(control, AppRunControl::Continue));
+                let replay_only_fork_requests =
+                    std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+                assert!(
+                    !replay_only_fork_requests
+                        .iter()
+                        .any(|method| method == "thread/fork"),
+                    "replay-only /fork must not reach the app server: {replay_only_fork_requests:?}"
+                );
+                let replay_only_fork_feedback =
+                    std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                    .filter_map(|event| match event {
+                        AppEvent::InsertHistoryCell(cell) => {
+                            Some(cell.transcript_lines(/*width*/ 100))
+                        }
+                        _ => None,
+                    })
+                    .flatten()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    replay_only_fork_feedback.contains(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE),
+                    "replay-only /fork must explain that the saved transcript is read-only"
                 );
 
                 // Switching away routes through `select_agent_thread_and_discard_side`. A

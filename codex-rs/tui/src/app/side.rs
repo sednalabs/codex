@@ -426,10 +426,13 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
-        // A replay-only channel is a saved transcript, not an app-server subscription. Every
-        // caller (including the switch-away path) must discard its local presentation state
-        // without attempting a thread-scoped interrupt or unsubscribe.
-        if self.thread_is_replay_only(thread_id) {
+        // A replay-only channel is a saved transcript, and an accepted terminal lifecycle means
+        // an inactive live channel has already closed server-side. Every caller (including the
+        // switch-away path) must discard either kind of local presentation state without
+        // attempting a thread-scoped interrupt or unsubscribe.
+        if self.thread_is_replay_only(thread_id)
+            || self.agent_navigation.is_terminally_closed(thread_id)
+        {
             self.discard_thread_local_state(thread_id).await;
             return true;
         }

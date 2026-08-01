@@ -4353,10 +4353,15 @@ class ThreadLoadedListParams(BaseModel):
         ),
     ] = None
     cursor: Annotated[
-        str | None, Field(description="Opaque pagination cursor returned by a previous call.")
+        str | None,
+        Field(description="Opaque pagination cursor returned as `nextCursor` by a previous call."),
     ] = None
     limit: Annotated[
-        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)
+        int | None,
+        Field(
+            description="Optional page size. When omitted, the server returns its bounded default of 100 sessions. Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to continue when more loaded sessions remain.",
+            ge=0,
+        ),
     ] = None
 
 
@@ -4378,7 +4383,7 @@ class ThreadLoadedListResponse(BaseModel):
         str | None,
         Field(
             alias="nextCursor",
-            description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+            description="Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate window inspected by the server, which can include loaded sessions that did not match an ancestor filter. If None, there are no more items to return.",
         ),
     ] = None
 
