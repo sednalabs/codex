@@ -20,7 +20,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
 use codex_protocol::protocol::ItemCompletedEvent;
-use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
@@ -385,7 +384,7 @@ WHERE thread_id = ?
 }
 
 #[tokio::test]
-async fn paginated_spawn_completion_preserves_requested_provenance_across_appends() {
+async fn paginated_completed_spawns_persist_and_duplicate_requested_provenance() {
     let home = TempDir::new().expect("temp dir");
     let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
     let thread_id = ThreadId::default();
@@ -395,82 +394,161 @@ async fn paginated_spawn_completion_preserves_requested_provenance_across_append
         .await
         .expect("persist session metadata");
 
-    store
-        .append_items(AppendThreadItemsParams {
-            thread_id,
-            items: vec![
-                turn_started("turn-1"),
-                RolloutItem::EventMsg(EventMsg::ItemStarted(ItemStartedEvent {
-                    thread_id,
-                    turn_id: "turn-1".to_string(),
-                    item: canonical_spawn_item(
-                        "spawn-model-only",
-                        CoreCollabAgentToolCallStatus::InProgress,
-                        Some("gpt-requested-model"),
-                        None,
-                    ),
-                    started_at_ms: 10,
-                })),
-            ],
-        })
-        .await
-        .expect("append canonical spawn start");
-
-    store
-        .append_items(AppendThreadItemsParams {
-            thread_id,
-            items: vec![
-                completed_item(
-                    thread_id,
-                    "turn-1",
-                    canonical_spawn_item(
-                        "spawn-model-only",
-                        CoreCollabAgentToolCallStatus::Completed,
-                        Some("gpt-effective-model"),
-                        Some(codex_protocol::openai_models::ReasoningEffort::Medium),
-                    ),
+    let cases = [
+        (
+            "spawn-model-only",
+            Some("gpt-requested-model"),
+            None,
+            "gpt-effective-model",
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        ),
+        (
+            "spawn-effort-only",
+            None,
+            Some(codex_protocol::openai_models::ReasoningEffort::High),
+            "gpt-effective-effort",
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        ),
+        (
+            "spawn-explicit-mismatch",
+            Some("gpt-requested-pair"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Ultra),
+            "gpt-effective-pair",
+            Some(codex_protocol::openai_models::ReasoningEffort::Low),
+        ),
+    ];
+    let mut completed_spawns = vec![turn_started("turn-1")];
+    completed_spawns.extend(cases.iter().map(
+        |(id, requested_model, requested_reasoning_effort, effective_model, effective_effort)| {
+            completed_item(
+                thread_id,
+                "turn-1",
+                canonical_spawn_item(
+                    id,
+                    CoreCollabAgentToolCallStatus::Completed,
+                    Some(*effective_model),
+                    effective_effort.clone(),
+                    *requested_model,
+                    requested_reasoning_effort.clone(),
                 ),
-                turn_completed("turn-1"),
-            ],
+            )
+        },
+    ));
+    completed_spawns.push(turn_completed("turn-1"));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: completed_spawns,
         })
         .await
-        .expect("append canonical spawn completion");
+        .expect("append completed canonical spawns");
+
+    let rollout_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("read durable rollout path");
+    let durable_lines = fs::read_to_string(rollout_path)
+        .expect("read durable rollout")
+        .lines()
+        .map(|line| serde_json::from_str::<RolloutLine>(line).expect("parse durable rollout line"))
+        .collect::<Vec<_>>();
+    assert!(
+        durable_lines
+            .iter()
+            .all(|line| { !matches!(&line.item, RolloutItem::EventMsg(EventMsg::ItemStarted(_))) })
+    );
+    for (id, requested_model, requested_reasoning_effort, effective_model, effective_effort) in
+        &cases
+    {
+        let item = durable_lines
+            .iter()
+            .find_map(|line| match &line.item {
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) if event.item.id() == *id => {
+                    Some(&event.item)
+                }
+                _ => None,
+            })
+            .expect("durable completed canonical spawn");
+        let TurnItem::CollabAgentToolCall(item) = item else {
+            panic!("expected durable collab spawn item");
+        };
+        assert_eq!(item.model.as_deref(), Some(*effective_model));
+        assert_eq!(item.reasoning_effort.as_ref(), effective_effort.as_ref());
+        assert_eq!(item.requested_model.as_deref(), *requested_model);
+        assert_eq!(
+            item.requested_reasoning_effort.as_ref(),
+            requested_reasoning_effort.as_ref()
+        );
+    }
+
+    let duplicate_completed_spawns = cases
+        .iter()
+        .map(|(id, _, _, effective_model, effective_effort)| {
+            completed_item(
+                thread_id,
+                "turn-1",
+                canonical_spawn_item(
+                    id,
+                    CoreCollabAgentToolCallStatus::Completed,
+                    Some(*effective_model),
+                    effective_effort.clone(),
+                    None,
+                    None,
+                ),
+            )
+        })
+        .collect();
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: duplicate_completed_spawns,
+        })
+        .await
+        .expect("append duplicate completed canonical spawns");
 
     let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
         home.path().abs(),
     ))
     .await
     .expect("open thread history db");
-    let item_json = sqlx::query_scalar::<_, String>(
+    let projected_items = sqlx::query_as::<_, (String, String)>(
         r#"
-SELECT item_json
+SELECT item_id, item_json
 FROM thread_items
-WHERE thread_id = ? AND turn_id = ? AND item_id = ?
+WHERE thread_id = ? AND turn_id = ?
         "#,
     )
     .bind(thread_id.to_string())
     .bind("turn-1")
-    .bind("spawn-model-only")
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await
-    .expect("read completed canonical spawn");
-    let ThreadItem::CollabAgentToolCall {
-        model,
-        reasoning_effort,
-        requested_model,
-        requested_reasoning_effort,
-        ..
-    } = serde_json::from_str::<ThreadItem>(&item_json).expect("deserialize projected spawn")
-    else {
-        panic!("expected completed collab spawn");
-    };
-    assert_eq!(model.as_deref(), Some("gpt-effective-model"));
-    assert_eq!(
-        reasoning_effort,
-        Some(codex_protocol::openai_models::ReasoningEffort::Medium)
-    );
-    assert_eq!(requested_model.as_deref(), Some("gpt-requested-model"));
-    assert_eq!(requested_reasoning_effort, None);
+    .expect("read projected completed canonical spawns");
+    assert_eq!(projected_items.len(), cases.len());
+    for (id, requested_model, requested_reasoning_effort, effective_model, effective_effort) in
+        &cases
+    {
+        let item_json = projected_items
+            .iter()
+            .find_map(|(item_id, item_json)| (item_id.as_str() == *id).then_some(item_json))
+            .expect("projected canonical spawn");
+        let ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model: projected_requested_model,
+            requested_reasoning_effort: projected_requested_reasoning_effort,
+            ..
+        } = serde_json::from_str::<ThreadItem>(item_json).expect("deserialize projected spawn")
+        else {
+            panic!("expected completed collab spawn");
+        };
+        assert_eq!(model.as_deref(), Some(*effective_model));
+        assert_eq!(reasoning_effort.as_ref(), effective_effort.as_ref());
+        assert_eq!(projected_requested_model.as_deref(), *requested_model);
+        assert_eq!(
+            projected_requested_reasoning_effort.as_ref(),
+            requested_reasoning_effort.as_ref()
+        );
+    }
 }
 
 #[tokio::test]
@@ -2029,6 +2107,8 @@ fn canonical_spawn_item(
     status: CoreCollabAgentToolCallStatus,
     model: Option<&str>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> TurnItem {
     TurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
         id: id.to_string(),
@@ -2040,6 +2120,8 @@ fn canonical_spawn_item(
         prompt: Some("inspect the repository".to_string()),
         model: model.map(str::to_string),
         reasoning_effort,
+        requested_model: requested_model.map(str::to_string),
+        requested_reasoning_effort,
         agents_states: Default::default(),
     })
 }

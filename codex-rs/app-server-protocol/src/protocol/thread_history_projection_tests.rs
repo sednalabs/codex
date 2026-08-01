@@ -315,6 +315,7 @@ fn canonical_spawn_item(
     model: Option<&str>,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> TurnItem {
+    let is_start = status == CoreCollabAgentToolCallStatus::InProgress;
     TurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
         id: id.to_string(),
         tool: CoreCollabAgentTool::SpawnAgent,
@@ -324,7 +325,9 @@ fn canonical_spawn_item(
         receiver_agents: Vec::new(),
         prompt: Some("inspect the repository".to_string()),
         model: model.map(str::to_string),
-        reasoning_effort,
+        reasoning_effort: reasoning_effort.clone(),
+        requested_model: is_start.then(|| model.map(str::to_string)).flatten(),
+        requested_reasoning_effort: is_start.then_some(reasoning_effort).flatten(),
         agents_states: Default::default(),
     })
 }

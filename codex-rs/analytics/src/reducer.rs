@@ -1350,7 +1350,9 @@ impl AnalyticsReducer {
                         .duration_ms
                         .and_then(|duration_ms| u64::try_from(duration_ms).ok()),
                 });
+                let thread_id = notification.thread_id;
                 let turn_id = notification.turn.id;
+                self.clear_terminal_turn_item_lifecycle(&thread_id, &turn_id);
                 self.maybe_emit_turn_event(&turn_id, out).await;
             }
             _ => {}
@@ -1624,6 +1626,13 @@ impl AnalyticsReducer {
         summary.final_approval_outcome = Some(final_approval_outcome(reviewer, status, resolution));
         summary.requested_additional_permissions |= pending_review.requested_additional_permissions;
         summary.requested_network_access |= pending_review.requested_network_access;
+    }
+
+    fn clear_terminal_turn_item_lifecycle(&mut self, thread_id: &str, turn_id: &str) {
+        self.tool_items_started_at_ms
+            .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
+        self.spawn_item_starts
+            .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
     }
 
     async fn maybe_emit_turn_event(&mut self, turn_id: &str, out: &mut Vec<TrackEventRequest>) {

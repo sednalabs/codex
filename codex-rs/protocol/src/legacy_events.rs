@@ -257,8 +257,11 @@ impl CollabAgentToolCallItem {
                     started_at_ms,
                     sender_thread_id: self.sender_thread_id,
                     prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.model.clone(),
-                    reasoning_effort: self.reasoning_effort.clone(),
+                    model: self.requested_model.clone().or_else(|| self.model.clone()),
+                    reasoning_effort: self
+                        .requested_reasoning_effort
+                        .clone()
+                        .or_else(|| self.reasoning_effort.clone()),
                 },
             )),
             CollabAgentTool::SendInput => receiver_thread_id.map(|receiver_thread_id| {

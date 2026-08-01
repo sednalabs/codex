@@ -525,13 +525,14 @@ impl ThreadItem {
     }
 }
 
-/// Carries caller-provided spawn overrides from an in-progress snapshot to its
+/// Carries caller-provided spawn overrides from a matching prior snapshot to its
 /// terminal snapshot without changing the effective values selected at completion.
 ///
 /// Canonical item lifecycle events materialize their start and completion snapshots
 /// independently. Core deliberately records the effective model and effort on the
-/// terminal snapshot, so request provenance must be retained from the matching start.
-pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, started: &ThreadItem) {
+/// terminal snapshot, so request provenance must be retained from the matching start or an
+/// earlier duplicate terminal snapshot.
+pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, source: &ThreadItem) {
     let (
         completed_id,
         completed_tool,
@@ -565,12 +566,12 @@ pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, started: &Thre
     }
 
     let (
-        started_id,
-        started_tool,
-        started_status,
-        started_requested_model,
-        started_requested_reasoning_effort,
-    ) = match started {
+        source_id,
+        source_tool,
+        source_status,
+        source_requested_model,
+        source_requested_reasoning_effort,
+    ) = match source {
         ThreadItem::CollabAgentToolCall {
             id,
             tool,
@@ -587,18 +588,23 @@ pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, started: &Thre
         ),
         _ => return,
     };
-    if completed_id != started_id
-        || *started_tool != CollabAgentTool::SpawnAgent
-        || *started_status != CollabAgentToolCallStatus::InProgress
+    if completed_id != source_id
+        || *source_tool != CollabAgentTool::SpawnAgent
+        || !matches!(
+            *source_status,
+            CollabAgentToolCallStatus::InProgress
+                | CollabAgentToolCallStatus::Completed
+                | CollabAgentToolCallStatus::Failed
+        )
     {
         return;
     }
 
     if completed_requested_model.is_none() {
-        completed_requested_model.clone_from(started_requested_model);
+        completed_requested_model.clone_from(source_requested_model);
     }
     if completed_requested_reasoning_effort.is_none() {
-        completed_requested_reasoning_effort.clone_from(started_requested_reasoning_effort);
+        completed_requested_reasoning_effort.clone_from(source_requested_reasoning_effort);
     }
 }
 
@@ -1038,35 +1044,27 @@ impl From<CoreTurnItem> for ThreadItem {
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
             },
-            CoreTurnItem::CollabAgentToolCall(call) => {
-                let is_spawn_begin = matches!(&call.tool, CoreCollabAgentTool::SpawnAgent)
-                    && matches!(&call.status, CoreCollabAgentToolCallStatus::InProgress);
-                let requested_model = is_spawn_begin.then(|| call.model.clone()).flatten();
-                let requested_reasoning_effort = is_spawn_begin
-                    .then(|| call.reasoning_effort.clone())
-                    .flatten();
-                ThreadItem::CollabAgentToolCall {
-                    id: call.id,
-                    tool: call.tool.into(),
-                    status: call.status.into(),
-                    sender_thread_id: call.sender_thread_id.to_string(),
-                    receiver_thread_ids: call
-                        .receiver_thread_ids
-                        .into_iter()
-                        .map(String::from)
-                        .collect(),
-                    prompt: call.prompt,
-                    model: call.model,
-                    reasoning_effort: call.reasoning_effort,
-                    requested_model,
-                    requested_reasoning_effort,
-                    agents_states: call
-                        .agents_states
-                        .into_iter()
-                        .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
-                        .collect(),
-                }
-            }
+            CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
+                id: call.id,
+                tool: call.tool.into(),
+                status: call.status.into(),
+                sender_thread_id: call.sender_thread_id.to_string(),
+                receiver_thread_ids: call
+                    .receiver_thread_ids
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                prompt: call.prompt,
+                model: call.model,
+                reasoning_effort: call.reasoning_effort,
+                requested_model: call.requested_model,
+                requested_reasoning_effort: call.requested_reasoning_effort,
+                agents_states: call
+                    .agents_states
+                    .into_iter()
+                    .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
+                    .collect(),
+            },
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 id: activity.id,
                 kind: activity.kind.into(),

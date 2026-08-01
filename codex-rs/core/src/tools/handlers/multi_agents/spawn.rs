@@ -53,6 +53,8 @@ async fn handle_spawn_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+    let requested_model = args.model.clone();
+    let requested_reasoning_effort = args.reasoning_effort.clone();
     let role_name = args
         .agent_type
         .as_deref()
@@ -81,8 +83,10 @@ async fn handle_spawn_agent(
                 prompt: Some(prompt.clone()),
                 // Preserve the caller's optional request. The resolved child configuration is
                 // reported by the completed item below.
-                model: args.model.clone(),
-                reasoning_effort: args.reasoning_effort.clone(),
+                model: requested_model.clone(),
+                reasoning_effort: requested_reasoning_effort.clone(),
+                requested_model: requested_model.clone(),
+                requested_reasoning_effort: requested_reasoning_effort.clone(),
                 agents_states: Default::default(),
             }),
         )
@@ -200,6 +204,8 @@ async fn handle_spawn_agent(
                 prompt: Some(prompt),
                 model: Some(effective_model),
                 reasoning_effort: Some(effective_reasoning_effort),
+                requested_model,
+                requested_reasoning_effort,
                 agents_states,
             }),
         )
