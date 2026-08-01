@@ -4376,8 +4376,14 @@ pub struct CollabAgentSpawnBeginEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
-    pub model: String,
-    pub reasoning_effort: ReasoningEffortConfig,
+    /// Model explicitly requested by the caller, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// Reasoning effort explicitly requested by the caller, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]

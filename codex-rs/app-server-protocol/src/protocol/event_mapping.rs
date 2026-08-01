@@ -86,8 +86,8 @@ pub fn item_event_to_server_notification(
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
                 receiver_thread_ids: Vec::new(),
                 prompt: Some(begin_event.prompt),
-                model: Some(begin_event.model),
-                reasoning_effort: Some(begin_event.reasoning_effort),
+                model: begin_event.model,
+                reasoning_effort: begin_event.reasoning_effort,
                 agents_states: HashMap::new(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
@@ -484,6 +484,7 @@ mod tests {
     use crate::protocol::v2::TerminalWaitInfo;
     use crate::protocol::v2::TerminalWaitPrimitive;
     use codex_protocol::ThreadId;
+    use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -540,6 +541,43 @@ mod tests {
         assert!(
             item_event_to_server_notification(EventMsg::ShutdownComplete, "thread-1", "turn-1",)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn collab_spawn_begin_preserves_optional_request_fields() {
+        let event = CollabAgentSpawnBeginEvent {
+            call_id: "call-spawn".to_string(),
+            started_at_ms: 123,
+            sender_thread_id: ThreadId::new(),
+            prompt: "inspect the repository".to_string(),
+            model: Some("gpt-caller".to_string()),
+            reasoning_effort: None,
+        };
+
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabAgentSpawnBegin(event.clone()),
+            "thread-1",
+            "turn-1",
+        );
+        assert_item_started_server_notification(
+            notification,
+            ItemStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                started_at_ms: event.started_at_ms,
+                item: ThreadItem::CollabAgentToolCall {
+                    id: event.call_id,
+                    tool: CollabAgentTool::SpawnAgent,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: event.sender_thread_id.to_string(),
+                    receiver_thread_ids: Vec::new(),
+                    prompt: Some(event.prompt),
+                    model: Some("gpt-caller".to_string()),
+                    reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+            },
         );
     }
 

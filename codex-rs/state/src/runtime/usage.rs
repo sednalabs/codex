@@ -31,8 +31,8 @@ struct TurnSnapshot {
 #[derive(Clone, Debug)]
 struct SpawnRequestState {
     parent_thread_id: ThreadId,
-    _requested_model: String,
-    _requested_reasoning_effort: String,
+    _requested_model: Option<String>,
+    _requested_reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -319,7 +319,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
                     SpawnRequestState {
                         parent_thread_id: begin.sender_thread_id,
                         _requested_model: begin.model.clone(),
-                        _requested_reasoning_effort: begin.reasoning_effort.to_string(),
+                        _requested_reasoning_effort: begin
+                            .reasoning_effort
+                            .as_ref()
+                            .map(std::string::ToString::to_string),
                     },
                 );
                 if let Err(err) = self.insert_spawn_request(begin).await {
@@ -632,7 +635,12 @@ WHERE provider_call_id = ?
         .bind(begin.call_id.clone())
         .bind(begin.sender_thread_id.to_string())
         .bind(begin.model.clone())
-        .bind(begin.reasoning_effort.to_string())
+        .bind(
+            begin
+                .reasoning_effort
+                .as_ref()
+                .map(std::string::ToString::to_string),
+        )
         .bind("pending")
         .bind(Utc::now().to_rfc3339())
         .execute(self.pool.as_ref())
@@ -2762,8 +2770,8 @@ WHERE tool_call_id = ?
                 call_id: spawn_call.to_string(),
                 sender_thread_id: thread_id,
                 prompt: String::new(),
-                model: "spawn-model".to_string(),
-                reasoning_effort: ReasoningEffortConfig::default(),
+                model: Some("spawn-model".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::default()),
                 started_at_ms: 0,
             }),
         };
@@ -2950,8 +2958,8 @@ WHERE child_thread_id = ?
                     call_id: spawn_call_id.to_string(),
                     sender_thread_id: parent_thread_id,
                     prompt: String::new(),
-                    model: "spawn-model".to_string(),
-                    reasoning_effort: ReasoningEffortConfig::default(),
+                    model: Some("spawn-model".to_string()),
+                    reasoning_effort: Some(ReasoningEffortConfig::default()),
                     started_at_ms: 0,
                 }),
             })
@@ -3329,8 +3337,8 @@ WHERE thread_id = ?
                 call_id: spawn_call.to_string(),
                 sender_thread_id: parent_thread_id,
                 prompt: String::new(),
-                model: "spawn-model".to_string(),
-                reasoning_effort: ReasoningEffortConfig::default(),
+                model: Some("spawn-model".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::default()),
                 started_at_ms: 0,
             }),
         };

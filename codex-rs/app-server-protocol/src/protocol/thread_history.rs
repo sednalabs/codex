@@ -889,8 +889,8 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
-            model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort.clone()),
+            model: payload.model.clone(),
+            reasoning_effort: payload.reasoning_effort.clone(),
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);

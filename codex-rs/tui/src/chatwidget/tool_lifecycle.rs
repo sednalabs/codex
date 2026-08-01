@@ -163,6 +163,7 @@ impl ChatWidget {
             return;
         };
         if matches!(tool, CollabAgentTool::SpawnAgent)
+            && matches!(status, CollabAgentToolCallStatus::InProgress)
             && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
         {
             self.pending_collab_spawn_requests
