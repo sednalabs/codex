@@ -170,6 +170,15 @@ impl App {
         self.active_thread_id.or(self.chat_widget.thread_id())
     }
 
+    /// Whether `thread_id` is a saved transcript that is displayed without a live session.
+    ///
+    /// Replay-only threads are readable, but must not receive thread-scoped writes.
+    pub(super) fn thread_is_replay_only(&self, thread_id: ThreadId) -> bool {
+        self.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+    }
+
     pub(super) fn ignore_same_thread_resume(
         &mut self,
         target_session: &crate::resume_picker::SessionTarget,
@@ -441,12 +450,7 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
-        if self
-            .thread_event_channels
-            .get(&thread_id)
-            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
-            && replay_only_thread_op_targets_thread(&op)
-        {
+        if self.thread_is_replay_only(thread_id) && replay_only_thread_op_targets_thread(&op) {
             self.chat_widget
                 .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
             return Ok(());

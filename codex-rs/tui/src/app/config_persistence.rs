@@ -729,6 +729,10 @@ impl App {
             return;
         };
 
+        if self.thread_is_replay_only(thread_id) {
+            return;
+        }
+
         let mode = if generate_memories {
             ThreadMemoryMode::Enabled
         } else {
