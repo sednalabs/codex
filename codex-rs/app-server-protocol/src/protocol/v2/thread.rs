@@ -1339,7 +1339,7 @@ pub struct ThreadSearchOccurrencesResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadLoadedListParams {
-    /// Opaque pagination cursor returned by a previous call.
+    /// Opaque pagination cursor returned as `nextCursor` by a previous call.
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
     /// Optional page size. When omitted, the server returns its bounded default of 100 sessions.

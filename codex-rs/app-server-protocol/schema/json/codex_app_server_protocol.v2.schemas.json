@@ -16976,7 +16976,7 @@
           ]
         },
         "cursor": {
-          "description": "Opaque pagination cursor returned by a previous call.",
+          "description": "Opaque pagination cursor returned as `nextCursor` by a previous call.",
           "type": [
             "string",
             "null"

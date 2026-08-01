@@ -784,6 +784,19 @@ impl AgentNavigationState {
         )
     }
 
+    /// Returns whether accepted lifecycle evidence says this child is terminal. This includes
+    /// close notifications that preceded picker metadata, so teardown does not mistake a stale
+    /// local live channel for an app-server session that still needs interruption.
+    pub(crate) fn is_terminally_closed(&self, thread_id: ThreadId) -> bool {
+        self.threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+            || matches!(
+                self.terminal_lifecycle_watermarks.get(&thread_id),
+                Some(TerminalLifecycleWatermark::Closed { .. })
+            )
+    }
+
     /// Records revision provenance for an accepted status-only thread while there is no picker
     /// row or terminal lifecycle watermark to own it. A terminal status moves this provenance to
     /// [`Self::terminal_lifecycle_watermarks`]; a later activity or metadata update moves it to
