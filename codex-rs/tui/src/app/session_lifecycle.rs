@@ -529,7 +529,10 @@ impl App {
                     Some(thread.updated_at),
                 );
                 if status.has_system_error {
-                    self.agent_navigation.set_system_error(thread_id, true);
+                    self.agent_navigation
+                        .confirm_system_error_from_authoritative_status(
+                            thread_id, /*status_revision*/ None,
+                        );
                 }
                 self.sync_agent_picker_identity(thread_id);
                 let keeps_system_error = self
@@ -1319,7 +1322,10 @@ impl App {
             Some(thread.updated_at),
         );
         if status.has_system_error {
-            self.agent_navigation.set_system_error(thread_id, true);
+            self.agent_navigation
+                .confirm_system_error_from_authoritative_status(
+                    thread_id, /*status_revision*/ None,
+                );
         }
         self.sync_agent_picker_identity(thread_id);
         // A live channel can have an empty store after a successful spawn. Only apply server
