@@ -1661,6 +1661,74 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
 }
 
 #[tokio::test]
+async fn open_agent_picker_hides_closed_sidecars_until_closed_filter_is_entered() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id,
+            agent_path: "/root/finished".to_string(),
+            model: None,
+            reasoning_effort: None,
+            is_running_hint: false,
+        });
+    app.mark_agent_picker_thread_closed(thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/finished"));
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(rendered.contains("/root/finished"));
+    assert!(rendered.contains("closed stale finished"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_status_classification_keeps_system_error_sidecars_selectable() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let status = crate::app::session_lifecycle::agent_picker_thread_status(
+        &codex_app_server_protocol::ThreadStatus::SystemError,
+        /*has_live_channel*/ false,
+    );
+
+    assert!(!status.is_running);
+    assert!(!status.is_closed);
+    assert!(status.has_system_error);
+
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Failed worker".to_string()),
+        Some("worker".to_string()),
+        status.is_closed,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_system_error(thread_id, status.has_system_error);
+
+    assert!(
+        app.should_attach_live_thread_for_selection(thread_id),
+        "a system-error row must keep the saved-transcript selection path"
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error)
+    );
+}
+
+#[tokio::test]
 async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -1894,19 +1962,17 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             backfill.refreshed_thread_ids,
             [child_thread_ids[1]].into_iter().collect()
         );
-        assert_eq!(
-            app.agent_navigation.get(&child_thread_ids[0]),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: Some("child-0".to_string()),
-                agent_role: Some("worker".to_string()),
-                agent_path: Some("/root/child-0".to_string()),
-                is_running: true,
-                is_closed: false,
-                created_at: None,
-                updated_at: None,
-                ..AgentPickerThreadEntry::default()
-            })
-        );
+        let child_zero = app
+            .agent_navigation
+            .get(&child_thread_ids[0])
+            .expect("first child should remain in the navigation cache");
+        assert_eq!(child_zero.agent_nickname.as_deref(), Some("child-0"));
+        assert_eq!(child_zero.agent_role.as_deref(), Some("worker"));
+        assert_eq!(child_zero.agent_path.as_deref(), Some("/root/child-0"));
+        assert!(child_zero.is_running);
+        assert!(!child_zero.is_closed);
+        assert!(child_zero.created_at.is_some());
+        assert!(child_zero.updated_at.is_some());
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
         assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
 
@@ -2039,7 +2105,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 }
 
 #[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
+async fn should_attach_saved_thread_for_selection_includes_closed_metadata() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2051,7 +2117,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         /*updated_at*/ None,
     );
 
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
 
     app.agent_navigation.upsert(
         thread_id,
@@ -2092,6 +2158,162 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     assert!(!is_available);
     assert_eq!(app.agent_navigation.get(&thread_id), None);
     assert!(!app.thread_event_channels.contains_key(&thread_id));
+    Ok(())
+}
+
+#[tokio::test]
+async fn transient_liveness_failure_preserves_known_system_error_status() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Unavailable worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation.set_system_error(thread_id, true);
+
+    let err = color_eyre::eyre::eyre!(
+        "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(
+        thread_id,
+        /*has_replay_channel*/ false,
+        &err,
+    ));
+
+    let entry = app
+        .agent_navigation
+        .get(&thread_id)
+        .expect("transient liveness failure should retain the cached picker entry");
+    assert!(
+        entry.has_system_error,
+        "a transient read failure must not erase a previously observed SystemError"
+    );
+    assert!(!entry.is_running);
+}
+
+#[tokio::test]
+async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_matches_closed_filter()
+{
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Closed worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation.set_system_error(thread_id, true);
+
+    let err = color_eyre::eyre::eyre!(
+        "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(
+        thread_id,
+        /*has_replay_channel*/ true,
+        &err,
+    ));
+
+    let entry = app
+        .agent_navigation
+        .get(&thread_id)
+        .expect("a replayable terminal thread should stay in the picker");
+    assert!(entry.is_closed);
+    assert!(
+        !entry.has_system_error,
+        "terminal closure must supersede an earlier SystemError"
+    );
+
+    app.render_agent_picker().await;
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Closed worker"),
+        "closed sidecars should remain hidden until the documented closed filter is entered"
+    );
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(rendered.contains("Closed worker"));
+    assert!(rendered.contains("closed stale finished"));
+    assert!(!rendered.contains("system error failed inspect replay"));
+}
+
+#[tokio::test]
+async fn invalid_agent_picker_continuation_clears_the_stale_load_more_action() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let started = app_server.start_thread(app.chat_widget.config_ref()).await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    app.agent_navigation.upsert(
+        ThreadId::new(),
+        Some("Visible sidecar".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_next_picker_page_cursor(Some("invalid-cursor".to_string()));
+
+    app.render_agent_picker().await;
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .contains("Load more historical sidecars")
+    );
+
+    app.load_more_agent_picker_page(&mut app_server).await;
+
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .contains("Load more historical sidecars"),
+        "an invalid continuation must not remain as a retryable picker action"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_next_page()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let started = app_server.start_thread(app.chat_widget.config_ref()).await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    app.agent_navigation.upsert(
+        ThreadId::new(),
+        Some("Visible sidecar".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_next_picker_page_cursor(Some("stale-continuation".to_string()));
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .contains("Load more historical sidecars"),
+        "a first page without next_cursor must clear the stale continuation before it is clickable"
+    );
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -3543,6 +3765,7 @@ fn inactive_thread_started_notification_initializes_replay_session() -> Result<(
                 task_name: Some("agent thread".to_string()),
                 is_running: false,
                 is_closed: false,
+                has_system_error: false,
                 created_at: Some(1),
                 updated_at: Some(2),
             })
@@ -3707,56 +3930,63 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
 }
 
 #[test]
-fn agent_picker_item_name_snapshot() {
+fn agent_picker_item_label_snapshot() {
     let thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
     let snapshot = [
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 Some("Robie"),
                 Some("explorer"),
+                Some("/root/research"),
                 /*is_primary*/ true
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 Some("Robie"),
                 Some("explorer"),
+                Some("/root/research"),
                 /*is_primary*/ false
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 Some("Robie"),
                 /*agent_role*/ None,
+                Some("/root/research"),
                 /*is_primary*/ false
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 /*agent_nickname*/ None,
                 Some("explorer"),
+                Some("/root/research"),
                 /*is_primary*/ false
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
-                /*agent_nickname*/ None, /*agent_role*/ None, /*is_primary*/ false
+            format_agent_picker_item_label(
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
+                Some("/root/research"),
+                /*is_primary*/ false
             ),
             thread_id
         ),
     ]
     .join("\n");
-    assert_app_snapshot!("agent_picker_item_name", snapshot);
+    assert_app_snapshot!("agent_picker_item_label", snapshot);
 }
 
 #[tokio::test]
@@ -6728,7 +6958,7 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
 }
 
 #[tokio::test]
-async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
+async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let receiver_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread");
@@ -6740,6 +6970,16 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         /*created_at*/ None,
         /*updated_at*/ None,
     );
+    app.agent_navigation
+        .set_agent_path(receiver_thread_id, Some("/root/explore".to_string()));
+    app.agent_navigation.update_identity(
+        receiver_thread_id,
+        Some("gpt-5.4".to_string()),
+        Some(ReasoningEffortConfig::High),
+        Some("openai".to_string()),
+        Some("Explore historical metadata".to_string()),
+    );
+    app.sync_agent_picker_identity(receiver_thread_id);
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
         config: app.config.clone(),
@@ -6772,11 +7012,30 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
             session: None,
             turns: Vec::new(),
             events: vec![ThreadBufferedEvent::Notification(
-                ServerNotification::ItemStarted(
+                ServerNotification::ItemCompleted(
+                    codex_app_server_protocol::ItemCompletedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        completed_at_ms: 0,
+                        item: ThreadItem::CollabAgentToolCall {
+                            id: "spawn-1".to_string(),
+                            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+                            status:
+                                codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                            sender_thread_id: ThreadId::new().to_string(),
+                            receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                            prompt: None,
+                            model: Some("gpt-5".to_string()),
+                            reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                            agents_states: HashMap::new(),
+                        },
+                    },
+                ),
+                ThreadBufferedEvent::Notification(ServerNotification::ItemStarted(
                     codex_app_server_protocol::ItemStartedNotification {
                         thread_id: "thread-1".to_string(),
                         turn_id: "turn-1".to_string(),
-                        started_at_ms: 0,
+                        started_at_ms: 1,
                         item: ThreadItem::CollabAgentToolCall {
                             id: "wait-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
@@ -6790,25 +7049,32 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             agents_states: HashMap::new(),
                         },
                     },
-                ),
+                )),
             )],
             input_state: None,
         },
         /*resume_restored_queue*/ false,
     );
 
+    let mut saw_named_spawn = false;
     let mut saw_named_wait = false;
+    let mut saw_effective_identity = false;
+    let mut saw_requested_identity = false;
     while let Ok(event) = app_event_rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {
             let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
+            saw_named_spawn |= transcript.contains("Spawned")
+                && transcript.contains("Robie [explorer] · /root/explore");
             saw_named_wait |= transcript.contains("Robie [explorer]");
+            saw_effective_identity |= transcript.contains("effective: gpt-5.4 high");
+            saw_requested_identity |= transcript.contains("requested: gpt-5 medium");
         }
     }
 
-    assert!(
-        saw_named_wait,
-        "expected replayed wait item to keep agent name"
-    );
+    assert!(saw_named_spawn, "expected replayed spawn item to keep agent identity");
+    assert!(saw_named_wait, "expected replayed wait item to keep agent identity");
+    assert!(saw_effective_identity, "expected replayed spawn to use effective metadata");
+    assert!(saw_requested_identity, "expected replayed spawn to retain requested metadata");
 }
 
 #[tokio::test]

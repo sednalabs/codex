@@ -1,0 +1,9 @@
+---
+source: tui/src/app/tests.rs
+expression: snapshot
+---
+Main [default] | 00000000-0000-0000-0000-000000000123
+Subagent: Robie [explorer] · /root/research | 00000000-0000-0000-0000-000000000123
+Subagent: Robie · /root/research | 00000000-0000-0000-0000-000000000123
+Subagent [explorer] · /root/research | 00000000-0000-0000-0000-000000000123
+/root/research | 00000000-0000-0000-0000-000000000123
