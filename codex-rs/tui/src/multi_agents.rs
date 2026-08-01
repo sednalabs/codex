@@ -557,6 +557,7 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
         SubAgentActivityKind::Started => true,
         SubAgentActivityKind::Interacted => return None,
         SubAgentActivityKind::Interrupted => false,
+        SubAgentActivityKind::Errored => false,
     };
     Some(SubAgentActivityDisplay {
         thread_id: parse_thread_id(agent_thread_id)?,
@@ -594,6 +595,7 @@ pub(crate) fn sub_agent_activity_summary(kind: SubAgentActivityKind, agent_path:
         SubAgentActivityKind::Started => format!("Started `{agent_path}`"),
         SubAgentActivityKind::Interacted => format!("Interacted with `{agent_path}`"),
         SubAgentActivityKind::Interrupted => format!("Interrupted `{agent_path}`"),
+        SubAgentActivityKind::Errored => format!("Failed `{agent_path}`"),
     }
 }
 
@@ -607,6 +609,7 @@ fn sub_agent_activity_title(
         SubAgentActivityKind::Started => ("Started ", agent_path),
         SubAgentActivityKind::Interacted => ("Interacted with ", agent_path),
         SubAgentActivityKind::Interrupted => ("Interrupted ", agent_path),
+        SubAgentActivityKind::Errored => ("Failed ", agent_path),
     };
     let mut spans = vec![
         Span::from(prefix).bold(),

@@ -4490,6 +4490,7 @@ pub enum SubAgentActivityKind {
     Started,
     Interacted,
     Interrupted,
+    Errored,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]

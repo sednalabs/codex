@@ -192,7 +192,8 @@ impl TraceReducer {
     ) -> Result<()> {
         let target_thread_id = payload.agent_thread_id.to_string();
         match (tool_kind, &payload.kind) {
-            (ToolCallKind::SpawnAgent, SubAgentActivityKind::Started) => {
+            (ToolCallKind::SpawnAgent, SubAgentActivityKind::Started)
+            | (ToolCallKind::SpawnAgent, SubAgentActivityKind::Errored) => {
                 let parent_thread_id = self
                     .rollout
                     .tool_calls
