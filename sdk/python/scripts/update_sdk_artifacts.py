@@ -789,6 +789,24 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
     source = out_path.read_text()
     source = _replace_generated_class_text(
         source,
+        "ThreadLoadedListParams",
+        'cursor: Annotated[\n        str | None, Field(description="Opaque pagination cursor returned by a previous call.")\n    ] = None',
+        'cursor: Annotated[\n        str | None,\n        Field(description="Opaque pagination cursor returned as `nextCursor` by a previous call."),\n    ] = None',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "ThreadLoadedListParams",
+        'limit: Annotated[\n        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)\n    ] = None',
+        'limit: Annotated[\n        int | None,\n        Field(\n            description="Optional page size. When omitted, the server returns its bounded default of 100 sessions. Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to continue when more loaded sessions remain.",\n            ge=0,\n        ),\n    ] = None',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "ThreadLoadedListResponse",
+        'description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return."',
+        'description="Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate window inspected by the server, which can include loaded sessions that did not match an ancestor filter. If None, there are no more items to return."',
+    )
+    source = _replace_generated_class_text(
+        source,
         "CollabAgentToolCallThreadItem",
         'description="Model requested for the spawned agent, when applicable."',
         'description="Effective model selected for the spawned agent, when available."',
@@ -884,6 +902,26 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
     ] = None
 """,
     )
+    subscription_field = """    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\\n\\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
+"""
+    for response_class in (
+        "ThreadStartResponse",
+        "ThreadForkResponse",
+        "ThreadResumeResponse",
+    ):
+        source = _insert_generated_class_fields_before(
+            source,
+            response_class,
+            "    thread: Thread",
+            "thread_subscription_id",
+            subscription_field,
+        )
     out_path.write_text(source)
 
 
