@@ -921,6 +921,7 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
             "    thread: Thread",
             "thread_subscription_id",
             subscription_field,
+            insert_after=True,
         )
     out_path.write_text(source)
 
@@ -931,6 +932,8 @@ def _insert_generated_class_fields_before(
     marker: str,
     field_name: str,
     fields: str,
+    *,
+    insert_after: bool = False,
 ) -> str:
     """Insert one current protocol field block into a known generated model class."""
     class_start = source.find(f"class {class_name}(BaseModel):")
@@ -945,7 +948,8 @@ def _insert_generated_class_fields_before(
         return source
     if marker not in class_source:
         raise RuntimeError(f"Generated {class_name} is missing expected insertion marker")
-    class_source = class_source.replace(marker, f"{fields}{marker}", 1)
+    replacement = f"{marker}{fields}" if insert_after else f"{fields}{marker}"
+    class_source = class_source.replace(marker, replacement, 1)
     return source[:class_start] + class_source + source[class_end:]
 
 
