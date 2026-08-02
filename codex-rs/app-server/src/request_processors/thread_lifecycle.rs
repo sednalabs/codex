@@ -270,6 +270,28 @@ pub(super) async fn rollback_failed_thread_attach(
     connection_id: ConnectionId,
     expected_subscription_id: &str,
 ) {
+    rollback_failed_thread_attach_with_predecessor(
+        thread_state_manager,
+        outgoing,
+        thread_id,
+        connection_id,
+        expected_subscription_id,
+        None,
+    )
+    .await;
+}
+
+/// Rolls back a provisional attachment with the predecessor captured before B overwrote the
+/// state-manager identity. That capture is necessary for the running-resume path, where the
+/// listener may be live on A while B is being hydrated.
+pub(super) async fn rollback_failed_thread_attach_with_predecessor(
+    thread_state_manager: &ThreadStateManager,
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_id: ThreadId,
+    connection_id: ConnectionId,
+    expected_subscription_id: &str,
+    predecessor_subscription_id: Option<&str>,
+) {
     let removed_failed_subscription = outgoing
         .unregister_thread_subscription_if_matches(
             connection_id,
@@ -277,6 +299,27 @@ pub(super) async fn rollback_failed_thread_attach(
             expected_subscription_id,
         )
         .await;
+    if let Some(predecessor_subscription_id) = predecessor_subscription_id
+        && thread_state_manager
+            .restore_connection_subscription_if_matches(
+                thread_id,
+                connection_id,
+                expected_subscription_id,
+                predecessor_subscription_id,
+            )
+            .await
+    {
+        // Only restore transport A after state-manager A won the exact-current check. If C
+        // claimed the outgoing map in the meantime, this is a no-op and C remains authoritative.
+        let _ = outgoing
+            .restore_thread_subscription_if_unclaimed(
+                connection_id,
+                thread_id,
+                predecessor_subscription_id.to_string(),
+            )
+            .await;
+        return;
+    }
     if removed_failed_subscription {
         let _ = thread_state_manager
             .unsubscribe_connection_from_thread_if_subscription_matches(
@@ -639,6 +682,9 @@ pub(super) async fn unload_thread_without_subscribers(
 
     // Any pending app-server -> client requests for this thread can no longer be
     // answered; cancel their callbacks before shutdown/unload.
+    outgoing
+        .release_thread_outbound_barrier_for_teardown(thread_id)
+        .await;
     outgoing
         .cancel_requests_for_thread(thread_id, /*error*/ None)
         .await;
@@ -1050,7 +1096,7 @@ pub(super) async fn handle_pending_thread_resume_request(
             return;
         }
     };
-    if !connection_added {
+    let Some(connection_added) = connection_added else {
         outgoing
             .unregister_thread_subscription_if_matches(
                 connection_id,
@@ -1081,7 +1127,8 @@ pub(super) async fn handle_pending_thread_resume_request(
                 .await;
         }
         return;
-    }
+    };
+    let predecessor_subscription_id = connection_added.predecessor_subscription_id;
 
     if !pending_thread_resume_is_current_or_reply(
         thread_state_manager,
@@ -1092,12 +1139,13 @@ pub(super) async fn handle_pending_thread_resume_request(
     )
     .await
     {
-        rollback_failed_thread_attach(
+        rollback_failed_thread_attach_with_predecessor(
             thread_state_manager,
             outgoing,
             conversation_id,
             connection_id,
             &thread_subscription_id,
+            predecessor_subscription_id.as_deref(),
         )
         .await;
         return;
@@ -1114,12 +1162,13 @@ pub(super) async fn handle_pending_thread_resume_request(
         {
             Ok(cursors) => cursors,
             Err(error) => {
-                rollback_failed_thread_attach(
+                rollback_failed_thread_attach_with_predecessor(
                     thread_state_manager,
                     outgoing,
                     conversation_id,
                     connection_id,
                     &thread_subscription_id,
+                    predecessor_subscription_id.as_deref(),
                 )
                 .await;
                 if pending_thread_resume_is_current_or_reply(
@@ -1158,12 +1207,13 @@ pub(super) async fn handle_pending_thread_resume_request(
     )
     .await
     {
-        rollback_failed_thread_attach(
+        rollback_failed_thread_attach_with_predecessor(
             thread_state_manager,
             outgoing,
             conversation_id,
             connection_id,
             &thread_subscription_id,
+            predecessor_subscription_id.as_deref(),
         )
         .await;
         return;
@@ -1220,14 +1270,38 @@ pub(super) async fn handle_pending_thread_resume_request(
     )
     .await
     {
-        rollback_failed_thread_attach(
+        rollback_failed_thread_attach_with_predecessor(
             thread_state_manager,
             outgoing,
             conversation_id,
             connection_id,
             &thread_subscription_id,
+            predecessor_subscription_id.as_deref(),
         )
         .await;
+        return;
+    }
+    if !outgoing
+        .thread_subscription_matches(connection_id, conversation_id, &thread_subscription_id)
+        .await
+    {
+        rollback_failed_thread_attach_with_predecessor(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+            predecessor_subscription_id.as_deref(),
+        )
+        .await;
+        outgoing
+            .send_error(
+                request_id,
+                invalid_request(
+                    "thread/resume subscription was superseded before publication completed",
+                ),
+            )
+            .await;
         return;
     }
     outgoing
@@ -1954,6 +2028,163 @@ mod tests {
                 .thread_subscription_matches(connection_id, thread_id, &active_subscription_id)
                 .await,
             "once C fails too, the transaction may restore active A"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_running_resume_attach_restores_its_captured_predecessor_for_later_events() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let active_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(active_subscription_id.clone()),
+            )
+            .await
+            .expect("A should establish the active running-thread attachment");
+
+        let provisional_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let provisional_attachment = thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(provisional_subscription_id.clone()),
+            )
+            .await
+            .expect("the real running-resume attach should install B");
+        assert_eq!(
+            provisional_attachment.predecessor_subscription_id.as_deref(),
+            Some(active_subscription_id.as_str()),
+            "B must capture A before it overwrites the state-manager token"
+        );
+
+        rollback_failed_thread_attach_with_predecessor(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &provisional_subscription_id,
+            provisional_attachment.predecessor_subscription_id.as_deref(),
+        )
+        .await;
+        assert_eq!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await,
+            Some(active_subscription_id.clone()),
+            "failed B hydration must restore active A in the real state-manager path"
+        );
+        let active_target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("failed B rollback must restore A in the outgoing map");
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &[active_target],
+            ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        )
+        .await;
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx.recv().await.expect("later event should reach restored A")
+        else {
+            panic!("expected tagged event through restored A");
+        };
+        assert_eq!(notification.thread_subscription_id, active_subscription_id);
+    }
+
+    #[tokio::test]
+    async fn failed_running_resume_attach_cannot_restore_a_over_concurrent_c() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let active_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(active_subscription_id.clone()),
+            )
+            .await
+            .expect("A should attach");
+        let failed_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let failed_attachment = thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(failed_subscription_id.clone()),
+            )
+            .await
+            .expect("B should attach provisionally");
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(replacement_subscription_id.clone()),
+            )
+            .await
+            .expect("C should supersede B before B failure cleanup");
+
+        rollback_failed_thread_attach_with_predecessor(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &failed_subscription_id,
+            failed_attachment.predecessor_subscription_id.as_deref(),
+        )
+        .await;
+        assert_eq!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await,
+            Some(replacement_subscription_id.clone()),
+            "B rollback must not resurrect A after C became current"
+        );
+        assert!(
+            outgoing
+                .thread_subscription_matches(
+                    connection_id,
+                    thread_id,
+                    &replacement_subscription_id,
+                )
+                .await,
+            "B rollback must not overwrite C in the outgoing map"
         );
     }
 

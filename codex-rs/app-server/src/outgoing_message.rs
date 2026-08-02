@@ -381,10 +381,10 @@ impl OutgoingMessageSender {
         }
 
         if let Some((thread_subscriptions, notification)) = warning
-            && self
-                .thread_outbound_warning_delivery_is_current(thread_id, listener_generation)
         {
-            self.send_server_notification_to_thread_subscriptions_direct(
+            self.send_current_thread_outbound_warning(
+                thread_id,
+                listener_generation,
                 &thread_subscriptions,
                 notification,
             )
@@ -410,6 +410,30 @@ impl OutgoingMessageSender {
             self.drain_thread_outbound_barrier(thread_id, listener_generation)
                 .await;
         }
+    }
+
+    /// Teardown invalidates any active warning (including the no-listener generation) and drains
+    /// its retained output immediately. This is intentionally generation-agnostic: after a
+    /// thread is removed, reloaded, or globally cleared, no warning lease may hold client-visible
+    /// traffic until its normal bounded timeout.
+    pub(crate) async fn release_thread_outbound_barrier_for_teardown(&self, thread_id: ThreadId) {
+        let released_generation = {
+            let mut barriers = self
+                .thread_outbound_barriers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(barrier) = barriers.get_mut(&thread_id) else {
+                return;
+            };
+            barrier.warning_delivery_invalidated = true;
+            if matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing) {
+                return;
+            }
+            barrier.phase = ThreadOutboundBarrierPhase::Releasing;
+            barrier.listener_generation
+        };
+        self.drain_thread_outbound_barrier(thread_id, released_generation)
+            .await;
     }
 
     /// A new listener invalidates older generation leases. Release their held traffic before
@@ -464,22 +488,6 @@ impl OutgoingMessageSender {
         }
         barrier.phase = ThreadOutboundBarrierPhase::Releasing;
         true
-    }
-
-    fn thread_outbound_warning_delivery_is_current(
-        &self,
-        thread_id: ThreadId,
-        listener_generation: u64,
-    ) -> bool {
-        self.thread_outbound_barriers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&thread_id)
-            .is_some_and(|barrier| {
-                barrier.listener_generation == listener_generation
-                    && matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing)
-                    && !barrier.warning_delivery_invalidated
-            })
     }
 
     async fn drain_thread_outbound_barrier(&self, thread_id: ThreadId, listener_generation: u64) {
@@ -646,30 +654,56 @@ impl OutgoingMessageSender {
         }
     }
 
-    async fn send_server_notification_to_thread_subscriptions_direct(
+    /// Enqueues a targetless warning only while the matching barrier generation remains current.
+    /// Reserving capacity happens before the barrier lock; once a permit is available, validation
+    /// and `permit.send` are one non-awaiting critical section. A replacement that wins first
+    /// therefore prevents this old warning from entering the transport after its lifecycle ended.
+    async fn send_current_thread_outbound_warning(
         &self,
+        thread_id: ThreadId,
+        listener_generation: u64,
         thread_subscriptions: &[ThreadSubscriptionTarget],
         notification: ServerNotification,
     ) {
         let envelope = timestamped_server_notification_envelope(notification);
         for thread_subscription in thread_subscriptions {
-            if let Err(error) = self
-                .sender
-                .send(OutgoingEnvelope::ToConnection {
-                    connection_id: thread_subscription.connection_id,
-                    message: OutgoingMessage::ThreadScopedNotification(
-                        ThreadScopedServerNotification {
-                            envelope: envelope.clone(),
-                            thread_subscription_id: thread_subscription
-                                .thread_subscription_id
-                                .clone(),
-                        },
-                    ),
-                    write_complete_tx: None,
-                })
-                .await
-            {
-                tracing::warn!("failed to send released targetless warning to client: {error:?}");
+            let permit = match self.sender.reserve().await {
+                Ok(permit) => permit,
+                Err(error) => {
+                    tracing::warn!(
+                        "failed to reserve transport for released targetless warning: {error:?}"
+                    );
+                    return;
+                }
+            };
+            let warning_enqueued = {
+                let barriers = self
+                    .thread_outbound_barriers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let warning_is_current = barriers.get(&thread_id).is_some_and(|barrier| {
+                    barrier.listener_generation == listener_generation
+                        && matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing)
+                        && !barrier.warning_delivery_invalidated
+                });
+                if warning_is_current {
+                    permit.send(OutgoingEnvelope::ToConnection {
+                        connection_id: thread_subscription.connection_id,
+                        message: OutgoingMessage::ThreadScopedNotification(
+                            ThreadScopedServerNotification {
+                                envelope: envelope.clone(),
+                                thread_subscription_id: thread_subscription
+                                    .thread_subscription_id
+                                    .clone(),
+                            },
+                        ),
+                        write_complete_tx: None,
+                    });
+                }
+                warning_is_current
+            };
+            if !warning_enqueued {
+                return;
             }
         }
     }
@@ -1939,6 +1973,7 @@ mod tests {
     use codex_app_server_protocol::ThreadGoalUpdatedNotification;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
+    use codex_app_server_protocol::WarningNotification;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -3419,5 +3454,125 @@ mod tests {
             timeout(Duration::from_millis(50), rx.recv()).await.is_err(),
             "no stale request envelope may follow the retained notifications"
         );
+    }
+
+    #[tokio::test]
+    async fn invalidated_warning_cannot_enqueue_after_waiting_for_transport_capacity() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let target = ThreadSubscriptionTarget::captured(
+            ConnectionId(1),
+            thread_id,
+            "subscription-a".to_string(),
+        );
+
+        // Occupy the sole transport slot before the warning barrier begins. The release task
+        // passes its old pre-await check in the regression case, then waits here for capacity.
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &[target.clone()],
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        assert!(outgoing.begin_thread_outbound_barrier(thread_id, 1));
+        let releasing_outgoing = outgoing.clone();
+        let releasing_target = target.clone();
+        let release = tokio::spawn(async move {
+            releasing_outgoing
+                .release_thread_outbound_barrier(
+                    thread_id,
+                    1,
+                    Some((
+                        vec![releasing_target],
+                        ServerNotification::Warning(WarningNotification {
+                            thread_id: Some(thread_id.to_string()),
+                            message: "old warning".to_string(),
+                        }),
+                    )),
+                )
+                .await;
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !release.is_finished(),
+            "the warning release should be waiting only for the occupied transport slot"
+        );
+
+        // A replacement wins after release started but before its actual transport enqueue.
+        // It must fence the old warning even though the old task is already in its release path.
+        outgoing
+            .release_thread_outbound_barriers_before_generation(thread_id, 2)
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = rx.recv().await.expect("preexisting core output should drain")
+        else {
+            panic!("expected the preexisting tagged core notification");
+        };
+        assert!(matches!(
+            notification.envelope.notification,
+            ServerNotification::ThreadGoalCleared(_)
+        ));
+        timeout(Duration::from_secs(1), release)
+            .await
+            .expect("invalidated warning release should finish once capacity is available")
+            .expect("warning release task should not panic");
+        assert!(
+            timeout(Duration::from_millis(50), rx.recv()).await.is_err(),
+            "the invalidated warning must not enqueue through the replacement lifecycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn teardown_releases_no_listener_and_listener_owned_outbound_gates() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        for listener_generation in [NO_LISTENER_THREAD_OUTBOUND_BARRIER_GENERATION, 7] {
+            let thread_id = ThreadId::new();
+            let target = ThreadSubscriptionTarget::captured(
+                ConnectionId(1),
+                thread_id,
+                format!("subscription-{listener_generation}"),
+            );
+            assert!(outgoing.begin_thread_outbound_barrier(thread_id, listener_generation));
+            outgoing
+                .send_server_notification_to_thread_subscriptions(
+                    &[target],
+                    ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                        thread_id: thread_id.to_string(),
+                    }),
+                )
+                .await;
+            assert_eq!(outgoing.deferred_thread_outbound_count(thread_id).await, 1);
+
+            outgoing
+                .release_thread_outbound_barrier_for_teardown(thread_id)
+                .await;
+            let OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::ThreadScopedNotification(notification),
+                ..
+            } = rx
+                .recv()
+                .await
+                .expect("teardown must drain retained output without waiting for warning timeout")
+            else {
+                panic!("expected retained tagged output after teardown release");
+            };
+            assert!(matches!(
+                notification.envelope.notification,
+                ServerNotification::ThreadGoalCleared(_)
+            ));
+        }
     }
 }

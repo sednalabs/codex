@@ -83,6 +83,14 @@ pub(crate) enum PendingThreadResumeReservationState {
     Superseded,
 }
 
+/// Result of making a running listener eligible for one explicitly minted connection token.
+/// The predecessor is captured under the same state lock that installs the new token so a later
+/// hydration failure can restore the still-valid prior lifecycle rather than guessing from a
+/// map that B already overwrote.
+pub(crate) struct ThreadSubscriptionAttachment {
+    pub(crate) predecessor_subscription_id: Option<String>,
+}
+
 /// Immutable ownership of one bounded targetless-warning wait.
 ///
 /// A warning accepted by a listener must not survive that listener being replaced or cleared.
@@ -1194,7 +1202,8 @@ impl ThreadStateManager {
         }
     }
 
-    fn clear_targetless_warning_waits(&self) {
+    /// Invalidates every detached warning lease during the app-server-wide listener sweep.
+    pub(crate) fn clear_targetless_warning_waits(&self) {
         self.targetless_warning_waits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1261,29 +1270,35 @@ impl ThreadStateManager {
         }
     }
 
-    pub(crate) async fn clear_all_listeners(&self) {
-        self.clear_targetless_warning_waits();
-        let thread_states = {
-            let state = self.state.lock().await;
-            state
-                .threads
-                .iter()
-                .map(|(thread_id, thread_entry)| (*thread_id, thread_entry.state.clone()))
-                .collect::<Vec<_>>()
-        };
+    /// Snapshots the current thread set for a coordinated shutdown sweep. A thread added after
+    /// this snapshot belongs to a later lifecycle and must not be swept as part of this pass.
+    pub(crate) async fn thread_ids(&self) -> Vec<ThreadId> {
+        self.state.lock().await.threads.keys().copied().collect()
+    }
 
-        for (thread_id, thread_state) in thread_states {
-            self.unregister_listener_command_tx(thread_id);
-            let mut thread_state = thread_state.lock().await;
-            tracing::debug!(
-                thread_id = %thread_id,
-                listener_generation = thread_state.listener_generation,
-                had_listener = thread_state.cancel_tx.is_some(),
-                had_active_turn = thread_state.active_turn_snapshot().is_some(),
-                "clearing thread listener during app-server shutdown"
-            );
-            thread_state.clear_listener();
-        }
+    /// Clears one listener after the caller has fenced its outbound warning barrier.
+    pub(crate) async fn clear_listener(&self, thread_id: ThreadId) {
+        let thread_state = {
+            self.state
+                .lock()
+                .await
+                .threads
+                .get(&thread_id)
+                .map(|thread_entry| thread_entry.state.clone())
+        };
+        let Some(thread_state) = thread_state else {
+            return;
+        };
+        self.unregister_listener_command_tx(thread_id);
+        let mut thread_state = thread_state.lock().await;
+        tracing::debug!(
+            thread_id = %thread_id,
+            listener_generation = thread_state.listener_generation,
+            had_listener = thread_state.cancel_tx.is_some(),
+            had_active_turn = thread_state.active_turn_snapshot().is_some(),
+            "clearing thread listener during app-server shutdown"
+        );
+        thread_state.clear_listener();
     }
 
     pub(crate) async fn unsubscribe_connection_from_thread(
@@ -1431,6 +1446,7 @@ impl ThreadStateManager {
     ) -> bool {
         self.try_add_connection_to_thread_with_subscription(thread_id, connection_id, None)
             .await
+            .is_some()
     }
 
     /// Adds a connection to an existing listener and records explicit attachment ownership.
@@ -1439,10 +1455,10 @@ impl ThreadStateManager {
         thread_id: ThreadId,
         connection_id: ConnectionId,
         subscription_id: Option<String>,
-    ) -> bool {
+    ) -> Option<ThreadSubscriptionAttachment> {
         let mut state = self.state.lock().await;
         if !state.live_connections.contains_key(&connection_id) {
-            return false;
+            return None;
         }
         state
             .thread_ids_by_connection
@@ -1451,6 +1467,13 @@ impl ThreadStateManager {
             .insert(thread_id);
         let thread_entry = state.threads.entry(thread_id).or_default();
         thread_entry.connection_ids.insert(connection_id);
+        let predecessor_subscription_id = subscription_id.as_ref().and_then(|subscription_id| {
+            thread_entry
+                .connection_subscription_ids
+                .get(&connection_id)
+                .filter(|previous_subscription_id| *previous_subscription_id != subscription_id)
+                .cloned()
+        });
         match subscription_id {
             Some(subscription_id) => {
                 thread_entry
@@ -1462,6 +1485,42 @@ impl ThreadStateManager {
             }
         }
         thread_entry.update_has_connections();
+        Some(ThreadSubscriptionAttachment {
+            predecessor_subscription_id,
+        })
+    }
+
+    /// Restores a predecessor token only while the failed provisional token is still current in
+    /// the state manager. A later attach or unsubscribe changes/removes that exact entry, which
+    /// fences stale rollback from resurrecting an old lifecycle over newer ownership.
+    pub(crate) async fn restore_connection_subscription_if_matches(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        failed_subscription_id: &str,
+        predecessor_subscription_id: &str,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if !state.live_connections.contains_key(&connection_id) {
+            return false;
+        }
+        let Some(thread_entry) = state.threads.get_mut(&thread_id) else {
+            return false;
+        };
+        if !thread_entry.connection_ids.contains(&connection_id)
+            || !thread_entry
+                .connection_subscription_ids
+                .get(&connection_id)
+                .is_some_and(|current_subscription_id| {
+                    current_subscription_id == failed_subscription_id
+                })
+        {
+            return false;
+        }
+        thread_entry.connection_subscription_ids.insert(
+            connection_id,
+            predecessor_subscription_id.to_string(),
+        );
         true
     }
 

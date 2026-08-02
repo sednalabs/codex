@@ -96,7 +96,7 @@ mod background_terminal_pagination_tests {
 }
 
 mod automatic_thread_attachment_tests {
-    use super::super::automatic_thread_started_subscription_is_current;
+    use super::super::captured_thread_subscription_is_current;
     use crate::outgoing_message::ConnectionId;
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
@@ -123,7 +123,7 @@ mod automatic_thread_attachment_tests {
             .await;
         assert!(created, "automatic attachment should mint its initial token");
         assert!(
-            automatic_thread_started_subscription_is_current(
+            captured_thread_subscription_is_current(
                 outgoing.as_ref(),
                 connection_id,
                 thread_id,
@@ -147,7 +147,7 @@ mod automatic_thread_attachment_tests {
             .register_thread_subscription(connection_id, thread_id)
             .await;
         assert!(
-            !automatic_thread_started_subscription_is_current(
+            !captured_thread_subscription_is_current(
                 outgoing.as_ref(),
                 connection_id,
                 thread_id,
@@ -156,7 +156,7 @@ mod automatic_thread_attachment_tests {
             .await
         );
         assert!(
-            automatic_thread_started_subscription_is_current(
+            captured_thread_subscription_is_current(
                 outgoing.as_ref(),
                 connection_id,
                 thread_id,
@@ -186,6 +186,46 @@ mod automatic_thread_attachment_tests {
         assert_eq!(received_connection_id, connection_id);
         assert_eq!(notification.thread_subscription_id, subscription_a);
         assert_ne!(notification.thread_subscription_id, subscription_b);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_publication_fence_rejects_a_token_replaced_during_hydration() {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let subscription_b = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        // This models cold resume or fork after its listener attached B but before response
+        // hydration completed. The final publication fence must suppress B once C reattaches.
+        let subscription_c = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        assert!(
+            !captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_b,
+            )
+            .await,
+            "cold resume and fork must not publish a response or ThreadStarted for stale B"
+        );
+        assert!(
+            captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_c,
+            )
+            .await,
+            "the later lifecycle C remains the only publishable owner"
+        );
     }
 }
 
