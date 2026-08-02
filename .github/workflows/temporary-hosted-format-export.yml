@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all
+          cargo fmt --all --manifest-path codex-rs/Cargo.toml
           uvx --from 'ruff==0.15.12' ruff format \
             sdk/python/scripts/update_sdk_artifacts.py \
             sdk/python/tests/test_artifact_workflow_and_binaries.py \
