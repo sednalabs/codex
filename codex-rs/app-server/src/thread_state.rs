@@ -94,6 +94,12 @@ pub(crate) struct TargetlessWarningWaitLease {
     listener_generation: Option<u64>,
 }
 
+impl TargetlessWarningWaitLease {
+    pub(crate) fn listener_generation(self) -> Option<u64> {
+        self.listener_generation
+    }
+}
+
 /// Delivery ownership for an extension warning accepted by a thread listener.
 ///
 /// A warning with existing recipients must retain those exact identities across listener FIFO
@@ -101,7 +107,7 @@ pub(crate) struct TargetlessWarningWaitLease {
 /// with no stale recipient to preserve, so delivery may wait for the first subscriber.
 pub(crate) enum ThreadWarningDelivery {
     Captured(Vec<ThreadSubscriptionTarget>),
-    AwaitCurrentSubscriber,
+    AwaitCurrentSubscriber(TargetlessWarningWaitLease),
 }
 
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
@@ -1011,6 +1017,19 @@ impl ThreadStateManager {
             .map(|registration| registration.tx.clone())
     }
 
+    /// Captures the sender and listener generation together so synchronous extension ingress can
+    /// claim a targetless-warning lease before it queues any listener command.
+    pub(crate) fn current_listener_command_tx_with_generation(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<(u64, mpsc::UnboundedSender<ThreadListenerCommand>)> {
+        self.listener_commands
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .map(|registration| (registration.generation, registration.tx.clone()))
+    }
+
     pub(crate) fn register_listener_command_tx(
         &self,
         thread_id: ThreadId,
@@ -1130,6 +1149,27 @@ impl ThreadStateManager {
                     && current_lease.listener_generation == lease.listener_generation
             })
         {
+            waits.remove(&thread_id);
+        }
+    }
+
+    /// Fences an older listener's detached warning waiter before the replacement publishes its
+    /// command sender. This closes the window where the replacement has taken the live listener
+    /// slot but an old waiter could still decide to deliver its warning.
+    pub(crate) fn invalidate_targetless_warning_wait_before_listener_generation(
+        &self,
+        thread_id: ThreadId,
+        next_listener_generation: u64,
+    ) {
+        let mut waits = self
+            .targetless_warning_waits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if waits.get(&thread_id).is_some_and(|lease| {
+            lease
+                .listener_generation
+                .is_some_and(|listener_generation| listener_generation < next_listener_generation)
+        }) {
             waits.remove(&thread_id);
         }
     }

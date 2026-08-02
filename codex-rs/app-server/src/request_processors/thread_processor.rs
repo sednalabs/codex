@@ -1470,6 +1470,11 @@ impl ThreadRequestProcessor {
             .outgoing
             .register_thread_subscription(request_id.connection_id, thread_id)
             .await;
+        let thread_subscription = ThreadSubscriptionTarget::captured(
+            request_id.connection_id,
+            thread_id,
+            thread_subscription_id.clone(),
+        );
         // Auto-attach before publication. A failed attach has already rolled back the started
         // thread's connection-local identity, so do not return its token or announce a lifecycle
         // that this client cannot receive.
@@ -1527,7 +1532,7 @@ impl ThreadRequestProcessor {
         let thread_originator = config_snapshot.originator.clone();
         let response = ThreadStartResponse {
             thread: thread.clone(),
-            thread_subscription_id: Some(thread_subscription_id),
+            thread_subscription_id: Some(thread_subscription_id.clone()),
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,
             service_tier: config_snapshot.service_tier,
@@ -1542,6 +1547,37 @@ impl ThreadRequestProcessor {
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
         let notif = thread_started_notification(thread);
+        // The final ownership check is the publication linearization point. If a newer attach
+        // has already replaced A, this request must not return a receipt for A while the event
+        // stream belongs to B. Once A wins this check, both the response and ThreadStarted carry
+        // the same captured token; a later replacement owns its separate lifecycle.
+        if !automatic_thread_started_subscription_is_current(
+            listener_task_context.outgoing.as_ref(),
+            request_id.connection_id,
+            thread_id,
+            &thread_subscription_id,
+        )
+        .await
+        {
+            let _ = listener_task_context
+                .thread_state_manager
+                .unsubscribe_connection_from_thread_if_subscription_matches(
+                    thread_id,
+                    request_id.connection_id,
+                    &thread_subscription_id,
+                )
+                .await;
+            listener_task_context
+                .outgoing
+                .send_error(
+                    request_id,
+                    invalid_request(
+                        "thread/start subscription was superseded before publication completed",
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
         listener_task_context
             .outgoing
             .send_response_with_thread_originator(request_id, response, thread_originator)
@@ -1553,7 +1589,10 @@ impl ThreadRequestProcessor {
 
         listener_task_context
             .outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
+            .send_server_notification_to_thread_subscriptions(
+                &[thread_subscription],
+                ServerNotification::ThreadStarted(notif),
+            )
             .instrument(tracing::info_span!(
                 "app_server.thread_start.notify_started",
                 otel.name = "app_server.thread_start.notify_started",
@@ -5964,9 +6003,9 @@ fn summary_from_stored_thread(
     }
 }
 
-/// An automatic attachment has no request response to carry its identity. Revalidate the token
-/// captured before listener attachment so a concurrent reattach cannot receive a stale
-/// `ThreadStarted` handshake after it has installed a replacement identity.
+/// Revalidate a captured `ThreadStarted` token before publication. Automatic attachments and
+/// thread/start both use it so a concurrent reattach cannot receive a stale handshake, nor can
+/// thread/start return one token while publishing its lifecycle notification with another.
 async fn automatic_thread_started_subscription_is_current(
     outgoing: &OutgoingMessageSender,
     connection_id: ConnectionId,

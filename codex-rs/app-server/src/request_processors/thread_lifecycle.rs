@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use super::*;
 
 use crate::extensions::deliver_targetless_warning_barrier_resolution;
@@ -386,7 +384,7 @@ pub(super) async fn ensure_listener_task_running(
         .await;
     let thread_settings_baseline =
         thread_settings_from_config_snapshot(&conversation.config_snapshot().await);
-    let (mut listener_command_rx, listener_generation) = {
+    let (mut listener_command_rx, listener_generation, listener_command_tx) = {
         let mut thread_state = thread_state.lock().await;
         if thread_state.listener_matches(&conversation) {
             return Ok(());
@@ -403,15 +401,21 @@ pub(super) async fn ensure_listener_task_running(
             );
             return Ok(());
         };
-        listener_task_context
-            .thread_state_manager
-            .register_listener_command_tx(
-                conversation_id,
-                listener_generation,
-                listener_command_tx.clone(),
-            );
-        (listener_command_rx, listener_generation)
+        (listener_command_rx, listener_generation, listener_command_tx)
     };
+    listener_task_context
+        .thread_state_manager
+        .invalidate_targetless_warning_wait_before_listener_generation(
+            conversation_id,
+            listener_generation,
+        );
+    listener_task_context
+        .outgoing
+        .release_thread_outbound_barriers_before_generation(conversation_id, listener_generation)
+        .await;
+    listener_task_context
+        .thread_state_manager
+        .register_listener_command_tx(conversation_id, listener_generation, listener_command_tx);
     let ListenerTaskContext {
         outgoing,
         thread_manager,
@@ -427,8 +431,6 @@ pub(super) async fn ensure_listener_task_running(
     tokio::spawn(async move {
         let (targetless_warning_resolution_tx, mut targetless_warning_resolution_rx) =
             tokio::sync::mpsc::unbounded_channel::<TargetlessWarningBarrierResolution>();
-        let mut targetless_warning_barrier_active = false;
-        let mut deferred_notification_commands = VecDeque::new();
         loop {
             tokio::select! {
                 biased;
@@ -447,69 +449,29 @@ pub(super) async fn ensure_listener_task_running(
                         targetless_warning_resolution,
                     )
                     .await;
-                    targetless_warning_barrier_active = false;
-
-                    // A targetless warning is an ordering barrier only for client-visible thread
-                    // notifications. Drain the commands that arrived after it in FIFO order, but
-                    // stop immediately if another targetless warning establishes the next barrier.
-                    while !targetless_warning_barrier_active {
-                        let Some(deferred_notification_command) =
-                            deferred_notification_commands.pop_front()
-                        else {
-                            break;
-                        };
-                        let command_outcome = handle_thread_listener_command(
-                            conversation_id,
-                            &conversation,
-                            codex_home.as_path(),
-                            &thread_state_manager,
-                            &thread_state,
-                            &thread_watch_manager,
-                            &outgoing_for_task,
-                            &pending_thread_unloads,
-                            listener_generation,
-                            &targetless_warning_resolution_tx,
-                            deferred_notification_command,
-                        )
-                        .await;
-                        match command_outcome {
-                            ThreadListenerCommandOutcome::Complete => {}
-                            ThreadListenerCommandOutcome::StartedTargetlessWarningBarrier => {
-                                targetless_warning_barrier_active = true;
-                            }
-                            ThreadListenerCommandOutcome::PostCommit(post_commit_command) => {
-                                let post_commit_outcome = handle_thread_listener_command(
-                                    conversation_id,
-                                    &conversation,
-                                    codex_home.as_path(),
-                                    &thread_state_manager,
-                                    &thread_state,
-                                    &thread_watch_manager,
-                                    &outgoing_for_task,
-                                    &pending_thread_unloads,
-                                    listener_generation,
-                                    &targetless_warning_resolution_tx,
-                                    post_commit_command,
-                                )
-                                .await;
-                                debug_assert!(matches!(
-                                    post_commit_outcome,
-                                    ThreadListenerCommandOutcome::Complete
-                                ));
-                            }
-                        }
-                    }
                 }
                 listener_command = listener_command_rx.recv() => {
                     let Some(listener_command) = listener_command else {
                         break;
                     };
-                    if targetless_warning_barrier_active
-                        && thread_listener_command_emits_thread_notification(&listener_command)
+                    let command_outcome = handle_thread_listener_command(
+                        conversation_id,
+                        &conversation,
+                        codex_home.as_path(),
+                        &thread_state_manager,
+                        &thread_state,
+                        &thread_watch_manager,
+                        &outgoing_for_task,
+                        &pending_thread_unloads,
+                        listener_generation,
+                        &targetless_warning_resolution_tx,
+                        listener_command,
+                    )
+                    .await;
+                    if let ThreadListenerCommandOutcome::PostCommit(post_commit_command) =
+                        command_outcome
                     {
-                        deferred_notification_commands.push_back(listener_command);
-                    } else {
-                        let command_outcome = handle_thread_listener_command(
+                        let post_commit_outcome = handle_thread_listener_command(
                             conversation_id,
                             &conversation,
                             codex_home.as_path(),
@@ -520,39 +482,13 @@ pub(super) async fn ensure_listener_task_running(
                             &pending_thread_unloads,
                             listener_generation,
                             &targetless_warning_resolution_tx,
-                            listener_command,
+                            post_commit_command,
                         )
                         .await;
-                        match command_outcome {
-                            ThreadListenerCommandOutcome::Complete => {}
-                            ThreadListenerCommandOutcome::StartedTargetlessWarningBarrier => {
-                                targetless_warning_barrier_active = true;
-                            }
-                            ThreadListenerCommandOutcome::PostCommit(post_commit_command) => {
-                                if targetless_warning_barrier_active {
-                                    deferred_notification_commands.push_back(post_commit_command);
-                                } else {
-                                    let post_commit_outcome = handle_thread_listener_command(
-                                        conversation_id,
-                                        &conversation,
-                                        codex_home.as_path(),
-                                        &thread_state_manager,
-                                        &thread_state,
-                                        &thread_watch_manager,
-                                        &outgoing_for_task,
-                                        &pending_thread_unloads,
-                                        listener_generation,
-                                        &targetless_warning_resolution_tx,
-                                        post_commit_command,
-                                    )
-                                    .await;
-                                    debug_assert!(matches!(
-                                        post_commit_outcome,
-                                        ThreadListenerCommandOutcome::Complete
-                                    ));
-                                }
-                            }
-                        }
+                        debug_assert!(matches!(
+                            post_commit_outcome,
+                            ThreadListenerCommandOutcome::Complete
+                        ));
                     }
                 }
                 event = conversation.next_event() => {
@@ -643,11 +579,26 @@ pub(super) async fn ensure_listener_task_running(
             }
         }
 
-        let mut thread_state = thread_state.lock().await;
-        if thread_state.listener_generation == listener_generation {
-            thread_state_manager
-                .unregister_listener_command_tx_if_generation(conversation_id, listener_generation);
-            thread_state.clear_listener();
+        let cleared_listener = {
+            let mut thread_state = thread_state.lock().await;
+            if thread_state.listener_generation != listener_generation {
+                false
+            } else {
+                thread_state_manager.unregister_listener_command_tx_if_generation(
+                    conversation_id,
+                    listener_generation,
+                );
+                thread_state.clear_listener();
+                true
+            }
+        };
+        if cleared_listener {
+            outgoing_for_task
+                .release_thread_outbound_barrier_for_listener_generation(
+                    conversation_id,
+                    listener_generation,
+                )
+                .await;
         }
     });
     Ok(())
@@ -791,19 +742,23 @@ pub(super) async fn handle_thread_listener_command(
                     send_thread_warning(outgoing, &thread_subscriptions, conversation_id, message)
                         .await;
                 }
-                crate::thread_state::ThreadWarningDelivery::AwaitCurrentSubscriber => {
-                    return if spawn_thread_warning_barrier_resolution(
+                crate::thread_state::ThreadWarningDelivery::AwaitCurrentSubscriber(lease) => {
+                    if !thread_state_manager
+                        .targetless_warning_wait_is_current(conversation_id, lease)
+                    {
+                        return ThreadListenerCommandOutcome::Complete;
+                    }
+                    // Extension ingress already installed the central transport barrier before
+                    // this command was queued. Keep the listener free to process following
+                    // commands while the detached waiter resolves the warning.
+                    spawn_thread_warning_barrier_resolution(
                         Arc::clone(outgoing),
                         thread_state_manager.clone(),
                         conversation_id,
-                        listener_generation,
                         message,
+                        lease,
                         targetless_warning_resolution_tx.clone(),
-                    ) {
-                        ThreadListenerCommandOutcome::StartedTargetlessWarningBarrier
-                    } else {
-                        ThreadListenerCommandOutcome::Complete
-                    };
+                    );
                 }
             }
         }
@@ -844,23 +799,7 @@ pub(super) async fn handle_thread_listener_command(
 
 enum ThreadListenerCommandOutcome {
     Complete,
-    StartedTargetlessWarningBarrier,
     PostCommit(ThreadListenerCommand),
-}
-
-/// These commands have thread-scoped client-visible output. Once a targetless warning has
-/// entered the listener order, they must wait for that warning's bounded delivery or timeout;
-/// ordinary listener ingress remains free to process meanwhile.
-fn thread_listener_command_emits_thread_notification(command: &ThreadListenerCommand) -> bool {
-    matches!(
-        command,
-        ThreadListenerCommand::CompleteThreadResume { .. }
-            | ThreadListenerCommand::EmitThreadGoalUpdated { .. }
-            | ThreadListenerCommand::EmitWarning { .. }
-            | ThreadListenerCommand::EmitThreadGoalCleared { .. }
-            | ThreadListenerCommand::EmitThreadGoalSnapshot { .. }
-            | ThreadListenerCommand::ResolveServerRequest { .. }
-    )
 }
 
 #[allow(clippy::too_many_arguments)]
