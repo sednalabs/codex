@@ -34,9 +34,7 @@ fn detached_review_lifecycle_gate(
     listener_result: Result<EnsureConversationListenerResult, JSONRPCErrorError>,
 ) -> Result<DetachedReviewLifecycleGate, JSONRPCErrorError> {
     match listener_result {
-        Ok(EnsureConversationListenerResult::Attached) => {
-            Ok(DetachedReviewLifecycleGate::Publish)
-        }
+        Ok(EnsureConversationListenerResult::Attached) => Ok(DetachedReviewLifecycleGate::Publish),
         Ok(EnsureConversationListenerResult::ConnectionClosed) => {
             Ok(DetachedReviewLifecycleGate::Suppress)
         }
