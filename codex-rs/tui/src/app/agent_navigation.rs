@@ -94,6 +94,10 @@ pub(crate) struct AgentNavigationState {
     parent_owned_threads: HashSet<ThreadId>,
     /// Opaque continuation for the next bounded persisted-subagent page.
     next_picker_page_cursor: Option<String>,
+    /// Monotonic ownership generation for continuation-page cursor updates. A root refresh
+    /// records this when it starts so its delayed first-page response cannot overwrite a cursor
+    /// installed by a newer explicit Load more action.
+    picker_continuation_generation: u64,
     /// Whether this session has completed the bounded legacy relation repair fallback.
     legacy_relation_fallback_checked: bool,
     /// Coalesces picker refreshes and binds their eventual reply to one root lifecycle.
@@ -115,6 +119,7 @@ struct PickerRefreshTicket {
     root_thread_id: ThreadId,
     lifecycle_generation: u64,
     request_generation: u64,
+    continuation_generation: u64,
 }
 
 /// User-visible completion state for an otherwise empty picker cache.
@@ -256,8 +261,25 @@ impl AgentNavigationState {
             root_thread_id,
             lifecycle_generation,
             request_generation,
+            continuation_generation: self.picker_continuation_generation,
         });
         Some(request_generation)
+    }
+
+    /// Returns whether the matching root refresh still owns the picker cursor. Thread metadata
+    /// remains useful after a continuation wins this race, but its first-page cursor does not.
+    pub(crate) fn picker_refresh_owns_cursor(
+        &self,
+        root_thread_id: ThreadId,
+        lifecycle_generation: u64,
+        request_generation: u64,
+    ) -> bool {
+        self.picker_refresh.is_some_and(|ticket| {
+            ticket.root_thread_id == root_thread_id
+                && ticket.lifecycle_generation == lifecycle_generation
+                && ticket.request_generation == request_generation
+                && ticket.continuation_generation == self.picker_continuation_generation
+        })
     }
 
     /// Consumes the matching in-flight picker refresh. A mismatch is an old response or a reply
@@ -268,12 +290,11 @@ impl AgentNavigationState {
         lifecycle_generation: u64,
         request_generation: u64,
     ) -> bool {
-        let ticket = PickerRefreshTicket {
-            root_thread_id,
-            lifecycle_generation,
-            request_generation,
-        };
-        if self.picker_refresh != Some(ticket) {
+        if !self.picker_refresh.is_some_and(|ticket| {
+            ticket.root_thread_id == root_thread_id
+                && ticket.lifecycle_generation == lifecycle_generation
+                && ticket.request_generation == request_generation
+        }) {
             return false;
         }
         self.picker_refresh = None;
@@ -1141,10 +1162,58 @@ impl AgentNavigationState {
         }
     }
 
-    fn activity_is_retired_lifecycle_replay(&self, activity: &SubAgentActivityDisplay) -> bool {
-        self.terminal_lifecycle_watermarks
+    fn activity_is_retired_lifecycle_replay(
+        &mut self,
+        activity: &SubAgentActivityDisplay,
+    ) -> bool {
+        let Some(watermark) = self
+            .terminal_lifecycle_watermarks
             .get(&activity.thread_id)
-            .is_some_and(|watermark| watermark.activity_ids().contains(&activity.activity_id))
+            .cloned()
+        else {
+            return false;
+        };
+
+        if watermark.activity_ids().contains(&activity.activity_id) {
+            return true;
+        }
+
+        match watermark {
+            TerminalLifecycleWatermark::Closed { .. } => {
+                // A close watermark has no activity that can establish a newer lifecycle. Keep
+                // every late identity in its bounded dedupe history and leave the closed row
+                // untouched, even if that row is still retained for the closed picker filter.
+                self.record_terminal_activity_id(
+                    activity.thread_id,
+                    activity.activity_id.clone(),
+                );
+                true
+            }
+            TerminalLifecycleWatermark::Recovered { .. }
+                if self
+                    .active_lifecycle_activity_ids
+                    .get(&activity.thread_id)
+                    .is_some_and(|activity_ids| activity_ids.contains(&activity.activity_id)) =>
+            {
+                // The terminal update for a post-recovery Started item shares its stable item
+                // id, so it belongs to the active lifecycle rather than the retired one.
+                false
+            }
+            TerminalLifecycleWatermark::Recovered { .. } if activity.is_running_hint => {
+                // A distinct Started item is positive evidence for a new lifecycle.
+                false
+            }
+            TerminalLifecycleWatermark::Recovered { .. } => {
+                // An unseen terminal item cannot prove that it belongs to the post-recovery
+                // lifecycle. Treat it as retired and remember its id within the existing bound;
+                // otherwise a delayed old Errored item could recolor an already-fresh row.
+                self.record_terminal_activity_id(
+                    activity.thread_id,
+                    activity.activity_id.clone(),
+                );
+                true
+            }
+        }
     }
 
     fn activity_can_create_missing_row(&mut self, activity: &SubAgentActivityDisplay) -> bool {
@@ -1161,12 +1230,17 @@ impl AgentNavigationState {
                 self.record_terminal_activity_id(activity.thread_id, activity.activity_id.clone());
                 false
             }
-            TerminalLifecycleWatermark::Recovered { .. } if activity.is_running_hint => {
-                // A distinct Started item is the only positive evidence of a new lifecycle. Keep
-                // the recovered watermark itself so late identities from the retired lifecycle
-                // remain blocked even after this fresh row is created.
-                self.active_lifecycle_activity_ids
-                    .remove(&activity.thread_id);
+            TerminalLifecycleWatermark::Recovered { .. }
+                if activity.is_running_hint
+                    || self
+                        .active_lifecycle_activity_ids
+                        .get(&activity.thread_id)
+                        .is_some_and(|activity_ids| {
+                            activity_ids.contains(&activity.activity_id)
+                        }) =>
+            {
+                // A distinct Started item establishes the new lifecycle. Its later terminal
+                // update is allowed only when it carries that same stable item id.
                 true
             }
             TerminalLifecycleWatermark::Recovered { .. } => {
@@ -1271,6 +1345,17 @@ impl AgentNavigationState {
     /// Stores the server continuation after a bounded `/agent` backfill.
     pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) {
         self.next_picker_page_cursor = next_cursor;
+    }
+
+    /// Stores the cursor produced by an explicit continuation request. This advances ownership
+    /// even when the continuation exhausts or invalidates the relation set, so an older root
+    /// refresh cannot resurrect or rewind its cursor afterward.
+    pub(crate) fn set_next_picker_page_cursor_from_continuation(
+        &mut self,
+        next_cursor: Option<String>,
+    ) {
+        self.next_picker_page_cursor = next_cursor;
+        self.picker_continuation_generation = self.picker_continuation_generation.wrapping_add(1);
     }
 
     /// Returns the next persisted-subagent page when one exists.
@@ -2210,6 +2295,75 @@ mod tests {
         assert!(state.get(&thread_id).is_some_and(|entry| entry.is_running
             && !entry.has_system_error
             && entry.agent_path.as_deref() == Some("/root/fresh-child")));
+    }
+
+    #[test]
+    fn recovery_fences_unseen_retired_error_after_a_fresh_started_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000130").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-130-old-started".to_string(),
+            thread_id,
+            agent_path: "/root/old-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+
+        // This positive Started item creates the new lifecycle before an independently delivered
+        // old terminal item reaches the parent. The old item's id was never previously observed,
+        // so an exact-id replay check alone would incorrectly recolor this fresh row.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-130-fresh-started".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-130-unseen-old-errored".to_string(),
+            thread_id,
+            agent_path: "/root/old-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_running
+                && !entry.is_closed
+                && !entry.has_system_error
+                && entry.agent_path.as_deref() == Some("/root/fresh-child")
+        }));
+        assert!(state
+            .terminal_lifecycle_watermarks
+            .get(&thread_id)
+            .is_some_and(|watermark| {
+                watermark
+                    .activity_ids()
+                    .contains("activity-130-unseen-old-errored")
+            }));
     }
 
     #[test]

@@ -1823,6 +1823,43 @@ async fn agent_picker_background_refresh_merges_discovered_rows_into_the_open_pi
 }
 
 #[tokio::test]
+async fn agent_picker_background_refresh_cannot_erase_a_newer_continuation_cursor() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.agent_navigation
+        .set_next_picker_page_cursor(Some("cursor-C1".to_string()));
+    let lifecycle_generation = app.thread_lifecycle_generation(primary_thread_id);
+    let request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, lifecycle_generation)
+        .expect("first refresh starts");
+
+    // The user consumes C1 before the background first page returns. Its continuation response
+    // is newer picker-cursor authority and must keep C2 even when the stale first page is empty.
+    app.agent_navigation
+        .set_next_picker_page_cursor_from_continuation(Some("cursor-C2".to_string()));
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: Vec::new(),
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: false,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        app.agent_navigation.next_picker_page_cursor(),
+        Some("cursor-C2".to_string()),
+        "a stale root response must not erase a newer continuation"
+    );
+}
+
+#[tokio::test]
 async fn agent_picker_background_refresh_rejects_an_old_root_lifecycle() {
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();

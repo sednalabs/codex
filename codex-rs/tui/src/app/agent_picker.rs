@@ -92,12 +92,16 @@ impl App {
         request_generation: u64,
         result: AgentPickerRefreshResult,
     ) {
+        let refresh_owns_cursor = self.agent_navigation.picker_refresh_owns_cursor(
+            primary_thread_id,
+            lifecycle_generation,
+            request_generation,
+        );
         if !self.agent_navigation.finish_picker_refresh(
             primary_thread_id,
             lifecycle_generation,
             request_generation,
-        )
-            || self.primary_thread_id != Some(primary_thread_id)
+        ) || self.primary_thread_id != Some(primary_thread_id)
             || !self.thread_accepts_lifecycle_generation(primary_thread_id, lifecycle_generation)
         {
             tracing::debug!(
@@ -109,9 +113,10 @@ impl App {
             return;
         }
 
-        let response_was_authoritatively_exhausted = result
-            .persisted_next_picker_page_cursor
-            .is_some_and(|next_cursor| next_cursor.is_none())
+        let response_was_authoritatively_exhausted = refresh_owns_cursor
+            && result
+                .persisted_next_picker_page_cursor
+                .is_some_and(|next_cursor| next_cursor.is_none())
             && result.errors.is_empty();
         let mut refreshed_thread_ids = HashSet::new();
         for thread in result.threads {
@@ -121,7 +126,9 @@ impl App {
                 &mut refreshed_thread_ids,
             );
         }
-        if let Some(next_cursor) = result.persisted_next_picker_page_cursor {
+        if refresh_owns_cursor
+            && let Some(next_cursor) = result.persisted_next_picker_page_cursor
+        {
             // A reopen must not rewind a continuation that the user already consumed. An
             // authoritative exhausted first page, however, must remove a stale Load more row.
             if next_cursor.is_none() || self.agent_navigation.next_picker_page_cursor().is_none()
