@@ -614,7 +614,7 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
         .user_shell()
         .derive_exec_args("", /*use_login_shell*/ false);
     #[cfg(not(windows))]
-    let hook_shell_program = hook_shell_argv.remove(0);
+    let hook_shell_program = Some(hook_shell_argv.remove(0));
     #[cfg(not(windows))]
     let _ = hook_shell_argv.pop();
     #[cfg(not(windows))]
