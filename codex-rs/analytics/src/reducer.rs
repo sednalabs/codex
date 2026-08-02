@@ -1283,13 +1283,14 @@ impl AnalyticsReducer {
                     turn_state.tool_counts.record(&notification.item);
                     return;
                 }
-                let Some(item_id) = tracked_tool_item_id(&notification.item) else {
+                let Some(item_id) = tracked_tool_item_id(&notification.item).map(str::to_owned)
+                else {
                     return;
                 };
                 let key = ToolItemKey {
                     thread_id: notification.thread_id.clone(),
                     turn_id: notification.turn_id.clone(),
-                    item_id: item_id.to_string(),
+                    item_id: item_id.clone(),
                 };
                 let started_spawn_item = self.spawn_item_starts.remove(&key);
                 let started_at_ms = self.tool_items_started_at_ms.remove(&key);
