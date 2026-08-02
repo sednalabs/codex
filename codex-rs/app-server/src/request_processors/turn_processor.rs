@@ -1072,10 +1072,13 @@ impl TurnRequestProcessor {
             .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
             .await;
         let created_subscription = created_subscription.then(|| {
-            ThreadSubscriptionTarget::captured(
-                request_id.connection_id,
-                thread_id,
-                thread_subscription_id,
+            (
+                thread_subscription_id.clone(),
+                ThreadSubscriptionTarget::captured(
+                    request_id.connection_id,
+                    thread_id,
+                    thread_subscription_id,
+                ),
             )
         });
 
@@ -1094,7 +1097,7 @@ impl TurnRequestProcessor {
             Err(error) => return Err(error),
         }
 
-        if let Some(thread_subscription) = created_subscription {
+        if let Some((thread_subscription_id, thread_subscription)) = created_subscription {
             let config_snapshot = thread.config_snapshot().await;
             let mut thread_summary = super::thread_processor::build_thread_from_loaded_snapshot(
                 thread_id,
@@ -1110,12 +1113,24 @@ impl TurnRequestProcessor {
                     .await,
                 matches!(thread.agent_status().await, AgentStatus::Running),
             );
-            self.outgoing
-                .send_server_notification_to_thread_subscriptions(
-                    &[thread_subscription],
-                    ServerNotification::ThreadStarted(thread_started_notification(thread_summary)),
+            if self
+                .outgoing
+                .thread_subscription_matches(
+                    request_id.connection_id,
+                    thread_id,
+                    &thread_subscription_id,
                 )
-                .await;
+                .await
+            {
+                self.outgoing
+                    .send_server_notification_to_thread_subscriptions(
+                        &[thread_subscription],
+                        ServerNotification::ThreadStarted(thread_started_notification(
+                            thread_summary,
+                        )),
+                    )
+                    .await;
+            }
         }
 
         Ok(Some((thread_id, thread)))
@@ -1414,11 +1429,12 @@ impl TurnRequestProcessor {
             .outgoing
             .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
             .await;
+        let created_subscription_id = created_subscription.then(|| thread_subscription_id.clone());
         let thread_subscription = created_subscription.then(|| {
             ThreadSubscriptionTarget::captured(
                 request_id.connection_id,
                 thread_id,
-                thread_subscription_id,
+                thread_subscription_id.clone(),
             )
         });
 
@@ -1437,9 +1453,13 @@ impl TurnRequestProcessor {
             Ok(DetachedReviewLifecycleGate::Publish) => {}
             Ok(DetachedReviewLifecycleGate::Suppress) => return Ok(()),
             Err(error) => {
-                if created_subscription {
+                if let Some(created_subscription_id) = created_subscription_id.as_deref() {
                     self.outgoing
-                        .unregister_thread_subscription(request_id.connection_id, thread_id)
+                        .unregister_thread_subscription_if_matches(
+                            request_id.connection_id,
+                            thread_id,
+                            created_subscription_id,
+                        )
                         .await;
                 }
                 return Err(error);
@@ -1456,7 +1476,16 @@ impl TurnRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
-        if let Some(thread_subscription) = thread_subscription {
+        if let Some(thread_subscription) = thread_subscription
+            && self
+                .outgoing
+                .thread_subscription_matches(
+                    request_id.connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+        {
             let notif = thread_started_notification(thread);
             self.outgoing
                 .send_server_notification_to_thread_subscriptions(
@@ -1628,6 +1657,12 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outgoing_message::ConnectionId;
+    use crate::outgoing_message::OutgoingMessageSender;
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_protocol::ThreadId;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
 
     #[test]
     fn detached_review_lifecycle_is_suppressed_when_listener_attachment_fails() {
@@ -1646,6 +1681,41 @@ mod tests {
         assert!(
             detached_review_lifecycle_gate(Err(invalid_request("listener attach failed"))).is_err(),
             "a listener error must propagate before any lifecycle output can publish"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_review_attach_error_cleanup_preserves_a_reattached_subscription() {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let (subscription_a, created) = outgoing
+            .ensure_thread_subscription_with_status(connection_id, thread_id)
+            .await;
+        assert!(created, "the detached review path should mint token A");
+        let subscription_b = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        // This is the exact attach-error cleanup used by detached review. It must only remove
+        // the token that its own attempt minted, not the concurrent reattach's current token.
+        assert!(
+            !outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    &subscription_a,
+                )
+                .await
+        );
+        assert!(
+            outgoing
+                .thread_subscription_matches(connection_id, thread_id, &subscription_b)
+                .await
         );
     }
 }

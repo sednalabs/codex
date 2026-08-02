@@ -3477,10 +3477,13 @@ impl ThreadRequestProcessor {
                     .ensure_thread_subscription_with_status(connection_id, thread_id)
                     .await;
                 created_subscription.then(|| {
-                    ThreadSubscriptionTarget::captured(
-                        connection_id,
-                        thread_id,
-                        thread_subscription_id,
+                    (
+                        thread_subscription_id.clone(),
+                        ThreadSubscriptionTarget::captured(
+                            connection_id,
+                            thread_id,
+                            thread_subscription_id,
+                        ),
                     )
                 })
             } else {
@@ -3494,19 +3497,42 @@ impl ThreadRequestProcessor {
                     None,
                 )
                 .await;
-            if let Some(thread_subscription) = created_subscription
+            if let Some((thread_subscription_id, thread_subscription)) = created_subscription
                 && matches!(
                     &attach_result,
                     Ok(EnsureConversationListenerResult::Attached)
                 )
                 && let Some(notification) = automatic_thread_started.clone()
             {
-                self.outgoing
-                    .send_server_notification_to_thread_subscriptions(
-                        &[thread_subscription],
-                        ServerNotification::ThreadStarted(notification),
-                    )
-                    .await;
+                if automatic_thread_started_subscription_is_current(
+                    self.outgoing.as_ref(),
+                    connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+                {
+                    self.outgoing
+                        .send_server_notification_to_thread_subscriptions(
+                            &[thread_subscription],
+                            ServerNotification::ThreadStarted(notification),
+                        )
+                        .await;
+                } else {
+                    tracing::debug!(
+                        %thread_id,
+                        ?connection_id,
+                        "suppressing stale automatic thread-started handshake after reattach"
+                    );
+                    let _ = self
+                        .outgoing
+                        .unregister_thread_subscription_if_matches(
+                            connection_id,
+                            thread_id,
+                            &thread_subscription_id,
+                        )
+                        .await;
+                }
             }
             log_listener_attach_result(attach_result, thread_id, connection_id, "thread");
         }
@@ -4335,6 +4361,8 @@ impl ThreadRequestProcessor {
         self.outgoing
             .cancel_requests_for_thread(thread_id, /*error*/ None)
             .await;
+        self.thread_state_manager
+            .unregister_listener_command_tx(thread_id);
         {
             let mut thread_state = thread_state.lock().await;
             thread_state.clear_listener();
@@ -5934,6 +5962,20 @@ fn summary_from_stored_thread(
         source,
         git_info,
     }
+}
+
+/// An automatic attachment has no request response to carry its identity. Revalidate the token
+/// captured before listener attachment so a concurrent reattach cannot receive a stale
+/// `ThreadStarted` handshake after it has installed a replacement identity.
+async fn automatic_thread_started_subscription_is_current(
+    outgoing: &OutgoingMessageSender,
+    connection_id: ConnectionId,
+    thread_id: ThreadId,
+    subscription_id: &str,
+) -> bool {
+    outgoing
+        .thread_subscription_matches(connection_id, thread_id, subscription_id)
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -658,6 +658,18 @@ impl OutgoingMessageSender {
             );
             return;
         };
+        self.replay_requests_to_thread_subscription(&replay_target).await;
+    }
+
+    /// Replays requests to an immutable subscription target captured by a successful lifecycle
+    /// response. Do not look up the current map entry here: a later resume may already own a
+    /// replacement token, which must not receive replay traffic from the older lifecycle.
+    pub(crate) async fn replay_requests_to_thread_subscription(
+        &self,
+        replay_target: &ThreadSubscriptionTarget,
+    ) {
+        let connection_id = replay_target.connection_id;
+        let thread_id = replay_target.thread_id;
         let requests = self.pending_requests_for_thread(thread_id).await;
         for request in requests {
             // Preserve the original recipients (which can now be stale and
