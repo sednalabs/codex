@@ -756,7 +756,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     ),
                                 };
                                 let request_id = match inner {
-                                    InProcessTaggedServerEvent::ServerRequest(req) => req.id().clone(),
+                                    InProcessTaggedServerEvent::ServerRequest(req) => {
+                                        req.id().clone()
+                                    }
                                     _ => unreachable!("we just sent a ServerRequest variant"),
                                 };
                                 outgoing_message_sender
@@ -789,7 +791,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     ),
                                 };
                                 let request_id = match inner {
-                                    InProcessTaggedServerEvent::ThreadServerRequest { request, .. } => {
+                                    InProcessTaggedServerEvent::ThreadServerRequest {
+                                        request, ..
+                                    } => {
                                         request.id().clone()
                                     }
                                     _ => request_id,
@@ -802,7 +806,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         OutgoingMessage::AppServerNotification(envelope) => {
                             if !forward_in_process_server_notification(
                                 &event_tx,
-                                InProcessTaggedServerEvent::ServerNotification(envelope.notification),
+                                InProcessTaggedServerEvent::ServerNotification(
+                                    envelope.notification,
+                                ),
                             )
                             .await
                             {

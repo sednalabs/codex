@@ -369,7 +369,9 @@ impl RemoteAppServerClient {
                                                             request,
                                                         }
                                                     }
-                                                    None => TaggedAppServerEvent::ServerRequest(request),
+                                                    None => {
+                                                        TaggedAppServerEvent::ServerRequest(request)
+                                                    }
                                                 };
                                                 if let Err(err) = deliver_event(
                                                     &event_tx,
@@ -1378,8 +1380,9 @@ mod tests {
                 old_subscription_id,
             ))
             .expect("test server channel should be open");
-        let delayed_request = tokio::time::timeout(Duration::from_secs(1), client.next_tagged_event())
-            .await
+        let delayed_request =
+            tokio::time::timeout(Duration::from_secs(1), client.next_tagged_event())
+                .await
             .expect("thread request should reach the client queue")
             .expect("client event stream should stay open");
 
