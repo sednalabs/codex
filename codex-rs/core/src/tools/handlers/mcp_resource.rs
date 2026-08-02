@@ -28,6 +28,7 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolPayload;
 use codex_protocol::protocol::McpInvocation;
 use codex_tools::ToolOutput;
+use codex_tools::ToolExecutionStatus;
 
 mod list_mcp_resource_templates;
 mod list_mcp_resources;
@@ -219,6 +220,18 @@ impl ReadResourceToolOutput {
     fn model_success(&self) -> Option<bool> {
         self.model_output.success
     }
+
+    fn execution_status_for_source(
+        &self,
+        source: &crate::tools::context::ToolCallSource,
+    ) -> ToolExecutionStatus {
+        match source {
+            crate::tools::context::ToolCallSource::Direct => {
+                ToolExecutionStatus::from_success(self.success_for_logging())
+            }
+            crate::tools::context::ToolCallSource::CodeMode { .. } => ToolExecutionStatus::Completed,
+        }
+    }
 }
 
 impl ToolOutput for ReadResourceToolOutput {
@@ -228,6 +241,10 @@ impl ToolOutput for ReadResourceToolOutput {
 
     fn success_for_logging(&self) -> bool {
         self.model_output.success_for_logging()
+    }
+
+    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
+        ToolExecutionStatus::Completed
     }
 
     fn to_response_item(
@@ -254,6 +271,18 @@ fn call_tool_result_from_content(content: &str, success: Option<bool>) -> CallTo
         content: vec![serde_json::json!({"type": "text", "text": content})],
         structured_content: None,
         is_error: success.map(|value| !value),
+        meta: None,
+    }
+}
+
+fn call_tool_result_from_execution_status(
+    content: &str,
+    execution_status: ToolExecutionStatus,
+) -> CallToolResult {
+    CallToolResult {
+        content: vec![serde_json::json!({"type": "text", "text": content})],
+        structured_content: None,
+        is_error: Some(!execution_status.is_completed()),
         meta: None,
     }
 }

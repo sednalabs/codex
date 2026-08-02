@@ -15,7 +15,7 @@ use rmcp::model::ReadResourceRequestParams;
 
 use super::ReadResourceArgs;
 use super::ReadResourcePayload;
-use super::call_tool_result_from_content;
+use super::call_tool_result_from_execution_status;
 use super::emit_tool_call_begin;
 use super::emit_tool_call_end;
 use super::ensure_model_can_access_mcp_server;
@@ -53,6 +53,7 @@ impl ReadMcpResourceHandler {
             session,
             step_context,
             call_id,
+            source,
             payload,
             ..
         } = invocation;
@@ -112,9 +113,9 @@ impl ReadMcpResourceHandler {
                         &call_id,
                         invocation,
                         duration,
-                        Ok(call_tool_result_from_content(
+                        Ok(call_tool_result_from_execution_status(
                             &content,
-                            output.model_success(),
+                            output.execution_status_for_source(&source),
                         )),
                     )
                     .await;

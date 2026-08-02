@@ -1,6 +1,7 @@
 use super::*;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
+use codex_tools::ToolExecutionStatus;
 use codex_tools::ToolOutput;
 use pretty_assertions::assert_eq;
 use rmcp::model::AnnotateAble;
@@ -8,6 +9,7 @@ use rmcp::model::ResourceContents;
 use serde_json::json;
 
 use crate::context_manager::ContextManager;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolPayload;
 
 fn resource(uri: &str, name: &str) -> Resource {
@@ -96,6 +98,38 @@ fn call_tool_result_from_content_marks_success() {
     let result = call_tool_result_from_content("{}", Some(true));
     assert_eq!(result.is_error, Some(false));
     assert_eq!(result.content.len(), 1);
+}
+
+#[test]
+fn oversized_json_resource_keeps_code_mode_execution_successful() {
+    let output = serialize_read_resource_output(
+        text_resource_payload(
+            "ops",
+            "ops://resource/large-json",
+            Some("application/json"),
+            json!({ "items": ["x".repeat(255 * 1024)] }).to_string(),
+        ),
+        TruncationPolicy::Bytes(8_000),
+    )
+    .expect("serialize resource output");
+
+    assert_eq!(output.model_success(), Some(false));
+    assert_eq!(output.success_for_logging(), false);
+    assert_eq!(
+        output.execution_status_for_source(&ToolCallSource::Direct),
+        ToolExecutionStatus::Failed
+    );
+    assert_eq!(
+        output.execution_status_for_source(&ToolCallSource::CodeMode {
+            cell_id: "cell-1".to_string(),
+            runtime_tool_call_id: "tool-1".to_string(),
+        }),
+        ToolExecutionStatus::Completed
+    );
+    assert_eq!(
+        output.code_mode_execution_status(),
+        ToolExecutionStatus::Completed
+    );
 }
 
 #[test]

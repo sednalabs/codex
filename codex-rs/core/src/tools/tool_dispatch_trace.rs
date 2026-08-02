@@ -15,6 +15,7 @@ use codex_rollout_trace::ToolDispatchPayload;
 use codex_rollout_trace::ToolDispatchRequester;
 use codex_rollout_trace::ToolDispatchResult;
 use codex_rollout_trace::ToolDispatchTraceContext;
+use codex_tools::ToolExecutionStatus;
 
 /// Keeps registry early-return paths paired with trace end events.
 pub(crate) struct ToolDispatchTrace {
@@ -37,6 +38,7 @@ impl ToolDispatchTrace {
         call_id: &str,
         payload: &ToolPayload,
         result: &dyn ToolOutput,
+        execution_status: ToolExecutionStatus,
     ) {
         if !self.context.is_enabled() {
             return;
@@ -46,7 +48,7 @@ impl ToolDispatchTrace {
         else {
             return;
         };
-        let status = if result.success_for_logging() {
+        let status = if execution_status.is_completed() {
             ExecutionStatus::Completed
         } else {
             ExecutionStatus::Failed

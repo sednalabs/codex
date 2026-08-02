@@ -7,6 +7,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_rollout_trace::ExecutionStatus;
 use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ToolCallRequester;
+use codex_tools::ToolExecutionStatus;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -21,6 +22,7 @@ use crate::tools::code_mode::WAIT_TOOL_NAME;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
@@ -58,6 +60,68 @@ impl ToolExecutor<ToolInvocation> for TestHandler {
 }
 
 impl CoreToolRuntime for TestHandler {}
+
+struct ModelBoundedCodeModeOutput;
+
+impl crate::tools::context::ToolOutput for ModelBoundedCodeModeOutput {
+    fn log_preview(&self) -> String {
+        "bounded model projection".to_string()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        false
+    }
+
+    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
+        ToolExecutionStatus::Completed
+    }
+
+    fn to_response_item(
+        &self,
+        call_id: &str,
+        payload: &ToolPayload,
+    ) -> codex_protocol::models::ResponseInputItem {
+        FunctionToolOutput::from_text(
+            "{\"error\":\"bounded\"}".to_string(),
+            Some(false),
+        )
+        .to_response_item(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> serde_json::Value {
+        serde_json::json!({ "complete": "resource value" })
+    }
+}
+
+struct ModelBoundedCodeModeHandler;
+
+impl ToolExecutor<ToolInvocation> for ModelBoundedCodeModeHandler {
+    fn tool_name(&self) -> codex_tools::ToolName {
+        codex_tools::ToolName::plain("model_bounded_resource")
+    }
+
+    fn spec(&self) -> codex_tools::ToolSpec {
+        codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
+            name: self.tool_name().name,
+            description: "Test model-bounded resource tool.".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: codex_tools::JsonSchema::default(),
+            output_schema: None,
+        })
+    }
+
+    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async {
+            Ok(
+                Box::new(ModelBoundedCodeModeOutput)
+                    as Box<dyn crate::tools::context::ToolOutput>,
+            )
+        })
+    }
+}
+
+impl CoreToolRuntime for ModelBoundedCodeModeHandler {}
 
 #[tokio::test]
 async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> anyhow::Result<()> {
@@ -147,6 +211,72 @@ async fn dispatch_lifecycle_trace_records_direct_and_code_mode_requesters() -> a
             .raw_result_payload_id
             .is_some(),
         "code-mode calls should keep the result returned to JavaScript",
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_bounded_output_records_code_mode_execution_as_completed() -> anyhow::Result<()> {
+    let temp = TempDir::new()?;
+    let (mut session, turn) = make_session_and_context().await;
+    attach_test_trace(&mut session, &turn, temp.path())?;
+    session.services.rollout_thread_trace.start_code_cell_trace(
+        turn.sub_id.as_str(),
+        "cell-1",
+        "call-code",
+        "await tools.model_bounded_resource({})",
+    );
+
+    let registry = ToolRegistry::with_handler_for_test(Arc::new(ModelBoundedCodeModeHandler));
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let direct = registry
+        .dispatch_any_with_terminal_outcome(
+            test_invocation(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "direct-model-projection",
+                "model_bounded_resource",
+                ToolCallSource::Direct,
+                "{}",
+            ),
+            /*terminal_outcome_reached*/ None,
+        )
+        .await?;
+    let code_mode = registry
+        .dispatch_any_with_terminal_outcome(
+            test_invocation(
+                session,
+                turn,
+                "code-mode-resource-read",
+                "model_bounded_resource",
+                ToolCallSource::CodeMode {
+                    cell_id: "cell-1".to_string(),
+                    runtime_tool_call_id: "tool-1".to_string(),
+                },
+                "{}",
+            ),
+            /*terminal_outcome_reached*/ None,
+        )
+        .await?;
+
+    let codex_protocol::models::ResponseInputItem::FunctionCallOutput { output, .. } =
+        direct.into_response()
+    else {
+        panic!("direct invocation should retain a function response");
+    };
+    assert_eq!(output.success, Some(false));
+    assert_eq!(code_mode.code_mode_result(), serde_json::json!({ "complete": "resource value" }));
+
+    let replayed = codex_rollout_trace::replay_bundle(single_bundle_dir(temp.path())?)?;
+    assert_eq!(
+        replayed.tool_calls["direct-model-projection"].execution.status,
+        ExecutionStatus::Failed
+    );
+    assert_eq!(
+        replayed.tool_calls["code-mode-resource-read"].execution.status,
+        ExecutionStatus::Completed
     );
 
     Ok(())
