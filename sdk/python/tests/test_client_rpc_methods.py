@@ -14,8 +14,6 @@ from openai_codex.generated.v2_all import (
     CollabAgentToolCallThreadItem,
     ReasoningEffort,
     ReasoningEffortOption,
-    SubAgentActivityKind,
-    SubAgentActivityThreadItem,
     ThreadForkParams,
     ThreadListParams,
     ThreadListResponse,
@@ -30,7 +28,12 @@ from openai_codex.generated.v2_all import (
     WarningNotification,
 )
 from openai_codex.models import Notification, UnknownNotification
-from openai_codex.types import ThreadSource
+from openai_codex.types import (
+    SubAgentActivityKind,
+    SubAgentActivityTerminalState,
+    SubAgentActivityThreadItem,
+    ThreadSource,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,13 +51,16 @@ def test_generated_v2_bundle_has_single_shared_plan_type_definition() -> None:
     assert source.count("class PlanType(") == 1
 
 
-def test_subagent_activity_errored_kind_matches_json_schema() -> None:
+def test_subagent_activity_terminal_detail_matches_json_schema() -> None:
     item = SubAgentActivityThreadItem.model_validate(
         {
             "agentPath": "/root/failed-child",
             "agentThreadId": "child-thread-1",
             "id": "activity-1",
-            "kind": "errored",
+            "kind": "interrupted",
+            "model": "gpt-5.6",
+            "reasoningEffort": "high",
+            "terminalState": "errored",
             "type": "subAgentActivity",
         }
     )
@@ -69,13 +75,16 @@ def test_subagent_activity_errored_kind_matches_json_schema() -> None:
         ).read_text()
     )
 
-    assert item.kind is SubAgentActivityKind.errored
+    assert item.kind is SubAgentActivityKind.interrupted
+    assert item.terminal_state is SubAgentActivityTerminalState.errored
+    assert item.model == "gpt-5.6"
+    assert item.reasoning_effort is ReasoningEffort.high
     assert schema_bundle["definitions"]["SubAgentActivityKind"]["enum"] == [
         "started",
         "interacted",
         "interrupted",
-        "errored",
     ]
+    assert schema_bundle["definitions"]["SubAgentActivityTerminalState"]["enum"] == ["errored"]
 
 
 def test_agent_picker_protocol_models_match_current_schema() -> None:

@@ -528,6 +528,46 @@ class ThreadResumeResponse(BaseModel):
     assert "Effective reasoning effort selected for the spawned agent" in once
 
 
+def test_generation_preserves_canonical_subagent_activity_contract(
+    tmp_path: Path,
+) -> None:
+    script = _load_update_script_module()
+    generated = tmp_path / "v2_all.py"
+    generated.write_text(
+        '''class SubAgentActivityKind(Enum):
+    started = "started"
+    interacted = "interacted"
+    interrupted = "interrupted"
+    errored = "errored"
+
+
+class SubAgentActivityThreadItem(BaseModel):
+    agent_path: Annotated[str, Field(alias="agentPath")]
+    agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
+    id: str
+    kind: SubAgentActivityKind
+    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]
+'''
+    )
+
+    script._preserve_subagent_activity_protocol_contract(generated)
+    once = generated.read_text()
+    script._preserve_subagent_activity_protocol_contract(generated)
+
+    kind_start = once.index("class SubAgentActivityKind(Enum):")
+    kind_end = once.index("\n\nclass ", kind_start)
+    kind_source = once[kind_start:kind_end]
+    assert generated.read_text() == once
+    assert 'errored = "errored"' not in kind_source
+    assert "class SubAgentActivityTerminalState(Enum):" in once
+    assert '    errored = "errored"' in once
+    assert "terminal_state" in once
+    assert 'alias="terminalState"' in once
+    assert "model" in once
+    assert "reasoning_effort" in once
+    assert 'alias="reasoningEffort"' in once
+
+
 def test_generated_chatgpt_account_email_is_required_nullable() -> None:
     from openai_codex.generated.v2_all import ChatgptAccount
 

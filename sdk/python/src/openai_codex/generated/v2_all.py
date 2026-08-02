@@ -3921,6 +3921,9 @@ class SubAgentActivityKind(Enum):
     started = "started"
     interacted = "interacted"
     interrupted = "interrupted"
+
+
+class SubAgentActivityTerminalState(Enum):
     errored = "errored"
 
 
@@ -4275,6 +4278,24 @@ class SubAgentActivityThreadItem(BaseModel):
     agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
     id: str
     kind: SubAgentActivityKind
+    model: Annotated[
+        str | None,
+        Field(description="Effective model selected for the affected child, when known."),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Effective reasoning effort selected for the affected child, when known.",
+        ),
+    ] = None
+    terminal_state: Annotated[
+        SubAgentActivityTerminalState | None,
+        Field(
+            alias="terminalState",
+            description="Additive terminal detail for the affected child, when available.",
+        ),
+    ] = None
     type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]
 
 

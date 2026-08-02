@@ -643,7 +643,7 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_chatgpt_account_email(out_path)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
-    _preserve_subagent_activity_kind_enum(out_path)
+    _preserve_subagent_activity_protocol_contract(out_path)
     _preserve_current_protocol_fields(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
@@ -759,8 +759,8 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
 
 
-def _preserve_subagent_activity_kind_enum(out_path: Path) -> None:
-    """Keep the public terminal sub-agent activity value across pinned-runtime regeneration."""
+def _preserve_subagent_activity_protocol_contract(out_path: Path) -> None:
+    """Keep sub-agent activity models aligned with the canonical V2 contract."""
     source = out_path.read_text()
     class_start = source.find("class SubAgentActivityKind(Enum):")
     if class_start == -1:
@@ -769,19 +769,66 @@ def _preserve_subagent_activity_kind_enum(out_path: Path) -> None:
     if class_end == -1:
         class_end = len(source)
 
-    class_source = source[class_start:class_end]
-    errored_member = '    errored = "errored"'
-    if errored_member in class_source:
-        return
-    interrupted_member = '    interrupted = "interrupted"'
-    if interrupted_member not in class_source:
-        raise RuntimeError("Generated SubAgentActivityKind is missing the interrupted member")
-    class_source = class_source.replace(
-        interrupted_member,
-        f"{interrupted_member}\n{errored_member}",
-        1,
+    activity_kind = """class SubAgentActivityKind(Enum):
+    started = "started"
+    interacted = "interacted"
+    interrupted = "interrupted"""
+    source = source[:class_start] + activity_kind + source[class_end:]
+
+    terminal_class = """class SubAgentActivityTerminalState(Enum):
+    errored = "errored"""
+    terminal_start = source.find("class SubAgentActivityTerminalState(Enum):")
+    if terminal_start == -1:
+        kind_end = source.find("\n\nclass ", class_start)
+        if kind_end == -1:
+            kind_end = len(source)
+        source = source[:kind_end] + "\n\n" + terminal_class + source[kind_end:]
+    else:
+        terminal_end = source.find("\n\nclass ", terminal_start)
+        if terminal_end == -1:
+            terminal_end = len(source)
+        source = source[:terminal_start] + terminal_class + source[terminal_end:]
+
+    source = _insert_generated_class_fields_before(
+        source,
+        "SubAgentActivityThreadItem",
+        '    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]',
+        "model",
+        """    model: Annotated[
+        str | None,
+        Field(description="Effective model selected for the affected child, when known."),
+    ] = None
+""",
     )
-    out_path.write_text(source[:class_start] + class_source + source[class_end:])
+    source = _insert_generated_class_fields_before(
+        source,
+        "SubAgentActivityThreadItem",
+        '    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]',
+        "reasoning_effort",
+        """    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Effective reasoning effort selected for the affected child, when known.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "SubAgentActivityThreadItem",
+        '    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]',
+        "terminal_state",
+        """    terminal_state: Annotated[
+        SubAgentActivityTerminalState | None,
+        Field(
+            alias="terminalState",
+            description="Additive terminal detail for the affected child, when available.",
+        ),
+    ] = None
+""",
+    )
+    out_path.write_text(source)
 
 
 def _preserve_current_protocol_fields(out_path: Path) -> None:
