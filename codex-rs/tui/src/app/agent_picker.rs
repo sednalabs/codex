@@ -92,7 +92,7 @@ impl App {
         request_generation: u64,
         result: AgentPickerRefreshResult,
     ) {
-        let refresh_owns_cursor = self.agent_navigation.picker_refresh_owns_cursor(
+        let refresh_owns_picker_snapshot = self.agent_navigation.picker_refresh_owns_snapshot(
             primary_thread_id,
             lifecycle_generation,
             request_generation,
@@ -113,7 +113,7 @@ impl App {
             return;
         }
 
-        let response_was_authoritatively_exhausted = refresh_owns_cursor
+        let response_was_authoritatively_exhausted = refresh_owns_picker_snapshot
             && result
                 .persisted_next_picker_page_cursor
                 .is_some_and(|next_cursor| next_cursor.is_none())
@@ -123,10 +123,11 @@ impl App {
             self.register_agent_picker_thread_from_backend(
                 primary_thread_id,
                 thread,
+                /*apply_snapshot_liveness*/ refresh_owns_picker_snapshot,
                 &mut refreshed_thread_ids,
             );
         }
-        if refresh_owns_cursor
+        if refresh_owns_picker_snapshot
             && let Some(next_cursor) = result.persisted_next_picker_page_cursor
         {
             // A reopen must not rewind a continuation that the user already consumed. An

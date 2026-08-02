@@ -1414,8 +1414,10 @@ impl ThreadRequestProcessor {
             .outgoing
             .register_thread_subscription(request_id.connection_id, thread_id)
             .await;
-        // Auto-attach a thread listener when starting a thread.
-        log_listener_attach_result(
+        // Auto-attach before publication. A failed attach has already rolled back the started
+        // thread's connection-local identity, so do not return its token or announce a lifecycle
+        // that this client cannot receive.
+        match gate_thread_start_listener_attachment(
             super::thread_lifecycle::ensure_conversation_listener(
                 listener_task_context.clone(),
                 thread_id,
@@ -1428,10 +1430,16 @@ impl ThreadRequestProcessor {
                 thread_start.experimental_raw_events = experimental_raw_events,
             ))
             .await,
+            &listener_task_context.thread_state_manager,
+            &listener_task_context.outgoing,
             thread_id,
             request_id.connection_id,
-            "thread",
-        );
+        )
+        .await?
+        {
+            ThreadStartAttachmentPublication::Publish => {}
+            ThreadStartAttachmentPublication::Suppress => return Ok(()),
+        }
 
         listener_task_context
             .thread_watch_manager
