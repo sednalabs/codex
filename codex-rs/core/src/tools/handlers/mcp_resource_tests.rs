@@ -354,11 +354,28 @@ fn history_does_not_retruncate_bounded_json_resource_error() {
             arguments: "{}".to_string(),
         },
     ));
+    let function_call = ResponseItem::FunctionCall {
+        id: None,
+        name: "read_mcp_resource".to_string(),
+        namespace: None,
+        arguments: "{}".to_string(),
+        call_id: "call-1".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
     let mut history = ContextManager::new();
-    history.record_items([&response_item], TruncationPolicy::Bytes(9_600));
+    history.record_items(
+        [&function_call, &response_item],
+        TruncationPolicy::Bytes(9_600),
+    );
     let prompt = history.for_prompt(&[]);
-    let [ResponseItem::FunctionCallOutput { output: recorded, .. }] = prompt.as_slice() else {
-        panic!("expected function call output in model prompt");
+    let [
+        ResponseItem::FunctionCall { .. },
+        ResponseItem::FunctionCallOutput {
+            output: recorded, ..
+        },
+    ] = prompt.as_slice()
+    else {
+        panic!("expected function call and output in model prompt");
     };
 
     assert_eq!(recorded.success, Some(false));
