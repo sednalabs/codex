@@ -81,11 +81,8 @@ impl crate::tools::context::ToolOutput for ModelBoundedCodeModeOutput {
         call_id: &str,
         payload: &ToolPayload,
     ) -> codex_protocol::models::ResponseInputItem {
-        FunctionToolOutput::from_text(
-            "{\"error\":\"bounded\"}".to_string(),
-            Some(false),
-        )
-        .to_response_item(call_id, payload)
+        FunctionToolOutput::from_text("{\"error\":\"bounded\"}".to_string(), Some(false))
+            .to_response_item(call_id, payload)
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> serde_json::Value {
@@ -113,10 +110,7 @@ impl ToolExecutor<ToolInvocation> for ModelBoundedCodeModeHandler {
 
     fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async {
-            Ok(
-                Box::new(ModelBoundedCodeModeOutput)
-                    as Box<dyn crate::tools::context::ToolOutput>,
-            )
+            Ok(Box::new(ModelBoundedCodeModeOutput) as Box<dyn crate::tools::context::ToolOutput>)
         })
     }
 }
@@ -267,15 +261,22 @@ async fn model_bounded_output_records_code_mode_execution_as_completed() -> anyh
         panic!("direct invocation should retain a function response");
     };
     assert_eq!(output.success, Some(false));
-    assert_eq!(code_mode.code_mode_result(), serde_json::json!({ "complete": "resource value" }));
+    assert_eq!(
+        code_mode.code_mode_result(),
+        serde_json::json!({ "complete": "resource value" })
+    );
 
     let replayed = codex_rollout_trace::replay_bundle(single_bundle_dir(temp.path())?)?;
     assert_eq!(
-        replayed.tool_calls["direct-model-projection"].execution.status,
+        replayed.tool_calls["direct-model-projection"]
+            .execution
+            .status,
         ExecutionStatus::Failed
     );
     assert_eq!(
-        replayed.tool_calls["code-mode-resource-read"].execution.status,
+        replayed.tool_calls["code-mode-resource-read"]
+            .execution
+            .status,
         ExecutionStatus::Completed
     );
 
