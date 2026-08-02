@@ -1754,7 +1754,7 @@ async fn on_request_user_input_response(
     user_input_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(user_input_guard);
     let value = match response {
         Ok(Ok(value)) => value,
@@ -1836,7 +1836,7 @@ async fn on_mcp_server_elicitation_response(
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(permission_guard);
     let response = mcp_server_elicitation_response_from_client_result(response);
 
@@ -1910,7 +1910,12 @@ async fn on_request_permissions_response(
         request_permissions_guard,
     } = pending_response;
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id.clone()).await;
+    resolve_server_request_on_thread_listener(
+        &thread_state,
+        &outgoing,
+        pending_request_id.clone(),
+    )
+    .await;
     drop(request_permissions_guard);
     let response = match request_permissions_response_from_client_result(
         requested_permissions,
@@ -2047,7 +2052,7 @@ async fn on_file_change_request_approval_response(
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(permission_guard);
     let decision = match response {
         Ok(Ok(value)) => match serde_json::from_value::<FileChangeRequestApprovalResponse>(value) {
@@ -2094,7 +2099,7 @@ async fn on_command_execution_request_approval_response(
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(permission_guard);
     let (decision, completion_status) = match response {
         Ok(Ok(value)) => {

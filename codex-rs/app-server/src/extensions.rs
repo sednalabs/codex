@@ -41,6 +41,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadSubscriptionTarget;
 use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadStateManager;
+use crate::thread_state::ThreadWarningDelivery;
 
 pub(crate) struct ThreadExtensionDependencies {
     pub(crate) event_sink: Arc<dyn ExtensionEventSink>,
@@ -285,6 +286,43 @@ pub(crate) async fn send_thread_warning(
         .await;
 }
 
+/// Delivers a warning that had no recipient at ingress once a current subscriber exists.
+///
+/// This is deliberately separate from `send_thread_warning`: an empty ingress target set means
+/// there is no stale identity to preserve. Nonempty sets always use the captured path instead.
+pub(crate) async fn send_thread_warning_after_subscriber(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_state_manager: &ThreadStateManager,
+    thread_id: ThreadId,
+    message: String,
+) {
+    if tokio::time::timeout(
+        EXTENSION_WARNING_SUBSCRIBER_TIMEOUT,
+        thread_state_manager.wait_for_thread_subscriber(thread_id),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!(
+            %thread_id,
+            timeout_secs = EXTENSION_WARNING_SUBSCRIBER_TIMEOUT.as_secs(),
+            "dropping extension warning after waiting for a thread subscriber"
+        );
+        return;
+    }
+    let thread_subscriptions = outgoing
+        .thread_subscription_targets_for_thread(thread_id)
+        .await;
+    if thread_subscriptions.is_empty() {
+        tracing::warn!(
+            %thread_id,
+            "dropping extension warning without a thread subscription identity"
+        );
+        return;
+    }
+    send_thread_warning(outgoing, &thread_subscriptions, thread_id, message).await;
+}
+
 struct AppServerExtensionEventSink {
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
@@ -373,9 +411,14 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
             .thread_state_manager
             .current_listener_command_tx(thread_id)
         {
+            let delivery = if thread_subscriptions.is_empty() {
+                ThreadWarningDelivery::AwaitCurrentSubscriber
+            } else {
+                ThreadWarningDelivery::Captured(thread_subscriptions.clone())
+            };
             let command = ThreadListenerCommand::EmitWarning {
                 message: message.clone(),
-                thread_subscriptions: thread_subscriptions.clone(),
+                delivery,
             };
             if listener_command_tx.send(command).is_ok() {
                 return;
@@ -394,33 +437,13 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
         let outgoing = Arc::clone(&self.outgoing);
         let thread_state_manager = self.thread_state_manager.clone();
         tokio::spawn(async move {
-            if tokio::time::timeout(
-                EXTENSION_WARNING_SUBSCRIBER_TIMEOUT,
-                thread_state_manager.wait_for_thread_subscriber(thread_id),
+            send_thread_warning_after_subscriber(
+                &outgoing,
+                &thread_state_manager,
+                thread_id,
+                message,
             )
-            .await
-            .is_err()
-            {
-                tracing::warn!(
-                    %thread_id,
-                    timeout_secs = EXTENSION_WARNING_SUBSCRIBER_TIMEOUT.as_secs(),
-                    "dropping extension warning after waiting for a thread subscriber"
-                );
-                return;
-            }
-            // There was no subscription at ingress, so capture only after a subscriber exists.
-            // This is a current warning rather than a stale queued lifecycle event.
-            let thread_subscriptions = outgoing
-                .thread_subscription_targets_for_thread(thread_id)
-                .await;
-            if thread_subscriptions.is_empty() {
-                tracing::warn!(
-                    %thread_id,
-                    "dropping extension warning without a thread subscription identity"
-                );
-                return;
-            }
-            send_thread_warning(&outgoing, &thread_subscriptions, thread_id, message).await;
+            .await;
         });
     }
 }
@@ -753,10 +776,10 @@ mod tests {
 
         let ThreadListenerCommand::EmitWarning {
             message,
-            thread_subscriptions,
+            delivery: ThreadWarningDelivery::Captured(thread_subscriptions),
         } = command
         else {
-            panic!("expected queued warning command");
+            panic!("expected queued warning with captured ingress targets");
         };
         send_thread_warning(&outgoing, &thread_subscriptions, thread_id, message).await;
 
@@ -774,6 +797,85 @@ mod tests {
         assert_eq!(received_connection_id, connection_id);
         assert_eq!(notification.thread_subscription_id, old_subscription_id);
         assert_ne!(notification.thread_subscription_id, replacement_subscription_id);
+    }
+
+    #[tokio::test]
+    async fn queued_zero_target_warning_waits_for_current_subscriber_at_delivery() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        let (listener_command_tx, mut listener_command_rx) = mpsc::unbounded_channel();
+        thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx);
+        let sink = app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
+
+        sink.emit_warning(ExtensionWarning {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-1".to_string()),
+            message: "queued without recipient".to_string(),
+        });
+        let command = listener_command_rx
+            .recv()
+            .await
+            .expect("warning should enter the listener FIFO");
+        let ThreadListenerCommand::EmitWarning { message, delivery } = command else {
+            panic!("expected queued warning command");
+        };
+        assert!(matches!(
+            delivery,
+            ThreadWarningDelivery::AwaitCurrentSubscriber
+        ));
+
+        let delivery_outgoing = outgoing.clone();
+        let delivery_thread_state_manager = thread_state_manager.clone();
+        let delivery_task = tokio::spawn(async move {
+            send_thread_warning_after_subscriber(
+                &delivery_outgoing,
+                &delivery_thread_state_manager,
+                thread_id,
+                message,
+            )
+            .await;
+        });
+        tokio::task::yield_now().await;
+
+        // Register the outgoing target before waking the subscriber waiter. There was no prior
+        // target to preserve, so this is a current warning rather than an old event rebinding.
+        let subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("current subscriber should attach");
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id: received_connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx
+            .recv()
+            .await
+            .expect("current subscriber should receive the warning")
+        else {
+            panic!("expected tagged warning notification");
+        };
+        assert_eq!(received_connection_id, connection_id);
+        assert_eq!(notification.thread_subscription_id, subscription_id);
+        delivery_task
+            .await
+            .expect("warning delivery task should not panic");
     }
 
     #[tokio::test]

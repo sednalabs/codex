@@ -1435,6 +1435,91 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
 }
 
 #[tokio::test]
+async fn revisioned_watcher_idle_wins_when_activity_materializes_picker_row() {
+    let mut app = make_test_app().await;
+    let child_thread_id = ThreadId::new();
+
+    app.apply_agent_picker_thread_status_change(
+        child_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: child_thread_id.to_string(),
+            status: ThreadStatus::Idle,
+            status_revision: Some(18),
+        },
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    // The delayed parent activity would normally hint that this row is running. It can still
+    // provide durable child metadata, but has no revision ordering over the status watcher.
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-activity".to_string(),
+            started_at_ms: 0,
+            item: ThreadItem::SubAgentActivity {
+                id: "activity-started".to_string(),
+                kind: SubAgentActivityKind::Started,
+                terminal_state: None,
+                agent_thread_id: child_thread_id.to_string(),
+                agent_path: "/root/status-first-activity".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+        }),
+    ));
+
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        !entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/status-first-activity")
+    }));
+}
+
+#[tokio::test]
+async fn revisioned_watcher_active_wins_when_receiver_cache_materializes_picker_row() {
+    let mut app = make_test_app().await;
+    let receiver_thread_id = ThreadId::new();
+
+    app.apply_agent_picker_thread_status_change(
+        receiver_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: receiver_thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(19),
+        },
+    );
+    assert!(app.agent_navigation.get(&receiver_thread_id).is_none());
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-receiver".to_string(),
+            started_at_ms: 0,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "wait-status-first".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::Wait,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: ThreadId::new().to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+    ));
+
+    assert!(app.agent_navigation.get(&receiver_thread_id).is_some_and(|entry| {
+        entry.is_running && !entry.is_closed && !entry.has_system_error
+    }));
+}
+
+#[tokio::test]
 async fn collab_receiver_notification_does_not_cache_not_found_thread() {
     let mut app = make_test_app().await;
     let receiver_thread_id =

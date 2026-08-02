@@ -1,5 +1,6 @@
 use super::*;
 use crate::extensions::send_thread_warning;
+use crate::extensions::send_thread_warning_after_subscriber;
 use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_protocol::config_types::MultiAgentMode;
 
@@ -641,9 +642,23 @@ pub(super) async fn handle_thread_listener_command(
         }
         ThreadListenerCommand::EmitWarning {
             message,
-            thread_subscriptions,
+            delivery,
         } => {
-            send_thread_warning(outgoing, &thread_subscriptions, conversation_id, message).await;
+            match delivery {
+                crate::thread_state::ThreadWarningDelivery::Captured(thread_subscriptions) => {
+                    send_thread_warning(outgoing, &thread_subscriptions, conversation_id, message)
+                        .await;
+                }
+                crate::thread_state::ThreadWarningDelivery::AwaitCurrentSubscriber => {
+                    send_thread_warning_after_subscriber(
+                        outgoing,
+                        thread_state_manager,
+                        conversation_id,
+                        message,
+                    )
+                    .await;
+                }
+            }
         }
         ThreadListenerCommand::EmitThreadGoalCleared {
             thread_subscriptions,
@@ -695,6 +710,22 @@ pub(super) async fn handle_pending_thread_resume_request(
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
     mut pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
+    let reservation_id = pending.reservation_id.clone();
+    if !thread_state_manager
+        .pending_thread_resume_matches(
+            conversation_id,
+            pending.request_id.connection_id,
+            &reservation_id,
+        )
+        .await
+    {
+        tracing::debug!(
+            thread_id = %conversation_id,
+            request_id = ?pending.request_id,
+            "dropping canceled or superseded running thread resume before listener effects"
+        );
+        return;
+    }
     let active_turn = {
         let state = thread_state.lock().await;
         state.active_turn_snapshot()
@@ -780,7 +811,19 @@ pub(super) async fn handle_pending_thread_resume_request(
         ) {
             Ok(page) => Some(page),
             Err(error) => {
-                outgoing.send_error(request_id, error).await;
+                if thread_state_manager
+                    .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+                    .await
+                {
+                    outgoing.send_error(request_id, error).await;
+                    thread_state_manager
+                        .clear_pending_thread_resume_if_matches(
+                            conversation_id,
+                            connection_id,
+                            &reservation_id,
+                        )
+                        .await;
+                }
                 return;
             }
         }
@@ -797,6 +840,12 @@ pub(super) async fn handle_pending_thread_resume_request(
     // Install the identity before the live connection becomes eligible for
     // replayed traffic. `try_add_connection_to_thread` can make a running
     // listener fan out immediately.
+    if !thread_state_manager
+        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+        .await
+    {
+        return;
+    }
     let thread_subscription_id = outgoing
         .register_thread_subscription(connection_id, conversation_id)
         .await;
@@ -808,7 +857,27 @@ pub(super) async fn handle_pending_thread_resume_request(
     let connection_added = {
         let pending_thread_unloads = pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
-            drop(pending_thread_unloads);
+            Err(/*is_closing*/ true)
+        } else if !thread_state_manager
+            .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+            .await
+        {
+            Err(/*is_closing*/ false)
+        } else {
+            Ok(
+                thread_state_manager
+                    .try_add_connection_to_thread_with_subscription(
+                        conversation_id,
+                        connection_id,
+                        Some(thread_subscription_id.clone()),
+                    )
+                    .await,
+            )
+        }
+    };
+    let connection_added = match connection_added {
+        Ok(connection_added) => connection_added,
+        Err(is_closing) => {
             outgoing
                 .unregister_thread_subscription_if_matches(
                     connection_id,
@@ -816,23 +885,34 @@ pub(super) async fn handle_pending_thread_resume_request(
                     &thread_subscription_id,
                 )
                 .await;
-            outgoing
-                .send_error(
-                    request_id,
-                    invalid_request(format!(
-                        "thread {conversation_id} is closing; retry thread/resume after the thread is closed"
-                    )),
+            if is_closing
+                && thread_state_manager
+                    .pending_thread_resume_matches(
+                        conversation_id,
+                        connection_id,
+                        &reservation_id,
+                    )
+                    .await
+            {
+                outgoing
+                    .send_error(
+                        request_id,
+                        invalid_request(format!(
+                            "thread {conversation_id} is closing; retry thread/resume after the \
+                             thread is closed"
+                        )),
+                    )
+                    .await;
+            }
+            thread_state_manager
+                .clear_pending_thread_resume_if_matches(
+                    conversation_id,
+                    connection_id,
+                    &reservation_id,
                 )
                 .await;
             return;
         }
-        thread_state_manager
-            .try_add_connection_to_thread_with_subscription(
-                conversation_id,
-                connection_id,
-                Some(thread_subscription_id.clone()),
-            )
-            .await
     };
     if !connection_added {
         outgoing
@@ -847,6 +927,28 @@ pub(super) async fn handle_pending_thread_resume_request(
             connection_id = ?connection_id,
             "skipping running thread resume for closed connection"
         );
+        thread_state_manager
+            .clear_pending_thread_resume_if_matches(
+                conversation_id,
+                connection_id,
+                &reservation_id,
+            )
+            .await;
+        return;
+    }
+
+    if !thread_state_manager
+        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+        .await
+    {
+        rollback_failed_thread_attach(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
         return;
     }
 
@@ -869,13 +971,42 @@ pub(super) async fn handle_pending_thread_resume_request(
                     &thread_subscription_id,
                 )
                 .await;
-                outgoing.send_error(request_id, error).await;
+                if thread_state_manager
+                    .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+                    .await
+                {
+                    outgoing.send_error(request_id, error).await;
+                }
+                thread_state_manager
+                    .clear_pending_thread_resume_if_matches(
+                        conversation_id,
+                        connection_id,
+                        &reservation_id,
+                    )
+                    .await;
                 return;
             }
         }
     } else {
         (None, None)
     };
+
+    // Cursor construction can hydrate from storage. Honor an unsubscribe that raced with that
+    // work before composing any receipt, lifecycle snapshot, or replay traffic.
+    if !thread_state_manager
+        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+        .await
+    {
+        rollback_failed_thread_attach(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
+        return;
+    }
 
     let config_snapshot = pending.config_snapshot;
     let sandbox = config_snapshot.sandbox_policy().into();
@@ -899,7 +1030,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     thread.session_id = session_id;
     let response = ThreadResumeResponse {
         thread,
-        thread_subscription_id: Some(thread_subscription_id),
+        thread_subscription_id: Some(thread_subscription_id.clone()),
         model,
         model_provider: model_provider_id,
         service_tier,
@@ -916,9 +1047,37 @@ pub(super) async fn handle_pending_thread_resume_request(
         turns_backwards_cursor,
         items_backwards_cursor,
     };
+    if !thread_state_manager
+        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+        .await
+    {
+        rollback_failed_thread_attach(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
+        return;
+    }
     outgoing
         .send_response_with_thread_originator(request_id, response, originator)
         .await;
+    if !thread_state_manager
+        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+        .await
+    {
+        rollback_failed_thread_attach(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
+        return;
+    }
     // Match cold resume: metadata-only resume should attach the listener without
     // paying the cost of turn reconstruction for historical usage replay.
     if let Some(token_usage_turn_id) = token_usage_turn_id {
@@ -949,6 +1108,20 @@ pub(super) async fn handle_pending_thread_resume_request(
             );
         }
     }
+    if !thread_state_manager
+        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
+        .await
+    {
+        rollback_failed_thread_attach(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
+        return;
+    }
     outgoing
         .replay_requests_to_connection_for_thread(connection_id, conversation_id)
         .await;
@@ -957,6 +1130,9 @@ pub(super) async fn handle_pending_thread_resume_request(
     if pending.emit_thread_goal_update {
         conversation.emit_thread_idle_lifecycle_if_idle().await;
     }
+    thread_state_manager
+        .clear_pending_thread_resume_if_matches(conversation_id, connection_id, &reservation_id)
+        .await;
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(
@@ -1103,6 +1279,7 @@ mod tests {
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
     use crate::thread_state::ConnectionCapabilities;
+    use codex_app_server_protocol::RequestId;
     use codex_app_server_protocol::ThreadGoal;
     use codex_app_server_protocol::ThreadGoalStatus;
     use tokio::sync::mpsc;
@@ -1243,6 +1420,131 @@ mod tests {
             thread_state_manager.has_subscribers(thread_id).await,
             "old cleanup must not unsubscribe the replacement listener"
         );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_cancels_queued_running_resume_before_connection_registration() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        let reservation_id = RequestId::Integer(41);
+
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, reservation_id.clone())
+            .await;
+        assert!(
+            thread_state_manager
+                .cancel_pending_thread_resume(thread_id, connection_id)
+                .await,
+            "unsubscribe must observe a listener-queued resume without a visible subscriber"
+        );
+        assert!(
+            !thread_state_manager
+                .pending_thread_resume_matches(thread_id, connection_id, &reservation_id)
+                .await,
+            "the queued handler must see its reservation was canceled before minting a token"
+        );
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_cancels_hydrating_resume_without_tearing_down_replacement() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let old_reservation_id = RequestId::Integer(42);
+        thread_state_manager
+            .reserve_pending_thread_resume(
+                thread_id,
+                connection_id,
+                old_reservation_id.clone(),
+            )
+            .await;
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(old_subscription_id.clone()),
+            )
+            .await
+            .expect("hydrating resume should attach before its cursor read");
+
+        assert!(
+            thread_state_manager
+                .cancel_pending_thread_resume(thread_id, connection_id)
+                .await,
+            "unsubscribe must cancel an in-progress hydration reservation"
+        );
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &old_subscription_id,
+        )
+        .await;
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+
+        let replacement_reservation_id = RequestId::Integer(43);
+        thread_state_manager
+            .reserve_pending_thread_resume(
+                thread_id,
+                connection_id,
+                replacement_reservation_id.clone(),
+            )
+            .await;
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(replacement_subscription_id.clone()),
+            )
+            .await
+            .expect("replacement resume should attach");
+
+        // The old cancellation cleanup runs after a replacement has taken ownership. It must
+        // match the old token rather than removing the current listener or reservation.
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &old_subscription_id,
+        )
+        .await;
+        assert!(
+            thread_state_manager
+                .pending_thread_resume_matches(
+                    thread_id,
+                    connection_id,
+                    &replacement_reservation_id,
+                )
+                .await
+        );
+        assert_eq!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .map(|target| target.thread_subscription_id),
+            Some(replacement_subscription_id)
+        );
+        assert!(thread_state_manager.has_subscribers(thread_id).await);
     }
 
     #[tokio::test]
