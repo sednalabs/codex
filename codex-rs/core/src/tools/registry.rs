@@ -664,7 +664,7 @@ impl ToolRegistry {
             Ok(_) => {
                 let guard = response_cell.lock().await;
                 match guard.as_ref() {
-                    Some(result) => ToolCallOutcome::Completed {
+                    Some(_) => ToolCallOutcome::Completed {
                         success: execution_completed,
                     },
                     None => ToolCallOutcome::Failed {

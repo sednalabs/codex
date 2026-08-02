@@ -217,10 +217,6 @@ impl ReadResourceToolOutput {
         function_call_output_content_items_to_text(&self.model_output.body).unwrap_or_default()
     }
 
-    fn model_success(&self) -> Option<bool> {
-        self.model_output.success
-    }
-
     fn execution_status_for_source(
         &self,
         source: &crate::tools::context::ToolCallSource,
