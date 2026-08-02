@@ -492,8 +492,8 @@ async fn paginated_completed_spawns_persist_and_duplicate_requested_provenance()
                     CoreCollabAgentToolCallStatus::Completed,
                     Some(*effective_model),
                     effective_effort.clone(),
-                    None,
-                    None,
+                    /*requested_model*/ None,
+                    /*requested_reasoning_effort*/ None,
                 ),
             )
         })

@@ -1111,7 +1111,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             let materialized_item = thread_state
                 .lock()
                 .await
-                .turn_item_snapshot(&event.turn_id, event.item.id());
+                .turn_item_snapshot(&event.turn_id, &event.item.id());
             let mut notification = item_event_to_server_notification(
                 EventMsg::ItemCompleted(event),
                 &conversation_id.to_string(),

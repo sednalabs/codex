@@ -1281,7 +1281,7 @@ impl ThreadManager {
     /// Returns one stable page of loaded descendants without materializing the ancestor's full
     /// persisted subtree. Persisted ancestry keeps an unloaded intermediary visible; the live
     /// registry remains a narrow fallback for graph outages and just-created edges.
-    pub(crate) async fn list_live_thread_spawn_descendants_page(
+    pub async fn list_live_thread_spawn_descendants_page(
         &self,
         ancestor_thread_id: ThreadId,
         cursor: Option<ThreadId>,
@@ -1361,7 +1361,7 @@ impl ThreadManager {
     /// Lists a bounded, stable page of loaded thread ids without allocating or sorting the full
     /// registry. The cursor may name a non-returned candidate when an ancestor filter was applied,
     /// so callers must treat it as opaque.
-    pub(crate) async fn list_thread_ids_page(
+    pub async fn list_thread_ids_page(
         &self,
         cursor: Option<ThreadId>,
         limit: usize,

@@ -5391,10 +5391,21 @@ pub(super) fn normalize_thread_turns_status(
     }
 }
 
+#[derive(Debug)]
 enum ThreadReadViewError {
     InvalidRequest(String),
     Unsupported(&'static str),
     Internal(String),
+}
+
+impl std::fmt::Display for ThreadReadViewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest(message) => write!(formatter, "invalid request: {message}"),
+            Self::Unsupported(operation) => write!(formatter, "unsupported operation: {operation}"),
+            Self::Internal(message) => write!(formatter, "internal error: {message}"),
+        }
+    }
 }
 
 fn thread_read_view_error(err: ThreadReadViewError) -> JSONRPCErrorError {

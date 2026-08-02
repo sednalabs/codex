@@ -379,7 +379,7 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
                 "Optional maximum descendant depth to return, counted from the inspected subtree root."
                     .to_string(),
             ))
-            .with_minimum(1)
+            .with_minimum(/*minimum*/ 1)
             .with_maximum(INSPECT_AGENT_TREE_MAX_DEPTH as u64),
         ),
         (
@@ -388,7 +388,7 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
                 "Optional maximum number of rows to return after tree ordering is applied."
                     .to_string(),
             ))
-            .with_minimum(1)
+            .with_minimum(/*minimum*/ 1)
             .with_maximum(INSPECT_AGENT_TREE_MAX_AGENTS as u64),
         ),
     ]);
