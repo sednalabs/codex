@@ -1,6 +1,6 @@
 use super::*;
 use crate::extensions::send_thread_warning;
-use crate::extensions::send_thread_warning_after_subscriber;
+use crate::extensions::spawn_thread_warning_after_subscriber;
 use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_protocol::config_types::MultiAgentMode;
 
@@ -650,13 +650,12 @@ pub(super) async fn handle_thread_listener_command(
                         .await;
                 }
                 crate::thread_state::ThreadWarningDelivery::AwaitCurrentSubscriber => {
-                    send_thread_warning_after_subscriber(
-                        outgoing,
-                        thread_state_manager,
+                    spawn_thread_warning_after_subscriber(
+                        Arc::clone(outgoing),
+                        thread_state_manager.clone(),
                         conversation_id,
                         message,
-                    )
-                    .await;
+                    );
                 }
             }
         }
@@ -711,19 +710,15 @@ pub(super) async fn handle_pending_thread_resume_request(
     mut pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
     let reservation_id = pending.reservation_id.clone();
-    if !thread_state_manager
-        .pending_thread_resume_matches(
-            conversation_id,
-            pending.request_id.connection_id,
-            &reservation_id,
-        )
-        .await
+    if !pending_thread_resume_is_current_or_reply(
+        thread_state_manager,
+        outgoing,
+        conversation_id,
+        &pending.request_id,
+        &reservation_id,
+    )
+    .await
     {
-        tracing::debug!(
-            thread_id = %conversation_id,
-            request_id = ?pending.request_id,
-            "dropping canceled or superseded running thread resume before listener effects"
-        );
         return;
     }
     let active_turn = {
@@ -811,9 +806,14 @@ pub(super) async fn handle_pending_thread_resume_request(
         ) {
             Ok(page) => Some(page),
             Err(error) => {
-                if thread_state_manager
-                    .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-                    .await
+                if pending_thread_resume_is_current_or_reply(
+                    thread_state_manager,
+                    outgoing,
+                    conversation_id,
+                    &request_id,
+                    &reservation_id,
+                )
+                .await
                 {
                     outgoing.send_error(request_id, error).await;
                     thread_state_manager
@@ -840,9 +840,14 @@ pub(super) async fn handle_pending_thread_resume_request(
     // Install the identity before the live connection becomes eligible for
     // replayed traffic. `try_add_connection_to_thread` can make a running
     // listener fan out immediately.
-    if !thread_state_manager
-        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-        .await
+    if !pending_thread_resume_is_current_or_reply(
+        thread_state_manager,
+        outgoing,
+        conversation_id,
+        &request_id,
+        &reservation_id,
+    )
+    .await
     {
         return;
     }
@@ -885,32 +890,43 @@ pub(super) async fn handle_pending_thread_resume_request(
                     &thread_subscription_id,
                 )
                 .await;
-            if is_closing
-                && thread_state_manager
-                    .pending_thread_resume_matches(
-                        conversation_id,
-                        connection_id,
-                        &reservation_id,
-                    )
-                    .await
-            {
-                outgoing
-                    .send_error(
-                        request_id,
-                        invalid_request(format!(
-                            "thread {conversation_id} is closing; retry thread/resume after the \
-                             thread is closed"
-                        )),
-                    )
-                    .await;
-            }
-            thread_state_manager
-                .clear_pending_thread_resume_if_matches(
+            if is_closing {
+                if pending_thread_resume_is_current_or_reply(
+                    thread_state_manager,
+                    outgoing,
                     conversation_id,
-                    connection_id,
+                    &request_id,
+                    &reservation_id,
+                )
+                .await
+                {
+                    outgoing
+                        .send_error(
+                            request_id,
+                            invalid_request(format!(
+                                "thread {conversation_id} is closing; retry thread/resume \
+                                 after the thread is closed"
+                            )),
+                        )
+                        .await;
+                    thread_state_manager
+                        .clear_pending_thread_resume_if_matches(
+                            conversation_id,
+                            connection_id,
+                            &reservation_id,
+                        )
+                        .await;
+                }
+            } else {
+                let _ = pending_thread_resume_is_current_or_reply(
+                    thread_state_manager,
+                    outgoing,
+                    conversation_id,
+                    &request_id,
                     &reservation_id,
                 )
                 .await;
+            }
             return;
         }
     };
@@ -927,19 +943,34 @@ pub(super) async fn handle_pending_thread_resume_request(
             connection_id = ?connection_id,
             "skipping running thread resume for closed connection"
         );
-        thread_state_manager
-            .clear_pending_thread_resume_if_matches(
-                conversation_id,
-                connection_id,
-                &reservation_id,
-            )
-            .await;
+        if pending_thread_resume_is_current_or_reply(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            &request_id,
+            &reservation_id,
+        )
+        .await
+        {
+            thread_state_manager
+                .clear_pending_thread_resume_if_matches(
+                    conversation_id,
+                    connection_id,
+                    &reservation_id,
+                )
+                .await;
+        }
         return;
     }
 
-    if !thread_state_manager
-        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-        .await
+    if !pending_thread_resume_is_current_or_reply(
+        thread_state_manager,
+        outgoing,
+        conversation_id,
+        &request_id,
+        &reservation_id,
+    )
+    .await
     {
         rollback_failed_thread_attach(
             thread_state_manager,
@@ -971,19 +1002,24 @@ pub(super) async fn handle_pending_thread_resume_request(
                     &thread_subscription_id,
                 )
                 .await;
-                if thread_state_manager
-                    .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-                    .await
+                if pending_thread_resume_is_current_or_reply(
+                    thread_state_manager,
+                    outgoing,
+                    conversation_id,
+                    &request_id,
+                    &reservation_id,
+                )
+                .await
                 {
                     outgoing.send_error(request_id, error).await;
+                    thread_state_manager
+                        .clear_pending_thread_resume_if_matches(
+                            conversation_id,
+                            connection_id,
+                            &reservation_id,
+                        )
+                        .await;
                 }
-                thread_state_manager
-                    .clear_pending_thread_resume_if_matches(
-                        conversation_id,
-                        connection_id,
-                        &reservation_id,
-                    )
-                    .await;
                 return;
             }
         }
@@ -993,9 +1029,14 @@ pub(super) async fn handle_pending_thread_resume_request(
 
     // Cursor construction can hydrate from storage. Honor an unsubscribe that raced with that
     // work before composing any receipt, lifecycle snapshot, or replay traffic.
-    if !thread_state_manager
-        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-        .await
+    if !pending_thread_resume_is_current_or_reply(
+        thread_state_manager,
+        outgoing,
+        conversation_id,
+        &request_id,
+        &reservation_id,
+    )
+    .await
     {
         rollback_failed_thread_attach(
             thread_state_manager,
@@ -1047,9 +1088,14 @@ pub(super) async fn handle_pending_thread_resume_request(
         turns_backwards_cursor,
         items_backwards_cursor,
     };
-    if !thread_state_manager
-        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-        .await
+    if !pending_thread_resume_is_current_or_reply(
+        thread_state_manager,
+        outgoing,
+        conversation_id,
+        &request_id,
+        &reservation_id,
+    )
+    .await
     {
         rollback_failed_thread_attach(
             thread_state_manager,
@@ -1133,6 +1179,60 @@ pub(super) async fn handle_pending_thread_resume_request(
     thread_state_manager
         .clear_pending_thread_resume_if_matches(conversation_id, connection_id, &reservation_id)
         .await;
+}
+
+/// Deferred running-thread resume has already returned `Handled` to the request processor. If
+/// listener ordering later loses its reservation, send the original request one terminal error
+/// instead of silently abandoning it. The winning replacement retains its distinct reservation.
+async fn pending_thread_resume_is_current_or_reply(
+    thread_state_manager: &ThreadStateManager,
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_id: ThreadId,
+    request_id: &ConnectionRequestId,
+    reservation_id: &RequestId,
+) -> bool {
+    match thread_state_manager
+        .pending_thread_resume_reservation_state(
+            thread_id,
+            request_id.connection_id,
+            reservation_id,
+        )
+        .await
+    {
+        crate::thread_state::PendingThreadResumeReservationState::Current => true,
+        crate::thread_state::PendingThreadResumeReservationState::Canceled => {
+            tracing::debug!(
+                thread_id = %thread_id,
+                request_id = ?request_id,
+                "rejecting canceled running thread resume before listener effects"
+            );
+            outgoing
+                .send_error(
+                    request_id.clone(),
+                    invalid_request(format!(
+                        "thread {thread_id} resume was canceled before it could complete"
+                    )),
+                )
+                .await;
+            false
+        }
+        crate::thread_state::PendingThreadResumeReservationState::Superseded => {
+            tracing::debug!(
+                thread_id = %thread_id,
+                request_id = ?request_id,
+                "rejecting superseded running thread resume before listener effects"
+            );
+            outgoing
+                .send_error(
+                    request_id.clone(),
+                    invalid_request(format!(
+                        "thread {thread_id} resume was superseded by a newer thread/resume request"
+                    )),
+                )
+                .await;
+            false
+        }
+    }
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(
@@ -1276,6 +1376,7 @@ pub(super) fn set_thread_status_and_interrupt_stale_turns(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outgoing_message::ConnectionRequestId;
     use crate::outgoing_message::OutgoingEnvelope;
     use crate::outgoing_message::OutgoingMessage;
     use crate::thread_state::ConnectionCapabilities;
@@ -1283,6 +1384,7 @@ mod tests {
     use codex_app_server_protocol::ThreadGoal;
     use codex_app_server_protocol::ThreadGoalStatus;
     use tokio::sync::mpsc;
+    use tokio::time::timeout;
 
     fn goal(thread_id: ThreadId, objective: &str) -> ThreadGoal {
         ThreadGoal {
@@ -1295,6 +1397,136 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn canceled_queued_resume_receives_one_terminal_error_before_listener_effects() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let request_id = RequestId::Integer(51);
+        let request = ConnectionRequestId {
+            connection_id,
+            request_id: request_id.clone(),
+        };
+        let thread_state_manager = ThreadStateManager::new();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, request_id.clone())
+            .await;
+        assert!(
+            thread_state_manager
+                .cancel_pending_thread_resume(thread_id, connection_id)
+                .await
+        );
+
+        assert!(
+            !pending_thread_resume_is_current_or_reply(
+                &thread_state_manager,
+                &outgoing,
+                thread_id,
+                &request,
+                &request_id,
+            )
+            .await
+        );
+        let OutgoingEnvelope::ToConnection { message, .. } = timeout(
+            Duration::from_millis(100),
+            outgoing_rx.recv(),
+        )
+        .await
+        .expect("canceled deferred resume must promptly terminate")
+        .expect("canceled deferred resume must send an error")
+        else {
+            panic!("expected a terminal resume error");
+        };
+        let OutgoingMessage::Error(error) = message else {
+            panic!("canceled resume must not publish a resume receipt or replay");
+        };
+        assert_eq!(error.id, request_id);
+        assert!(error.error.message.contains("canceled"));
+        assert!(
+            timeout(Duration::from_millis(10), outgoing_rx.recv())
+                .await
+                .is_err(),
+            "one canceled deferred resume must not emit a duplicate terminal response"
+        );
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+    }
+
+    #[tokio::test]
+    async fn superseded_queued_resume_receives_one_error_without_touching_replacement() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let old_request_id = RequestId::Integer(52);
+        let replacement_request_id = RequestId::Integer(53);
+        let old_request = ConnectionRequestId {
+            connection_id,
+            request_id: old_request_id.clone(),
+        };
+        let thread_state_manager = ThreadStateManager::new();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, old_request_id.clone())
+            .await;
+        thread_state_manager
+            .reserve_pending_thread_resume(
+                thread_id,
+                connection_id,
+                replacement_request_id.clone(),
+            )
+            .await;
+
+        assert!(
+            !pending_thread_resume_is_current_or_reply(
+                &thread_state_manager,
+                &outgoing,
+                thread_id,
+                &old_request,
+                &old_request_id,
+            )
+            .await
+        );
+        let OutgoingEnvelope::ToConnection { message, .. } = timeout(
+            Duration::from_millis(100),
+            outgoing_rx.recv(),
+        )
+        .await
+        .expect("superseded deferred resume must promptly terminate")
+        .expect("superseded deferred resume must send an error")
+        else {
+            panic!("expected a terminal resume error");
+        };
+        let OutgoingMessage::Error(error) = message else {
+            panic!("superseded resume must not publish a late receipt or replay");
+        };
+        assert_eq!(error.id, old_request_id);
+        assert!(error.error.message.contains("superseded"));
+        assert!(
+            thread_state_manager
+                .pending_thread_resume_matches(
+                    thread_id,
+                    connection_id,
+                    &replacement_request_id,
+                )
+                .await,
+            "an old deferred handler must not clear or reply for the replacement"
+        );
+        assert!(
+            timeout(Duration::from_millis(10), outgoing_rx.recv())
+                .await
+                .is_err(),
+            "the old handler must send exactly one terminal outcome"
+        );
     }
 
     #[tokio::test]
