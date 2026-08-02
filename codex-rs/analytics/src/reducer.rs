@@ -1323,7 +1323,7 @@ impl AnalyticsReducer {
                     return;
                 };
                 let Some((connection_state, thread_state, thread_metadata)) = self
-                    .thread_context_or_warn(AnalyticsDropSite::tool_item(&notification, item_id))
+                    .thread_context_or_warn(AnalyticsDropSite::tool_item(&notification, &item_id))
                 else {
                     return;
                 };
