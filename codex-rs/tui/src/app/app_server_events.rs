@@ -1,6 +1,7 @@
 //! App-server event stream handling for the TUI app.
 
 use super::App;
+use super::ThreadLifecycleTarget;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
@@ -66,7 +67,63 @@ impl App {
         app_server_client: &AppServerSession,
         notification: ServerNotification,
     ) {
+        let ingress_target = match server_notification_thread_target(&notification) {
+            ServerNotificationThreadTarget::Thread(thread_id) => {
+                Some(self.thread_lifecycle_target_at_ingress(thread_id))
+            }
+            ServerNotificationThreadTarget::InvalidThreadId(_)
+            | ServerNotificationThreadTarget::AppScoped
+            | ServerNotificationThreadTarget::Global => None,
+        };
+        self.handle_server_notification_event_at_ingress(
+            app_server_client,
+            notification,
+            ingress_target,
+        )
+        .await;
+    }
+
+    /// Delivers a notification from a listener which already captured its thread lifecycle.
+    ///
+    /// Listener work must retain this token across asynchronous hand-off; recomputing it here
+    /// would let an old subscription event mutate a same-id reattachment.
+    pub(super) async fn handle_thread_server_notification_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        target: ThreadLifecycleTarget,
+        notification: ServerNotification,
+    ) {
+        self.handle_server_notification_event_at_ingress(
+            app_server_client,
+            notification,
+            Some(target),
+        )
+        .await;
+    }
+
+    async fn handle_server_notification_event_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        notification: ServerNotification,
+        ingress_target: Option<ThreadLifecycleTarget>,
+    ) {
         let thread_target = server_notification_thread_target(&notification);
+        if let Some(ingress_target) = ingress_target {
+            if !matches!(
+                &thread_target,
+                ServerNotificationThreadTarget::Thread(thread_id)
+                    if *thread_id == ingress_target.thread_id
+            )
+                || !self.thread_accepts_ingress_target(ingress_target)
+            {
+                tracing::debug!(
+                    thread_id = %ingress_target.thread_id,
+                    lifecycle_generation = ingress_target.lifecycle_generation,
+                    "dropping app-server notification from a stale thread ingress listener"
+                );
+                return;
+            }
+        }
         if let ServerNotificationThreadTarget::Thread(thread_id) = &thread_target
             && self.thread_is_discarded(*thread_id)
         {
@@ -78,6 +135,20 @@ impl App {
         }
         match &notification {
             ServerNotification::ServerRequestResolved(notification) => {
+                if let Some(ingress_target) = ingress_target
+                    && let Some(owner) = self
+                        .pending_app_server_requests
+                        .thread_target_for_request_id(&notification.request_id)
+                    && owner != ingress_target
+                {
+                    tracing::debug!(
+                        thread_id = %ingress_target.thread_id,
+                        lifecycle_generation = ingress_target.lifecycle_generation,
+                        request_id = ?notification.request_id,
+                        "dropping server-request resolution for a different thread lifecycle"
+                    );
+                    return;
+                }
                 if let Some(request) = self
                     .pending_app_server_requests
                     .resolve_notification(&notification.request_id)
@@ -208,7 +279,62 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        let ingress_target = server_request_thread_id(&request)
+            .map(|thread_id| self.thread_lifecycle_target_at_ingress(thread_id));
+        self.handle_server_request_event_at_ingress(app_server_client, request, ingress_target)
+            .await;
+    }
+
+    /// Delivers a request from a listener which already captured its thread lifecycle.
+    ///
+    /// Unlike notifications, stale requests are explicitly rejected with their original JSON-RPC
+    /// id, so the old server-side call cannot remain pending after the UI has moved on.
+    pub(super) async fn handle_thread_server_request_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        target: ThreadLifecycleTarget,
+        request: ServerRequest,
+    ) {
+        self.handle_server_request_event_at_ingress(app_server_client, request, Some(target))
+            .await;
+    }
+
+    async fn handle_server_request_event_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        request: ServerRequest,
+        ingress_target: Option<ThreadLifecycleTarget>,
+    ) {
         let thread_id = server_request_thread_id(&request);
+        if let Some(ingress_target) = ingress_target
+            && (thread_id != Some(ingress_target.thread_id)
+                || !self.thread_accepts_ingress_target(ingress_target))
+        {
+            tracing::debug!(
+                thread_id = %ingress_target.thread_id,
+                lifecycle_generation = ingress_target.lifecycle_generation,
+                request_id = ?request.id(),
+                "rejecting app-server request from a stale thread ingress listener"
+            );
+            if let Err(err) = self
+                .reject_app_server_request(
+                    app_server_client,
+                    request.id().clone(),
+                    format!(
+                        "The TUI no longer accepts requests for thread {} lifecycle {}.",
+                        ingress_target.thread_id, ingress_target.lifecycle_generation
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    thread_id = %ingress_target.thread_id,
+                    error = %err,
+                    "failed to reject stale app-server request"
+                );
+            }
+            return;
+        }
         if thread_id.is_some_and(|thread_id| self.thread_is_discarded(thread_id)) {
             let thread_id = thread_id.expect("checked as present above");
             tracing::debug!(
@@ -268,9 +394,9 @@ impl App {
             return;
         }
 
-        let unsupported = if let Some(thread_id) = thread_id {
+        let unsupported = if let Some(target) = ingress_target {
             self.pending_app_server_requests
-                .note_thread_server_request(thread_id, &request)
+                .note_thread_server_request_for_lifecycle(target, &request)
         } else {
             self.pending_app_server_requests.note_server_request(&request)
         };

@@ -326,6 +326,68 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
 }
 
 #[tokio::test]
+async fn inactive_approval_uses_its_target_lifecycle_generation() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let displayed_thread_id = ThreadId::new();
+    let inactive_thread_id = ThreadId::new();
+    app.mark_thread_attached(displayed_thread_id);
+    app.mark_thread_attached(inactive_thread_id);
+    let displayed_generation = app.thread_lifecycle_generation(displayed_thread_id);
+    let inactive_generation = app.thread_lifecycle_generation(inactive_thread_id);
+    app.active_thread_id = Some(displayed_thread_id);
+    app.chat_widget
+        .set_thread_lifecycle_generation(displayed_generation);
+
+    let request = exec_approval_request(
+        inactive_thread_id,
+        "turn-inactive",
+        "inactive-call",
+        /*approval_id*/ None,
+    );
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_thread_server_request_for_lifecycle(
+                ThreadLifecycleTarget {
+                    thread_id: inactive_thread_id,
+                    lifecycle_generation: inactive_generation,
+                },
+                &request,
+            ),
+        None
+    );
+    app.enqueue_thread_request(inactive_thread_id, request).await?;
+
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+
+    let submitted = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::SubmitThreadOp {
+                thread_id,
+                lifecycle_generation,
+                op: Op::ExecApproval { id, .. },
+            } => Some((thread_id, lifecycle_generation, id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        submitted,
+        vec![(
+            inactive_thread_id,
+            inactive_generation,
+            "inactive-call".to_string(),
+        )]
+    );
+
+    app.mark_thread_attached(inactive_thread_id);
+    assert!(
+        !app.thread_accepts_lifecycle_generation(inactive_thread_id, inactive_generation),
+        "an answer from the earlier inactive presentation must be rejected after reattachment"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn resolved_buffered_approval_does_not_become_actionable_after_drain() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
@@ -4307,7 +4369,10 @@ async fn inactive_thread_exec_approval_preserves_context() {
         action: AppServerNetworkPolicyRuleAction::Allow,
     }]);
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(approval))) = app
+    let Some(ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::Exec(approval),
+        ..
+    }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -4369,7 +4434,10 @@ async fn inactive_thread_exec_approval_splits_shell_wrapped_command() {
     params.command =
         Some(shlex::try_join(["/bin/zsh", "-lc", script]).expect("round-trippable shell wrapper"));
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(approval))) = app
+    let Some(ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::Exec(approval),
+        ..
+    }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -4429,7 +4497,10 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
         .expect("valid localized paths")
         .expect("expected file change approval request");
 
-    let ThreadInteractiveRequest::Approval(ApprovalRequest::ApplyPatch(approval)) = &request else {
+    let ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::ApplyPatch(approval),
+        ..
+    } = &request else {
         panic!("expected apply-patch approval request");
     };
     assert_eq!(
@@ -4484,7 +4555,10 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
         },
     };
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Permissions(approval))) = app
+    let Some(ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::Permissions(approval),
+        ..
+    }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -4526,7 +4600,7 @@ async fn inactive_thread_url_elicitation_routes_to_app_link() {
         },
     };
 
-    let Some(ThreadInteractiveRequest::AppLink(params)) = app
+    let Some(ThreadInteractiveRequest::AppLink { params, .. }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -5736,7 +5810,8 @@ async fn discard_closed_side_thread_removes_local_state_and_rejects_pending_requ
 async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.discard_closed_side_thread(&app_server, thread_id).await;
     assert!(app.thread_is_discarded(thread_id));
@@ -5752,6 +5827,107 @@ async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
         app.thread_event_channels
             .get(&thread_id)
             .is_some_and(ThreadEventChannel::has_live_attachment)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_thread_ingress_is_fenced_after_same_id_reattach() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let old_target = ThreadLifecycleTarget {
+        thread_id,
+        lifecycle_generation: app.thread_lifecycle_generation(thread_id),
+    };
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-ingress")),
+        Vec::new(),
+    )
+    .await?;
+    let new_target = app.thread_lifecycle_target_at_ingress(thread_id);
+    assert_ne!(old_target, new_target);
+
+    app.handle_thread_server_notification_at_ingress(
+        &app_server,
+        old_target,
+        thread_closed_notification(thread_id),
+    )
+    .await;
+    assert!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("reattached primary has a receiver")
+            .try_recv()
+            .is_err(),
+        "a delayed close from the old subscription must not reach the reattached presentation"
+    );
+
+    app.handle_thread_server_notification_at_ingress(
+        &app_server,
+        new_target,
+        thread_closed_notification(thread_id),
+    )
+    .await;
+    assert!(matches!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("reattached primary has a receiver")
+            .try_recv(),
+        Ok(ThreadBufferedEvent::Notification(ServerNotification::ThreadClosed(_)))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_thread_request_ingress_is_rejected_and_new_ingress_is_retained() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let old_target = ThreadLifecycleTarget {
+        thread_id,
+        lifecycle_generation: app.thread_lifecycle_generation(thread_id),
+    };
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-request")),
+        Vec::new(),
+    )
+    .await?;
+    let new_target = app.thread_lifecycle_target_at_ingress(thread_id);
+    let stale_request = exec_approval_request(
+        thread_id,
+        "turn-old",
+        "request-old",
+        /*approval_id*/ None,
+    );
+
+    app.handle_thread_server_request_at_ingress(&app_server, old_target, stale_request.clone())
+        .await;
+    assert!(
+        !app.pending_app_server_requests
+            .contains_server_request(&stale_request),
+        "a stale request must be rejected before it can enter the new lifecycle's ledger"
+    );
+
+    let new_request = exec_approval_request(
+        thread_id,
+        "turn-new",
+        "request-new",
+        /*approval_id*/ None,
+    );
+    app.handle_thread_server_request_at_ingress(&app_server, new_target, new_request.clone())
+        .await;
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&new_request),
+        "a request delivered by the replacement listener must remain actionable"
     );
     Ok(())
 }

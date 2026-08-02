@@ -242,10 +242,29 @@ use self::thread_events::*;
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
 
+/// A thread presentation identity captured when work enters the TUI.
+///
+/// Thread ids can be deliberately reattached after a discard. Pairing the id with the local
+/// generation keeps queued work from a previous presentation from mutating the replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ThreadLifecycleTarget {
+    pub(super) thread_id: ThreadId,
+    pub(super) lifecycle_generation: u64,
+}
+
 enum ThreadInteractiveRequest {
-    AppLink(AppLinkViewParams),
-    Approval(ApprovalRequest),
-    McpServerElicitation(McpServerElicitationFormRequest),
+    AppLink {
+        target: ThreadLifecycleTarget,
+        params: AppLinkViewParams,
+    },
+    Approval {
+        target: ThreadLifecycleTarget,
+        request: ApprovalRequest,
+    },
+    McpServerElicitation {
+        target: ThreadLifecycleTarget,
+        request: McpServerElicitationFormRequest,
+    },
 }
 
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
