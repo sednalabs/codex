@@ -1069,7 +1069,7 @@ impl TurnRequestProcessor {
 
         if let Some(thread_subscription) = created_subscription {
             let config_snapshot = thread.config_snapshot().await;
-            let mut thread_summary = build_thread_from_loaded_snapshot(
+            let mut thread_summary = super::thread_processor::build_thread_from_loaded_snapshot(
                 thread_id,
                 &config_snapshot,
                 thread.as_ref(),
@@ -1376,7 +1376,7 @@ impl TurnRequestProcessor {
                 // handshake. Build the authoritative summary from the loaded
                 // runtime instead, just as automatic child attachment does.
                 let config_snapshot = review_thread.config_snapshot().await;
-                build_thread_from_loaded_snapshot(
+                super::thread_processor::build_thread_from_loaded_snapshot(
                     thread_id,
                     &config_snapshot,
                     review_thread.as_ref(),
