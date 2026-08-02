@@ -23,11 +23,35 @@ impl fmt::Display for ConnectionId {
 #[serde(untagged)]
 pub enum OutgoingMessage {
     Request(ServerRequest),
+    /// A thread-bound server request with its immutable, connection-local
+    /// subscription identity. Serialization stays JSON-RPC-compatible by
+    /// flattening the ordinary request and adding one extension property.
+    ThreadScopedRequest(ThreadScopedServerRequest),
+    /// A thread-bound app-server notification with its immutable,
+    /// connection-local subscription identity. It serializes to the normal
+    /// notification envelope plus one extension property.
+    ThreadScopedNotification(ThreadScopedServerNotification),
     /// AppServerNotification is specific to the case where this is run as an
     /// "app server" as opposed to an MCP server.
     AppServerNotification(ServerNotificationEnvelope),
     Response(OutgoingResponse),
     Error(OutgoingError),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadScopedServerRequest {
+    #[serde(flatten)]
+    pub request: ServerRequest,
+    #[serde(rename = "threadSubscriptionId")]
+    pub thread_subscription_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadScopedServerNotification {
+    #[serde(flatten)]
+    pub envelope: ServerNotificationEnvelope,
+    #[serde(rename = "threadSubscriptionId")]
+    pub thread_subscription_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -54,5 +78,42 @@ impl QueuedOutgoingMessage {
             message,
             write_complete_tx: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use codex_app_server_protocol::AccountLoginCompletedNotification;
+    use codex_app_server_protocol::JSONRPCMessage;
+    use codex_app_server_protocol::ServerNotification;
+
+    use super::*;
+
+    #[test]
+    fn thread_subscription_extension_preserves_jsonrpc_notification_shape() {
+        let message = OutgoingMessage::ThreadScopedNotification(ThreadScopedServerNotification {
+            envelope: ServerNotificationEnvelope {
+                notification: ServerNotification::AccountLoginCompleted(
+                    AccountLoginCompletedNotification {
+                        login_id: None,
+                        success: true,
+                        error: None,
+                    },
+                ),
+                emitted_at_ms: Some(123),
+            },
+            thread_subscription_id: "subscription-123".to_string(),
+        });
+
+        let value = serde_json::to_value(message).expect("thread notification should serialize");
+        assert_eq!(
+            value.get("threadSubscriptionId"),
+            Some(&serde_json::json!("subscription-123"))
+        );
+        assert!(matches!(
+            serde_json::from_value::<JSONRPCMessage>(value)
+                .expect("older JSON-RPC decoder should ignore the extension"),
+            JSONRPCMessage::Notification(_)
+        ));
     }
 }

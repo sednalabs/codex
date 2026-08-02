@@ -699,6 +699,12 @@ impl App {
                     let mut store = channel.store.lock().await;
                     Self::install_side_thread_snapshot(&mut store, forked.session, forked.turns);
                 }
+                self.bind_thread_subscription_and_flush(
+                    app_server,
+                    child_thread_id,
+                    forked.thread_subscription_id,
+                )
+                .await;
                 self.side_threads
                     .insert(child_thread_id, SideThreadState::new(parent_thread_id));
                 // `thread/started` is delivered after the fork response; seed navigation before

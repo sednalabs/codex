@@ -1004,7 +1004,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         };
 
         match server_event {
-            InProcessServerEvent::ServerRequest(request) => {
+            InProcessServerEvent::ServerRequest(request)
+            | InProcessServerEvent::ThreadServerRequest { request, .. } => {
                 handle_server_request(
                     &client,
                     request,
@@ -1013,7 +1014,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 )
                 .await;
             }
-            InProcessServerEvent::ServerNotification(mut notification) => {
+            InProcessServerEvent::ServerNotification(mut notification)
+            | InProcessServerEvent::ThreadServerNotification {
+                notification: mut notification,
+                ..
+            } => {
                 if let ServerNotification::Error(payload) = &notification {
                     if payload.thread_id == primary_thread_id_for_requests
                         && payload.turn_id == task_id
@@ -2685,6 +2690,7 @@ mod tests {
                 name: Some("thread".to_string()),
                 turns: vec![],
             },
+            thread_subscription_id: None,
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,

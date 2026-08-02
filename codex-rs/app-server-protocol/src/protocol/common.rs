@@ -2765,6 +2765,7 @@ mod tests {
                     name: None,
                     turns: Vec::new(),
                 },
+                thread_subscription_id: None,
                 model: "gpt-5".to_string(),
                 model_provider: "openai".to_string(),
                 service_tier: None,

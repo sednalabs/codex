@@ -18,7 +18,6 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
-use codex_app_server_client::ThreadEventIngressRegistry;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
@@ -237,6 +236,9 @@ pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
     pub(crate) blocks_direct_input: bool,
+    /// Server-minted immutable identity for the connection's live event
+    /// subscription. `None` is the compatibility path for an older server.
+    pub(crate) thread_subscription_id: Option<String>,
 }
 
 pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
@@ -1305,15 +1307,6 @@ impl AppServerSession {
         self.client.request_handle()
     }
 
-    /// Returns the transport-facing thread ingress registry for this session.
-    ///
-    /// `App` replaces the bound epoch on every local attach and discard. The app-server client
-    /// stamps incoming thread traffic before its event queue, so the central TUI dispatcher does
-    /// not have to infer an old subscription from a reused thread id.
-    pub(crate) fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
-        self.client.thread_event_ingress_registry()
-    }
-
     pub(crate) fn next_request_id(&mut self) -> RequestId {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
@@ -1720,6 +1713,7 @@ async fn started_thread_from_start_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        thread_subscription_id: response.thread_subscription_id,
     })
 }
 
@@ -1737,6 +1731,7 @@ async fn started_thread_from_resume_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        thread_subscription_id: response.thread_subscription_id,
     })
 }
 
@@ -1754,6 +1749,7 @@ async fn started_thread_from_fork_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        thread_subscription_id: response.thread_subscription_id,
     })
 }
 
@@ -2854,6 +2850,7 @@ mod tests {
                     duration_ms: None,
                 }],
             },
+            thread_subscription_id: None,
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,

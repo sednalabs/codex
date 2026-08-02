@@ -5428,11 +5428,13 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
     );
 
     app.apply_refreshed_snapshot_thread(
+        Some(&app_server),
         child_thread_id,
         AppServerStartedThread {
             session: test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
             turns: Vec::new(),
             blocks_direct_input: false,
+            thread_subscription_id: None,
         },
         &mut child_snapshot,
     )
@@ -5804,26 +5806,21 @@ async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> R
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.mark_thread_attached(thread_id);
-    let old_target = ThreadLifecycleTarget {
-        thread_id,
-        lifecycle_generation: app.thread_lifecycle_generation(thread_id),
-    };
+    let old_subscription_id = "old-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(old_subscription_id.clone()));
     app.mark_thread_discarded(thread_id);
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/reattached-ingress")),
         Vec::new(),
     )
     .await?;
-    let new_target = app.thread_lifecycle_target_at_ingress(thread_id);
-    assert_ne!(old_target, new_target);
+    let new_subscription_id = "new-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(new_subscription_id.clone()));
 
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerNotification {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: old_target.thread_id,
-                subscription_epoch: old_target.lifecycle_generation,
-            },
+            thread_subscription_id: old_subscription_id,
             notification: thread_closed_notification(thread_id),
         },
     )
@@ -5840,10 +5837,7 @@ async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> R
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerNotification {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: new_target.thread_id,
-                subscription_epoch: new_target.lifecycle_generation,
-            },
+            thread_subscription_id: new_subscription_id,
             notification: thread_closed_notification(thread_id),
         },
     )
@@ -5866,17 +5860,16 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.mark_thread_attached(thread_id);
-    let old_target = ThreadLifecycleTarget {
-        thread_id,
-        lifecycle_generation: app.thread_lifecycle_generation(thread_id),
-    };
+    let old_subscription_id = "old-request-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(old_subscription_id.clone()));
     app.mark_thread_discarded(thread_id);
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/reattached-request")),
         Vec::new(),
     )
     .await?;
-    let new_target = app.thread_lifecycle_target_at_ingress(thread_id);
+    let new_subscription_id = "new-request-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(new_subscription_id.clone()));
     let stale_request = exec_approval_request(
         thread_id,
         "turn-old",
@@ -5887,10 +5880,7 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerRequest {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: old_target.thread_id,
-                subscription_epoch: old_target.lifecycle_generation,
-            },
+            thread_subscription_id: old_subscription_id.clone(),
             request: stale_request.clone(),
         },
     )
@@ -5899,6 +5889,19 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
         !app.pending_app_server_requests
             .contains_server_request(&stale_request),
         "a stale request must be rejected before it can enter the new lifecycle's ledger"
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            thread_subscription_id: old_subscription_id,
+            request: stale_request.clone(),
+        },
+    )
+    .await;
+    assert_eq!(
+        app.rejected_stale_thread_subscription_requests.len(),
+        1,
+        "the original stale request id must be rejected exactly once"
     );
 
     let new_request = exec_approval_request(
@@ -5910,10 +5913,7 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerRequest {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: new_target.thread_id,
-                subscription_epoch: new_target.lifecycle_generation,
-            },
+            thread_subscription_id: new_subscription_id,
             request: new_request.clone(),
         },
     )
@@ -5927,23 +5927,72 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
 }
 
 #[tokio::test]
+async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actionable() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let subscription_id = "resume-replay-subscription".to_string();
+    let replayed_request = exec_approval_request(
+        thread_id,
+        "turn-replayed-before-response",
+        "request-replayed-before-response",
+        /*approval_id*/ None,
+    );
+
+    // App-server is allowed to replay a pending request immediately after it
+    // attaches the listener and before the resume response reaches the TUI.
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            thread_subscription_id: subscription_id.clone(),
+            request: replayed_request.clone(),
+        },
+    )
+    .await;
+    assert_eq!(app.deferred_thread_subscription_events.len(), 1);
+    assert!(
+        !app
+            .pending_app_server_requests
+            .contains_server_request(&replayed_request),
+        "an unknown subscription must not be guessed from a thread id"
+    );
+
+    app.mark_thread_attached(thread_id);
+    app.bind_thread_subscription_and_flush(&app_server, thread_id, Some(subscription_id))
+        .await;
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/replayed-resume")),
+        Vec::new(),
+    )
+    .await?;
+
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&replayed_request),
+        "the replayed request must become actionable after the response binds its identity"
+    );
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.mark_thread_attached(thread_id);
-    let stale_target = ThreadLifecycleTarget {
-        thread_id,
-        lifecycle_generation: app.thread_lifecycle_generation(thread_id),
-    };
+    let stale_subscription_id = "old-resolution-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(stale_subscription_id.clone()));
     app.mark_thread_discarded(thread_id);
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/reattached-resolution")),
         Vec::new(),
     )
     .await?;
-    let replacement_target = app.thread_lifecycle_target_at_ingress(thread_id);
+    let replacement_subscription_id = "new-resolution-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(replacement_subscription_id.clone()));
     let replacement_request = exec_approval_request(
         thread_id,
         "turn-replacement",
@@ -5954,10 +6003,7 @@ async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerRequest {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: replacement_target.thread_id,
-                subscription_epoch: replacement_target.lifecycle_generation,
-            },
+            thread_subscription_id: replacement_subscription_id.clone(),
             request: replacement_request.clone(),
         },
     )
@@ -5977,10 +6023,7 @@ async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerNotification {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: stale_target.thread_id,
-                subscription_epoch: stale_target.lifecycle_generation,
-            },
+            thread_subscription_id: stale_subscription_id,
             notification: resolution.clone(),
         },
     )
@@ -5994,10 +6037,7 @@ async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerNotification {
-            target: codex_app_server_client::ThreadEventIngressTarget {
-                thread_id: replacement_target.thread_id,
-                subscription_epoch: replacement_target.lifecycle_generation,
-            },
+            thread_subscription_id: replacement_subscription_id,
             notification: resolution,
         },
     )
@@ -6352,7 +6392,9 @@ async fn make_test_app() -> App {
         thread_event_channels: HashMap::new(),
         thread_lifecycle_generations: HashMap::new(),
         discarded_thread_generations: HashMap::new(),
-        thread_event_ingress_registry: None,
+        thread_subscription_targets: HashMap::new(),
+        deferred_thread_subscription_events: VecDeque::new(),
+        rejected_stale_thread_subscription_requests: HashSet::new(),
         agent_navigation: AgentNavigationState::default(),
         side_threads: HashMap::new(),
         active_thread_id: None,
@@ -6425,7 +6467,9 @@ async fn make_test_app_with_channels() -> (
             thread_event_channels: HashMap::new(),
             thread_lifecycle_generations: HashMap::new(),
             discarded_thread_generations: HashMap::new(),
-            thread_event_ingress_registry: None,
+            thread_subscription_targets: HashMap::new(),
+            deferred_thread_subscription_events: VecDeque::new(),
+            rejected_stale_thread_subscription_requests: HashSet::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,
@@ -8551,11 +8595,13 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     };
 
     app.apply_refreshed_snapshot_thread(
+        None,
         thread_id,
         AppServerStartedThread {
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
             blocks_direct_input: true,
+            thread_subscription_id: None,
         },
         &mut snapshot,
     )

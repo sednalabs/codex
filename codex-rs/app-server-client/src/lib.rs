@@ -18,14 +18,12 @@
 mod path;
 mod remote;
 
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
@@ -56,7 +54,6 @@ pub use codex_core::otel_init::build_provider as build_otel_provider;
 pub use codex_exec_server::EnvironmentManager;
 pub use codex_exec_server::ExecServerRuntimePaths;
 use codex_feedback::CodexFeedback;
-use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::de::DeserializeOwned;
@@ -102,91 +99,19 @@ pub enum AppServerEvent {
     Lagged { skipped: usize },
     ServerNotification(ServerNotification),
     ServerRequest(ServerRequest),
-    /// A thread event was tagged by the transport-facing client worker before it entered the
-    /// consumer queue. Callers must retain this target across any further queueing so a delayed
-    /// event cannot be attributed to a later subscription for the same thread id.
+    /// A thread event carries the immutable subscription identity minted by
+    /// app-server before it entered the consumer queue.
     ThreadServerNotification {
-        target: ThreadEventIngressTarget,
+        thread_subscription_id: String,
         notification: ServerNotification,
     },
-    /// See [`Self::ThreadServerNotification`]. Stale requests retain their original request id
-    /// and can therefore be rejected by the caller without entering a replacement lifecycle.
+    /// See [`Self::ThreadServerNotification`]. Stale requests retain both
+    /// their original subscription identity and JSON-RPC id.
     ThreadServerRequest {
-        target: ThreadEventIngressTarget,
+        thread_subscription_id: String,
         request: ServerRequest,
     },
     Disconnected { message: String },
-}
-
-/// A caller-owned epoch identifying one subscription presentation of a thread.
-///
-/// The app-server protocol does not currently carry a subscription epoch in each message. The
-/// client therefore stamps thread traffic at the transport-facing worker, before it is placed on
-/// its consumer queue. A surface must replace this target whenever it deliberately reattaches the
-/// same thread id.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ThreadEventIngressTarget {
-    pub thread_id: ThreadId,
-    pub subscription_epoch: u64,
-}
-
-/// Shared registry used by a client surface to bind server thread traffic to its local lifecycle.
-///
-/// This registry is intentionally client-local rather than a protocol claim: it fences events
-/// which the transport worker already received before an unsubscribe/reattach reaches the UI
-/// queue. It does not imply that `thread/unsubscribe` drains a remote server stream.
-#[derive(Clone, Debug, Default)]
-pub struct ThreadEventIngressRegistry {
-    targets: Arc<Mutex<HashMap<ThreadId, u64>>>,
-}
-
-impl ThreadEventIngressRegistry {
-    /// Replaces the epoch used to stamp subsequently received traffic for `thread_id`.
-    pub fn bind(&self, thread_id: ThreadId, subscription_epoch: u64) {
-        self.targets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(thread_id, subscription_epoch);
-    }
-
-    fn target_for_thread(&self, thread_id: ThreadId) -> Option<ThreadEventIngressTarget> {
-        self.targets
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&thread_id)
-            .copied()
-            .map(|subscription_epoch| ThreadEventIngressTarget {
-                thread_id,
-                subscription_epoch,
-            })
-    }
-
-    fn annotate_event(&self, event: AppServerEvent) -> AppServerEvent {
-        match event {
-            AppServerEvent::ServerNotification(notification) => {
-                let Some(thread_id) = server_notification_thread_id(&notification) else {
-                    return AppServerEvent::ServerNotification(notification);
-                };
-                let Some(target) = self.target_for_thread(thread_id) else {
-                    return AppServerEvent::ServerNotification(notification);
-                };
-                AppServerEvent::ThreadServerNotification {
-                    target,
-                    notification,
-                }
-            }
-            AppServerEvent::ServerRequest(request) => {
-                let Some(thread_id) = server_request_thread_id(&request) else {
-                    return AppServerEvent::ServerRequest(request);
-                };
-                let Some(target) = self.target_for_thread(thread_id) else {
-                    return AppServerEvent::ServerRequest(request);
-                };
-                AppServerEvent::ThreadServerRequest { target, request }
-            }
-            event => event,
-        }
-    }
 }
 
 impl From<InProcessServerEvent> for AppServerEvent {
@@ -197,152 +122,22 @@ impl From<InProcessServerEvent> for AppServerEvent {
                 Self::ServerNotification(notification)
             }
             InProcessServerEvent::ServerRequest(request) => Self::ServerRequest(request),
+            InProcessServerEvent::ThreadServerNotification {
+                notification,
+                thread_subscription_id,
+            } => Self::ThreadServerNotification {
+                notification,
+                thread_subscription_id,
+            },
+            InProcessServerEvent::ThreadServerRequest {
+                request,
+                thread_subscription_id,
+            } => Self::ThreadServerRequest {
+                request,
+                thread_subscription_id,
+            },
         }
     }
-}
-
-fn server_request_thread_id(request: &ServerRequest) -> Option<ThreadId> {
-    let thread_id = match request {
-        ServerRequest::CommandExecutionRequestApproval { params, .. } => &params.thread_id,
-        ServerRequest::FileChangeRequestApproval { params, .. } => &params.thread_id,
-        ServerRequest::ToolRequestUserInput { params, .. } => &params.thread_id,
-        ServerRequest::McpServerElicitationRequest { params, .. } => &params.thread_id,
-        ServerRequest::PermissionsRequestApproval { params, .. } => &params.thread_id,
-        ServerRequest::DynamicToolCall { params, .. } => &params.thread_id,
-        ServerRequest::CurrentTimeRead { params, .. } => &params.thread_id,
-        ServerRequest::ComputerUseCall { params, .. } => &params.thread_id,
-        ServerRequest::ChatgptAuthTokensRefresh { .. }
-        | ServerRequest::AttestationGenerate { .. }
-        | ServerRequest::ApplyPatchApproval { .. }
-        | ServerRequest::ExecCommandApproval { .. } => return None,
-    };
-    ThreadId::from_string(thread_id).ok()
-}
-
-fn server_notification_thread_id(notification: &ServerNotification) -> Option<ThreadId> {
-    let thread_id = match notification {
-        ServerNotification::Error(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadStarted(notification) => Some(notification.thread.id.as_str()),
-        ServerNotification::ThreadStatusChanged(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadArchived(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadDeleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadUnarchived(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadClosed(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadNameUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadTokenUsageUpdated(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadGoalUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadGoalCleared(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadSettingsUpdated(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::TurnStarted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::HookStarted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::TurnCompleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::HookCompleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::TurnDiffUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::TurnPlanUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ItemStarted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ItemCompleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::RawResponseItemCompleted(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::RawResponseCompleted(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::AgentMessageDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::PlanDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::CommandExecutionOutputDelta(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::TerminalInteraction(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::FileChangeOutputDelta(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::FileChangePatchUpdated(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ServerRequestResolved(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::McpToolCallProgress(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ReasoningSummaryTextDelta(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ReasoningSummaryPartAdded(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ReasoningTextDelta(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ContextCompacted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ModelRerouted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ModelVerification(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ModelSafetyBufferingUpdated(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::TurnModerationMetadata(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeStarted(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeItemAdded(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeTranscriptDelta(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeTranscriptDone(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeOutputAudioDelta(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeSdp(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeError(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::ThreadRealtimeClosed(notification) => {
-            Some(notification.thread_id.as_str())
-        }
-        ServerNotification::Warning(notification) => notification.thread_id.as_deref(),
-        ServerNotification::GuardianWarning(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::McpServerStatusUpdated(notification) => notification.thread_id.as_deref(),
-        ServerNotification::SkillsChanged(_)
-        | ServerNotification::McpServerOauthLoginCompleted(_)
-        | ServerNotification::AccountUpdated(_)
-        | ServerNotification::AccountRateLimitsUpdated(_)
-        | ServerNotification::AppListUpdated(_)
-        | ServerNotification::EnvironmentConnected(_)
-        | ServerNotification::EnvironmentDisconnected(_)
-        | ServerNotification::RemoteControlStatusChanged(_)
-        | ServerNotification::ExternalAgentConfigImportProgress(_)
-        | ServerNotification::ExternalAgentConfigImportCompleted(_)
-        | ServerNotification::DeprecationNotice(_)
-        | ServerNotification::ConfigWarning(_)
-        | ServerNotification::FuzzyFileSearchSessionUpdated(_)
-        | ServerNotification::FuzzyFileSearchSessionCompleted(_)
-        | ServerNotification::CommandExecOutputDelta(_)
-        | ServerNotification::ProcessOutputDelta(_)
-        | ServerNotification::ProcessExited(_)
-        | ServerNotification::FsChanged(_)
-        | ServerNotification::WindowsWorldWritableWarning(_)
-        | ServerNotification::WindowsSandboxSetupCompleted(_)
-        | ServerNotification::AccountLoginCompleted(_) => None,
-    };
-    thread_id.and_then(|thread_id| ThreadId::from_string(thread_id).ok())
 }
 
 fn event_requires_delivery(event: &AppServerEvent) -> bool {
@@ -669,7 +464,6 @@ enum ClientCommand {
 pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
     event_rx: mpsc::Receiver<AppServerEvent>,
-    thread_event_ingress_registry: ThreadEventIngressRegistry,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -702,9 +496,6 @@ impl InProcessAppServerClient {
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
-        let thread_event_ingress_registry = ThreadEventIngressRegistry::default();
-        let worker_ingress_registry = thread_event_ingress_registry.clone();
-
         let worker_handle = tokio::spawn(async move {
             let mut event_stream_enabled = true;
             let mut skipped_events = 0usize;
@@ -781,7 +572,7 @@ impl InProcessAppServerClient {
                             continue;
                         }
 
-                        let event = worker_ingress_registry.annotate_event(event.into());
+                        let event = event.into();
                         match forward_in_process_event(
                             &event_tx,
                             &mut skipped_events,
@@ -813,13 +604,8 @@ impl InProcessAppServerClient {
         Ok(Self {
             command_tx,
             event_rx,
-            thread_event_ingress_registry,
             worker_handle,
         })
-    }
-
-    pub fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
-        self.thread_event_ingress_registry.clone()
     }
 
     pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
@@ -981,7 +767,6 @@ impl InProcessAppServerClient {
         let Self {
             command_tx,
             event_rx,
-            thread_event_ingress_registry: _thread_event_ingress_registry,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -1138,13 +923,6 @@ impl AppServerClient {
         match self {
             Self::InProcess(client) => client.next_event().await,
             Self::Remote(client) => client.next_event().await,
-        }
-    }
-
-    pub fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
-        match self {
-            Self::InProcess(client) => client.thread_event_ingress_registry(),
-            Self::Remote(client) => client.thread_event_ingress_registry(),
         }
     }
 
@@ -2341,7 +2119,6 @@ mod tests {
         let mut client = InProcessAppServerClient {
             command_tx,
             event_rx,
-            thread_event_ingress_registry: ThreadEventIngressRegistry::default(),
             worker_handle,
         };
 
@@ -2566,7 +2343,6 @@ mod tests {
         let client = InProcessAppServerClient {
             command_tx,
             event_rx,
-            thread_event_ingress_registry: ThreadEventIngressRegistry::default(),
             worker_handle,
         };
 

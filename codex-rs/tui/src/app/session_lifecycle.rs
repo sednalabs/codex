@@ -650,7 +650,7 @@ impl App {
             return Ok(true);
         }
 
-        let (session, turns, live_attached) = match app_server
+        let (session, turns, live_attached, thread_subscription_id) = match app_server
             .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
             .await
         {
@@ -658,7 +658,12 @@ impl App {
                 if started.blocks_direct_input {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
-                (started.session, started.turns, true)
+                (
+                    started.session,
+                    started.turns,
+                    true,
+                    started.thread_subscription_id,
+                )
             }
             Err(resume_err) => {
                 tracing::warn!(
@@ -693,7 +698,7 @@ impl App {
                 // `thread/read` can seed replay state, but it does not attach the app-server
                 // listener that `thread/resume` establishes, so treat this path as replay-only.
                 session.model.clear();
-                (session, turns, false)
+                (session, turns, false, None)
             }
         };
         // A successful explicit resume/read is positive recovery evidence. It is the only path
@@ -711,6 +716,15 @@ impl App {
         // transcript state. Keep only request-like state that the snapshot cannot replace
         // before the picker replays this channel into a fresh ChatWidget.
         store.rebase_buffer_after_session_refresh();
+        drop(store);
+        if live_attached {
+            self.bind_thread_subscription_and_flush(
+                app_server,
+                thread_id,
+                thread_subscription_id,
+            )
+            .await;
+        }
         Ok(live_attached)
     }
 
@@ -969,6 +983,12 @@ impl App {
         if !self.pending_startup_thread_start {
             if let Ok(started) = result {
                 let thread_id = started.session.thread_id;
+                // The start response may race queued listener traffic even
+                // though this startup result is no longer wanted. Bind then
+                // tombstone it so those original frames are rejected rather
+                // than deferred forever or attributed to a later same-id UI.
+                self.mark_thread_attached(thread_id);
+                self.bind_thread_subscription(thread_id, started.thread_subscription_id);
                 if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                     tracing::warn!(
                         thread_id = %thread_id,
@@ -990,6 +1010,7 @@ impl App {
                 }
                 self.enqueue_primary_thread_session_with_presentation_and_server(
                     Some(app_server),
+                    started.thread_subscription_id,
                     started.session,
                     started.turns,
                     ThreadAttachPresentation::SessionLineage,
@@ -1124,6 +1145,7 @@ impl App {
         }
         self.enqueue_primary_thread_session_with_presentation_and_server(
             Some(app_server),
+            started.thread_subscription_id,
             started.session,
             started.turns,
             presentation,
@@ -1804,6 +1826,7 @@ impl App {
                 match self
                     .enqueue_primary_thread_session_with_presentation_and_server(
                         Some(app_server),
+                        resumed.thread_subscription_id,
                         resumed.session,
                         resumed.turns,
                         ThreadAttachPresentation::SessionLineage,

@@ -169,6 +169,11 @@ pub struct MockExperimentalMethodResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartResponse {
     pub thread: Thread,
+    /// Immutable identity for this connection's thread-event subscription.
+    /// Optional for compatibility with older app-server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_subscription_id: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
@@ -410,6 +415,11 @@ pub struct ThreadResumeParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadResumeResponse {
     pub thread: Thread,
+    /// Immutable identity for this connection's thread-event subscription.
+    /// Optional for compatibility with older app-server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_subscription_id: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
@@ -610,6 +620,11 @@ pub struct ThreadForkParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadForkResponse {
     pub thread: Thread,
+    /// Immutable identity for this connection's thread-event subscription.
+    /// Optional for compatibility with older app-server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_subscription_id: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,

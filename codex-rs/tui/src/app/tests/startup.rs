@@ -163,6 +163,7 @@ async fn startup_thread_started_submits_queued_startup_input() {
             session: test_thread_session(thread_id, test_path_buf("/tmp/project")),
             turns: Vec::new(),
             blocks_direct_input: false,
+            thread_subscription_id: None,
         }),
     )
     .await
@@ -243,6 +244,7 @@ fn stale_startup_thread_started_removes_local_routing_state() -> Result<()> {
                     session: test_thread_session(stale_thread_id, test_path_buf("/tmp/project")),
                     turns: Vec::new(),
                     blocks_direct_input: false,
+                    thread_subscription_id: None,
                 }),
             )
             .await?;

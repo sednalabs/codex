@@ -213,27 +213,36 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Installs the transport-facing event registry before this app starts attaching threads.
-    ///
-    /// The registry is intentionally updated by the lifecycle markers below rather than by the
-    /// raw app-server event handler. That lets the client worker capture a target before a server
-    /// event is queued for the central dispatcher.
-    pub(super) fn set_thread_event_ingress_registry(
+    /// Binds an app-server-issued immutable subscription identity to the
+    /// lifecycle that just completed an authoritative attach. Any prior active
+    /// identity for this thread becomes a tombstone instead of being removed:
+    /// a queued old frame must retain its old routing outcome after same-id
+    /// reattachment.
+    pub(super) fn bind_thread_subscription(
         &mut self,
-        registry: codex_app_server_client::ThreadEventIngressRegistry,
+        thread_id: ThreadId,
+        thread_subscription_id: Option<String>,
     ) {
-        self.thread_event_ingress_registry = Some(registry);
-        for (&thread_id, &generation) in &self.thread_lifecycle_generations {
-            if let Some(registry) = self.thread_event_ingress_registry.as_ref() {
-                registry.bind(thread_id, generation);
+        let Some(thread_subscription_id) = thread_subscription_id else {
+            // Older app servers do not advertise subscription identities. The
+            // ordinary raw-event compatibility path remains available, but it
+            // cannot provide the stronger delayed-frame guarantee.
+            return;
+        };
+        let target = ThreadLifecycleTarget {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+        };
+        for binding in self.thread_subscription_targets.values_mut() {
+            if let ThreadSubscriptionBinding::Active(previous_target) = binding
+                && previous_target.thread_id == thread_id
+                && *previous_target != target
+            {
+                *binding = ThreadSubscriptionBinding::Tombstoned(*previous_target);
             }
         }
-    }
-
-    fn bind_thread_event_ingress_target(&self, thread_id: ThreadId, lifecycle_generation: u64) {
-        if let Some(registry) = self.thread_event_ingress_registry.as_ref() {
-            registry.bind(thread_id, lifecycle_generation);
-        }
+        self.thread_subscription_targets
+            .insert(thread_subscription_id, ThreadSubscriptionBinding::Active(target));
     }
 
     /// Captures the lifecycle expected by an app-server ingress listener. Before the first
@@ -289,7 +298,6 @@ impl App {
             .or_default();
         *generation = generation.wrapping_add(1);
         self.discarded_thread_generations.remove(&thread_id);
-        self.bind_thread_event_ingress_target(thread_id, *generation);
     }
 
     pub(super) fn mark_thread_discarded(&mut self, thread_id: ThreadId) {
@@ -299,10 +307,13 @@ impl App {
             .or_default();
         *generation = generation.wrapping_add(1);
         self.discarded_thread_generations.insert(thread_id, *generation);
-        // Keep the discard epoch installed rather than unbinding. Any old traffic the client
-        // receives between teardown and a same-id reattach must be stamped as discarded and
-        // rejected later, not recomputed as the new attachment.
-        self.bind_thread_event_ingress_target(thread_id, *generation);
+        for binding in self.thread_subscription_targets.values_mut() {
+            if let ThreadSubscriptionBinding::Active(target) = binding
+                && target.thread_id == thread_id
+            {
+                *binding = ThreadSubscriptionBinding::Tombstoned(*target);
+            }
+        }
     }
 
     /// Rejects a thread-scoped write after its live session was replaced with a replay-only
@@ -1649,6 +1660,7 @@ impl App {
     ) -> Result<()> {
         self.enqueue_primary_thread_session_with_presentation_and_server(
             None,
+            None,
             session,
             turns,
             presentation,
@@ -1659,6 +1671,7 @@ impl App {
     pub(super) async fn enqueue_primary_thread_session_with_presentation_and_server(
         &mut self,
         app_server: Option<&AppServerSession>,
+        thread_subscription_id: Option<String>,
         session: ThreadSessionState,
         turns: Vec<Turn>,
         presentation: ThreadAttachPresentation,
@@ -1678,6 +1691,14 @@ impl App {
         {
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
+        }
+        if let Some(app_server) = app_server {
+            self.bind_thread_subscription_and_flush(
+                app_server,
+                thread_id,
+                thread_subscription_id,
+            )
+            .await;
         }
         self.activate_thread_channel(thread_id).await;
         self.chat_widget
@@ -1816,7 +1837,7 @@ impl App {
             .await
         {
             Ok(started) => {
-                self.apply_refreshed_snapshot_thread(thread_id, started, snapshot)
+                self.apply_refreshed_snapshot_thread(Some(app_server), thread_id, started, snapshot)
                     .await
             }
             Err(err) => {
@@ -1844,6 +1865,7 @@ impl App {
 
     pub(super) async fn apply_refreshed_snapshot_thread(
         &mut self,
+        app_server: Option<&AppServerSession>,
         thread_id: ThreadId,
         started: AppServerStartedThread,
         snapshot: &mut ThreadEventSnapshot,
@@ -1852,12 +1874,21 @@ impl App {
         if started.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread_id);
         }
-        let AppServerStartedThread { session, turns, .. } = started;
+        let AppServerStartedThread {
+            session,
+            turns,
+            thread_subscription_id,
+            ..
+        } = started;
         if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
             channel.mark_live();
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();
+        }
+        if let Some(app_server) = app_server {
+            self.bind_thread_subscription_and_flush(app_server, thread_id, thread_subscription_id)
+                .await;
         }
         snapshot.session = Some(session);
         snapshot.turns = turns;

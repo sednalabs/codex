@@ -15,6 +15,8 @@ use codex_app_server_protocol::ServerNotificationEnvelope;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::ServerResponse;
+use codex_app_server_transport::ThreadScopedServerNotification;
+use codex_app_server_transport::ThreadScopedServerRequest;
 use codex_otel::span_w3c_trace_context;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::W3cTraceContext;
@@ -25,6 +27,7 @@ use tokio::sync::oneshot;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::error_code::internal_error;
 use crate::server_request_error::TURN_TRANSITION_PENDING_REQUEST_ERROR_REASON;
@@ -102,6 +105,10 @@ pub(crate) struct OutgoingMessageSender {
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
     request_contexts: Mutex<HashMap<ConnectionRequestId, RequestContext>>,
+    /// Fresh, connection-local identities for active thread subscriptions.
+    /// A queued event keeps the identity with which it was emitted; replacing
+    /// this map entry therefore cannot relabel old traffic.
+    thread_subscription_ids: Mutex<HashMap<(ConnectionId, ThreadId), String>>,
     analytics_events_client: AnalyticsEventsClient,
 }
 
@@ -217,8 +224,73 @@ impl OutgoingMessageSender {
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
+            thread_subscription_ids: Mutex::new(HashMap::new()),
             analytics_events_client,
         }
+    }
+
+    /// Creates a new immutable identity for one connection's presentation of a
+    /// thread. Callers register it before emitting the successful attach
+    /// response, which makes replay sent immediately after that response
+    /// attributable without relying on client-side timing.
+    pub(crate) async fn register_thread_subscription(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> String {
+        let subscription_id = Uuid::now_v7().to_string();
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .insert((connection_id, thread_id), subscription_id.clone());
+        subscription_id
+    }
+
+    /// Returns the existing identity for an already attached thread, or
+    /// registers one before a listener can emit any thread-scoped traffic.
+    /// Explicit start/resume/fork flows call `register_thread_subscription`
+    /// first to force a fresh identity; background attachment paths use this
+    /// method so they cannot fall back to unscoped traffic.
+    pub(crate) async fn ensure_thread_subscription(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> String {
+        let mut subscriptions = self.thread_subscription_ids.lock().await;
+        subscriptions
+            .entry((connection_id, thread_id))
+            .or_insert_with(|| Uuid::now_v7().to_string())
+            .clone()
+    }
+
+    pub(crate) async fn unregister_thread_subscription(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) {
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .remove(&(connection_id, thread_id));
+    }
+
+    pub(crate) async fn unregister_thread_subscriptions_for_thread(&self, thread_id: ThreadId) {
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .retain(|(_, candidate_thread_id), _| *candidate_thread_id != thread_id);
+    }
+
+    async fn thread_subscription_id(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> Option<String> {
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .get(&(connection_id, thread_id))
+            .cloned()
     }
 
     pub(crate) async fn register_request_context(&self, request_context: RequestContext) {
@@ -234,6 +306,11 @@ impl OutgoingMessageSender {
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         let mut request_contexts = self.request_contexts.lock().await;
         request_contexts.retain(|request_id, _| request_id.connection_id != connection_id);
+        drop(request_contexts);
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .retain(|(candidate_connection_id, _), _| *candidate_connection_id != connection_id);
     }
 
     pub(crate) async fn request_trace_context(
@@ -301,29 +378,41 @@ impl OutgoingMessageSender {
                 id,
                 PendingCallbackEntry {
                     callback: tx_approve,
-                    thread_id,
+                    thread_id: thread_id.clone(),
                     request: request.clone(),
                 },
             );
         }
 
-        let outgoing_message = OutgoingMessage::Request(request.clone());
         let send_result = match connection_ids {
             None => {
                 self.sender
                     .send(OutgoingEnvelope::Broadcast {
-                        message: outgoing_message,
+                        message: OutgoingMessage::Request(request.clone()),
                     })
                     .await
             }
             Some(connection_ids) => {
                 let mut send_error = None;
                 for connection_id in connection_ids {
+                    let message = match thread_id {
+                        Some(thread_id) => self
+                            .thread_subscription_id(*connection_id, thread_id)
+                            .await
+                            .map(|thread_subscription_id| {
+                                OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+                                    request: request.clone(),
+                                    thread_subscription_id,
+                                })
+                            })
+                            .unwrap_or_else(|| OutgoingMessage::Request(request.clone())),
+                        None => OutgoingMessage::Request(request.clone()),
+                    };
                     if let Err(err) = self
                         .sender
                         .send(OutgoingEnvelope::ToConnection {
                             connection_id: *connection_id,
-                            message: outgoing_message.clone(),
+                            message,
                             write_complete_tx: None,
                         })
                         .await
@@ -357,11 +446,21 @@ impl OutgoingMessageSender {
     ) {
         let requests = self.pending_requests_for_thread(thread_id).await;
         for request in requests {
+            let message = self
+                .thread_subscription_id(connection_id, thread_id)
+                .await
+                .map(|thread_subscription_id| {
+                    OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+                        request: request.clone(),
+                        thread_subscription_id,
+                    })
+                })
+                .unwrap_or_else(|| OutgoingMessage::Request(request));
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id,
-                    message: OutgoingMessage::Request(request),
+                    message,
                     write_complete_tx: None,
                 })
                 .await
@@ -501,6 +600,41 @@ impl OutgoingMessageSender {
         }
     }
 
+    async fn thread_subscriptions_for_thread(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<(ConnectionId, String)> {
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .iter()
+            .filter_map(|((connection_id, candidate_thread_id), subscription_id)| {
+                (*candidate_thread_id == thread_id)
+                    .then(|| (*connection_id, subscription_id.clone()))
+            })
+            .collect()
+    }
+
+    async fn thread_scoped_notification_message(
+        &self,
+        connection_id: ConnectionId,
+        notification: &ServerNotification,
+        envelope: &ServerNotificationEnvelope,
+    ) -> OutgoingMessage {
+        let Some(thread_id) = server_notification_thread_id(notification) else {
+            return OutgoingMessage::AppServerNotification(envelope.clone());
+        };
+        self.thread_subscription_id(connection_id, thread_id)
+            .await
+            .map(|thread_subscription_id| {
+                OutgoingMessage::ThreadScopedNotification(ThreadScopedServerNotification {
+                    envelope: envelope.clone(),
+                    thread_subscription_id,
+                })
+            })
+            .unwrap_or_else(|| OutgoingMessage::AppServerNotification(envelope.clone()))
+    }
+
     pub(crate) async fn send_response<T>(&self, request_id: ConnectionRequestId, response: T)
     where
         T: Into<ClientResponsePayload>,
@@ -601,12 +735,36 @@ impl OutgoingMessageSender {
             targeted_connections = connection_ids.len(),
             "app-server event: {notification}"
         );
-        let outgoing_message = timestamped_server_notification(notification);
+        let envelope = timestamped_server_notification_envelope(notification.clone());
         if connection_ids.is_empty() {
+            if let Some(thread_id) = server_notification_thread_id(&notification) {
+                let subscriptions = self.thread_subscriptions_for_thread(thread_id).await;
+                if !subscriptions.is_empty() {
+                    for (connection_id, thread_subscription_id) in subscriptions {
+                        if let Err(err) = self
+                            .sender
+                            .send(OutgoingEnvelope::ToConnection {
+                                connection_id,
+                                message: OutgoingMessage::ThreadScopedNotification(
+                                    ThreadScopedServerNotification {
+                                        envelope: envelope.clone(),
+                                        thread_subscription_id,
+                                    },
+                                ),
+                                write_complete_tx: None,
+                            })
+                            .await
+                        {
+                            warn!("failed to send server notification to client: {err:?}");
+                        }
+                    }
+                    return;
+                }
+            }
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::Broadcast {
-                    message: outgoing_message,
+                    message: OutgoingMessage::AppServerNotification(envelope),
                 })
                 .await
             {
@@ -615,11 +773,14 @@ impl OutgoingMessageSender {
             return;
         }
         for connection_id in connection_ids {
+            let message = self
+                .thread_scoped_notification_message(*connection_id, &notification, &envelope)
+                .await;
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id: *connection_id,
-                    message: outgoing_message.clone(),
+                    message,
                     write_complete_tx: None,
                 })
                 .await
@@ -635,7 +796,10 @@ impl OutgoingMessageSender {
         notification: ServerNotification,
     ) {
         tracing::trace!("app-server event: {notification}");
-        let outgoing_message = timestamped_server_notification(notification);
+        let envelope = timestamped_server_notification_envelope(notification.clone());
+        let outgoing_message = self
+            .thread_scoped_notification_message(connection_id, &notification, &envelope)
+            .await;
         if let Err(err) = self
             .sender
             .send(OutgoingEnvelope::ToConnection {
@@ -655,7 +819,10 @@ impl OutgoingMessageSender {
         notification: ServerNotification,
     ) {
         tracing::trace!("app-server event: {notification}");
-        let outgoing_message = timestamped_server_notification(notification);
+        let envelope = timestamped_server_notification_envelope(notification.clone());
+        let outgoing_message = self
+            .thread_scoped_notification_message(connection_id, &notification, &envelope)
+            .await;
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
         if let Err(err) = self
             .sender
@@ -740,6 +907,84 @@ impl OutgoingMessageSender {
     }
 }
 
+fn server_notification_thread_id(notification: &ServerNotification) -> Option<ThreadId> {
+    let thread_id = match notification {
+        ServerNotification::Error(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadStarted(notification) => Some(notification.thread.id.as_str()),
+        ServerNotification::ThreadStatusChanged(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadArchived(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadDeleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadUnarchived(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadClosed(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadNameUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadTokenUsageUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadGoalUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadGoalCleared(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadSettingsUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::HookStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::HookCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnDiffUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnPlanUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemGuardianApprovalReviewStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::RawResponseItemCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::RawResponseCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::AgentMessageDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::PlanDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::CommandExecutionOutputDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TerminalInteraction(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::FileChangeOutputDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::FileChangePatchUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ServerRequestResolved(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::McpToolCallProgress(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ReasoningSummaryTextDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ReasoningSummaryPartAdded(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ReasoningTextDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ContextCompacted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ModelRerouted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ModelVerification(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ModelSafetyBufferingUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnModerationMetadata(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeItemAdded(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeTranscriptDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeTranscriptDone(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeOutputAudioDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeSdp(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeError(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeClosed(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::Warning(notification) => notification.thread_id.as_deref(),
+        ServerNotification::GuardianWarning(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::McpServerStatusUpdated(notification) => notification.thread_id.as_deref(),
+        ServerNotification::SkillsChanged(_)
+        | ServerNotification::McpServerOauthLoginCompleted(_)
+        | ServerNotification::AccountUpdated(_)
+        | ServerNotification::AccountRateLimitsUpdated(_)
+        | ServerNotification::AppListUpdated(_)
+        | ServerNotification::EnvironmentConnected(_)
+        | ServerNotification::EnvironmentDisconnected(_)
+        | ServerNotification::RemoteControlStatusChanged(_)
+        | ServerNotification::ExternalAgentConfigImportProgress(_)
+        | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        | ServerNotification::DeprecationNotice(_)
+        | ServerNotification::ConfigWarning(_)
+        | ServerNotification::FuzzyFileSearchSessionUpdated(_)
+        | ServerNotification::FuzzyFileSearchSessionCompleted(_)
+        | ServerNotification::CommandExecOutputDelta(_)
+        | ServerNotification::ProcessOutputDelta(_)
+        | ServerNotification::ProcessExited(_)
+        | ServerNotification::FsChanged(_)
+        | ServerNotification::WindowsWorldWritableWarning(_)
+        | ServerNotification::WindowsSandboxSetupCompleted(_)
+        | ServerNotification::AccountLoginCompleted(_) => None,
+    };
+    thread_id.and_then(|thread_id| ThreadId::from_string(thread_id).ok())
+}
+
 fn now_unix_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -749,11 +994,13 @@ fn now_unix_timestamp_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn timestamped_server_notification(notification: ServerNotification) -> OutgoingMessage {
-    OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+fn timestamped_server_notification_envelope(
+    notification: ServerNotification,
+) -> ServerNotificationEnvelope {
+    ServerNotificationEnvelope {
         notification,
         emitted_at_ms: Some(now_unix_timestamp_ms().try_into().unwrap_or_default()),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -779,6 +1026,7 @@ mod tests {
     use codex_app_server_protocol::RateLimitWindow;
     use codex_app_server_protocol::ServerResponse;
     use codex_app_server_protocol::ToolRequestUserInputParams;
+    use codex_app_server_protocol::ThreadClosedNotification;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
@@ -1214,6 +1462,51 @@ mod tests {
         });
 
         assert_eq!(timestamps[0], timestamps[1]);
+    }
+
+    #[tokio::test]
+    async fn thread_notification_keeps_its_original_subscription_identity_after_reattach() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        outgoing
+            .send_server_notification_to_connection(
+                connection_id,
+                ServerNotification::ThreadClosed(ThreadClosedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        let first = rx.recv().await.expect("first thread notification should be queued");
+
+        let new_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        outgoing
+            .send_server_notification_to_connection(
+                connection_id,
+                ServerNotification::ThreadClosed(ThreadClosedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        let second = rx.recv().await.expect("second thread notification should be queued");
+
+        let subscription_id = |envelope: OutgoingEnvelope| match envelope {
+            OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::ThreadScopedNotification(notification),
+                ..
+            } => notification.thread_subscription_id,
+            other => panic!("expected tagged thread notification, got {other:?}"),
+        };
+        assert_eq!(subscription_id(first), old_subscription_id);
+        assert_eq!(subscription_id(second), new_subscription_id);
     }
 
     #[tokio::test]

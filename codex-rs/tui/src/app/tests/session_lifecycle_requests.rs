@@ -438,6 +438,7 @@ async fn primary_reset_rejects_buffered_request_before_a_different_primary_attac
     let thread_b_id = thread_b.session.thread_id;
     app.enqueue_primary_thread_session_with_presentation_and_server(
         Some(&app_server),
+        thread_b.thread_subscription_id,
         thread_b.session,
         thread_b.turns,
         ThreadAttachPresentation::SessionLineage,
@@ -473,6 +474,7 @@ async fn stale_thread_operation_after_reattach_cannot_issue_an_rpc_but_current_g
     let thread_id = started.session.thread_id;
     app.enqueue_primary_thread_session_with_presentation_and_server(
         Some(&app_server),
+        started.thread_subscription_id,
         started.session,
         started.turns,
         ThreadAttachPresentation::SessionLineage,

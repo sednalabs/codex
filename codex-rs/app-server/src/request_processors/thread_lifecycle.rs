@@ -161,11 +161,24 @@ pub(super) async fn ensure_conversation_listener(
                 "thread {conversation_id} is closing; retry after the thread is closed"
             )));
         }
+        // An automatic attachment can be the first route by which a thread
+        // reaches this connection (for example, a spawned child). Establish
+        // server-owned identity before publishing the connection to a running
+        // listener, so no thread event can observe a subscribed connection
+        // without an immutable subscription identity.
+        listener_task_context
+            .outgoing
+            .ensure_thread_subscription(connection_id, conversation_id)
+            .await;
         let Some(thread_state) = listener_task_context
             .thread_state_manager
             .try_ensure_connection_subscribed(conversation_id, connection_id, raw_events_enabled)
             .await
         else {
+            listener_task_context
+                .outgoing
+                .unregister_thread_subscription(connection_id, conversation_id)
+                .await;
             return Ok(EnsureConversationListenerResult::ConnectionClosed);
         };
         thread_state
@@ -181,6 +194,10 @@ pub(super) async fn ensure_conversation_listener(
         let _ = listener_task_context
             .thread_state_manager
             .unsubscribe_connection_from_thread(conversation_id, connection_id)
+            .await;
+        listener_task_context
+            .outgoing
+            .unregister_thread_subscription(connection_id, conversation_id)
             .await;
         return Err(error);
     }
@@ -635,10 +652,19 @@ pub(super) async fn handle_pending_thread_resume_request(
         }
     }
 
-    {
+    // Install the identity before the live connection becomes eligible for
+    // replayed traffic. `try_add_connection_to_thread` can make a running
+    // listener fan out immediately.
+    let thread_subscription_id = outgoing
+        .register_thread_subscription(connection_id, conversation_id)
+        .await;
+    let connection_added = {
         let pending_thread_unloads = pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
             drop(pending_thread_unloads);
+            outgoing
+                .unregister_thread_subscription(connection_id, conversation_id)
+                .await;
             outgoing
                 .send_error(
                     request_id,
@@ -649,17 +675,20 @@ pub(super) async fn handle_pending_thread_resume_request(
                 .await;
             return;
         }
-        if !thread_state_manager
+        thread_state_manager
             .try_add_connection_to_thread(conversation_id, connection_id)
             .await
-        {
-            tracing::debug!(
-                thread_id = %conversation_id,
-                connection_id = ?connection_id,
-                "skipping running thread resume for closed connection"
-            );
-            return;
-        }
+    };
+    if !connection_added {
+        outgoing
+            .unregister_thread_subscription(connection_id, conversation_id)
+            .await;
+        tracing::debug!(
+            thread_id = %conversation_id,
+            connection_id = ?connection_id,
+            "skipping running thread resume for closed connection"
+        );
+        return;
     }
 
     let (turns_backwards_cursor, items_backwards_cursor) = if let Some(thread_store) =
@@ -673,6 +702,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         {
             Ok(cursors) => cursors,
             Err(error) => {
+                outgoing
+                    .unregister_thread_subscription(connection_id, conversation_id)
+                    .await;
                 outgoing.send_error(request_id, error).await;
                 return;
             }
@@ -701,9 +733,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         thread_response_active_permission_profile(active_permission_profile);
     let session_id = conversation.session_configured().session_id.to_string();
     thread.session_id = session_id;
-
     let response = ThreadResumeResponse {
         thread,
+        thread_subscription_id: Some(thread_subscription_id),
         model,
         model_provider: model_provider_id,
         service_tier,
