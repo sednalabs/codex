@@ -122,6 +122,7 @@ pub use tool_executor::ToolExecutor;
 pub use tool_executor::ToolExecutorFuture;
 pub use tool_executor::ToolExposure;
 pub use tool_output::JsonToolOutput;
+pub use tool_output::ToolExecutionStatus;
 pub use tool_output::ToolOutput;
 pub use tool_payload::ToolPayload;
 pub use tool_search::ToolSearchEntry;
