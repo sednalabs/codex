@@ -2152,7 +2152,7 @@ impl ThreadManagerState {
 
         {
             let mut threads = self.threads.write().await;
-            if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
+            if let std::collections::btree_map::Entry::Vacant(e) = threads.entry(thread_id) {
                 let thread = Arc::new(CodexThread::new(
                     session,
                     io,
