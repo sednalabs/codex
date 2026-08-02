@@ -332,13 +332,11 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                     outgoing
                         .send_server_notification_to_thread_subscriptions(
                             &thread_subscriptions,
-                            ServerNotification::ThreadGoalUpdated(
-                                ThreadGoalUpdatedNotification {
-                                    thread_id: thread_id.to_string(),
-                                    turn_id,
-                                    goal,
-                                },
-                            ),
+                            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                                thread_id: thread_id.to_string(),
+                                turn_id,
+                                goal,
+                            }),
                         )
                         .await;
                 });

@@ -1599,34 +1599,36 @@ mod tests {
             .expect("initial event should enqueue");
 
         let mut skipped_events = 0usize;
-        let delivery = forward_in_process_event(
-            &event_tx,
-            &mut skipped_events,
-            AppServerEvent::ThreadServerNotification {
-                thread_subscription_id: "thread-subscription".to_string(),
-                notification: ServerNotification::ThreadStatusChanged(
-                    codex_app_server_protocol::ThreadStatusChangedNotification {
-                        thread_id: "thread".to_string(),
-                        status: codex_app_server_protocol::ThreadStatus::Idle,
-                        status_revision: Some(1),
-                    },
-                ),
-            },
-            |_| {},
-        );
-        tokio::pin!(delivery);
+        {
+            let delivery = forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification: ServerNotification::ThreadStatusChanged(
+                        codex_app_server_protocol::ThreadStatusChangedNotification {
+                            thread_id: "thread".to_string(),
+                            status: codex_app_server_protocol::ThreadStatus::Idle,
+                            status_revision: Some(1),
+                        },
+                    ),
+                },
+                |_| {},
+            );
+            tokio::pin!(delivery);
 
-        assert!(
-            timeout(Duration::from_millis(20), &mut delivery)
-                .await
-                .is_err(),
-            "terminal thread transitions must block rather than be dropped"
-        );
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(AppServerEvent::Lagged { skipped: 1 })
-        ));
-        assert_eq!(delivery.await, ForwardEventResult::Continue);
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "terminal thread transitions must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::Lagged { skipped: 1 })
+            ));
+            assert_eq!(delivery.await, ForwardEventResult::Continue);
+        }
         assert!(matches!(
             event_rx.recv().await,
             Some(AppServerEvent::ThreadServerNotification {

@@ -465,7 +465,7 @@ async fn spawn_agent_invalid_model_completes_failed_lifecycle_without_effective_
             "model": "not-a-configured-model"
         }),
         Some("not-a-configured-model"),
-        None,
+        /*requested_reasoning_effort*/ None,
     )
     .await;
 }
@@ -478,7 +478,7 @@ async fn spawn_agent_invalid_reasoning_effort_completes_failed_lifecycle_without
             "message": "inspect this repo",
             "reasoning_effort": "ultra"
         }),
-        None,
+        /*requested_model*/ None,
         Some(ReasoningEffort::Ultra),
     )
     .await;
@@ -491,8 +491,8 @@ async fn spawn_agent_invalid_role_completes_failed_lifecycle_without_effective_i
             "message": "inspect this repo",
             "agent_type": "not-a-configured-role"
         }),
-        None,
-        None,
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
     )
     .await;
 }
@@ -501,7 +501,12 @@ async fn spawn_agent_invalid_role_completes_failed_lifecycle_without_effective_i
 async fn spawn_agent_runtime_failure_completes_failed_lifecycle_without_effective_identity() {
     // The default test session has no live ThreadManager behind AgentControl, so the actual
     // runtime spawn call fails after all request and role validation has succeeded.
-    assert_failed_spawn_lifecycle(json!({"message": "inspect this repo"}), None, None).await;
+    assert_failed_spawn_lifecycle(
+        json!({"message": "inspect this repo"}),
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
+    )
+    .await;
 }
 
 #[tokio::test]
