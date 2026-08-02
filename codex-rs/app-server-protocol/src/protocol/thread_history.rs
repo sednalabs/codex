@@ -604,7 +604,11 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_item_started(&mut self, payload: &ItemStartedEvent) {
-        self.handle_materialized_item_lifecycle(&payload.turn_id, &payload.item, None);
+        self.handle_materialized_item_lifecycle(
+            &payload.turn_id,
+            &payload.item,
+            /*started_item*/ None,
+        );
     }
 
     fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
