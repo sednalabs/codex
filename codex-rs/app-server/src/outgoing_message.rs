@@ -578,14 +578,37 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         thread_id: ThreadId,
     ) {
+        // Capture the already-established identity once. A resume/reconnect
+        // must never mint a token while replaying a request because the
+        // client has not received a corresponding lifecycle handshake for
+        // that newly created token.
+        let Some(replay_target) = self
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+        else {
+            tracing::debug!(
+                ?connection_id,
+                %thread_id,
+                "dropping request replay without an active thread subscription"
+            );
+            return;
+        };
         let requests = self.pending_requests_for_thread(thread_id).await;
         for request in requests {
-            let thread_subscription_id = self
-                .ensure_thread_subscription(connection_id, thread_id)
-                .await;
+            // Preserve the original recipients (which can now be stale and
+            // safely fenced) and add this exact replay target. When the
+            // request resolves, every client that actually received it gets
+            // the matching resolution without deriving a replacement token.
+            let Some(replay_target_added) = self
+                .append_thread_request_resolution_target(request.id(), replay_target.clone())
+                .await
+            else {
+                continue;
+            };
+            let request_id = request.id().clone();
             let message = OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
                 request,
-                thread_subscription_id,
+                thread_subscription_id: replay_target.thread_subscription_id.clone(),
             });
             if let Err(err) = self
                 .sender
@@ -596,6 +619,10 @@ impl OutgoingMessageSender {
                 })
                 .await
             {
+                if replay_target_added {
+                    self.remove_thread_request_resolution_target(&request_id, &replay_target)
+                        .await;
+                }
                 warn!("failed to resend request to client: {err:?}");
             }
         }
@@ -700,6 +727,13 @@ impl OutgoingMessageSender {
             .remove(id)
     }
 
+    /// Discards retained resolution recipients for a thread-scoped request
+    /// that completes without going through the listener resolution command
+    /// (for example, the internal current-time provider).
+    pub(crate) async fn discard_thread_request_resolution_targets(&self, id: &RequestId) {
+        self.thread_request_resolution_targets.lock().await.remove(id);
+    }
+
     pub(crate) async fn pending_requests_for_thread(
         &self,
         thread_id: ThreadId,
@@ -779,6 +813,57 @@ impl OutgoingMessageSender {
                 })
             })
             .collect()
+    }
+
+    /// Captures one already-active connection-local thread identity without
+    /// creating a replacement. Callers that selected a connection before an
+    /// asynchronous send must use this target directly, or safely decline to
+    /// send when it has disappeared.
+    pub(crate) async fn thread_subscription_target_for_connection(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> Option<ThreadSubscriptionTarget> {
+        self.thread_subscription_ids
+            .lock()
+            .await
+            .get(&(connection_id, thread_id))
+            .cloned()
+            .map(|thread_subscription_id| {
+                ThreadSubscriptionTarget::captured(
+                    connection_id,
+                    thread_id,
+                    thread_subscription_id,
+                )
+            })
+    }
+
+    async fn append_thread_request_resolution_target(
+        &self,
+        request_id: &RequestId,
+        target: ThreadSubscriptionTarget,
+    ) -> Option<bool> {
+        let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
+        let Some(targets) = resolution_targets.get_mut(request_id) else {
+            return None;
+        };
+        if !targets.contains(&target) {
+            targets.push(target);
+            Some(true)
+        } else {
+            Some(false)
+        }
+    }
+
+    async fn remove_thread_request_resolution_target(
+        &self,
+        request_id: &RequestId,
+        target: &ThreadSubscriptionTarget,
+    ) {
+        let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
+        if let Some(targets) = resolution_targets.get_mut(request_id) {
+            targets.retain(|candidate| candidate != target);
+        }
     }
 
     /// Sends a notification through identities captured by a listener or
@@ -1807,14 +1892,17 @@ mod tests {
             .register_thread_subscription(connection_id, thread_id)
             .await;
 
-        let connection_ids = [connection_id];
+        let old_target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("current-time request should capture the original subscription");
         let (_request_id, _response_rx) = outgoing
-            .send_request_to_connections(
-                Some(&connection_ids),
+            .send_request_to_thread_subscriptions(
+                &[old_target],
                 ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
                     thread_id: thread_id.to_string(),
                 }),
-                Some(thread_id),
+                thread_id,
             )
             .await;
         let stale = rx
@@ -1825,13 +1913,17 @@ mod tests {
         let new_subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
             .await;
+        let new_target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("replacement current-time request should capture its subscription");
         let (_request_id, _response_rx) = outgoing
-            .send_request_to_connections(
-                Some(&connection_ids),
+            .send_request_to_thread_subscriptions(
+                &[new_target],
                 ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
                     thread_id: thread_id.to_string(),
                 }),
-                Some(thread_id),
+                thread_id,
             )
             .await;
         let current = rx
@@ -1982,6 +2074,150 @@ mod tests {
                 .iter()
                 .all(|subscription_id| subscription_id == &new_subscription_id)
         );
+    }
+
+    #[tokio::test]
+    async fn replayed_request_resolves_to_old_and_replayed_subscription_targets() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let old_target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("initial subscription should be captured");
+        let (request_id, _request_rx) = outgoing
+            .send_request_to_thread_subscriptions(
+                &[old_target],
+                ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "approval-1".to_string(),
+                    questions: Vec::new(),
+                    auto_resolution_ms: None,
+                }),
+                thread_id,
+            )
+            .await;
+
+        outgoing
+            .unregister_thread_subscription(connection_id, thread_id)
+            .await;
+        let replay_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        outgoing
+            .replay_requests_to_connection_for_thread(connection_id, thread_id)
+            .await;
+
+        outgoing
+            .notify_client_response(request_id.clone(), serde_json::json!({}))
+            .await;
+        assert!(
+            outgoing
+                .pending_requests_for_thread(thread_id)
+                .await
+                .is_empty(),
+            "the response must clear the replayed pending request"
+        );
+
+        let resolution_targets = outgoing
+            .take_thread_request_resolution_targets(&request_id)
+            .await
+            .expect("response resolution should retain every delivered target");
+        assert_eq!(resolution_targets.len(), 2);
+        assert!(resolution_targets
+            .iter()
+            .any(|target| target.thread_subscription_id == old_subscription_id));
+        assert!(resolution_targets
+            .iter()
+            .any(|target| target.thread_subscription_id == replay_subscription_id));
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &resolution_targets,
+                ServerNotification::ServerRequestResolved(ServerRequestResolvedNotification {
+                    thread_id: thread_id.to_string(),
+                    request_id: request_id.clone(),
+                }),
+            )
+            .await;
+
+        let mut request_tokens = Vec::new();
+        let mut resolution_tokens = Vec::new();
+        for _ in 0..4 {
+            let envelope = rx.recv().await.expect("replay traffic should be queued");
+            match envelope {
+                OutgoingEnvelope::ToConnection {
+                    message: OutgoingMessage::ThreadScopedRequest(request),
+                    ..
+                } => request_tokens.push(request.thread_subscription_id),
+                OutgoingEnvelope::ToConnection {
+                    message: OutgoingMessage::ThreadScopedNotification(notification),
+                    ..
+                } => {
+                    let ServerNotification::ServerRequestResolved(resolved) =
+                        notification.envelope.notification
+                    else {
+                        panic!("expected replay resolution notification");
+                    };
+                    assert_eq!(resolved.request_id, request_id);
+                    resolution_tokens.push(notification.thread_subscription_id);
+                }
+                envelope => panic!("expected captured replay traffic, got {envelope:?}"),
+            }
+        }
+
+        assert_eq!(request_tokens, vec![old_subscription_id.clone(), replay_subscription_id.clone()]);
+        assert_eq!(resolution_tokens, vec![old_subscription_id, replay_subscription_id]);
+    }
+
+    #[tokio::test]
+    async fn captured_current_time_request_does_not_recreate_after_reattach() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing = OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("current-time snapshot should capture its existing identity");
+
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let (request_id, _request_rx) = outgoing
+            .send_request_to_thread_subscriptions(
+                &[target],
+                ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                }),
+                thread_id,
+            )
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedRequest(request),
+            ..
+        } = rx.recv().await.expect("current-time request should be queued")
+        else {
+            panic!("expected a captured current-time request");
+        };
+        assert_eq!(request.thread_subscription_id, old_subscription_id);
+        let current_target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("replacement subscription should remain current");
+        assert_eq!(current_target.thread_subscription_id, replacement_subscription_id);
+        outgoing.cancel_request(&request_id).await;
     }
 
     #[tokio::test]
