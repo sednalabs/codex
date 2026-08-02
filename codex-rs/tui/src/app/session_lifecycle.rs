@@ -923,7 +923,6 @@ impl App {
     ) {
         let mut thread_ids = HashSet::new();
         thread_ids.extend(self.thread_event_channels.keys().copied());
-        thread_ids.extend(self.thread_event_listener_tasks.keys().copied());
         thread_ids.extend(self.side_threads.keys().copied());
         thread_ids.extend(self.pending_primary_events.iter().map(|event| event.thread_id));
         thread_ids.extend(self.pending_app_server_requests.pending_thread_ids());
@@ -945,10 +944,8 @@ impl App {
             } else {
                 self.mark_thread_discarded(thread_id);
                 self.pending_app_server_requests.clear_thread(thread_id);
-                self.abort_thread_event_listener(thread_id);
             }
         }
-        self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
         self.agent_navigation.clear();
         self.side_threads.clear();

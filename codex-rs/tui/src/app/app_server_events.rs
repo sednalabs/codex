@@ -54,6 +54,31 @@ impl App {
                 self.handle_server_request_event(app_server_client, request)
                     .await;
             }
+            AppServerEvent::ThreadServerNotification {
+                target,
+                notification,
+            } => {
+                self.handle_thread_server_notification_at_ingress(
+                    app_server_client,
+                    ThreadLifecycleTarget {
+                        thread_id: target.thread_id,
+                        lifecycle_generation: target.subscription_epoch,
+                    },
+                    notification,
+                )
+                .await;
+            }
+            AppServerEvent::ThreadServerRequest { target, request } => {
+                self.handle_thread_server_request_at_ingress(
+                    app_server_client,
+                    ThreadLifecycleTarget {
+                        thread_id: target.thread_id,
+                        lifecycle_generation: target.subscription_epoch,
+                    },
+                    request,
+                )
+                .await;
+            }
             AppServerEvent::Disconnected { message } => {
                 tracing::warn!("app-server event stream disconnected: {message}");
                 self.chat_widget.add_error_message(message.clone());

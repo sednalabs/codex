@@ -18,6 +18,7 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_client::ThreadEventIngressRegistry;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
@@ -1302,6 +1303,15 @@ impl AppServerSession {
 
     pub(crate) fn request_handle(&self) -> AppServerRequestHandle {
         self.client.request_handle()
+    }
+
+    /// Returns the transport-facing thread ingress registry for this session.
+    ///
+    /// `App` replaces the bound epoch on every local attach and discard. The app-server client
+    /// stamps incoming thread traffic before its event queue, so the central TUI dispatcher does
+    /// not have to infer an old subscription from a reused thread id.
+    pub(crate) fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
+        self.client.thread_event_ingress_registry()
     }
 
     pub(crate) fn next_request_id(&mut self) -> RequestId {

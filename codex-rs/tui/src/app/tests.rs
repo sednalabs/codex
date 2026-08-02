@@ -541,41 +541,6 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
 }
 
 #[tokio::test]
-async fn reset_thread_event_state_aborts_listener_tasks() {
-    struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
-
-    impl Drop for NotifyOnDrop {
-        fn drop(&mut self) {
-            if let Some(tx) = self.0.take() {
-                let _ = tx.send(());
-            }
-        }
-    }
-
-    let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(async move {
-        let _notify_on_drop = NotifyOnDrop(Some(dropped_tx));
-        let _ = started_tx.send(());
-        std::future::pending::<()>().await;
-    });
-    app.thread_event_listener_tasks.insert(thread_id, handle);
-    started_rx
-        .await
-        .expect("listener task should report it started");
-
-    app.reset_thread_event_state(None).await;
-
-    assert_eq!(app.thread_event_listener_tasks.is_empty(), true);
-    time::timeout(Duration::from_millis(50), dropped_rx)
-        .await
-        .expect("timed out waiting for listener task abort")
-        .expect("listener task drop notification should succeed");
-}
-
-#[tokio::test]
 async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
@@ -5832,7 +5797,7 @@ async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
 }
 
 #[tokio::test]
-async fn stale_thread_ingress_is_fenced_after_same_id_reattach() -> Result<()> {
+async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     let app_server =
@@ -5852,10 +5817,15 @@ async fn stale_thread_ingress_is_fenced_after_same_id_reattach() -> Result<()> {
     let new_target = app.thread_lifecycle_target_at_ingress(thread_id);
     assert_ne!(old_target, new_target);
 
-    app.handle_thread_server_notification_at_ingress(
+    app.handle_app_server_event(
         &app_server,
-        old_target,
-        thread_closed_notification(thread_id),
+        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: old_target.thread_id,
+                subscription_epoch: old_target.lifecycle_generation,
+            },
+            notification: thread_closed_notification(thread_id),
+        },
     )
     .await;
     assert!(
@@ -5867,10 +5837,15 @@ async fn stale_thread_ingress_is_fenced_after_same_id_reattach() -> Result<()> {
         "a delayed close from the old subscription must not reach the reattached presentation"
     );
 
-    app.handle_thread_server_notification_at_ingress(
+    app.handle_app_server_event(
         &app_server,
-        new_target,
-        thread_closed_notification(thread_id),
+        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: new_target.thread_id,
+                subscription_epoch: new_target.lifecycle_generation,
+            },
+            notification: thread_closed_notification(thread_id),
+        },
     )
     .await;
     assert!(matches!(
@@ -5884,10 +5859,11 @@ async fn stale_thread_ingress_is_fenced_after_same_id_reattach() -> Result<()> {
 }
 
 #[tokio::test]
-async fn stale_thread_request_ingress_is_rejected_and_new_ingress_is_retained() -> Result<()> {
+async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.mark_thread_attached(thread_id);
     let old_target = ThreadLifecycleTarget {
@@ -5908,8 +5884,17 @@ async fn stale_thread_request_ingress_is_rejected_and_new_ingress_is_retained() 
         /*approval_id*/ None,
     );
 
-    app.handle_thread_server_request_at_ingress(&app_server, old_target, stale_request.clone())
-        .await;
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: old_target.thread_id,
+                subscription_epoch: old_target.lifecycle_generation,
+            },
+            request: stale_request.clone(),
+        },
+    )
+    .await;
     assert!(
         !app.pending_app_server_requests
             .contains_server_request(&stale_request),
@@ -5922,12 +5907,105 @@ async fn stale_thread_request_ingress_is_rejected_and_new_ingress_is_retained() 
         "request-new",
         /*approval_id*/ None,
     );
-    app.handle_thread_server_request_at_ingress(&app_server, new_target, new_request.clone())
-        .await;
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: new_target.thread_id,
+                subscription_epoch: new_target.lifecycle_generation,
+            },
+            request: new_request.clone(),
+        },
+    )
+    .await;
     assert!(
         app.pending_app_server_requests
             .contains_server_request(&new_request),
         "a request delivered by the replacement listener must remain actionable"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let stale_target = ThreadLifecycleTarget {
+        thread_id,
+        lifecycle_generation: app.thread_lifecycle_generation(thread_id),
+    };
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-resolution")),
+        Vec::new(),
+    )
+    .await?;
+    let replacement_target = app.thread_lifecycle_target_at_ingress(thread_id);
+    let replacement_request = exec_approval_request(
+        thread_id,
+        "turn-replacement",
+        "request-replacement",
+        /*approval_id*/ None,
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: replacement_target.thread_id,
+                subscription_epoch: replacement_target.lifecycle_generation,
+            },
+            request: replacement_request.clone(),
+        },
+    )
+    .await;
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&replacement_request),
+        "the replacement request must be recorded before a delayed resolution is handled"
+    );
+
+    let resolution = ServerNotification::ServerRequestResolved(
+        codex_app_server_protocol::ServerRequestResolvedNotification {
+            thread_id: thread_id.to_string(),
+            request_id: AppServerRequestId::Integer(1),
+        },
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: stale_target.thread_id,
+                subscription_epoch: stale_target.lifecycle_generation,
+            },
+            notification: resolution.clone(),
+        },
+    )
+    .await;
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&replacement_request),
+        "a stale resolution must not clear the replacement lifecycle's pending request"
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+            target: codex_app_server_client::ThreadEventIngressTarget {
+                thread_id: replacement_target.thread_id,
+                subscription_epoch: replacement_target.lifecycle_generation,
+            },
+            notification: resolution,
+        },
+    )
+    .await;
+    assert!(
+        !app.pending_app_server_requests
+            .contains_server_request(&replacement_request),
+        "the replacement lifecycle's own resolution must still work"
     );
     Ok(())
 }
@@ -6274,7 +6352,7 @@ async fn make_test_app() -> App {
         thread_event_channels: HashMap::new(),
         thread_lifecycle_generations: HashMap::new(),
         discarded_thread_generations: HashMap::new(),
-        thread_event_listener_tasks: HashMap::new(),
+        thread_event_ingress_registry: None,
         agent_navigation: AgentNavigationState::default(),
         side_threads: HashMap::new(),
         active_thread_id: None,
@@ -6347,7 +6425,7 @@ async fn make_test_app_with_channels() -> (
             thread_event_channels: HashMap::new(),
             thread_lifecycle_generations: HashMap::new(),
             discarded_thread_generations: HashMap::new(),
-            thread_event_listener_tasks: HashMap::new(),
+            thread_event_ingress_registry: None,
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,

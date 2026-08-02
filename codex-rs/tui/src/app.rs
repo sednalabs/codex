@@ -88,6 +88,7 @@ use crate::workspace_command::AppServerWorkspaceCommandRunner;
 use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_client::ThreadEventIngressRegistry;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AskForApproval;
@@ -197,7 +198,6 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
-use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_message_consolidation;
@@ -596,7 +596,9 @@ pub(crate) struct App {
     thread_lifecycle_generations: HashMap<ThreadId, u64>,
     /// A local discard tombstone. Only an authoritative attach/recovery may remove it.
     discarded_thread_generations: HashMap<ThreadId, u64>,
-    thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
+    /// The app-server client's transport-facing thread ingress registry. It snapshots the local
+    /// lifecycle before a server event enters the central TUI queue.
+    thread_event_ingress_registry: Option<ThreadEventIngressRegistry>,
     agent_navigation: AgentNavigationState,
     side_threads: HashMap<ThreadId, SideThreadState>,
     active_thread_id: Option<ThreadId>,
@@ -1107,7 +1109,7 @@ See the Codex keymap documentation for supported actions and examples."
             thread_event_channels: HashMap::new(),
             thread_lifecycle_generations: HashMap::new(),
             discarded_thread_generations: HashMap::new(),
-            thread_event_listener_tasks: HashMap::new(),
+            thread_event_ingress_registry: None,
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,
@@ -1122,6 +1124,7 @@ See the Codex keymap documentation for supported actions and examples."
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         };
+        app.set_thread_event_ingress_registry(app_server.thread_event_ingress_registry());
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
         }
