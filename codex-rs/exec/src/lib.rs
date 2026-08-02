@@ -17,12 +17,12 @@ pub use cli::Cli;
 pub use cli::Command;
 pub use cli::ReviewArgs;
 use codex_android_computer_use::AndroidComputerUseOutcome;
+use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 use codex_app_server_client::EnvironmentManager;
 use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
-use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
@@ -1072,6 +1072,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 let message = lagged_event_warning_message(skipped);
                 warn!("{message}");
                 event_processor.process_warning(message);
+            }
+            AppServerEvent::Disconnected { message } => {
+                warn!("in-process app-server event stream disconnected: {message}");
+                error_seen = true;
+                break;
             }
         }
     }

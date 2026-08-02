@@ -1772,11 +1772,11 @@ mod tests {
             model,
             reasoning_effort,
         );
-        let CoreTurnItem::CollabAgentToolCall(item) = &mut item else {
+        let CoreTurnItem::CollabAgentToolCall(spawn) = &mut item else {
             unreachable!("canonical spawn helper must build a collab call");
         };
-        item.requested_model = None;
-        item.requested_reasoning_effort = None;
+        spawn.requested_model = None;
+        spawn.requested_reasoning_effort = None;
         item
     }
 
@@ -4143,13 +4143,20 @@ mod tests {
             .map(RolloutItem::EventMsg)
             .collect::<Vec<_>>();
         let turns = build_turns_from_rollout_items(&items);
-        let [ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+        let [ThreadItem::CollabAgentToolCall {
+            status,
+            receiver_thread_ids,
+            model,
+            reasoning_effort,
+            ..
+        }] = turns[0].items.as_slice()
+        else {
             panic!("expected a reconstructed failed spawn item");
         };
-        assert_eq!(spawn.status, CollabAgentToolCallStatus::Failed);
-        assert!(spawn.receiver_thread_ids.is_empty());
-        assert_eq!(spawn.model, None);
-        assert_eq!(spawn.reasoning_effort, None);
+        assert_eq!(status, &CollabAgentToolCallStatus::Failed);
+        assert!(receiver_thread_ids.is_empty());
+        assert_eq!(model, &None);
+        assert_eq!(reasoning_effort, &None);
     }
 
     #[test]
@@ -4179,15 +4186,23 @@ mod tests {
             .map(RolloutItem::EventMsg)
             .collect::<Vec<_>>();
         let turns = build_turns_from_rollout_items(&items);
-        let [ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+        let [ThreadItem::CollabAgentToolCall {
+            status,
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        }] = turns[0].items.as_slice()
+        else {
             panic!("expected a reconstructed in-progress spawn item");
         };
-        assert_eq!(spawn.status, CollabAgentToolCallStatus::InProgress);
-        assert_eq!(spawn.model, None);
-        assert_eq!(spawn.reasoning_effort, None);
-        assert_eq!(spawn.requested_model.as_deref(), Some("gpt-requested"));
+        assert_eq!(status, &CollabAgentToolCallStatus::InProgress);
+        assert_eq!(model, &None);
+        assert_eq!(reasoning_effort, &None);
+        assert_eq!(requested_model.as_deref(), Some("gpt-requested"));
         assert_eq!(
-            spawn.requested_reasoning_effort,
+            *requested_reasoning_effort,
             Some(codex_protocol::openai_models::ReasoningEffort::High)
         );
     }
@@ -4388,17 +4403,29 @@ mod tests {
             .map(RolloutItem::EventMsg)
             .collect::<Vec<_>>();
         let turns = build_turns_from_rollout_items(&items);
-        let [_, ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+        let [
+            _,
+            ThreadItem::CollabAgentToolCall {
+                status,
+                receiver_thread_ids,
+                model,
+                reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
+                ..
+            },
+        ] = turns[0].items.as_slice()
+        else {
             panic!("expected a reconstructed failed spawn item");
         };
-        assert_eq!(spawn.status, CollabAgentToolCallStatus::Failed);
-        assert!(spawn.receiver_thread_ids.is_empty());
-        assert_eq!(spawn.model, None);
-        assert_eq!(spawn.reasoning_effort, None);
-        assert_eq!(spawn.requested_model.as_deref(), Some("gpt-requested"));
+        assert_eq!(status, &CollabAgentToolCallStatus::Failed);
+        assert!(receiver_thread_ids.is_empty());
+        assert_eq!(model, &None);
+        assert_eq!(reasoning_effort, &None);
+        assert_eq!(requested_model.as_deref(), Some("gpt-requested"));
         assert_eq!(
-            spawn.requested_reasoning_effort,
-            Some(codex_protocol::openai_models::ReasoningEffort::High)
+            requested_reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::High)
         );
     }
 
@@ -4523,21 +4550,28 @@ mod tests {
         let turn = builder
             .turn_snapshot(turn_id)
             .expect("legacy canonical turn");
-        let [ThreadItem::CollabAgentToolCall(spawn)] = turn.items.as_slice() else {
+        let [ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        }] = turn.items.as_slice()
+        else {
             panic!("expected a completed legacy canonical spawn");
         };
-        assert_eq!(spawn.model.as_deref(), Some("gpt-effective-model"));
+        assert_eq!(model.as_deref(), Some("gpt-effective-model"));
         assert_eq!(
-            spawn.reasoning_effort,
-            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+            reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
         );
         assert_eq!(
-            spawn.requested_model.as_deref(),
+            requested_model.as_deref(),
             Some("gpt-requested-model")
         );
         assert_eq!(
-            spawn.requested_reasoning_effort,
-            Some(codex_protocol::openai_models::ReasoningEffort::High)
+            requested_reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::High)
         );
     }
 
@@ -4581,14 +4615,20 @@ mod tests {
             let started_turn = builder
                 .turn_snapshot(&turn_id)
                 .expect("started legacy turn");
-            let [ThreadItem::CollabAgentToolCall(started_spawn)] = started_turn.items.as_slice()
+            let [ThreadItem::CollabAgentToolCall {
+                model,
+                reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
+                ..
+            }] = started_turn.items.as_slice()
             else {
                 panic!("expected a started legacy canonical spawn");
             };
-            assert_eq!(started_spawn.model, None);
-            assert_eq!(started_spawn.reasoning_effort, None);
-            assert_eq!(started_spawn.requested_model.as_deref(), expected_model);
-            assert_eq!(started_spawn.requested_reasoning_effort, expected_effort);
+            assert_eq!(model, &None);
+            assert_eq!(reasoning_effort, &None);
+            assert_eq!(requested_model.as_deref(), expected_model);
+            assert_eq!(requested_reasoning_effort, &expected_effort);
 
             builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
@@ -4605,21 +4645,26 @@ mod tests {
             let completed_turn = builder
                 .turn_snapshot(&turn_id)
                 .expect("completed legacy turn");
-            let [ThreadItem::CollabAgentToolCall(completed_spawn)] =
-                completed_turn.items.as_slice()
+            let [ThreadItem::CollabAgentToolCall {
+                model,
+                reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
+                ..
+            }] = completed_turn.items.as_slice()
             else {
                 panic!("expected a completed legacy canonical spawn");
             };
             assert_eq!(
-                completed_spawn.model.as_deref(),
+                model.as_deref(),
                 Some("gpt-effective-model")
             );
             assert_eq!(
-                completed_spawn.reasoning_effort,
-                Some(codex_protocol::openai_models::ReasoningEffort::High)
+                reasoning_effort,
+                &Some(codex_protocol::openai_models::ReasoningEffort::High)
             );
-            assert_eq!(completed_spawn.requested_model.as_deref(), expected_model);
-            assert_eq!(completed_spawn.requested_reasoning_effort, expected_effort);
+            assert_eq!(requested_model.as_deref(), expected_model);
+            assert_eq!(requested_reasoning_effort, &expected_effort);
         }
     }
 
@@ -4652,16 +4697,23 @@ mod tests {
         let turn = builder
             .turn_snapshot(turn_id)
             .expect("terminal duplicate turn");
-        let [ThreadItem::CollabAgentToolCall(spawn)] = turn.items.as_slice() else {
+        let [ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        }] = turn.items.as_slice()
+        else {
             panic!("expected a completed terminal duplicate spawn");
         };
-        assert_eq!(spawn.model.as_deref(), Some("gpt-effective-model"));
+        assert_eq!(model.as_deref(), Some("gpt-effective-model"));
         assert_eq!(
-            spawn.reasoning_effort,
-            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+            reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
         );
-        assert_eq!(spawn.requested_model, None);
-        assert_eq!(spawn.requested_reasoning_effort, None);
+        assert_eq!(requested_model, &None);
+        assert_eq!(requested_reasoning_effort, &None);
     }
 
     #[test]

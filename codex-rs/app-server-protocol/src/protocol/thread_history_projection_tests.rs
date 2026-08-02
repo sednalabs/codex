@@ -479,10 +479,10 @@ fn legacy_canonical_spawn_start_item(
         model,
         reasoning_effort,
     );
-    let TurnItem::CollabAgentToolCall(item) = &mut item else {
+    let TurnItem::CollabAgentToolCall(spawn) = &mut item else {
         unreachable!("canonical spawn helper must build a collab call");
     };
-    item.requested_model = None;
-    item.requested_reasoning_effort = None;
+    spawn.requested_model = None;
+    spawn.requested_reasoning_effort = None;
     item
 }
