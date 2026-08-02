@@ -217,8 +217,34 @@ impl App {
         }
 
         if self.agent_navigation.is_empty() {
-            self.chat_widget
-                .add_info_message("No agents available yet.".to_string(), /*hint*/ None);
+            // Keep a stable, searchable picker surface open while the cache-first refresh runs.
+            // Its view id lets a valid background reply replace this loading row with discovered
+            // descendants, while a dismissed picker remains dismissed and is never revived.
+            let prior_search_query = self
+                .chat_widget
+                .selection_view_search_query(AGENT_PICKER_VIEW_ID);
+            self.chat_widget.replace_or_show_selection_view(
+                AGENT_PICKER_VIEW_ID,
+                SelectionViewParams {
+                    view_id: Some(AGENT_PICKER_VIEW_ID),
+                    title: Some("Subagents".to_string()),
+                    subtitle: Some("Checking current and saved subagents...".to_string()),
+                    footer_hint: Some(standard_popup_hint_line()),
+                    is_searchable: true,
+                    initial_search_query: prior_search_query,
+                    search_placeholder: Some("Search agents or type 'closed'".to_string()),
+                    items: vec![SelectionItem {
+                        name: "Loading subagents...".to_string(),
+                        description: Some(
+                            "This picker updates automatically when descendant sessions load."
+                                .to_string(),
+                        ),
+                        is_disabled: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
             return;
         }
 
