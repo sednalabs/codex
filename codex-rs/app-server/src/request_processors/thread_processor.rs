@@ -1034,12 +1034,14 @@ impl ThreadRequestProcessor {
         conversation_id: ThreadId,
         connection_id: ConnectionId,
         raw_events_enabled: bool,
+        expected_subscription_id: Option<&str>,
     ) -> Result<EnsureConversationListenerResult, JSONRPCErrorError> {
         super::thread_lifecycle::ensure_conversation_listener(
             self.listener_task_context(),
             conversation_id,
             connection_id,
             raw_events_enabled,
+            expected_subscription_id,
         )
         .await
     }
@@ -1423,6 +1425,7 @@ impl ThreadRequestProcessor {
                 thread_id,
                 request_id.connection_id,
                 experimental_raw_events,
+                Some(&thread_subscription_id),
             )
             .instrument(tracing::info_span!(
                 "app_server.thread_start.attach_listener",
@@ -1434,6 +1437,7 @@ impl ThreadRequestProcessor {
             &listener_task_context.outgoing,
             thread_id,
             request_id.connection_id,
+            &thread_subscription_id,
         )
         .await?
         {
@@ -3429,7 +3433,12 @@ impl ThreadRequestProcessor {
                 None
             };
             let attach_result = self
-                .ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
+                .ensure_conversation_listener(
+                    thread_id,
+                    connection_id,
+                    raw_events_enabled,
+                    None,
+                )
                 .await;
             if let Some(thread_subscription) = created_subscription
                 && matches!(
@@ -3708,6 +3717,7 @@ impl ThreadRequestProcessor {
                         thread_id,
                         request_id.connection_id,
                         /*raw_events_enabled*/ false,
+                        Some(&thread_subscription_id),
                     )
                     .await
                 {
@@ -3718,6 +3728,7 @@ impl ThreadRequestProcessor {
                             &self.outgoing,
                             thread_id,
                             request_id.connection_id,
+                            &thread_subscription_id,
                         )
                         .await;
                         return Ok(());
@@ -3728,6 +3739,7 @@ impl ThreadRequestProcessor {
                             &self.outgoing,
                             thread_id,
                             request_id.connection_id,
+                            &thread_subscription_id,
                         )
                         .await;
                         self.outgoing.send_error(request_id, error).await;
@@ -3752,6 +3764,7 @@ impl ThreadRequestProcessor {
                             &self.outgoing,
                             thread_id,
                             request_id.connection_id,
+                            &thread_subscription_id,
                         )
                         .await;
                         self.outgoing
@@ -3802,6 +3815,7 @@ impl ThreadRequestProcessor {
                                     &self.outgoing,
                                     thread_id,
                                     request_id.connection_id,
+                                    &thread_subscription_id,
                                 )
                                 .await;
                                 self.outgoing.send_error(request_id, error).await;
@@ -3839,6 +3853,7 @@ impl ThreadRequestProcessor {
                                 &self.outgoing,
                                 thread_id,
                                 request_id.connection_id,
+                                &thread_subscription_id,
                             )
                             .await;
                             self.outgoing.send_error(request_id, error).await;
@@ -4875,6 +4890,7 @@ impl ThreadRequestProcessor {
                 thread_id,
                 request_id.connection_id,
                 /*raw_events_enabled*/ false,
+                Some(&thread_subscription_id),
             )
             .await
         {
@@ -4885,6 +4901,7 @@ impl ThreadRequestProcessor {
                     &self.outgoing,
                     thread_id,
                     request_id.connection_id,
+                    &thread_subscription_id,
                 )
                 .await;
                 return Ok(());
@@ -4895,6 +4912,7 @@ impl ThreadRequestProcessor {
                     &self.outgoing,
                     thread_id,
                     request_id.connection_id,
+                    &thread_subscription_id,
                 )
                 .await;
                 return Err(error);
@@ -4916,6 +4934,7 @@ impl ThreadRequestProcessor {
                         &self.outgoing,
                         thread_id,
                         request_id.connection_id,
+                        &thread_subscription_id,
                     )
                     .await;
                     return Err(error);
@@ -4959,6 +4978,7 @@ impl ThreadRequestProcessor {
                         &self.outgoing,
                         thread_id,
                         request_id.connection_id,
+                        &thread_subscription_id,
                     )
                     .await;
                     return Err(error);
