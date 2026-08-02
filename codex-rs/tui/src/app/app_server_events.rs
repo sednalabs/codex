@@ -99,16 +99,86 @@ impl App {
         };
         self.bind_thread_subscription(thread_id, Some(thread_subscription_id.clone()));
 
+        self.flush_deferred_thread_subscription_events(app_server_client, &thread_subscription_id)
+            .await;
+    }
+
+    /// Drains only frames bearing the already-bound immutable identity. This
+    /// keeps a concurrent attach for another thread or generation deferred
+    /// until its own authoritative handshake arrives.
+    async fn flush_deferred_thread_subscription_events(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: &str,
+    ) {
         let deferred = std::mem::take(&mut self.deferred_thread_subscription_events);
         for event in deferred {
             if thread_subscription_id_for_event(&event)
-                .is_some_and(|candidate| candidate == thread_subscription_id.as_str())
+                .is_some_and(|candidate| candidate == thread_subscription_id)
             {
                 self.handle_app_server_event(app_server_client, event).await;
             } else {
                 self.deferred_thread_subscription_events.push_back(event);
             }
         }
+    }
+
+    /// A spawned child can be attached by the server without a corresponding
+    /// start/resume/fork response. Its tagged `thread/started` notification is
+    /// the server-authoritative lifecycle handshake: bind exactly that token
+    /// before routing the child metadata and any traffic deferred ahead of it.
+    ///
+    /// This is deliberately narrower than ordinary thread-id routing. Once a
+    /// local lifecycle has been discarded or has any active/tombstoned token,
+    /// a different unknown token cannot resurrect it. The normal explicit
+    /// attach response remains the only path that can establish that later
+    /// lifecycle.
+    async fn handle_automatic_thread_subscription_started(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        notification: ServerNotification,
+    ) -> bool {
+        let ServerNotification::ThreadStarted(started) = &notification else {
+            return false;
+        };
+        let Ok(thread_id) = codex_protocol::ThreadId::from_string(&started.thread.id) else {
+            tracing::debug!(
+                thread_subscription_id,
+                thread_id = %started.thread.id,
+                "dropping automatic thread-started subscription with an invalid thread id"
+            );
+            return true;
+        };
+
+        let has_existing_lifecycle = self.thread_subscription_targets.values().any(|binding| {
+            matches!(
+                binding,
+                super::ThreadSubscriptionBinding::Active(target)
+                    | super::ThreadSubscriptionBinding::Tombstoned(target)
+                    if target.thread_id == thread_id
+            )
+        });
+        if self.thread_is_discarded(thread_id) || has_existing_lifecycle {
+            tracing::debug!(
+                %thread_id,
+                thread_subscription_id,
+                "dropping unknown automatic thread-started subscription for an existing lifecycle"
+            );
+            return true;
+        }
+
+        let target = self.thread_lifecycle_target_at_ingress(thread_id);
+        self.bind_thread_subscription_to_target(target, Some(thread_subscription_id.clone()));
+        self.handle_thread_server_notification_at_ingress(
+            app_server_client,
+            target,
+            notification,
+        )
+        .await;
+        self.flush_deferred_thread_subscription_events(app_server_client, &thread_subscription_id)
+            .await;
+        true
     }
 
     async fn handle_thread_subscription_notification(
@@ -132,12 +202,21 @@ impl App {
                 .await;
             }
             None => {
-                self.deferred_thread_subscription_events.push_back(
-                    AppServerEvent::ThreadServerNotification {
-                        thread_subscription_id,
-                        notification,
-                    },
-                );
+                if !self
+                    .handle_automatic_thread_subscription_started(
+                        app_server_client,
+                        thread_subscription_id.clone(),
+                        notification.clone(),
+                    )
+                    .await
+                {
+                    self.deferred_thread_subscription_events.push_back(
+                        AppServerEvent::ThreadServerNotification {
+                            thread_subscription_id,
+                            notification,
+                        },
+                    );
+                }
             }
         }
     }

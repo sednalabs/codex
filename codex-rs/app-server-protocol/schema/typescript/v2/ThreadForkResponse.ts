@@ -9,7 +9,12 @@ import type { AskForApproval } from "./AskForApproval";
 import type { SandboxPolicy } from "./SandboxPolicy";
 import type { Thread } from "./Thread";
 
-export type ThreadForkResponse = {thread: Thread, model: string, modelProvider: string, serviceTier: string | null, cwd: AbsolutePathBuf, /**
+export type ThreadForkResponse = {thread: Thread, /**
+ * Immutable identity for this connection's thread-event subscription.
+ *
+ * Optional for compatibility with older app-server versions.
+ */
+threadSubscriptionId?: string, model: string, modelProvider: string, serviceTier: string | null, cwd: AbsolutePathBuf, /**
  * Environment-native paths to instruction source files currently loaded for this thread.
  */
 instructionSources: Array<LegacyAppPathString>, approvalPolicy: AskForApproval, /**

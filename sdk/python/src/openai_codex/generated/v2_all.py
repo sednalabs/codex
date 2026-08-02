@@ -8946,6 +8946,13 @@ class ThreadForkResponse(BaseModel):
     ]
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
     thread: Thread
+    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
 
 
 class ThreadListResponse(BaseModel):
@@ -9021,6 +9028,13 @@ class ThreadResumeResponse(BaseModel):
     ]
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
     thread: Thread
+    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
 
 
 class ThreadRollbackResponse(BaseModel):
@@ -9074,6 +9088,13 @@ class ThreadStartResponse(BaseModel):
     ]
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
     thread: Thread
+    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
 
 
 class ThreadStartedNotification(BaseModel):
