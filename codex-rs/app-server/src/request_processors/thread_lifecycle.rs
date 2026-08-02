@@ -326,6 +326,15 @@ pub(super) async fn ensure_listener_task_running(
                         }
                     };
 
+                    // This is listener ingress. Capture the exact
+                    // connection-scoped identities before any other await or
+                    // event bookkeeping can yield: a later unsubscribe and
+                    // reattach of the same connection must not relabel this
+                    // already accepted event with its replacement token.
+                    let thread_subscriptions = outgoing_for_task
+                        .thread_subscription_targets_for_thread(conversation_id)
+                        .await;
+
                     // Track the event before emitting any typed translations
                     // so thread-local state such as raw event opt-in stays
                     // synchronized with the conversation.
@@ -341,9 +350,6 @@ pub(super) async fn ensure_listener_task_running(
                     {
                         continue;
                     }
-                    let thread_subscriptions = outgoing_for_task
-                        .thread_subscription_targets_for_thread(conversation_id)
-                        .await;
                     let thread_outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
                         outgoing_for_task.clone(),
                         thread_subscriptions,
@@ -841,21 +847,25 @@ pub(super) async fn resolve_pending_server_request(
     request_id: RequestId,
 ) {
     let thread_id = conversation_id.to_string();
-    let thread_subscriptions = outgoing
-        .thread_subscription_targets_for_thread(conversation_id)
-        .await;
-    let outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
-        outgoing.clone(),
-        thread_subscriptions,
-        conversation_id,
-    );
+    let Some(thread_subscriptions) = outgoing
+        .take_thread_request_resolution_targets(&request_id)
+        .await
+    else {
+        tracing::debug!(
+            ?request_id,
+            %conversation_id,
+            "dropping resolution without captured thread request targets"
+        );
+        return;
+    };
     outgoing
-        .send_server_notification(ServerNotification::ServerRequestResolved(
-            ServerRequestResolvedNotification {
+        .send_server_notification_to_thread_subscriptions(
+            &thread_subscriptions,
+            ServerNotification::ServerRequestResolved(ServerRequestResolvedNotification {
                 thread_id,
                 request_id,
-            },
-        ))
+            }),
+        )
         .await;
 }
 

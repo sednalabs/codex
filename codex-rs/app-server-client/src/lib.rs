@@ -165,8 +165,9 @@ fn event_requires_delivery(event: &AppServerEvent) -> bool {
 /// (`CommandExecutionOutputDelta`, progress, etc.) is best-effort and may be
 /// dropped with only cosmetic impact.
 ///
-/// Both the in-process and remote transports delegate to this function so the
-/// classification stays in sync.
+/// The in-process runtime maintains the same classification at its upstream
+/// queue boundary; keep the two lists in exact parity so neither transport can
+/// drop a notification that the other retains.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,

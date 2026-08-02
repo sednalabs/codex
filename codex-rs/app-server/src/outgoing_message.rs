@@ -101,6 +101,12 @@ pub(crate) struct OutgoingMessageSender {
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
+    /// The immutable subscriber identities through which a thread-scoped
+    /// request was issued. Its resolution must close that same lifecycle,
+    /// even when the connection has since reattached with a newer token.
+    thread_request_resolution_targets: Mutex<
+        HashMap<RequestId, Vec<ThreadSubscriptionTarget>>,
+    >,
     /// Incoming requests that are still waiting on a final response or error.
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
@@ -277,6 +283,7 @@ impl OutgoingMessageSender {
             next_server_request_id: AtomicI64::new(0),
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
+            thread_request_resolution_targets: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
             thread_subscription_ids: Mutex::new(HashMap::new()),
             analytics_events_client,
@@ -525,6 +532,13 @@ impl OutgoingMessageSender {
                 },
             );
         }
+        {
+            let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
+            resolution_targets.insert(
+                outgoing_message_id.clone(),
+                thread_subscriptions.to_vec(),
+            );
+        }
 
         let mut send_error = None;
         for thread_subscription in thread_subscriptions {
@@ -558,6 +572,10 @@ impl OutgoingMessageSender {
             );
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.remove(&outgoing_message_id);
+            self.thread_request_resolution_targets
+                .lock()
+                .await
+                .remove(&outgoing_message_id);
         }
         (outgoing_message_id, rx_approve)
     }
@@ -632,6 +650,10 @@ impl OutgoingMessageSender {
 
     pub(crate) async fn cancel_request(&self, id: &RequestId) -> bool {
         let entry = self.take_request_callback(id).await;
+        self.thread_request_resolution_targets
+            .lock()
+            .await
+            .remove(id);
         if let Some((request_id, _entry)) = entry {
             self.analytics_events_client
                 .track_server_request_aborted(now_unix_timestamp_ms(), request_id);
@@ -649,6 +671,7 @@ impl OutgoingMessageSender {
                 .map(|(_, entry)| entry)
                 .collect::<Vec<_>>()
         };
+        self.thread_request_resolution_targets.lock().await.clear();
 
         for entry in entries {
             self.analytics_events_client
@@ -668,6 +691,17 @@ impl OutgoingMessageSender {
     ) -> Option<(RequestId, PendingCallbackEntry)> {
         let mut request_id_to_callback = self.request_id_to_callback.lock().await;
         request_id_to_callback.remove_entry(id)
+    }
+
+    /// Takes the immutable targets captured for a thread-scoped request's
+    /// resolution. A missing entry is intentionally not reconstructed from
+    /// the current subscription map: that request has no safe lifecycle to
+    /// address after its original target was discarded.
+    pub(crate) async fn take_thread_request_resolution_targets(
+        &self,
+        id: &RequestId,
+    ) -> Option<Vec<ThreadSubscriptionTarget>> {
+        self.thread_request_resolution_targets.lock().await.remove(id)
     }
 
     pub(crate) async fn pending_requests_for_thread(
@@ -690,7 +724,7 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
         error: Option<JSONRPCErrorError>,
     ) {
-        let entries = {
+        let (entries, request_ids) = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             let request_ids = request_id_to_callback
                 .iter()
@@ -700,13 +734,19 @@ impl OutgoingMessageSender {
                 .collect::<Vec<_>>();
 
             let mut entries = Vec::with_capacity(request_ids.len());
-            for request_id in request_ids {
-                if let Some(entry) = request_id_to_callback.remove(&request_id) {
+            for request_id in &request_ids {
+                if let Some(entry) = request_id_to_callback.remove(request_id) {
                     entries.push(entry);
                 }
             }
-            entries
+            (entries, request_ids)
         };
+        {
+            let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
+            for request_id in request_ids {
+                resolution_targets.remove(&request_id);
+            }
+        }
 
         for entry in entries {
             self.analytics_events_client
@@ -1787,18 +1827,23 @@ mod tests {
                 thread_id: thread_id.to_string(),
             }))
             .await;
-        let (_old_request_id, _old_request_rx) = old_listener
+        let (old_request_id, _old_request_rx) = old_listener
             .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
                 thread_id: thread_id.to_string(),
             }))
             .await;
-        old_listener
-            .send_server_notification(ServerNotification::ServerRequestResolved(
-                ServerRequestResolvedNotification {
+        let old_resolution_targets = outgoing
+            .take_thread_request_resolution_targets(&old_request_id)
+            .await
+            .expect("old request should retain its original targets");
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &old_resolution_targets,
+                ServerNotification::ServerRequestResolved(ServerRequestResolvedNotification {
                     thread_id: thread_id.to_string(),
-                    request_id: RequestId::Integer(1),
-                },
-            ))
+                    request_id: old_request_id,
+                }),
+            )
             .await;
 
         new_listener
@@ -1806,18 +1851,23 @@ mod tests {
                 thread_id: thread_id.to_string(),
             }))
             .await;
-        let (_new_request_id, _new_request_rx) = new_listener
+        let (new_request_id, _new_request_rx) = new_listener
             .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
                 thread_id: thread_id.to_string(),
             }))
             .await;
-        new_listener
-            .send_server_notification(ServerNotification::ServerRequestResolved(
-                ServerRequestResolvedNotification {
+        let new_resolution_targets = outgoing
+            .take_thread_request_resolution_targets(&new_request_id)
+            .await
+            .expect("new request should retain its original targets");
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &new_resolution_targets,
+                ServerNotification::ServerRequestResolved(ServerRequestResolvedNotification {
                     thread_id: thread_id.to_string(),
-                    request_id: RequestId::Integer(2),
-                },
-            ))
+                    request_id: new_request_id,
+                }),
+            )
             .await;
 
         let mut subscription_ids = Vec::new();
