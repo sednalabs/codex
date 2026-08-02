@@ -256,11 +256,29 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         thread_id: ThreadId,
     ) -> String {
+        self.ensure_thread_subscription_with_status(connection_id, thread_id)
+            .await
+            .0
+    }
+
+    /// Returns an immutable subscription identity and whether this call created
+    /// it. Automatic listener attachment uses the latter to send its one-time
+    /// lifecycle handshake without duplicating explicit start/resume/fork
+    /// notifications that already registered an identity.
+    pub(crate) async fn ensure_thread_subscription_with_status(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> (String, bool) {
         let mut subscriptions = self.thread_subscription_ids.lock().await;
-        subscriptions
-            .entry((connection_id, thread_id))
-            .or_insert_with(|| Uuid::now_v7().to_string())
-            .clone()
+        match subscriptions.entry((connection_id, thread_id)) {
+            std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let subscription_id = Uuid::now_v7().to_string();
+                entry.insert(subscription_id.clone());
+                (subscription_id, true)
+            }
+        }
     }
 
     pub(crate) async fn unregister_thread_subscription(
@@ -1002,6 +1020,7 @@ mod tests {
     use codex_app_server_protocol::CommandExecutionApprovalDecision;
     use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
     use codex_app_server_protocol::ConfigWarningNotification;
+    use codex_app_server_protocol::CurrentTimeReadParams;
     use codex_app_server_protocol::DynamicToolCallParams;
     use codex_app_server_protocol::FileChangeRequestApprovalParams;
     use codex_app_server_protocol::GuardianWarningNotification;
@@ -1494,6 +1513,68 @@ mod tests {
         };
         assert_eq!(subscription_id(first), old_subscription_id);
         assert_eq!(subscription_id(second), new_subscription_id);
+    }
+
+    #[tokio::test]
+    async fn current_time_request_keeps_its_subscription_identity_after_reattach() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        let connection_ids = [connection_id];
+        let (_request_id, _response_rx) = outgoing
+            .send_request_to_connections(
+                Some(&connection_ids),
+                ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                }),
+                Some(thread_id),
+            )
+            .await;
+        let stale = rx.recv().await.expect("current-time request should be queued");
+
+        let new_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let (_request_id, _response_rx) = outgoing
+            .send_request_to_connections(
+                Some(&connection_ids),
+                ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                }),
+                Some(thread_id),
+            )
+            .await;
+        let current = rx.recv().await.expect("replacement request should be queued");
+
+        let subscription_and_thread_id = |envelope: OutgoingEnvelope| match envelope {
+            OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::ThreadScopedRequest(request),
+                ..
+            } => {
+                let ServerRequest::CurrentTimeRead { params, .. } = request.request else {
+                    panic!("expected tagged current-time request");
+                };
+                (request.thread_subscription_id, params.thread_id)
+            }
+            other => panic!("expected tagged current-time request, got {other:?}"),
+        };
+
+        assert_eq!(
+            subscription_and_thread_id(stale),
+            (old_subscription_id, thread_id.to_string()),
+            "a request queued before reattach must retain its old subscription token"
+        );
+        assert_eq!(
+            subscription_and_thread_id(current),
+            (new_subscription_id, thread_id.to_string()),
+            "a request after reattach must be delivered through the replacement token"
+        );
     }
 
     #[tokio::test]

@@ -223,19 +223,31 @@ impl App {
         thread_id: ThreadId,
         thread_subscription_id: Option<String>,
     ) {
+        let target = ThreadLifecycleTarget {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+        };
+        self.bind_thread_subscription_to_target(target, thread_subscription_id);
+    }
+
+    /// Binds a subscription to a listener-captured lifecycle target. This is
+    /// used when server-authoritative traffic arrives before a primary session
+    /// is materialized, so the token remains attached to that pending target
+    /// instead of being recomputed against a later same-id lifecycle.
+    pub(super) fn bind_thread_subscription_to_target(
+        &mut self,
+        target: ThreadLifecycleTarget,
+        thread_subscription_id: Option<String>,
+    ) {
         let Some(thread_subscription_id) = thread_subscription_id else {
             // Older app servers do not advertise subscription identities. The
             // ordinary raw-event compatibility path remains available, but it
             // cannot provide the stronger delayed-frame guarantee.
             return;
         };
-        let target = ThreadLifecycleTarget {
-            thread_id,
-            lifecycle_generation: self.thread_lifecycle_generation(thread_id),
-        };
         for binding in self.thread_subscription_targets.values_mut() {
             if let ThreadSubscriptionBinding::Active(previous_target) = binding
-                && previous_target.thread_id == thread_id
+                && previous_target.thread_id == target.thread_id
                 && *previous_target != target
             {
                 *binding = ThreadSubscriptionBinding::Tombstoned(*previous_target);

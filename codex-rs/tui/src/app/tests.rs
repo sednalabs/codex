@@ -55,6 +55,7 @@ use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::CurrentTimeReadParams;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -5927,6 +5928,55 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
 }
 
 #[tokio::test]
+async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattach() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let old_subscription_id = "old-current-time-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(old_subscription_id.clone()));
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-current-time")),
+        Vec::new(),
+    )
+    .await?;
+    let new_subscription_id = "new-current-time-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(new_subscription_id.clone()));
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            thread_subscription_id: old_subscription_id,
+            request: current_time_read_request(thread_id, 41),
+        },
+    )
+    .await;
+    assert!(
+        collect_rendered_history_cells(&mut app_event_rx).is_empty(),
+        "a stale CurrentTimeRead must not reach the replacement thread presentation"
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            thread_subscription_id: new_subscription_id,
+            request: current_time_read_request(thread_id, 42),
+        },
+    )
+    .await;
+    assert!(
+        collect_rendered_history_cells(&mut app_event_rx)
+            .contains("External current time is not available in TUI."),
+        "the replacement subscription must still deliver CurrentTimeRead normally"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actionable() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
@@ -5971,6 +6021,118 @@ async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actio
         app.pending_app_server_requests
             .contains_server_request(&replayed_request),
         "the replayed request must become actionable after the response binds its identity"
+    );
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let primary_session = test_thread_session(primary_thread_id, test_path_buf("/tmp/main"));
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.primary_session_configured = Some(primary_session.clone());
+    app.thread_event_channels.insert(
+        primary_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            primary_session,
+            Vec::new(),
+        ),
+    );
+
+    let automatic_subscription_id = "automatic-child-subscription".to_string();
+    let child_approval = exec_approval_request(
+        child_thread_id,
+        "turn-child",
+        "request-child",
+        /*approval_id*/ None,
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+            thread_subscription_id: automatic_subscription_id.clone(),
+            request: child_approval.clone(),
+        },
+    )
+    .await;
+    assert_eq!(app.deferred_thread_subscription_events.len(), 1);
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+            thread_subscription_id: automatic_subscription_id.clone(),
+            notification: automatic_child_started_notification(
+                child_thread_id,
+                "Child",
+                "explorer",
+            ),
+        },
+    )
+    .await;
+    assert!(matches!(
+        app.thread_subscription_targets.get(&automatic_subscription_id),
+        Some(ThreadSubscriptionBinding::Active(target)) if target.thread_id == child_thread_id
+    ));
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&child_approval),
+        "the deferred child approval must become actionable after its automatic handshake"
+    );
+    assert_eq!(
+        app.chat_widget.pending_thread_approvals(),
+        &["Subagent: Child [explorer]".to_string()],
+        "the child approval must surface in the active parent view"
+    );
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    let child_entry = app
+        .agent_navigation
+        .get(&child_thread_id)
+        .expect("the automatic ThreadStarted metadata must create a child picker entry");
+    assert_eq!(child_entry.agent_nickname.as_deref(), Some("Child"));
+    assert_eq!(child_entry.agent_role.as_deref(), Some("explorer"));
+    assert_eq!(child_entry.model.as_deref(), Some("gpt-test"));
+
+    // Reattaching the same thread id gives the UI a new authoritative
+    // lifecycle. The old automatic token remains a tombstone and its delayed
+    // ThreadStarted frame cannot mutate the replacement child presentation.
+    app.mark_thread_discarded(child_thread_id);
+    app.mark_thread_attached(child_thread_id);
+    let replacement_subscription_id = "replacement-child-subscription".to_string();
+    app.bind_thread_subscription(
+        child_thread_id,
+        Some(replacement_subscription_id.clone()),
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+            thread_subscription_id: automatic_subscription_id.clone(),
+            notification: automatic_child_started_notification(
+                child_thread_id,
+                "Stale Child",
+                "reviewer",
+            ),
+        },
+    )
+    .await;
+    assert!(matches!(
+        app.thread_subscription_targets.get(&automatic_subscription_id),
+        Some(ThreadSubscriptionBinding::Tombstoned(target)) if target.thread_id == child_thread_id
+    ));
+    assert!(matches!(
+        app.thread_subscription_targets.get(&replacement_subscription_id),
+        Some(ThreadSubscriptionBinding::Active(target)) if target.thread_id == child_thread_id
+    ));
+    assert_eq!(
+        app.agent_navigation
+            .get(&child_thread_id)
+            .and_then(|entry| entry.agent_nickname.as_deref()),
+        Some("Child"),
+        "a delayed old token must not overwrite the replacement child metadata"
     );
     assert!(app.deferred_thread_subscription_events.is_empty());
     Ok(())
@@ -7122,6 +7284,46 @@ fn thread_closed_notification(thread_id: ThreadId) -> ServerNotification {
     })
 }
 
+fn automatic_child_started_notification(
+    thread_id: ThreadId,
+    agent_nickname: &str,
+    agent_role: &str,
+) -> ServerNotification {
+    ServerNotification::ThreadStarted(ThreadStartedNotification {
+        thread: Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "automatic child".to_string(),
+            ephemeral: false,
+            is_pinned: false,
+            history_mode: Default::default(),
+            model_provider: "test-provider".to_string(),
+            model: Some("gpt-test".to_string()),
+            reasoning_effort: None,
+            created_at: 1,
+            updated_at: 1,
+            recency_at: Some(1),
+            status: codex_app_server_protocol::ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            path: None,
+            cwd: test_path_buf("/tmp/child").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Unknown,
+            can_accept_direct_input: Some(true),
+            thread_source: None,
+            agent_nickname: Some(agent_nickname.to_string()),
+            agent_role: Some(agent_role.to_string()),
+            git_info: None,
+            name: Some("automatic child".to_string()),
+            turns: Vec::new(),
+        },
+    })
+}
+
 fn token_usage_notification(
     thread_id: ThreadId,
     turn_id: &str,
@@ -7218,6 +7420,15 @@ fn exec_approval_request(
             proposed_execpolicy_amendment: None,
             proposed_network_policy_amendments: None,
             available_decisions: None,
+        },
+    }
+}
+
+fn current_time_read_request(thread_id: ThreadId, request_id: i64) -> ServerRequest {
+    ServerRequest::CurrentTimeRead {
+        request_id: AppServerRequestId::Integer(request_id),
+        params: CurrentTimeReadParams {
+            thread_id: thread_id.to_string(),
         },
     }
 }

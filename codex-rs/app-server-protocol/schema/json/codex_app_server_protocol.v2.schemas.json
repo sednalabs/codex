@@ -15779,6 +15779,13 @@
         },
         "thread": {
           "$ref": "#/definitions/Thread"
+        },
+        "threadSubscriptionId": {
+          "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -17586,6 +17593,13 @@
         },
         "thread": {
           "$ref": "#/definitions/Thread"
+        },
+        "threadSubscriptionId": {
+          "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -17992,6 +18006,13 @@
         },
         "thread": {
           "$ref": "#/definitions/Thread"
+        },
+        "threadSubscriptionId": {
+          "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

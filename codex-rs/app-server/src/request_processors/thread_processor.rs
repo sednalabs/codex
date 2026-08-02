@@ -3315,8 +3315,9 @@ impl ThreadRequestProcessor {
         connection_ids: Vec<ConnectionId>,
     ) {
         let mut raw_events_enabled = false;
-        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            let config_snapshot = thread.config_snapshot().await;
+        let mut automatic_thread_started = None;
+        if let Ok(loaded_thread) = self.thread_manager.get_thread(thread_id).await {
+            let config_snapshot = loaded_thread.config_snapshot().await;
             self.thread_watch_manager
                 .upsert_thread(&thread_id.to_string())
                 .await;
@@ -3329,12 +3330,65 @@ impl ThreadRequestProcessor {
                     .await
                     .experimental_raw_events;
             }
+
+            let thread_started = match self.read_thread_view(thread_id, /*include_turns*/ false).await
+            {
+                Ok(thread) => thread,
+                Err(error) => {
+                    tracing::warn!(
+                        %thread_id,
+                        %error,
+                        "failed to build persisted thread summary for automatic listener attachment"
+                    );
+                    let mut thread = build_thread_from_loaded_snapshot(
+                        thread_id,
+                        &config_snapshot,
+                        loaded_thread.as_ref(),
+                    );
+                    thread.status = resolve_thread_status(
+                        self.thread_watch_manager
+                            .loaded_status_for_thread(&thread.id)
+                            .await,
+                        matches!(loaded_thread.agent_status().await, AgentStatus::Running),
+                    );
+                    thread
+                }
+            };
+            automatic_thread_started = Some(thread_started_notification(thread_started));
         }
 
         for connection_id in connection_ids {
+            // Explicit start/resume/fork flows have already minted an identity
+            // for their response. A newly minted one here identifies a server-
+            // initiated child attachment, which needs a tagged ThreadStarted
+            // handshake so the TUI can bind and flush its deferred traffic.
+            let created_subscription = if automatic_thread_started.is_some() {
+                self.outgoing
+                    .ensure_thread_subscription_with_status(connection_id, thread_id)
+                    .await
+                    .1
+            } else {
+                false
+            };
+            let attach_result = self
+                .ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
+                .await;
+            if created_subscription
+                && matches!(
+                    &attach_result,
+                    Ok(EnsureConversationListenerResult::Attached)
+                )
+                && let Some(notification) = automatic_thread_started.clone()
+            {
+                self.outgoing
+                    .send_server_notification_to_connection(
+                        connection_id,
+                        ServerNotification::ThreadStarted(notification),
+                    )
+                    .await;
+            }
             log_listener_attach_result(
-                self.ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
-                    .await,
+                attach_result,
                 thread_id,
                 connection_id,
                 "thread",
