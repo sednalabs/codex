@@ -18,6 +18,7 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_client::TaggedAppServerEvent;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
@@ -514,6 +515,10 @@ impl AppServerSession {
 
     pub(crate) async fn next_event(&mut self) -> Option<AppServerEvent> {
         self.client.next_event().await
+    }
+
+    pub(crate) async fn next_tagged_event(&mut self) -> Option<TaggedAppServerEvent> {
+        self.client.next_tagged_event().await
     }
 
     #[cfg(test)]

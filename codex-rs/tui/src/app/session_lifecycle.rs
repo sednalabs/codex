@@ -713,8 +713,8 @@ impl App {
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
         // The authoritative resume/read snapshot already contains ordinary lifecycle and
-        // transcript state. Keep only request-like state that the snapshot cannot replace
-        // before the picker replays this channel into a fresh ChatWidget.
+        // transcript state. Keep request-like state plus the latest goal/usage state that can
+        // arrive around the refresh before the picker replays this channel into a fresh widget.
         store.rebase_buffer_after_session_refresh();
         drop(store);
         if live_attached {
@@ -747,7 +747,8 @@ impl App {
         let mut store = channel.store.lock().await;
         store.set_session(session, turns);
         // `thread/read(includeTurns)` is authoritative for a closed transcript too. Avoid
-        // replaying its pre-attach notification buffer on top of the returned turns.
+        // replaying ordinary pre-attach traffic on top of the returned turns, while retaining
+        // the latest goal/usage state that can race with the refresh.
         store.rebase_buffer_after_session_refresh();
         Ok(())
     }

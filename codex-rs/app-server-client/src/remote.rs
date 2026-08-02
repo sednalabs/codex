@@ -4,10 +4,10 @@ This module implements the remote app-server client transport.
 It owns the remote connection lifecycle, including the initialize/initialized
 handshake, JSON-RPC request/response routing, server-request resolution, and
 notification streaming. Remote connections always carry WebSocket frames, over
-either TCP WebSocket URLs or local Unix sockets. The rest of the crate uses the
-same `AppServerEvent` surface for both in-process and remote transports, so
-callers such as the TUI can switch between them without changing their
-higher-level session logic.
+either TCP WebSocket URLs or local Unix sockets. Both transports retain the
+same legacy `AppServerEvent` surface and offer the additive
+`TaggedAppServerEvent` stream for callers such as TUI that need listener
+lifecycle identity.
 */
 
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ use std::time::Duration;
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
+use crate::TaggedAppServerEvent;
 use crate::TypedRequestError;
 use crate::server_notification_requires_delivery;
 use codex_app_server_protocol::ClientInfo;
@@ -151,8 +152,8 @@ enum RemoteClientCommand {
 
 pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
-    event_rx: mpsc::Receiver<AppServerEvent>,
-    pending_events: VecDeque<AppServerEvent>,
+    event_rx: mpsc::Receiver<TaggedAppServerEvent>,
+    pending_events: VecDeque<TaggedAppServerEvent>,
     server_version: Option<String>,
     codex_home: Option<String>,
     worker_handle: tokio::task::JoinHandle<()>,
@@ -212,7 +213,7 @@ impl RemoteAppServerClient {
         .await?;
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
-        let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
+        let (event_tx, event_rx) = mpsc::channel::<TaggedAppServerEvent>(channel_capacity);
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
@@ -253,7 +254,7 @@ impl RemoteAppServerClient {
                                     if let Err(err) = deliver_event(
                                         &event_tx,
                                         &mut skipped_events,
-                                        AppServerEvent::Disconnected {
+                                        TaggedAppServerEvent::Disconnected {
                                             message: message.clone(),
                                         },
                                     )
@@ -363,12 +364,12 @@ impl RemoteAppServerClient {
                                             Ok(request) => {
                                                 let event = match thread_subscription_id {
                                                     Some(thread_subscription_id) => {
-                                                        AppServerEvent::ThreadServerRequest {
+                                                        TaggedAppServerEvent::ThreadServerRequest {
                                                             thread_subscription_id,
                                                             request,
                                                         }
                                                     }
-                                                    None => AppServerEvent::ServerRequest(request),
+                                                    None => TaggedAppServerEvent::ServerRequest(request),
                                                 };
                                                 if let Err(err) = deliver_event(
                                                     &event_tx,
@@ -406,7 +407,7 @@ impl RemoteAppServerClient {
                                                     if let Err(err) = deliver_event(
                                                         &event_tx,
                                                         &mut skipped_events,
-                                                        AppServerEvent::Disconnected {
+                                                        TaggedAppServerEvent::Disconnected {
                                                             message: message.clone(),
                                                         },
                                                     )
@@ -429,7 +430,7 @@ impl RemoteAppServerClient {
                                         if let Err(deliver_err) = deliver_event(
                                             &event_tx,
                                             &mut skipped_events,
-                                            AppServerEvent::Disconnected {
+                                            TaggedAppServerEvent::Disconnected {
                                                 message: message.clone(),
                                             },
                                         )
@@ -455,7 +456,7 @@ impl RemoteAppServerClient {
                                 if let Err(err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
-                                    AppServerEvent::Disconnected {
+                                    TaggedAppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
                                 )
@@ -480,7 +481,7 @@ impl RemoteAppServerClient {
                                 if let Err(deliver_err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
-                                    AppServerEvent::Disconnected {
+                                    TaggedAppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
                                 )
@@ -498,7 +499,7 @@ impl RemoteAppServerClient {
                                 if let Err(err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
-                                    AppServerEvent::Disconnected {
+                                    TaggedAppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
                                 )
@@ -643,7 +644,14 @@ impl RemoteAppServerClient {
         })?
     }
 
+    /// Returns the next legacy event. Thread subscription identity is retained
+    /// only on [`next_tagged_event`](Self::next_tagged_event).
     pub async fn next_event(&mut self) -> Option<AppServerEvent> {
+        self.next_tagged_event().await.map(Into::into)
+    }
+
+    /// Returns the next event with immutable thread subscription identity.
+    pub async fn next_tagged_event(&mut self) -> Option<TaggedAppServerEvent> {
         if let Some(event) = self.pending_events.pop_front() {
             return Some(event);
         }
@@ -851,7 +859,7 @@ async fn initialize_remote_connection<S>(
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
-) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
+) -> IoResult<(Vec<TaggedAppServerEvent>, Option<String>, Option<String>)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -919,12 +927,12 @@ where
                                 Ok(request) => {
                                     pending_events.push(match thread_subscription_id {
                                         Some(thread_subscription_id) => {
-                                            AppServerEvent::ThreadServerRequest {
+                                            TaggedAppServerEvent::ThreadServerRequest {
                                                 thread_subscription_id,
                                                 request,
                                             }
                                         }
-                                        None => AppServerEvent::ServerRequest(request),
+                                        None => TaggedAppServerEvent::ServerRequest(request),
                                     });
                                 }
                                 Err(err) => {
@@ -1019,35 +1027,35 @@ fn server_message_and_subscription_id(
 fn app_server_event_from_notification(
     notification: JSONRPCNotification,
     thread_subscription_id: Option<String>,
-) -> Option<AppServerEvent> {
+) -> Option<TaggedAppServerEvent> {
     match ServerNotification::try_from(notification) {
         Ok(notification) => Some(match thread_subscription_id {
-            Some(thread_subscription_id) => AppServerEvent::ThreadServerNotification {
+            Some(thread_subscription_id) => TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 notification,
             },
-            None => AppServerEvent::ServerNotification(notification),
+            None => TaggedAppServerEvent::ServerNotification(notification),
         }),
         Err(_) => None,
     }
 }
 
 async fn deliver_event(
-    event_tx: &mpsc::Sender<AppServerEvent>,
+    event_tx: &mpsc::Sender<TaggedAppServerEvent>,
     skipped_events: &mut usize,
-    event: AppServerEvent,
+    event: TaggedAppServerEvent,
 ) -> IoResult<()> {
     if *skipped_events > 0 {
         if remote_event_requires_delivery(&event) {
             event_tx
-                .send(AppServerEvent::Lagged {
+                .send(TaggedAppServerEvent::Lagged {
                     skipped: *skipped_events,
                 })
                 .await
                 .map_err(|_| event_consumer_closed())?;
             *skipped_events = 0;
         } else {
-            match event_tx.try_send(AppServerEvent::Lagged {
+            match event_tx.try_send(TaggedAppServerEvent::Lagged {
                 skipped: *skipped_events,
             }) {
                 Ok(()) => {
@@ -1081,16 +1089,16 @@ async fn deliver_event(
     }
 }
 
-fn remote_event_requires_delivery(event: &AppServerEvent) -> bool {
+fn remote_event_requires_delivery(event: &TaggedAppServerEvent) -> bool {
     match event {
-        AppServerEvent::Lagged { .. } => false,
-        AppServerEvent::ServerNotification(notification)
-        | AppServerEvent::ThreadServerNotification { notification, .. } => {
+        TaggedAppServerEvent::Lagged { .. } => false,
+        TaggedAppServerEvent::ServerNotification(notification)
+        | TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
             server_notification_requires_delivery(notification)
         }
-        AppServerEvent::ServerRequest(_)
-        | AppServerEvent::ThreadServerRequest { .. }
-        | AppServerEvent::Disconnected { .. } => true,
+        TaggedAppServerEvent::ServerRequest(_)
+        | TaggedAppServerEvent::ThreadServerRequest { .. }
+        | TaggedAppServerEvent::Disconnected { .. } => true,
     }
 }
 
@@ -1223,6 +1231,15 @@ mod tests {
         )
     }
 
+    fn thread_name_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadNameUpdated(
+            codex_app_server_protocol::ThreadNameUpdatedNotification {
+                thread_id: "thread".to_string(),
+                thread_name: Some("renamed thread".to_string()),
+            },
+        )
+    }
+
     #[tokio::test]
     async fn transport_worker_preserves_server_subscription_identity() {
         let (client_io, server_io) = duplex(64 * 1024);
@@ -1341,7 +1358,7 @@ mod tests {
             ))
             .expect("test server channel should be open");
         let delayed_notification =
-            tokio::time::timeout(Duration::from_secs(1), client.next_event())
+            tokio::time::timeout(Duration::from_secs(1), client.next_tagged_event())
                 .await
                 .expect("thread notification should reach the client queue")
                 .expect("client event stream should stay open");
@@ -1361,13 +1378,13 @@ mod tests {
                 old_subscription_id,
             ))
             .expect("test server channel should be open");
-        let delayed_request = tokio::time::timeout(Duration::from_secs(1), client.next_event())
+        let delayed_request = tokio::time::timeout(Duration::from_secs(1), client.next_tagged_event())
             .await
             .expect("thread request should reach the client queue")
             .expect("client event stream should stay open");
 
         match delayed_notification {
-            AppServerEvent::ThreadServerNotification {
+            TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 notification: ServerNotification::ThreadClosed(notification),
             } => {
@@ -1377,7 +1394,7 @@ mod tests {
             event => panic!("expected transport-stamped thread close, got {event:?}"),
         }
         match delayed_request {
-            AppServerEvent::ThreadServerRequest {
+            TaggedAppServerEvent::ThreadServerRequest {
                 thread_subscription_id,
                 request: ServerRequest::ToolRequestUserInput { request_id, .. },
             } => {
@@ -1418,12 +1435,12 @@ mod tests {
                 "new-subscription",
             ))
             .expect("test server channel should be open");
-        match tokio::time::timeout(Duration::from_secs(1), client.next_event())
+        match tokio::time::timeout(Duration::from_secs(1), client.next_tagged_event())
             .await
             .expect("replacement thread notification should reach the client queue")
             .expect("client event stream should stay open")
         {
-            AppServerEvent::ThreadServerNotification {
+            TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 ..
             } => {
@@ -1446,7 +1463,7 @@ mod tests {
     async fn terminal_thread_transition_blocks_for_remote_consumer_backpressure() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
-            .send(AppServerEvent::Lagged { skipped: 1 })
+            .send(TaggedAppServerEvent::Lagged { skipped: 1 })
             .await
             .expect("initial event should enqueue");
 
@@ -1455,7 +1472,7 @@ mod tests {
             let delivery = deliver_event(
                 &event_tx,
                 &mut skipped_events,
-                AppServerEvent::ThreadServerNotification {
+                TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id: "thread-subscription".to_string(),
                     notification: ServerNotification::ThreadArchived(
                         codex_app_server_protocol::ThreadArchivedNotification {
@@ -1474,7 +1491,7 @@ mod tests {
             );
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::Lagged { skipped: 1 })
+                Some(TaggedAppServerEvent::Lagged { skipped: 1 })
             ));
             delivery
                 .await
@@ -1482,7 +1499,7 @@ mod tests {
         }
         assert!(matches!(
             event_rx.recv().await,
-            Some(AppServerEvent::ThreadServerNotification {
+            Some(TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 notification: ServerNotification::ThreadArchived(_),
             }) if thread_subscription_id == "thread-subscription"
@@ -1491,14 +1508,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_queue_blocks_for_goal_and_usage_state_backpressure() {
+    async fn remote_queue_blocks_for_goal_usage_and_name_state_backpressure() {
         for (notification, expected_kind) in [
             (thread_goal_updated_notification(), "goal"),
             (thread_token_usage_updated_notification(), "usage"),
+            (thread_name_updated_notification(), "name"),
         ] {
             let (event_tx, mut event_rx) = mpsc::channel(1);
             event_tx
-                .send(AppServerEvent::Lagged { skipped: 1 })
+                .send(TaggedAppServerEvent::Lagged { skipped: 1 })
                 .await
                 .expect("initial event should enqueue");
 
@@ -1506,7 +1524,7 @@ mod tests {
             let delivery = deliver_event(
                 &event_tx,
                 &mut skipped_events,
-                AppServerEvent::ThreadServerNotification {
+                TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id: "thread-subscription".to_string(),
                     notification,
                 },
@@ -1521,22 +1539,28 @@ mod tests {
             );
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::Lagged { skipped: 1 })
+                Some(TaggedAppServerEvent::Lagged { skipped: 1 })
             ));
             delivery
                 .await
-                .expect("goal and usage state should deliver after capacity returns");
+                .expect("goal, usage, and name state should deliver after capacity returns");
             match event_rx.recv().await {
-                Some(AppServerEvent::ThreadServerNotification {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadGoalUpdated(_),
                 }) if expected_kind == "goal" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
-                Some(AppServerEvent::ThreadServerNotification {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadTokenUsageUpdated(_),
                 }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(TaggedAppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadNameUpdated(_),
+                }) if expected_kind == "name" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
                 event => panic!("expected retained {expected_kind} state, got {event:?}"),
@@ -1548,7 +1572,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
-        let (_event_tx, event_rx) = mpsc::channel::<AppServerEvent>(1);
+        let (_event_tx, event_rx) = mpsc::channel::<TaggedAppServerEvent>(1);
         let worker_handle = tokio::spawn(async move {
             let _ = command_rx.recv().await;
         });

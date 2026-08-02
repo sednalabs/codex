@@ -10,8 +10,8 @@
 //! - Event consumption with backpressure signaling ([`InProcessServerEvent::Lagged`]).
 //!   [`InProcessAppServerClient::next_event`] keeps its legacy
 //!   [`InProcessServerEvent`] return type, while
-//!   [`InProcessAppServerClient::next_app_server_event`] exposes the tagged
-//!   transport-neutral [`AppServerEvent`] surface.
+//!   [`InProcessAppServerClient::next_tagged_event`] exposes the additive
+//!   transport-neutral [`TaggedAppServerEvent`] surface.
 //! - Bounded graceful shutdown with abort fallback.
 //!
 //! The facade interposes a worker task between the caller and the underlying
@@ -33,6 +33,7 @@ use std::time::Duration;
 pub use codex_app_server::app_server_control_socket_path;
 pub use codex_app_server::in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
 pub use codex_app_server::in_process::InProcessServerEvent;
+pub use codex_app_server::in_process::InProcessTaggedServerEvent;
 use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server::in_process::LogDbLayer;
 pub use codex_app_server::in_process::StateDbHandle;
@@ -100,44 +101,51 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 
 #[derive(Debug, Clone)]
 pub enum AppServerEvent {
-    Lagged {
-        skipped: usize,
-    },
+    Lagged { skipped: usize },
     ServerNotification(ServerNotification),
     ServerRequest(ServerRequest),
-    /// A thread event carries the immutable subscription identity minted by
-    /// app-server before it entered the consumer queue.
+    Disconnected { message: String },
+}
+
+/// Transport-neutral event that retains the immutable subscription identity
+/// captured for a thread-scoped listener event.
+///
+/// This additive API leaves [`AppServerEvent`] unchanged for callers with an
+/// exhaustive match. Use [`AppServerClient::next_tagged_event`] or
+/// [`InProcessAppServerClient::next_tagged_event`] when lifecycle fencing is
+/// required.
+#[derive(Debug, Clone)]
+pub enum TaggedAppServerEvent {
+    Lagged { skipped: usize },
+    ServerNotification(ServerNotification),
+    ServerRequest(ServerRequest),
     ThreadServerNotification {
         thread_subscription_id: String,
         notification: ServerNotification,
     },
-    /// See [`Self::ThreadServerNotification`]. Stale requests retain both
-    /// their original subscription identity and JSON-RPC id.
     ThreadServerRequest {
         thread_subscription_id: String,
         request: ServerRequest,
     },
-    Disconnected {
-        message: String,
-    },
+    Disconnected { message: String },
 }
 
-impl From<InProcessServerEvent> for AppServerEvent {
-    fn from(value: InProcessServerEvent) -> Self {
+impl From<InProcessTaggedServerEvent> for TaggedAppServerEvent {
+    fn from(value: InProcessTaggedServerEvent) -> Self {
         match value {
-            InProcessServerEvent::Lagged { skipped } => Self::Lagged { skipped },
-            InProcessServerEvent::ServerNotification(notification) => {
+            InProcessTaggedServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            InProcessTaggedServerEvent::ServerNotification(notification) => {
                 Self::ServerNotification(notification)
             }
-            InProcessServerEvent::ServerRequest(request) => Self::ServerRequest(request),
-            InProcessServerEvent::ThreadServerNotification {
+            InProcessTaggedServerEvent::ServerRequest(request) => Self::ServerRequest(request),
+            InProcessTaggedServerEvent::ThreadServerNotification {
                 notification,
                 thread_subscription_id,
             } => Self::ThreadServerNotification {
                 notification,
                 thread_subscription_id,
             },
-            InProcessServerEvent::ThreadServerRequest {
+            InProcessTaggedServerEvent::ThreadServerRequest {
                 request,
                 thread_subscription_id,
             } => Self::ThreadServerRequest {
@@ -148,46 +156,57 @@ impl From<InProcessServerEvent> for AppServerEvent {
     }
 }
 
-fn into_legacy_in_process_event(event: AppServerEvent) -> Option<InProcessServerEvent> {
-    match event {
-        AppServerEvent::Lagged { skipped } => Some(InProcessServerEvent::Lagged { skipped }),
-        AppServerEvent::ServerNotification(notification) => {
-            Some(InProcessServerEvent::ServerNotification(notification))
-        }
-        AppServerEvent::ServerRequest(request) => {
-            Some(InProcessServerEvent::ServerRequest(request))
-        }
-        AppServerEvent::ThreadServerNotification {
-            notification,
-            thread_subscription_id,
-        } => Some(InProcessServerEvent::ThreadServerNotification {
-            notification,
-            thread_subscription_id,
-        }),
-        AppServerEvent::ThreadServerRequest {
-            request,
-            thread_subscription_id,
-        } => Some(InProcessServerEvent::ThreadServerRequest {
-            request,
-            thread_subscription_id,
-        }),
-        AppServerEvent::Disconnected { message } => {
-            warn!(
-                "in-process app-server client received an unexpected transport disconnect: {message}"
-            );
-            None
+impl From<AppServerEvent> for TaggedAppServerEvent {
+    fn from(value: AppServerEvent) -> Self {
+        match value {
+            AppServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            AppServerEvent::ServerNotification(notification) => Self::ServerNotification(notification),
+            AppServerEvent::ServerRequest(request) => Self::ServerRequest(request),
+            AppServerEvent::Disconnected { message } => Self::Disconnected { message },
         }
     }
 }
 
-fn event_requires_delivery(event: &AppServerEvent) -> bool {
+impl From<TaggedAppServerEvent> for AppServerEvent {
+    fn from(value: TaggedAppServerEvent) -> Self {
+        match value {
+            TaggedAppServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            TaggedAppServerEvent::ServerNotification(notification)
+            | TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
+                Self::ServerNotification(notification)
+            }
+            TaggedAppServerEvent::ServerRequest(request)
+            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => Self::ServerRequest(request),
+            TaggedAppServerEvent::Disconnected { message } => Self::Disconnected { message },
+        }
+    }
+}
+
+impl From<TaggedAppServerEvent> for InProcessServerEvent {
+    fn from(value: TaggedAppServerEvent) -> Self {
+        match value {
+            TaggedAppServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            TaggedAppServerEvent::ServerNotification(notification)
+            | TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
+                Self::ServerNotification(notification)
+            }
+            TaggedAppServerEvent::ServerRequest(request)
+            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => Self::ServerRequest(request),
+            TaggedAppServerEvent::Disconnected { .. } => {
+                unreachable!("the in-process runtime never emits transport disconnect events")
+            }
+        }
+    }
+}
+
+fn event_requires_delivery(event: &TaggedAppServerEvent) -> bool {
     // These transcript and authoritative state events must remain lossless.
     // Dropping streamed assistant text or an active goal/usage snapshot can
     // leave the TUI permanently stale, while dropping completion notifications
     // can leave surfaces waiting forever.
     match event {
-        AppServerEvent::ServerNotification(notification)
-        | AppServerEvent::ThreadServerNotification { notification, .. } => {
+        TaggedAppServerEvent::ServerNotification(notification)
+        | TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
             server_notification_requires_delivery(notification)
         }
         _ => false,
@@ -221,6 +240,7 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
             | ServerNotification::ThreadGoalUpdated(_)
             | ServerNotification::ThreadGoalCleared(_)
             | ServerNotification::ThreadTokenUsageUpdated(_)
+            | ServerNotification::ThreadNameUpdated(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -252,9 +272,9 @@ enum ForwardEventResult {
 /// If a dropped event is a `ServerRequest`, `reject_server_request` is called
 /// so the server does not wait for a response that will never come.
 async fn forward_in_process_event<F>(
-    event_tx: &mpsc::Sender<AppServerEvent>,
+    event_tx: &mpsc::Sender<TaggedAppServerEvent>,
     skipped_events: &mut usize,
-    event: AppServerEvent,
+    event: TaggedAppServerEvent,
     mut reject_server_request: F,
 ) -> ForwardEventResult
 where
@@ -265,7 +285,7 @@ where
             // Surface lag before the lossless event, but do not let the lag marker itself cause
             // us to drop the transcript/completion notification the caller is blocked on.
             if event_tx
-                .send(AppServerEvent::Lagged {
+                .send(TaggedAppServerEvent::Lagged {
                     skipped: *skipped_events,
                 })
                 .await
@@ -275,7 +295,7 @@ where
             }
             *skipped_events = 0;
         } else {
-            match event_tx.try_send(AppServerEvent::Lagged {
+            match event_tx.try_send(TaggedAppServerEvent::Lagged {
                 skipped: *skipped_events,
             }) {
                 Ok(()) => {
@@ -284,8 +304,8 @@ where
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     *skipped_events = skipped_events.saturating_add(1);
                     warn!("dropping in-process app-server event because consumer queue is full");
-                    if let AppServerEvent::ServerRequest(request)
-                    | AppServerEvent::ThreadServerRequest { request, .. } = event
+                    if let TaggedAppServerEvent::ServerRequest(request)
+                    | TaggedAppServerEvent::ThreadServerRequest { request, .. } = event
                     {
                         reject_server_request(request);
                     }
@@ -312,8 +332,8 @@ where
         Err(mpsc::error::TrySendError::Full(event)) => {
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping in-process app-server event because consumer queue is full");
-            if let AppServerEvent::ServerRequest(request)
-            | AppServerEvent::ThreadServerRequest { request, .. } = event
+            if let TaggedAppServerEvent::ServerRequest(request)
+            | TaggedAppServerEvent::ThreadServerRequest { request, .. } = event
             {
                 reject_server_request(request);
             }
@@ -516,7 +536,7 @@ enum ClientCommand {
 /// boundary.
 pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
-    event_rx: mpsc::Receiver<AppServerEvent>,
+    event_rx: mpsc::Receiver<TaggedAppServerEvent>,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -548,7 +568,7 @@ impl InProcessAppServerClient {
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
-        let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
+        let (event_tx, event_rx) = mpsc::channel::<TaggedAppServerEvent>(channel_capacity);
         let worker_handle = tokio::spawn(async move {
             let mut event_stream_enabled = true;
             let mut skipped_events = 0usize;
@@ -601,11 +621,11 @@ impl InProcessAppServerClient {
                             }
                         }
                     }
-                    event = handle.next_event(), if event_stream_enabled => {
+                    event = handle.next_tagged_event(), if event_stream_enabled => {
                         let Some(event) = event else {
                             break;
                         };
-                        if let InProcessServerEvent::ServerRequest(
+                        if let InProcessTaggedServerEvent::ServerRequest(
                             ServerRequest::ChatgptAuthTokensRefresh { request_id, .. }
                         ) = &event
                         {
@@ -625,7 +645,7 @@ impl InProcessAppServerClient {
                             continue;
                         }
 
-                        let event = event.into();
+                        let event: TaggedAppServerEvent = event.into();
                         match forward_in_process_event(
                             &event_tx,
                             &mut skipped_events,
@@ -806,20 +826,28 @@ impl InProcessAppServerClient {
     /// Returns the next legacy in-process event, or `None` when worker exits.
     ///
     /// This preserves the established [`InProcessServerEvent`] API for direct
-    /// embedders. Call [`next_app_server_event`](Self::next_app_server_event)
-    /// when the tagged, transport-neutral event surface is required.
+    /// embedders. Call [`next_tagged_event`](Self::next_tagged_event) when the
+    /// tagged, transport-neutral event surface is required.
     pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
-        self.next_app_server_event()
-            .await
-            .and_then(into_legacy_in_process_event)
+        self.next_tagged_event().await.map(Into::into)
+    }
+
+    /// Returns the next legacy, transport-neutral facade event.
+    ///
+    /// This method is kept for callers that adopted the previous facade. It
+    /// deliberately drops subscription tags to preserve the stable
+    /// [`AppServerEvent`] shape. New lifecycle-aware consumers should use
+    /// [`next_tagged_event`](Self::next_tagged_event).
+    pub async fn next_app_server_event(&mut self) -> Option<AppServerEvent> {
+        self.next_tagged_event().await.map(Into::into)
     }
 
     /// Returns the next tagged, transport-neutral facade event.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
-    /// the worker emits [`AppServerEvent::Lagged`] markers and may reject
+    /// the worker emits [`TaggedAppServerEvent::Lagged`] markers and may reject
     /// pending server requests rather than letting approval flows hang.
-    pub async fn next_app_server_event(&mut self) -> Option<AppServerEvent> {
+    pub async fn next_tagged_event(&mut self) -> Option<TaggedAppServerEvent> {
         self.event_rx.recv().await
     }
 
@@ -987,6 +1015,16 @@ impl AppServerClient {
         match self {
             Self::InProcess(client) => client.next_app_server_event().await,
             Self::Remote(client) => client.next_event().await,
+        }
+    }
+
+    /// Returns the next lifecycle-aware event without discarding a thread
+    /// subscription tag. Existing users of [`next_event`](Self::next_event)
+    /// retain its original exhaustive [`AppServerEvent`] contract.
+    pub async fn next_tagged_event(&mut self) -> Option<TaggedAppServerEvent> {
+        match self {
+            Self::InProcess(client) => client.next_tagged_event().await,
+            Self::Remote(client) => client.next_tagged_event().await,
         }
     }
 
@@ -1295,6 +1333,15 @@ mod tests {
         )
     }
 
+    fn thread_name_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadNameUpdated(
+            codex_app_server_protocol::ThreadNameUpdatedNotification {
+                thread_id: "thread".to_string(),
+                thread_name: Some("renamed thread".to_string()),
+            },
+        )
+    }
+
     fn agent_message_delta_notification(delta: &str) -> ServerNotification {
         ServerNotification::AgentMessageDelta(
             codex_app_server_protocol::AgentMessageDeltaNotification {
@@ -1518,7 +1565,7 @@ mod tests {
     async fn forward_in_process_event_preserves_transcript_notifications_under_backpressure() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
-            .send(AppServerEvent::ServerNotification(
+            .send(TaggedAppServerEvent::ServerNotification(
                 command_execution_output_delta_notification("stdout-1"),
             ))
             .await
@@ -1528,7 +1575,7 @@ mod tests {
         let result = forward_in_process_event(
             &event_tx,
             &mut skipped_events,
-            AppServerEvent::ServerNotification(command_execution_output_delta_notification(
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
                 "stdout-2",
             )),
             |_| {},
@@ -1558,7 +1605,7 @@ mod tests {
             let result = forward_in_process_event(
                 &event_tx,
                 &mut skipped_events,
-                AppServerEvent::ServerNotification(notification),
+                TaggedAppServerEvent::ServerNotification(notification),
                 |_| {},
             )
             .await;
@@ -1571,20 +1618,20 @@ mod tests {
             .expect("receiver task should join successfully");
         assert!(matches!(
             &events[0],
-            AppServerEvent::ServerNotification(
+            TaggedAppServerEvent::ServerNotification(
                 ServerNotification::CommandExecutionOutputDelta(notification)
             ) if notification.delta == "stdout-1"
         ));
-        assert!(matches!(&events[1], AppServerEvent::Lagged { skipped: 1 }));
+        assert!(matches!(&events[1], TaggedAppServerEvent::Lagged { skipped: 1 }));
         assert!(matches!(
             &events[2],
-            AppServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+            TaggedAppServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
                 notification
             )) if notification.delta == "hello"
         ));
         assert!(matches!(
             &events[3],
-            AppServerEvent::ServerNotification(ServerNotification::ItemCompleted(
+            TaggedAppServerEvent::ServerNotification(ServerNotification::ItemCompleted(
                 notification
             )) if matches!(
                 &notification.item,
@@ -1593,7 +1640,7 @@ mod tests {
         ));
         assert!(matches!(
             &events[4],
-            AppServerEvent::ServerNotification(ServerNotification::TurnCompleted(
+            TaggedAppServerEvent::ServerNotification(ServerNotification::TurnCompleted(
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
@@ -1603,7 +1650,7 @@ mod tests {
     async fn backpressure_preserves_automatic_handshake_before_retained_child_approval() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
-            .send(AppServerEvent::ServerNotification(
+            .send(TaggedAppServerEvent::ServerNotification(
                 command_execution_output_delta_notification("stdout-1"),
             ))
             .await
@@ -1613,7 +1660,7 @@ mod tests {
         let dropped = forward_in_process_event(
             &event_tx,
             &mut skipped_events,
-            AppServerEvent::ServerNotification(command_execution_output_delta_notification(
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
                 "stdout-2",
             )),
             |_| {},
@@ -1626,7 +1673,7 @@ mod tests {
             let delivery = forward_in_process_event(
                 &event_tx,
                 &mut skipped_events,
-                AppServerEvent::ThreadServerNotification {
+                TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id: "automatic-child".to_string(),
                     notification: automatic_child_started_notification(),
                 },
@@ -1642,18 +1689,18 @@ mod tests {
 
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::ServerNotification(
+                Some(TaggedAppServerEvent::ServerNotification(
                     ServerNotification::CommandExecutionOutputDelta(_)
                 ))
             ));
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::Lagged { skipped: 1 })
+                Some(TaggedAppServerEvent::Lagged { skipped: 1 })
             ));
             assert_eq!(delivery.await, ForwardEventResult::Continue);
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::ThreadServerNotification {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadStarted(_),
                 }) if thread_subscription_id == "automatic-child"
@@ -1665,7 +1712,7 @@ mod tests {
         let request_delivery = forward_in_process_event(
             &event_tx,
             &mut skipped_events,
-            AppServerEvent::ThreadServerRequest {
+            TaggedAppServerEvent::ThreadServerRequest {
                 thread_subscription_id: "automatic-child".to_string(),
                 request: approval.clone(),
             },
@@ -1675,7 +1722,7 @@ mod tests {
         assert_eq!(request_delivery, ForwardEventResult::Continue);
         assert!(matches!(
             event_rx.recv().await,
-            Some(AppServerEvent::ThreadServerRequest {
+            Some(TaggedAppServerEvent::ThreadServerRequest {
                 thread_subscription_id,
                 request,
             }) if thread_subscription_id == "automatic-child" && request.id() == approval.id()
@@ -1686,7 +1733,7 @@ mod tests {
     async fn in_process_facade_blocks_for_terminal_thread_transition_backpressure() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
-            .send(AppServerEvent::Lagged { skipped: 1 })
+            .send(TaggedAppServerEvent::Lagged { skipped: 1 })
             .await
             .expect("initial event should enqueue");
 
@@ -1695,7 +1742,7 @@ mod tests {
             let delivery = forward_in_process_event(
                 &event_tx,
                 &mut skipped_events,
-                AppServerEvent::ThreadServerNotification {
+                TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id: "thread-subscription".to_string(),
                     notification: ServerNotification::ThreadStatusChanged(
                         codex_app_server_protocol::ThreadStatusChangedNotification {
@@ -1717,13 +1764,13 @@ mod tests {
             );
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::Lagged { skipped: 1 })
+                Some(TaggedAppServerEvent::Lagged { skipped: 1 })
             ));
             assert_eq!(delivery.await, ForwardEventResult::Continue);
         }
         assert!(matches!(
             event_rx.recv().await,
-            Some(AppServerEvent::ThreadServerNotification {
+            Some(TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 notification: ServerNotification::ThreadStatusChanged(_),
             }) if thread_subscription_id == "thread-subscription"
@@ -1732,14 +1779,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_process_facade_blocks_for_goal_and_usage_state_backpressure() {
+    async fn in_process_facade_blocks_for_goal_usage_and_name_state_backpressure() {
         for (notification, expected_kind) in [
             (thread_goal_updated_notification(), "goal"),
             (thread_token_usage_updated_notification(), "usage"),
+            (thread_name_updated_notification(), "name"),
         ] {
             let (event_tx, mut event_rx) = mpsc::channel(1);
             event_tx
-                .send(AppServerEvent::Lagged { skipped: 1 })
+                .send(TaggedAppServerEvent::Lagged { skipped: 1 })
                 .await
                 .expect("initial event should enqueue");
 
@@ -1747,7 +1795,7 @@ mod tests {
             let delivery = forward_in_process_event(
                 &event_tx,
                 &mut skipped_events,
-                AppServerEvent::ThreadServerNotification {
+                TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id: "thread-subscription".to_string(),
                     notification,
                 },
@@ -1763,20 +1811,26 @@ mod tests {
             );
             assert!(matches!(
                 event_rx.recv().await,
-                Some(AppServerEvent::Lagged { skipped: 1 })
+                Some(TaggedAppServerEvent::Lagged { skipped: 1 })
             ));
             assert_eq!(delivery.await, ForwardEventResult::Continue);
             match event_rx.recv().await {
-                Some(AppServerEvent::ThreadServerNotification {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadGoalUpdated(_),
                 }) if expected_kind == "goal" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
-                Some(AppServerEvent::ThreadServerNotification {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadTokenUsageUpdated(_),
                 }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(TaggedAppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadNameUpdated(_),
+                }) if expected_kind == "name" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
                 event => panic!("expected retained {expected_kind} state, got {event:?}"),
@@ -2451,7 +2505,7 @@ mod tests {
             }
         });
         event_tx
-            .send(AppServerEvent::Lagged { skipped: 3 })
+            .send(TaggedAppServerEvent::Lagged { skipped: 3 })
             .await
             .expect("lagged marker should enqueue");
         drop(event_tx);
@@ -2475,7 +2529,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn next_app_server_event_preserves_tagged_thread_events() {
+    async fn next_tagged_event_preserves_tagged_thread_events() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = mpsc::channel(1);
         let worker_handle = tokio::spawn(async move {
@@ -2484,7 +2538,7 @@ mod tests {
             }
         });
         event_tx
-            .send(AppServerEvent::ThreadServerNotification {
+            .send(TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id: "thread-subscription".to_string(),
                 notification: thread_goal_updated_notification(),
             })
@@ -2499,8 +2553,8 @@ mod tests {
         };
 
         assert!(matches!(
-            client.next_app_server_event().await,
-            Some(AppServerEvent::ThreadServerNotification {
+            client.next_tagged_event().await,
+            Some(TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 notification: ServerNotification::ThreadGoalUpdated(_),
             }) if thread_subscription_id == "thread-subscription"
@@ -2509,10 +2563,69 @@ mod tests {
         client.shutdown().await.expect("shutdown should complete");
     }
 
+    #[tokio::test]
+    async fn legacy_in_process_next_event_collapses_thread_subscription_tags() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let worker_handle = tokio::spawn(async move {
+            if let Some(ClientCommand::Shutdown { response_tx }) = command_rx.recv().await {
+                let _ = response_tx.send(Ok(()));
+            }
+        });
+        event_tx
+            .send(TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id: "thread-subscription".to_string(),
+                notification: thread_goal_updated_notification(),
+            })
+            .await
+            .expect("tagged event should enqueue");
+        drop(event_tx);
+
+        let mut client = InProcessAppServerClient {
+            command_tx,
+            event_rx,
+            worker_handle,
+        };
+
+        assert!(matches!(
+            client.next_event().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::ThreadGoalUpdated(_)
+            ))
+        ));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[test]
+    fn legacy_event_enums_remain_exhaustively_matchable() {
+        // These deliberately exhaustive matches are the compatibility contract
+        // for public consumers. Thread subscription identity belongs solely to
+        // the additive tagged event surface.
+        fn match_legacy_in_process(event: InProcessServerEvent) {
+            match event {
+                InProcessServerEvent::Lagged { .. } => {}
+                InProcessServerEvent::ServerNotification(_) => {}
+                InProcessServerEvent::ServerRequest(_) => {}
+            }
+        }
+
+        fn match_legacy_transport(event: AppServerEvent) {
+            match event {
+                AppServerEvent::Lagged { .. } => {}
+                AppServerEvent::ServerNotification(_) => {}
+                AppServerEvent::ServerRequest(_) => {}
+                AppServerEvent::Disconnected { .. } => {}
+            }
+        }
+
+        let _ = (match_legacy_in_process, match_legacy_transport);
+    }
+
     #[test]
     fn event_requires_delivery_marks_transcript_and_terminal_events() {
         assert!(event_requires_delivery(
-            &AppServerEvent::ThreadServerNotification {
+            &TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id: "automatic-child".to_string(),
                 notification: automatic_child_started_notification(),
             }
@@ -2552,16 +2665,17 @@ mod tests {
                 },
             ),
             thread_token_usage_updated_notification(),
+            thread_name_updated_notification(),
         ] {
             assert!(event_requires_delivery(
-                &AppServerEvent::ThreadServerNotification {
+                &TaggedAppServerEvent::ThreadServerNotification {
                     thread_subscription_id: "thread-subscription".to_string(),
                     notification,
                 }
             ));
         }
         assert!(event_requires_delivery(
-            &AppServerEvent::ServerNotification(
+            &TaggedAppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::TurnCompleted(
                     codex_app_server_protocol::TurnCompletedNotification {
                         final_model: None,
@@ -2582,7 +2696,7 @@ mod tests {
             )
         ));
         assert!(event_requires_delivery(
-            &AppServerEvent::ServerNotification(
+            &TaggedAppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::AgentMessageDelta(
                     codex_app_server_protocol::AgentMessageDeltaNotification {
                         thread_id: "thread".to_string(),
@@ -2594,7 +2708,7 @@ mod tests {
             )
         ));
         assert!(event_requires_delivery(
-            &AppServerEvent::ServerNotification(
+            &TaggedAppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::ItemCompleted(
                     codex_app_server_protocol::ItemCompletedNotification {
                         thread_id: "thread".to_string(),
@@ -2611,7 +2725,7 @@ mod tests {
             )
         ));
         assert!(event_requires_delivery(
-            &AppServerEvent::ServerNotification(
+            &TaggedAppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::ExternalAgentConfigImportCompleted(
                     codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
                         import_id: "import".to_string(),
@@ -2620,11 +2734,11 @@ mod tests {
                 )
             )
         ));
-        assert!(!event_requires_delivery(&AppServerEvent::Lagged {
+        assert!(!event_requires_delivery(&TaggedAppServerEvent::Lagged {
             skipped: 1
         }));
         assert!(!event_requires_delivery(
-            &AppServerEvent::ServerNotification(
+            &TaggedAppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::CommandExecutionOutputDelta(
                     codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
                         thread_id: "thread".to_string(),

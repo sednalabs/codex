@@ -121,6 +121,7 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ThreadGoalUpdated(_)
             | ServerNotification::ThreadGoalCleared(_)
             | ServerNotification::ThreadTokenUsageUpdated(_)
+            | ServerNotification::ThreadNameUpdated(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -136,12 +137,12 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
 /// saturated in-process queue to discard it. Progress-only notifications stay
 /// best-effort so a slow consumer does not stall unrelated live output.
 async fn forward_in_process_server_notification(
-    event_tx: &mpsc::Sender<InProcessServerEvent>,
-    event: InProcessServerEvent,
+    event_tx: &mpsc::Sender<InProcessTaggedServerEvent>,
+    event: InProcessTaggedServerEvent,
 ) -> bool {
     let notification = match &event {
-        InProcessServerEvent::ServerNotification(notification)
-        | InProcessServerEvent::ThreadServerNotification { notification, .. } => notification,
+        InProcessTaggedServerEvent::ServerNotification(notification)
+        | InProcessTaggedServerEvent::ThreadServerNotification { notification, .. } => notification,
         _ => unreachable!("only notification events reach the notification queue"),
     };
 
@@ -207,22 +208,50 @@ pub struct InProcessStartArgs {
 pub enum InProcessServerEvent {
     /// Server request that requires client response/rejection.
     ServerRequest(ServerRequest),
-    /// Thread-bound server request carrying the immutable identity of the
-    /// subscription that emitted it.
-    ThreadServerRequest {
-        request: ServerRequest,
-        thread_subscription_id: String,
-    },
     /// App-server notification directed to the embedded client.
     ServerNotification(ServerNotification),
-    /// Thread-bound notification carrying the immutable identity of the
-    /// subscription that emitted it.
-    ThreadServerNotification {
-        notification: ServerNotification,
-        thread_subscription_id: String,
-    },
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
+}
+
+/// Event emitted from the app-server to consumers that need the immutable
+/// thread-subscription identity captured at transport ingress.
+///
+/// This is additive. [`InProcessServerEvent`] retains its original three
+/// variants and remains the result of [`InProcessClientHandle::next_event`]
+/// for source-compatible embedders. Consumers that enforce listener lifecycle
+/// identity should use [`InProcessClientHandle::next_tagged_event`] instead.
+#[derive(Debug, Clone)]
+pub enum InProcessTaggedServerEvent {
+    Lagged {
+        skipped: usize,
+    },
+    ServerNotification(ServerNotification),
+    ServerRequest(ServerRequest),
+    ThreadServerNotification {
+        thread_subscription_id: String,
+        notification: ServerNotification,
+    },
+    ThreadServerRequest {
+        thread_subscription_id: String,
+        request: ServerRequest,
+    },
+}
+
+impl From<InProcessTaggedServerEvent> for InProcessServerEvent {
+    fn from(value: InProcessTaggedServerEvent) -> Self {
+        match value {
+            InProcessTaggedServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            InProcessTaggedServerEvent::ServerNotification(notification)
+            | InProcessTaggedServerEvent::ThreadServerNotification { notification, .. } => {
+                Self::ServerNotification(notification)
+            }
+            InProcessTaggedServerEvent::ServerRequest(request)
+            | InProcessTaggedServerEvent::ThreadServerRequest { request, .. } => {
+                Self::ServerRequest(request)
+            }
+        }
+    }
 }
 
 /// Internal message sent from [`InProcessClientHandle`] methods to the runtime task.
@@ -320,7 +349,7 @@ impl InProcessClientSender {
 /// request/response helpers, and surface-specific startup policy.
 pub struct InProcessClientHandle {
     client: InProcessClientSender,
-    event_rx: mpsc::Receiver<InProcessServerEvent>,
+    event_rx: mpsc::Receiver<InProcessTaggedServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
@@ -367,11 +396,17 @@ impl InProcessClientHandle {
         self.client.fail_server_request(request_id, error)
     }
 
-    /// Receives the next server event from the in-process runtime.
+    /// Receives the next legacy server event from the in-process runtime.
     ///
     /// Returns `None` when the runtime task exits and no more events are
     /// available.
     pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
+        self.next_tagged_event().await.map(Into::into)
+    }
+
+    /// Receives the next server event with its captured thread-subscription
+    /// identity when the event is thread-scoped.
+    pub async fn next_tagged_event(&mut self) -> Option<InProcessTaggedServerEvent> {
         self.event_rx.recv().await
     }
 
@@ -445,7 +480,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
-    let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    let (event_tx, event_rx) = mpsc::channel::<InProcessTaggedServerEvent>(channel_capacity);
 
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
@@ -701,7 +736,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             // Send directly to avoid cloning; on failure the
                             // original value is returned inside the error.
                             if let Err(send_error) = event_tx
-                                .try_send(InProcessServerEvent::ServerRequest(request))
+                                .try_send(InProcessTaggedServerEvent::ServerRequest(request))
                             {
                                 let (error, inner) = match send_error {
                                     mpsc::error::TrySendError::Full(inner) => (
@@ -721,7 +756,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     ),
                                 };
                                 let request_id = match inner {
-                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
+                                    InProcessTaggedServerEvent::ServerRequest(req) => req.id().clone(),
                                     _ => unreachable!("we just sent a ServerRequest variant"),
                                 };
                                 outgoing_message_sender
@@ -732,7 +767,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         OutgoingMessage::ThreadScopedRequest(request) => {
                             let request_id = request.request.id().clone();
                             if let Err(send_error) = event_tx.try_send(
-                                InProcessServerEvent::ThreadServerRequest {
+                                InProcessTaggedServerEvent::ThreadServerRequest {
                                     request: request.request,
                                     thread_subscription_id: request.thread_subscription_id,
                                 },
@@ -754,7 +789,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     ),
                                 };
                                 let request_id = match inner {
-                                    InProcessServerEvent::ThreadServerRequest { request, .. } => {
+                                    InProcessTaggedServerEvent::ThreadServerRequest { request, .. } => {
                                         request.id().clone()
                                     }
                                     _ => request_id,
@@ -767,7 +802,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         OutgoingMessage::AppServerNotification(envelope) => {
                             if !forward_in_process_server_notification(
                                 &event_tx,
-                                InProcessServerEvent::ServerNotification(envelope.notification),
+                                InProcessTaggedServerEvent::ServerNotification(envelope.notification),
                             )
                             .await
                             {
@@ -775,7 +810,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::ThreadScopedNotification(notification) => {
-                            let event = InProcessServerEvent::ThreadServerNotification {
+                            let event = InProcessTaggedServerEvent::ThreadServerNotification {
                                 notification: notification.envelope.notification,
                                 thread_subscription_id: notification.thread_subscription_id,
                             };
@@ -950,6 +985,15 @@ mod tests {
                     last: usage,
                     model_context_window: Some(100),
                 },
+            },
+        )
+    }
+
+    fn thread_name_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadNameUpdated(
+            codex_app_server_protocol::ThreadNameUpdatedNotification {
+                thread_id: "thread".to_string(),
+                thread_name: Some("renamed thread".to_string()),
             },
         )
     }
@@ -1146,6 +1190,9 @@ mod tests {
             &thread_token_usage_updated_notification()
         ));
         assert!(server_notification_requires_delivery(
+            &thread_name_updated_notification()
+        ));
+        assert!(server_notification_requires_delivery(
             &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
@@ -1181,20 +1228,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_process_queue_blocks_for_goal_and_usage_state_backpressure() {
+    async fn in_process_queue_blocks_for_goal_usage_and_name_state_backpressure() {
         for (notification, expected_kind) in [
             (thread_goal_updated_notification(), "goal"),
             (thread_token_usage_updated_notification(), "usage"),
+            (thread_name_updated_notification(), "name"),
         ] {
             let (event_tx, mut event_rx) = mpsc::channel(1);
             event_tx
-                .send(InProcessServerEvent::Lagged { skipped: 1 })
+                .send(InProcessTaggedServerEvent::Lagged { skipped: 1 })
                 .await
                 .expect("initial event should enqueue");
 
             let delivery = forward_in_process_server_notification(
                 &event_tx,
-                InProcessServerEvent::ThreadServerNotification {
+                InProcessTaggedServerEvent::ThreadServerNotification {
                     thread_subscription_id: "thread-subscription".to_string(),
                     notification,
                 },
@@ -1209,20 +1257,26 @@ mod tests {
             );
             assert!(matches!(
                 event_rx.recv().await,
-                Some(InProcessServerEvent::Lagged { skipped: 1 })
+                Some(InProcessTaggedServerEvent::Lagged { skipped: 1 })
             ));
             assert!(delivery.await);
             match event_rx.recv().await {
-                Some(InProcessServerEvent::ThreadServerNotification {
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadGoalUpdated(_),
                 }) if expected_kind == "goal" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
-                Some(InProcessServerEvent::ThreadServerNotification {
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadTokenUsageUpdated(_),
                 }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadNameUpdated(_),
+                }) if expected_kind == "name" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
                 event => panic!("expected retained {expected_kind} state, got {event:?}"),

@@ -561,10 +561,7 @@ pub(crate) async fn run_onboarding_app(
                         AppServerEvent::Disconnected { message } => {
                             return Err(color_eyre::eyre::eyre!(message));
                         }
-                        AppServerEvent::Lagged { .. }
-                        | AppServerEvent::ServerRequest(_)
-                        | AppServerEvent::ThreadServerNotification { .. }
-                        | AppServerEvent::ThreadServerRequest { .. } => {}
+                        AppServerEvent::Lagged { .. } | AppServerEvent::ServerRequest(_) => {}
                     }
                 }
             }
