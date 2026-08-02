@@ -2544,6 +2544,13 @@ decisions.
   `out_of_band_resource_read_reconciles_the_published_mcp_runtime` is the
   focused hosted
   regression for refresh behavior.
+- All-server resource and resource-template listings use the same immutable
+  step binding. A configured server without an exact ready client, or a list
+  failure through a captured client, leaves ready-server results available and
+  adds a bounded `failures` entry with `notReady` or `listFailed`. Complete
+  results retain their previous shape. Explicit unavailable-server requests
+  still fail, and only a later binding may expose a recovered client; neither
+  path substitutes cached authority or retargets a prepared call.
 - Upstream commit `65ae4c26e0` registers disabled-by-default experimental
   feature `mcp_2026_07_28` in core, the generated config schema, and app-server
   feature enablement. It does not yet change the runtime resource or prepared
@@ -2599,6 +2606,9 @@ decisions.
 - Primary files:
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/connectors/src/connector_runtime/mod.rs`
+  - `codex-rs/codex-mcp/src/binding.rs`
+  - `codex-rs/codex-mcp/src/binding_clients.rs`
+  - `codex-rs/codex-mcp/src/lib.rs`
   - `codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs`
   - `codex-rs/codex-mcp/src/runtime.rs`
   - `codex-rs/codex-mcp/src/resource_client.rs`
@@ -2607,6 +2617,10 @@ decisions.
   - `codex-rs/codex-mcp/src/tool_catalog_cache.rs`
   - `codex-rs/app-server/tests/suite/v2/mcp_server_status.rs`
   - `codex-rs/core/src/mcp_tool_call.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource_spec.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource_spec_tests.rs`
+  - `codex-rs/core/src/tools/handlers/mcp_resource_tests.rs`
   - `codex-rs/core/tests/suite/mcp_tool_cache.rs`
   - `codex-rs/core/tests/suite/rmcp_client.rs`
   - `codex-rs/core/src/session/mcp.rs`

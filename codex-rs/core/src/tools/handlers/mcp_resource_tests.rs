@@ -1,4 +1,5 @@
 use super::*;
+use codex_mcp::McpResourceListingFailureReason;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseItem;
 use codex_tools::ToolExecutionStatus;
@@ -7,6 +8,7 @@ use pretty_assertions::assert_eq;
 use rmcp::model::AnnotateAble;
 use rmcp::model::ResourceContents;
 use serde_json::json;
+use std::collections::HashMap;
 
 use crate::context_manager::ContextManager;
 use crate::tools::context::ToolCallSource;
@@ -74,7 +76,10 @@ fn list_resources_payload_from_all_servers_is_sorted() {
         vec![resource("memo://a-1", "a-1"), resource("memo://a-2", "a-2")],
     );
 
-    let payload = ListResourcesPayload::from_all_servers(map);
+    let payload = ListResourcesPayload::from_all_servers(McpResourceListing {
+        by_server: map,
+        failures: Vec::new(),
+    });
     let value = serde_json::to_value(&payload).expect("serialize payload");
     let uris: Vec<String> = value["resources"]
         .as_array()
@@ -90,6 +95,58 @@ fn list_resources_payload_from_all_servers_is_sorted() {
             "memo://a-2".to_string(),
             "memo://b-1".to_string()
         ]
+    );
+}
+
+#[test]
+fn all_server_resource_payload_reports_partial_listing_failures() {
+    let payload = ListResourcesPayload::from_all_servers(McpResourceListing {
+        by_server: HashMap::from([("ready".to_string(), vec![resource("memo://ready", "ready")])]),
+        failures: vec![McpResourceListingFailure {
+            server: "starting".to_string(),
+            reason: McpResourceListingFailureReason::NotReady,
+        }],
+    });
+
+    assert_eq!(
+        serde_json::to_value(&payload).expect("serialize payload"),
+        json!({
+            "resources": [{
+                "server": "ready",
+                "uri": "memo://ready",
+                "name": "ready"
+            }],
+            "failures": [{
+                "server": "starting",
+                "reason": "notReady"
+            }]
+        })
+    );
+}
+
+#[test]
+fn all_server_template_payload_reports_partial_listing_failures() {
+    let payload = ListResourceTemplatesPayload::from_all_servers(McpResourceListing {
+        by_server: HashMap::from([("ready".to_string(), vec![template("memo://{id}", "memo")])]),
+        failures: vec![McpResourceListingFailure {
+            server: "failed".to_string(),
+            reason: McpResourceListingFailureReason::ListFailed,
+        }],
+    });
+
+    assert_eq!(
+        serde_json::to_value(&payload).expect("serialize payload"),
+        json!({
+            "resourceTemplates": [{
+                "server": "ready",
+                "uriTemplate": "memo://{id}",
+                "name": "memo"
+            }],
+            "failures": [{
+                "server": "failed",
+                "reason": "listFailed"
+            }]
+        })
     );
 }
 

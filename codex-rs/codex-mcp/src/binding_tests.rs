@@ -100,10 +100,10 @@ async fn test_step(
         codex_apps_tools_cache_context: None,
         tool_catalog_cache_context: None,
     });
-    let clients = Arc::new(McpBindingClients::new(HashMap::from([(
-        SERVER_NAME.to_string(),
-        Arc::clone(&managed_client),
-    )])));
+    let clients = Arc::new(McpBindingClients::new(
+        HashMap::from([(SERVER_NAME.to_string(), Arc::clone(&managed_client))]),
+        [SERVER_NAME.to_string()].into_iter().collect(),
+    ));
     let connections = Arc::new(McpConnectionSet::empty(/*prefix_mcp_tool_names*/ true));
     let tool_catalog_revision = Arc::new(tokio::sync::RwLock::new(0));
     let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());

@@ -1,8 +1,9 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::McpResourceListing;
+use codex_mcp::McpResourceListingFailure;
 use codex_protocol::items::McpToolCallError;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus;
@@ -113,6 +114,8 @@ struct ListResourcesPayload {
     resources: Vec<ResourceWithServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failures: Vec<McpResourceListingFailure>,
 }
 
 impl ListResourcesPayload {
@@ -126,10 +129,15 @@ impl ListResourcesPayload {
             server: Some(server),
             resources,
             next_cursor: result.next_cursor,
+            failures: Vec::new(),
         }
     }
 
-    fn from_all_servers(resources_by_server: HashMap<String, Vec<Resource>>) -> Self {
+    fn from_all_servers(listing: McpResourceListing<Resource>) -> Self {
+        let McpResourceListing {
+            by_server: resources_by_server,
+            failures,
+        } = listing;
         let mut entries: Vec<(String, Vec<Resource>)> = resources_by_server.into_iter().collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -144,6 +152,7 @@ impl ListResourcesPayload {
             server: None,
             resources,
             next_cursor: None,
+            failures,
         }
     }
 }
@@ -156,6 +165,8 @@ struct ListResourceTemplatesPayload {
     resource_templates: Vec<ResourceTemplateWithServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failures: Vec<McpResourceListingFailure>,
 }
 
 impl ListResourceTemplatesPayload {
@@ -169,10 +180,15 @@ impl ListResourceTemplatesPayload {
             server: Some(server),
             resource_templates,
             next_cursor: result.next_cursor,
+            failures: Vec::new(),
         }
     }
 
-    fn from_all_servers(templates_by_server: HashMap<String, Vec<ResourceTemplate>>) -> Self {
+    fn from_all_servers(listing: McpResourceListing<ResourceTemplate>) -> Self {
+        let McpResourceListing {
+            by_server: templates_by_server,
+            failures,
+        } = listing;
         let mut entries: Vec<(String, Vec<ResourceTemplate>)> =
             templates_by_server.into_iter().collect();
         entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -188,6 +204,7 @@ impl ListResourceTemplatesPayload {
             server: None,
             resource_templates,
             next_cursor: None,
+            failures,
         }
     }
 }
