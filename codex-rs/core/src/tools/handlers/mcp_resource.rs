@@ -8,6 +8,7 @@ use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::CallToolResult;
+use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 use rmcp::model::ListResourceTemplatesResult;
@@ -24,7 +25,9 @@ use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolPayload;
 use codex_protocol::protocol::McpInvocation;
+use codex_tools::ToolOutput;
 
 mod list_mcp_resource_templates;
 mod list_mcp_resources;
@@ -196,6 +199,66 @@ struct ReadResourcePayload {
     result: ReadResourceResult,
 }
 
+/// Separates the model-safe result from the complete resource payload that code mode exposes.
+///
+/// `read_mcp_resource` is an unusual built-in: an MCP resource can itself be structured data.
+/// Applying a generic middle truncation to its enclosing JSON string can make a declared JSON
+/// resource invalid. The model receives either the complete serialized payload or a small,
+/// explicit error. Code mode retains the unbounded resource payload, matching its pre-bounding
+/// result shape.
+struct ReadResourceToolOutput {
+    model_output: FunctionToolOutput,
+    raw_content: String,
+}
+
+impl ReadResourceToolOutput {
+    fn model_content(&self) -> String {
+        function_call_output_content_items_to_text(&self.model_output.body).unwrap_or_default()
+    }
+
+    fn model_success(&self) -> Option<bool> {
+        self.model_output.success
+    }
+}
+
+impl ToolOutput for ReadResourceToolOutput {
+    fn log_preview(&self) -> String {
+        self.model_output.log_preview()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.model_output.success_for_logging()
+    }
+
+    fn to_response_item(
+        &self,
+        call_id: &str,
+        payload: &ToolPayload,
+    ) -> codex_protocol::models::ResponseInputItem {
+        self.model_output.to_response_item(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
+        Value::String(self.raw_content.clone())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoundedReadResourceErrorPayload {
+    server: String,
+    uri: String,
+    error: BoundedReadResourceError,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BoundedReadResourceError {
+    code: &'static str,
+    message: &'static str,
+    truncated: bool,
+}
+
 fn call_tool_result_from_content(content: &str, success: Option<bool>) -> CallToolResult {
     CallToolResult {
         content: vec![serde_json::json!({"type": "text", "text": content})],
@@ -315,6 +378,56 @@ where
     let content = truncate_text(&content, truncation_policy * 1.2);
 
     Ok(FunctionToolOutput::from_text(content, Some(true)))
+}
+
+fn serialize_read_resource_output(
+    payload: ReadResourcePayload,
+    truncation_policy: TruncationPolicy,
+) -> Result<ReadResourceToolOutput, FunctionCallError> {
+    let raw_content = serde_json::to_string(&payload).map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "failed to serialize MCP resource response: {err}"
+        ))
+    })?;
+    let bounded_content = truncate_text(&raw_content, truncation_policy * 1.2);
+    let requires_structured_failure = bounded_content != raw_content
+        && payload.result.contents.iter().any(|content| {
+            matches!(
+                content,
+                rmcp::model::ResourceContents::TextResourceContents {
+                    mime_type: Some(mime_type),
+                    ..
+                } if mime_type
+                    .split(';')
+                    .next()
+                    .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+            )
+        });
+
+    let model_output = if requires_structured_failure {
+        let error = BoundedReadResourceErrorPayload {
+            server: payload.server,
+            uri: payload.uri,
+            error: BoundedReadResourceError {
+                code: "mcp_resource_model_output_too_large",
+                message: "The resource contains JSON that exceeds the model output limit.",
+                truncated: true,
+            },
+        };
+        let error_content = serde_json::to_string(&error).map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to serialize bounded MCP resource error: {err}"
+            ))
+        })?;
+        FunctionToolOutput::from_text(error_content, Some(false))
+    } else {
+        FunctionToolOutput::from_text(bounded_content, Some(true))
+    };
+
+    Ok(ReadResourceToolOutput {
+        model_output,
+        raw_content,
+    })
 }
 
 fn parse_arguments(raw_args: &str) -> Result<Option<Value>, FunctionCallError> {

@@ -2,7 +2,13 @@ use super::*;
 use pretty_assertions::assert_eq;
 use rmcp::model::AnnotateAble;
 use rmcp::model::ResourceContents;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::ResponseInputItem;
+use codex_tools::ToolOutput;
 use serde_json::json;
+
+use crate::context_manager::truncate_function_output_payload;
+use crate::tools::context::ToolPayload;
 
 fn resource(uri: &str, name: &str) -> Resource {
     rmcp::model::RawResource {
@@ -159,4 +165,104 @@ fn serialize_function_output_caps_read_resource_payload() {
 
     assert_ne!(output, serialized);
     assert_eq!(output, expected);
+}
+
+fn json_resource_payload(text: String) -> ReadResourcePayload {
+    ReadResourcePayload {
+        server: "hosted".to_string(),
+        uri: "ops://work_item/w10190/tree".to_string(),
+        result: ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+            uri: "ops://work_item/w10190/tree".to_string(),
+            mime_type: Some("application/json; charset=utf-8".to_string()),
+            text,
+            meta: None,
+        }]),
+    }
+}
+
+#[test]
+fn serialize_read_resource_output_preserves_small_json_for_model() {
+    let resource_json = json!({"items": ["one", "two"]}).to_string();
+    let output = serialize_read_resource_output(
+        json_resource_payload(resource_json.clone()),
+        TruncationPolicy::Bytes(8_000),
+    )
+    .expect("serialize resource output");
+
+    assert_eq!(output.model_success(), Some(true));
+    let model_payload: serde_json::Value =
+        serde_json::from_str(&output.model_content()).expect("parse model envelope");
+    let model_resource = model_payload["contents"][0]["text"]
+        .as_str()
+        .expect("resource text");
+    let parsed_resource: serde_json::Value =
+        serde_json::from_str(model_resource).expect("parse model resource JSON");
+    assert_eq!(parsed_resource, serde_json::from_str(&resource_json).unwrap());
+}
+
+#[test]
+fn large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload() {
+    let resource_json = json!({"items": ["x".repeat(255 * 1024)]}).to_string();
+    let output = serialize_read_resource_output(
+        json_resource_payload(resource_json.clone()),
+        TruncationPolicy::Bytes(8_000),
+    )
+    .expect("serialize resource output");
+
+    assert_eq!(output.model_success(), Some(false));
+    let model_content = output.model_content();
+    assert!(!model_content.contains("tokens truncated"));
+    let model_error: serde_json::Value =
+        serde_json::from_str(&model_content).expect("parse bounded model error");
+    assert_eq!(
+        model_error,
+        json!({
+            "server": "hosted",
+            "uri": "ops://work_item/w10190/tree",
+            "error": {
+                "code": "mcp_resource_model_output_too_large",
+                "message": "The resource contains JSON that exceeds the model output limit.",
+                "truncated": true
+            }
+        })
+    );
+    assert!(model_error.get("contents").is_none());
+
+    let raw_payload = output.code_mode_result(&ToolPayload::Function {
+        arguments: "{}".to_string(),
+    });
+    let raw_content = raw_payload.as_str().expect("raw code-mode string");
+    let raw_envelope: serde_json::Value =
+        serde_json::from_str(raw_content).expect("parse raw code-mode envelope");
+    let raw_resource = raw_envelope["contents"][0]["text"]
+        .as_str()
+        .expect("raw resource text");
+    assert_eq!(raw_resource, resource_json);
+    let _: serde_json::Value = serde_json::from_str(raw_resource).expect("parse raw JSON resource");
+}
+
+#[test]
+fn history_does_not_retruncate_bounded_json_resource_error() {
+    let output = serialize_read_resource_output(
+        json_resource_payload(json!({"items": ["x".repeat(255 * 1024)]}).to_string()),
+        TruncationPolicy::Bytes(8_000),
+    )
+    .expect("serialize resource output");
+    let response = output.to_response_item(
+        "call-1",
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
+        },
+    );
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("expected function call output");
+    };
+    let recorded = truncate_function_output_payload(&output, TruncationPolicy::Bytes(9_600));
+
+    assert_eq!(recorded, output);
+    assert_eq!(recorded.success, Some(false));
+    let FunctionCallOutputBody::Text(recorded_text) = recorded.body else {
+        panic!("expected text output");
+    };
+    let _: serde_json::Value = serde_json::from_str(&recorded_text).expect("parse history error");
 }

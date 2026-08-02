@@ -7,7 +7,6 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::mcp_resource_spec::create_read_mcp_resource_tool;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::McpInvocation;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -23,7 +22,7 @@ use super::ensure_model_can_access_mcp_server;
 use super::normalize_required_string;
 use super::parse_args;
 use super::parse_arguments;
-use super::serialize_function_output;
+use super::serialize_read_resource_output;
 
 pub struct ReadMcpResourceHandler;
 
@@ -103,10 +102,9 @@ impl ReadMcpResourceHandler {
         let truncation_policy = turn.model_info.truncation_policy.into();
 
         match payload_result {
-            Ok(payload) => match serialize_function_output(payload, truncation_policy) {
+            Ok(payload) => match serialize_read_resource_output(payload, truncation_policy) {
                 Ok(output) => {
-                    let content = function_call_output_content_items_to_text(&output.body)
-                        .unwrap_or_default();
+                    let content = output.model_content();
                     let duration = start.elapsed();
                     emit_tool_call_end(
                         &session,
@@ -114,7 +112,7 @@ impl ReadMcpResourceHandler {
                         &call_id,
                         invocation,
                         duration,
-                        Ok(call_tool_result_from_content(&content, output.success)),
+                        Ok(call_tool_result_from_content(&content, output.model_success())),
                     )
                     .await;
                     Ok(boxed_tool_output(output))
