@@ -649,6 +649,10 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
             /*terminal_outcome_reached*/ None,
         )
         .await?;
+    assert!(
+        !hook_marker.exists(),
+        "the model-bounded direct projection must not invoke PostToolUse"
+    );
     let code_mode = registry
         .dispatch_any_with_terminal_outcome(
             test_invocation_with_source(
