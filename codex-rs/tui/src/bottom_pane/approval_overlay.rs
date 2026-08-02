@@ -233,7 +233,7 @@ impl ApprovalOverlay {
     fn dismiss_resolved_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
         let queue_len = self.queue.len();
         self.queue
-            .retain(|queued_request| !queued_request.matches_resolved_request(request));
+            .retain(|queued_request| !queued_request.request.matches_resolved_request(request));
         if self
             .current_request
             .as_ref()

@@ -116,7 +116,51 @@ impl App {
             if thread_subscription_id_for_event(&event)
                 .is_some_and(|candidate| candidate == thread_subscription_id)
             {
-                self.handle_app_server_event(app_server_client, event).await;
+                match event {
+                    AppServerEvent::ThreadServerNotification { notification, .. } => {
+                        let Some(target) = self
+                            .thread_subscription_targets
+                            .get(thread_subscription_id)
+                            .copied()
+                        else {
+                            self.deferred_thread_subscription_events.push_back(
+                                AppServerEvent::ThreadServerNotification {
+                                    thread_subscription_id: thread_subscription_id.to_string(),
+                                    notification,
+                                },
+                            );
+                            continue;
+                        };
+                        self.handle_thread_server_notification_at_ingress(
+                            app_server_client,
+                            target,
+                            notification,
+                        )
+                        .await;
+                    }
+                    AppServerEvent::ThreadServerRequest { request, .. } => {
+                        let Some(target) = self
+                            .thread_subscription_targets
+                            .get(thread_subscription_id)
+                            .copied()
+                        else {
+                            self.deferred_thread_subscription_events.push_back(
+                                AppServerEvent::ThreadServerRequest {
+                                    thread_subscription_id: thread_subscription_id.to_string(),
+                                    request,
+                                },
+                            );
+                            continue;
+                        };
+                        self.handle_thread_server_request_at_ingress(
+                            app_server_client,
+                            target,
+                            request,
+                        )
+                        .await;
+                    }
+                    _ => {}
+                }
             } else {
                 self.deferred_thread_subscription_events.push_back(event);
             }

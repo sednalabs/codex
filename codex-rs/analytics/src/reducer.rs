@@ -177,7 +177,7 @@ pub(crate) struct AnalyticsReducer {
     pub(crate) spawn_item_starts: HashMap<ToolItemKey, ThreadItem>,
     pub(crate) pending_tool_item_lifecycle_order: VecDeque<ToolItemKey>,
     pub(crate) terminal_turn_item_lifecycles: HashSet<(String, String)>,
-    terminal_turn_item_lifecycle_order: VecDeque<(String, String)>,
+    pub(crate) terminal_turn_item_lifecycle_order: VecDeque<(String, String)>,
     pending_reviews: HashMap<RequestId, PendingReviewState>,
     item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
 }
@@ -400,10 +400,10 @@ struct TurnState {
 }
 
 #[derive(Clone, Hash, Eq, PartialEq)]
-struct ToolItemKey {
-    thread_id: String,
-    turn_id: String,
-    item_id: String,
+pub(crate) struct ToolItemKey {
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) item_id: String,
 }
 
 #[derive(Default)]

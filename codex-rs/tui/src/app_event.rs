@@ -33,7 +33,7 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
-use codex_message_history::HistoryBatchCursor;
+pub(crate) use codex_message_history::HistoryBatchCursor;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;

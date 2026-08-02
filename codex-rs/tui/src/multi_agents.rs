@@ -439,10 +439,10 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
         } => {
             let (model, reasoning_effort) = match status {
                 CollabAgentToolCallStatus::InProgress => (
-                    requested_model.as_ref().or(model).cloned(),
+                    requested_model.as_ref().or(model.as_ref()).cloned(),
                     requested_reasoning_effort
                         .as_ref()
-                        .or(reasoning_effort)
+                        .or(reasoning_effort.as_ref())
                         .cloned(),
                 ),
                 CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed => {
