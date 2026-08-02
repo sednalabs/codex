@@ -122,6 +122,10 @@ impl App {
                             .thread_subscription_targets
                             .get(thread_subscription_id)
                             .copied()
+                            .map(|binding| match binding {
+                                super::ThreadSubscriptionBinding::Active(target)
+                                | super::ThreadSubscriptionBinding::Tombstoned(target) => target,
+                            })
                         else {
                             self.deferred_thread_subscription_events.push_back(
                                 AppServerEvent::ThreadServerNotification {
@@ -143,6 +147,10 @@ impl App {
                             .thread_subscription_targets
                             .get(thread_subscription_id)
                             .copied()
+                            .map(|binding| match binding {
+                                super::ThreadSubscriptionBinding::Active(target)
+                                | super::ThreadSubscriptionBinding::Tombstoned(target) => target,
+                            })
                         else {
                             self.deferred_thread_subscription_events.push_back(
                                 AppServerEvent::ThreadServerRequest {
