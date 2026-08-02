@@ -1033,6 +1033,11 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
+        if !thread.enabled(Feature::RealtimeConversation) {
+            return Err(invalid_request(format!(
+                "thread {thread_id} does not support realtime conversation"
+            )));
+        }
         // Realtime commands can be the first operation through which a
         // connection reaches this loaded thread. They do not return a thread
         // subscription id themselves, so a newly created identity requires
@@ -1089,12 +1094,6 @@ impl TurnRequestProcessor {
                     ServerNotification::ThreadStarted(thread_started_notification(thread_summary)),
                 )
                 .await;
-        }
-
-        if !thread.enabled(Feature::RealtimeConversation) {
-            return Err(invalid_request(format!(
-                "thread {thread_id} does not support realtime conversation"
-            )));
         }
 
         Ok(Some((thread_id, thread)))
@@ -1384,19 +1383,20 @@ impl TurnRequestProcessor {
             }
         };
 
-        // Review start has no thread attach response, but it emits a
-        // thread/started notification before installing its listener. Mint
-        // the connection-scoped identity first so that notification and every
-        // later listener event carry the same authoritative identity.
-        let thread_subscription_id = self
+        // Review start has no thread attach response, so the creator of its
+        // connection-scoped identity emits the one authoritative
+        // thread/started notification before a listener can publish traffic.
+        // A concurrent automatic attach that already created the identity
+        // owns that handshake and must not receive a duplicate here.
+        let (thread_subscription_id, created_subscription) = self
             .outgoing
-            .register_thread_subscription(request_id.connection_id, thread_id)
+            .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
             .await;
-        let thread_subscription = ThreadSubscriptionTarget::captured(
+        let thread_subscription = created_subscription.then(|| ThreadSubscriptionTarget::captured(
             request_id.connection_id,
             thread_id,
             thread_subscription_id,
-        );
+        ));
         thread.session_id = review_thread.session_configured().session_id.to_string();
         self.thread_watch_manager
             .upsert_thread_silently(&thread.id)
@@ -1407,13 +1407,15 @@ impl TurnRequestProcessor {
                 .await,
             /*has_in_progress_turn*/ false,
         );
-        let notif = thread_started_notification(thread);
-        self.outgoing
-            .send_server_notification_to_thread_subscriptions(
-                &[thread_subscription],
-                ServerNotification::ThreadStarted(notif),
-            )
-            .await;
+        if let Some(thread_subscription) = thread_subscription {
+            let notif = thread_started_notification(thread);
+            self.outgoing
+                .send_server_notification_to_thread_subscriptions(
+                    &[thread_subscription],
+                    ServerNotification::ThreadStarted(notif),
+                )
+                .await;
+        }
 
         log_listener_attach_result(
             self.ensure_conversation_listener(
