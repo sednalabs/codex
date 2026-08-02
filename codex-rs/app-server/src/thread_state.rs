@@ -1,6 +1,7 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::ThreadSubscriptionTarget;
+use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -47,6 +48,10 @@ struct RetainedTerminalTurnHistory {
 
 pub(crate) struct PendingThreadResumeRequest {
     pub(crate) request_id: ConnectionRequestId,
+    /// Immutable request identity reserved before this command enters the listener FIFO.
+    /// `thread/unsubscribe` removes the matching reservation even before the handler has made a
+    /// connection visible, and a replacement resume supersedes an older queued command.
+    pub(crate) reservation_id: RequestId,
     pub(crate) history_items: Vec<RolloutItem>,
     pub(crate) config_snapshot: ThreadConfigSnapshot,
     pub(crate) instruction_sources: Vec<LegacyAppPathString>,
@@ -64,6 +69,16 @@ pub(crate) struct PendingThreadResumeRequest {
     pub(crate) redact_resume_payloads: bool,
 }
 
+/// Delivery ownership for an extension warning accepted by a thread listener.
+///
+/// A warning with existing recipients must retain those exact identities across listener FIFO
+/// delay. Conversely, a warning accepted while no thread subscription exists is current work
+/// with no stale recipient to preserve, so delivery may wait for the first subscriber.
+pub(crate) enum ThreadWarningDelivery {
+    Captured(Vec<ThreadSubscriptionTarget>),
+    AwaitCurrentSubscriber,
+}
+
 // ThreadListenerCommand is used to perform operations in the context of the thread listener, for serialization purposes.
 pub(crate) enum ThreadListenerCommand {
     // SendThreadResumeResponse is used to resume an already running thread by sending the thread's history to the client and atomically subscribing for new updates.
@@ -77,7 +92,7 @@ pub(crate) enum ThreadListenerCommand {
     // EmitWarning is used to order extension warnings with other thread notifications.
     EmitWarning {
         message: String,
-        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
+        delivery: ThreadWarningDelivery,
     },
     // EmitThreadGoalCleared is used to order app-server goal clears with running-thread resume responses.
     EmitThreadGoalCleared {
@@ -336,6 +351,7 @@ impl ThreadState {
 
 pub(crate) async fn resolve_server_request_on_thread_listener(
     thread_state: &Arc<Mutex<ThreadState>>,
+    outgoing: &ThreadScopedOutgoingMessageSender,
     request_id: RequestId,
 ) {
     let (completion_tx, completion_rx) = oneshot::channel();
@@ -344,10 +360,14 @@ pub(crate) async fn resolve_server_request_on_thread_listener(
         state.listener_command_tx()
     };
     let Some(listener_command_tx) = listener_command_tx else {
+        outgoing
+            .discard_thread_request_resolution_targets(&request_id)
+            .await;
         error!("failed to remove pending client request: thread listener is not running");
         return;
     };
 
+    let cleanup_request_id = request_id.clone();
     if listener_command_tx
         .send(ThreadListenerCommand::ResolveServerRequest {
             request_id,
@@ -355,6 +375,9 @@ pub(crate) async fn resolve_server_request_on_thread_listener(
         })
         .is_err()
     {
+        outgoing
+            .discard_thread_request_resolution_targets(&cleanup_request_id)
+            .await;
         error!(
             "failed to remove pending client request: thread listener command channel is closed"
         );
@@ -362,6 +385,9 @@ pub(crate) async fn resolve_server_request_on_thread_listener(
     }
 
     if let Err(err) = completion_rx.await {
+        outgoing
+            .discard_thread_request_resolution_targets(&cleanup_request_id)
+            .await;
         error!("failed to remove pending client request: {err}");
     }
 }
@@ -371,7 +397,9 @@ mod tests {
     use super::*;
     use codex_app_server_protocol::ApprovalsReviewer;
     use codex_app_server_protocol::AskForApproval;
+    use codex_app_server_protocol::CurrentTimeReadParams;
     use codex_app_server_protocol::SandboxPolicy;
+    use codex_app_server_protocol::ServerRequestPayload;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::Settings;
@@ -401,6 +429,71 @@ mod tests {
         ];
 
         assert_eq!(results, vec![true, false, true, false]);
+    }
+
+    #[tokio::test]
+    async fn missing_or_closed_listener_discards_thread_request_resolution_targets() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(crate::outgoing_message::OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let scoped_outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing.clone(),
+            vec![ConnectionId(1)],
+            thread_id,
+        );
+        let thread_state = Arc::new(Mutex::new(ThreadState::default()));
+
+        let (missing_listener_request_id, _missing_listener_waiter) = scoped_outgoing
+            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        let _ = outgoing_rx
+            .recv()
+            .await
+            .expect("request should be queued before missing-listener cleanup");
+        resolve_server_request_on_thread_listener(
+            &thread_state,
+            &scoped_outgoing,
+            missing_listener_request_id.clone(),
+        )
+        .await;
+        assert!(
+            outgoing
+                .take_thread_request_resolution_targets(&missing_listener_request_id)
+                .await
+                .is_none(),
+            "a missing listener must not retain a successful request's resolution recipients"
+        );
+
+        let (closed_listener_tx, closed_listener_rx) = mpsc::unbounded_channel();
+        drop(closed_listener_rx);
+        thread_state.lock().await.listener_command_tx = Some(closed_listener_tx);
+        let (closed_listener_request_id, _closed_listener_waiter) = scoped_outgoing
+            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        let _ = outgoing_rx
+            .recv()
+            .await
+            .expect("request should be queued before closed-listener cleanup");
+        resolve_server_request_on_thread_listener(
+            &thread_state,
+            &scoped_outgoing,
+            closed_listener_request_id.clone(),
+        )
+        .await;
+        assert!(
+            outgoing
+                .take_thread_request_resolution_targets(&closed_listener_request_id)
+                .await
+                .is_none(),
+            "a closed listener command channel must discard retained recipients exactly once"
+        );
     }
 
     #[test]
@@ -602,6 +695,7 @@ struct ThreadStateManagerInner {
     live_connections: HashMap<ConnectionId, ConnectionCapabilities>,
     threads: HashMap<ThreadId, ThreadEntry>,
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
+    pending_thread_resume_reservations: HashMap<(ThreadId, ConnectionId), RequestId>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -633,6 +727,76 @@ impl ThreadStateManager {
             .await
             .live_connections
             .insert(connection_id, capabilities);
+    }
+
+    /// Reserves a queued running-thread resume before it reaches listener execution. A newer
+    /// resume on the same connection/thread intentionally replaces the old reservation, making
+    /// the older command a no-op when it eventually runs.
+    pub(crate) async fn reserve_pending_thread_resume(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        request_id: RequestId,
+    ) {
+        self.state
+            .lock()
+            .await
+            .pending_thread_resume_reservations
+            .insert((thread_id, connection_id), request_id);
+    }
+
+    /// Returns whether this running-thread resume still owns its reservation.
+    pub(crate) async fn pending_thread_resume_matches(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        request_id: &RequestId,
+    ) -> bool {
+        self.state
+            .lock()
+            .await
+            .pending_thread_resume_reservations
+            .get(&(thread_id, connection_id))
+            .is_some_and(|current_request_id| current_request_id == request_id)
+    }
+
+    /// Cancels any queued or in-progress resume for this connection/thread. This deliberately
+    /// does not require a visible subscriber: `thread/unsubscribe` is authoritative while a
+    /// resume is still in the listener FIFO or hydrating its response.
+    pub(crate) async fn cancel_pending_thread_resume(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        self.state
+            .lock()
+            .await
+            .pending_thread_resume_reservations
+            .remove(&(thread_id, connection_id))
+            .is_some()
+    }
+
+    /// Finishes a resume only if it still owns the reservation, preserving a replacement that
+    /// was queued while the old command was completing.
+    pub(crate) async fn clear_pending_thread_resume_if_matches(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        request_id: &RequestId,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if state
+            .pending_thread_resume_reservations
+            .get(&(thread_id, connection_id))
+            .is_some_and(|current_request_id| current_request_id == request_id)
+        {
+            state
+                .pending_thread_resume_reservations
+                .remove(&(thread_id, connection_id));
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(
@@ -726,6 +890,9 @@ impl ThreadStateManager {
                 thread_ids.remove(&thread_id);
                 !thread_ids.is_empty()
             });
+            state
+                .pending_thread_resume_reservations
+                .retain(|(candidate_thread_id, _), _| *candidate_thread_id != thread_id);
             thread_state
         };
         self.unregister_listener_command_tx(thread_id);
@@ -950,6 +1117,11 @@ impl ThreadStateManager {
         {
             let mut state = self.state.lock().await;
             state.live_connections.remove(&connection_id);
+            state
+                .pending_thread_resume_reservations
+                .retain(|(_, candidate_connection_id), _| {
+                    *candidate_connection_id != connection_id
+                });
             let thread_ids = state
                 .thread_ids_by_connection
                 .remove(&connection_id)

@@ -949,26 +949,80 @@ impl ThreadRequestProcessor {
     ) -> Result<ThreadUnsubscribeResponse, JSONRPCErrorError> {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        // Keep the identity observed by this unsubscribe. A newer overlapping resume can install
+        // a replacement token while this request is in flight; cleanup below must not remove it.
+        let observed_subscription_id = self
+            .outgoing
+            .current_thread_subscription_id(connection_id, thread_id)
+            .await;
+        let canceled_pending_resume = self
+            .thread_state_manager
+            .cancel_pending_thread_resume(thread_id, connection_id)
+            .await;
 
         if self.thread_manager.get_thread(thread_id).await.is_err() {
-            self.outgoing
-                .unregister_thread_subscription(connection_id, thread_id)
-                .await;
+            if let Some(subscription_id) = observed_subscription_id.as_deref() {
+                if self
+                    .outgoing
+                    .unregister_thread_subscription_if_matches(
+                        connection_id,
+                        thread_id,
+                        subscription_id,
+                    )
+                    .await
+                {
+                    let _ = self
+                        .thread_state_manager
+                        .unsubscribe_connection_from_thread_if_subscription_matches(
+                            thread_id,
+                            connection_id,
+                            subscription_id,
+                        )
+                        .await;
+                }
+            } else {
+                self.outgoing
+                    .unregister_thread_subscription(connection_id, thread_id)
+                    .await;
+            }
             self.finalize_thread_teardown(thread_id).await;
             return Ok(ThreadUnsubscribeResponse {
                 status: ThreadUnsubscribeStatus::NotLoaded,
             });
         };
 
-        let was_subscribed = self
-            .thread_state_manager
-            .unsubscribe_connection_from_thread(thread_id, connection_id)
-            .await;
-        self.outgoing
-            .unregister_thread_subscription(connection_id, thread_id)
-            .await;
+        let was_subscribed = if let Some(subscription_id) = observed_subscription_id.as_deref() {
+            if self
+                .outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    subscription_id,
+                )
+                .await
+            {
+                self.thread_state_manager
+                    .unsubscribe_connection_from_thread_if_subscription_matches(
+                        thread_id,
+                        connection_id,
+                        subscription_id,
+                    )
+                    .await
+            } else {
+                false
+            }
+        } else {
+            let was_subscribed = self
+                .thread_state_manager
+                .unsubscribe_connection_from_thread(thread_id, connection_id)
+                .await;
+            self.outgoing
+                .unregister_thread_subscription(connection_id, thread_id)
+                .await;
+            was_subscribed
+        };
 
-        let status = if was_subscribed {
+        let status = if was_subscribed || canceled_pending_resume {
             ThreadUnsubscribeStatus::Unsubscribed
         } else {
             ThreadUnsubscribeStatus::NotSubscribed
@@ -4198,10 +4252,22 @@ impl ThreadRequestProcessor {
                 None
             };
             let resume_cursor_store = paginated_resume.then(|| Arc::clone(&self.thread_store));
+            // Claim this connection/thread before the listener command is visible. An
+            // unsubscribe can then cancel a queued resume even though the handler has not yet
+            // installed a connection subscription.
+            let reservation_id = request_id.request_id.clone();
+            self.thread_state_manager
+                .reserve_pending_thread_resume(
+                    existing_thread_id,
+                    request_id.connection_id,
+                    reservation_id.clone(),
+                )
+                .await;
 
             let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse(
                 Box::new(crate::thread_state::PendingThreadResumeRequest {
                     request_id: request_id.clone(),
+                    reservation_id: reservation_id.clone(),
                     history_items,
                     config_snapshot,
                     instruction_sources,
@@ -4218,6 +4284,13 @@ impl ThreadRequestProcessor {
                 }),
             );
             if listener_command_tx.send(command).is_err() {
+                self.thread_state_manager
+                    .clear_pending_thread_resume_if_matches(
+                        existing_thread_id,
+                        request_id.connection_id,
+                        &reservation_id,
+                    )
+                    .await;
                 return Err(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener command channel is closed"
                 )));

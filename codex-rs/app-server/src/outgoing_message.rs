@@ -207,6 +207,14 @@ impl ThreadScopedOutgoingMessageSender {
             .await
     }
 
+    /// Drops retained resolution recipients when the listener can no longer serialize the
+    /// corresponding `ServerRequestResolved` notification.
+    pub(crate) async fn discard_thread_request_resolution_targets(&self, request_id: &RequestId) {
+        self.outgoing
+            .discard_thread_request_resolution_targets(request_id)
+            .await;
+    }
+
     pub(crate) fn track_effective_permissions_approval_response(
         &self,
         request_id: RequestId,
@@ -387,6 +395,21 @@ impl OutgoingMessageSender {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&(connection_id, thread_id))
             .is_some_and(|subscription_id| subscription_id == expected_subscription_id)
+    }
+
+    /// Captures the currently-owned subscription identity without creating one. Callers that
+    /// subsequently unsubscribe must use this immutable value so an overlapping resume cannot
+    /// have its newer token removed by stale cleanup.
+    pub(crate) async fn current_thread_subscription_id(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+    ) -> Option<String> {
+        self.thread_subscription_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(connection_id, thread_id))
+            .cloned()
     }
 
     pub(crate) async fn unregister_thread_subscriptions_for_thread(&self, thread_id: ThreadId) {

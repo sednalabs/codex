@@ -513,6 +513,10 @@ impl AgentNavigationState {
                 ..entry
             },
         );
+        // Every row producer, including local receiver caches and replay-only materialization,
+        // comes through this path. A revisioned watcher state carries stronger liveness ordering
+        // than such metadata, so restore it after safely merging the descriptive fields.
+        self.reconcile_revisioned_watcher_liveness(thread_id);
     }
 
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
@@ -522,12 +526,14 @@ impl AgentNavigationState {
             // terminal item. Preserve the new row rather than letting that old item recolor it.
             return;
         }
+        let revisioned_watcher_status = self.revisioned_watcher_status(thread_id);
+        let watcher_owns_liveness = revisioned_watcher_status.is_some();
         let is_errored_activity = activity.has_system_error;
         let accepted_system_error = self
             .last_accepted_statuses
             .get(&thread_id)
             .is_some_and(|status| status.has_system_error);
-        let error_epoch = is_errored_activity.then(|| {
+        let error_epoch = (!watcher_owns_liveness && is_errored_activity).then(|| {
             self.last_accepted_statuses
                 .get(&thread_id)
                 .filter(|status| status.has_system_error)
@@ -574,6 +580,23 @@ impl AgentNavigationState {
             // descriptive metadata above and its identity below, but never let it recolor or
             // revive a closed row.
             self.record_terminal_activity_id(thread_id, activity.activity_id);
+            return;
+        }
+        if watcher_owns_liveness {
+            // Parent activity has no revision ordering relative to a child watcher. It can fill
+            // in identity and retain its replay boundary, but must not turn a status-first Idle,
+            // Active, or SystemError observation into a different liveness state.
+            self.reconcile_revisioned_watcher_liveness(thread_id);
+            if self
+                .threads
+                .get(&thread_id)
+                .is_some_and(|entry| entry.is_closed)
+            {
+                self.record_terminal_activity_id(thread_id, activity.activity_id);
+            } else {
+                self.record_active_activity_id(thread_id, activity.activity_id);
+            }
+            self.advance_picker_snapshot_generation();
             return;
         }
         // A delayed non-error activity must not make a terminal `Errored` activity look like a
