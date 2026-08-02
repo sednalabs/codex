@@ -668,7 +668,9 @@ mod tests {
             agents_states: Default::default(),
         };
 
-        let Some(EventMsg::CollabAgentSpawnBegin(begin)) = item.as_legacy_begin_event(123) else {
+        let Some(EventMsg::CollabAgentSpawnBegin(begin)) =
+            item.as_legacy_begin_event(/*started_at_ms*/ 123)
+        else {
             panic!("spawn item should emit a legacy begin event");
         };
         assert_eq!(begin.model.as_deref(), Some("gpt-requested"));

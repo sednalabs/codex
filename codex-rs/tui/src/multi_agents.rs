@@ -1585,7 +1585,7 @@ mod tests {
         let item = spawn_item(
             CollabAgentToolCallStatus::InProgress,
             Some("gpt-caller"),
-            None,
+            /*reasoning_effort*/ None,
         );
 
         assert_eq!(
@@ -1611,7 +1611,7 @@ mod tests {
     fn effort_only_spawn_request_does_not_fabricate_model() {
         let item = spawn_item(
             CollabAgentToolCallStatus::InProgress,
-            None,
+            /*model*/ None,
             Some(ReasoningEffortConfig::High),
         );
 
