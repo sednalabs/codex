@@ -108,7 +108,7 @@ type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorErro
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     // Keep this in exact parity with the facade classifier in
     // `codex-app-server-client`: this runtime queue is upstream of that
-    // facade, so it cannot discard transcript, lifecycle, goal, or usage
+    // facade, so it cannot discard transcript, lifecycle, goal, usage, or rename
     // state that the facade later treats as lossless.
     matches!(
         notification,

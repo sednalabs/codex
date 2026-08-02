@@ -207,9 +207,9 @@ impl From<TaggedAppServerEvent> for InProcessServerEvent {
 
 fn event_requires_delivery(event: &TaggedAppServerEvent) -> bool {
     // These transcript and authoritative state events must remain lossless.
-    // Dropping streamed assistant text or an active goal/usage snapshot can
-    // leave the TUI permanently stale, while dropping completion notifications
-    // can leave surfaces waiting forever.
+    // Dropping streamed assistant text, active goal/usage state, or a successful
+    // thread rename can leave the TUI permanently stale, while dropping completion
+    // notifications can leave surfaces waiting forever.
     match event {
         TaggedAppServerEvent::ServerNotification(notification)
         | TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
@@ -223,7 +223,8 @@ fn event_requires_delivery(event: &TaggedAppServerEvent) -> bool {
 ///
 /// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas), the
 /// authoritative `ItemCompleted` / `TurnCompleted`, and thread lifecycle,
-/// goal, and token-usage state form the lossless tier of the event stream.
+/// goal, token-usage, and thread-name state form the lossless tier of the event
+/// stream.
 /// Dropping any of these corrupts visible output, leaves a surface waiting for
 /// completion, or leaves it with stale active state. Progress-only traffic
 /// (`CommandExecutionOutputDelta`, progress, etc.) is best-effort and may be
