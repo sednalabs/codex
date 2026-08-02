@@ -229,6 +229,24 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Captures the lifecycle expected by an app-server ingress listener. Before the first
+    /// primary attachment, events are buffered for the generation which that authoritative
+    /// attachment will create; after that, they belong to the current presentation.
+    pub(super) fn thread_lifecycle_target_at_ingress(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadLifecycleTarget {
+        let lifecycle_generation = if self.primary_thread_id.is_none() {
+            self.next_thread_lifecycle_generation(thread_id)
+        } else {
+            self.thread_lifecycle_generation(thread_id)
+        };
+        ThreadLifecycleTarget {
+            thread_id,
+            lifecycle_generation,
+        }
+    }
+
     /// The generation that a buffered server event expects the next authoritative attachment to
     /// receive. This is captured before a primary session exists and checked again at delivery.
     fn next_thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
@@ -242,6 +260,17 @@ impl App {
     ) -> bool {
         !self.thread_is_discarded(thread_id)
             && self.thread_lifecycle_generation(thread_id) == generation
+    }
+
+    /// Accepts a listener-captured ingress target. The only future generation allowed is the
+    /// pre-primary buffer target, which is checked again when the primary attachment drains it.
+    pub(super) fn thread_accepts_ingress_target(&self, target: ThreadLifecycleTarget) -> bool {
+        !self.thread_is_discarded(target.thread_id)
+            && (self.thread_lifecycle_generation(target.thread_id)
+                == target.lifecycle_generation
+                || (self.primary_thread_id.is_none()
+                    && self.next_thread_lifecycle_generation(target.thread_id)
+                        == target.lifecycle_generation))
     }
 
     /// Marks a session snapshot, resume, or explicit replay read as authoritative positive
@@ -357,6 +386,22 @@ impl App {
         thread_id: ThreadId,
         request: &ServerRequest,
     ) -> std::io::Result<Option<ThreadInteractiveRequest>> {
+        self.interactive_request_for_thread_request_at_lifecycle(
+            ThreadLifecycleTarget {
+                thread_id,
+                lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+            },
+            request,
+        )
+        .await
+    }
+
+    pub(super) async fn interactive_request_for_thread_request_at_lifecycle(
+        &self,
+        target: ThreadLifecycleTarget,
+        request: &ServerRequest,
+    ) -> std::io::Result<Option<ThreadInteractiveRequest>> {
+        let thread_id = target.thread_id;
         let thread_label = Some(self.thread_label(thread_id));
         Ok(match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
@@ -390,28 +435,32 @@ impl App {
                     network_approval_context,
                     additional_permissions,
                 };
-                Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(
-                    approval,
-                )))
+                Some(ThreadInteractiveRequest::Approval {
+                    target,
+                    request: ApprovalRequest::Exec(approval),
+                })
             }
             ServerRequest::FileChangeRequestApproval { params, .. } => Some(
-                ThreadInteractiveRequest::Approval(ApprovalRequest::ApplyPatch(
-                    ApplyPatchApprovalRequest {
-                    thread_id,
-                    thread_label,
-                    id: params.item_id.clone(),
-                    reason: params.reason.clone(),
-                    cwd: self
-                        .thread_cwd(thread_id)
-                        .await
-                        .unwrap_or_else(|| self.config.cwd.clone()),
-                    changes: self
-                        .thread_file_change_changes(thread_id, &params.turn_id, &params.item_id)
-                        .await
-                        .map(crate::app_server_approval_conversions::file_update_changes_to_display)
-                        .unwrap_or_default(),
-                    },
-                )),
+                ThreadInteractiveRequest::Approval {
+                    target,
+                    request: ApprovalRequest::ApplyPatch(ApplyPatchApprovalRequest {
+                        thread_id,
+                        thread_label,
+                        id: params.item_id.clone(),
+                        reason: params.reason.clone(),
+                        cwd: self
+                            .thread_cwd(thread_id)
+                            .await
+                            .unwrap_or_else(|| self.config.cwd.clone()),
+                        changes: self
+                            .thread_file_change_changes(thread_id, &params.turn_id, &params.item_id)
+                            .await
+                            .map(
+                                crate::app_server_approval_conversions::file_update_changes_to_display,
+                            )
+                            .unwrap_or_default(),
+                    }),
+                },
             ),
             ServerRequest::McpServerElicitationRequest { request_id, params } => {
                 if let Some(params) = AppLinkViewParams::from_url_app_server_request(
@@ -420,7 +469,7 @@ impl App {
                     request_id.clone(),
                     &params.request,
                 ) {
-                    Some(ThreadInteractiveRequest::AppLink(params))
+                    Some(ThreadInteractiveRequest::AppLink { target, params })
                 } else if let Some(request) =
                     McpServerElicitationFormRequest::from_app_server_request(
                         thread_id,
@@ -428,33 +477,38 @@ impl App {
                         params,
                     )
                 {
-                    Some(ThreadInteractiveRequest::McpServerElicitation(request))
+                    Some(ThreadInteractiveRequest::McpServerElicitation { target, request })
                 } else {
                     match &params.request {
                         codex_app_server_protocol::McpServerElicitationRequest::Form {
                             message,
                             ..
-                        } => Some(ThreadInteractiveRequest::Approval(
-                            ApprovalRequest::McpElicitation(McpElicitationApprovalRequest {
-                                thread_id,
-                                thread_label,
-                                server_name: params.server_name.clone(),
-                                request_id: request_id.clone(),
-                                message: message.clone(),
-                            }),
-                        )),
+                        } => Some(ThreadInteractiveRequest::Approval {
+                            target,
+                            request: ApprovalRequest::McpElicitation(
+                                McpElicitationApprovalRequest {
+                                    thread_id,
+                                    thread_label,
+                                    server_name: params.server_name.clone(),
+                                    request_id: request_id.clone(),
+                                    message: message.clone(),
+                                },
+                            ),
+                        }),
                         codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm {
                             ..
                         }
                         | codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => {
-                            self.app_event_tx.resolve_elicitation(
-                                thread_id,
-                                params.server_name.clone(),
-                                request_id.clone(),
-                                codex_app_server_protocol::McpServerElicitationAction::Decline,
-                                /*content*/ None,
-                                /*meta*/ None,
-                            );
+                            self.app_event_tx
+                                .for_thread_lifecycle_generation(target.lifecycle_generation)
+                                .resolve_elicitation(
+                                    thread_id,
+                                    params.server_name.clone(),
+                                    request_id.clone(),
+                                    codex_app_server_protocol::McpServerElicitationAction::Decline,
+                                    /*content*/ None,
+                                    /*meta*/ None,
+                                );
                             None
                         }
                     }
@@ -469,8 +523,9 @@ impl App {
                         format!("failed to localize requested filesystem paths: {err}"),
                     )
                 })?;
-                Some(ThreadInteractiveRequest::Approval(
-                    ApprovalRequest::Permissions(PermissionsApprovalRequest {
+                Some(ThreadInteractiveRequest::Approval {
+                    target,
+                    request: ApprovalRequest::Permissions(PermissionsApprovalRequest {
                         thread_id,
                         thread_label,
                         call_id: params.item_id.clone(),
@@ -478,7 +533,7 @@ impl App {
                         reason: params.reason.clone(),
                         permissions,
                     }),
-                ))
+                })
             }
             _ => None,
         })
@@ -486,16 +541,61 @@ impl App {
 
     pub(super) fn push_thread_interactive_request(&mut self, request: ThreadInteractiveRequest) {
         match request {
-            ThreadInteractiveRequest::AppLink(params) => {
-                self.chat_widget.open_app_link_view(params);
+            ThreadInteractiveRequest::AppLink { target, params } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    target.thread_id,
+                    target.lifecycle_generation,
+                ) {
+                    tracing::debug!(
+                        thread_id = %target.thread_id,
+                        lifecycle_generation = target.lifecycle_generation,
+                        "dropping stale app-link prompt"
+                    );
+                    return;
+                }
+                self.chat_widget.open_app_link_view_with_sender(
+                    params,
+                    self.app_event_tx
+                        .for_thread_lifecycle_generation(target.lifecycle_generation),
+                );
             }
-            ThreadInteractiveRequest::Approval(request) => {
+            ThreadInteractiveRequest::Approval { target, request } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    target.thread_id,
+                    target.lifecycle_generation,
+                ) {
+                    tracing::debug!(
+                        thread_id = %target.thread_id,
+                        lifecycle_generation = target.lifecycle_generation,
+                        "dropping stale approval prompt"
+                    );
+                    return;
+                }
                 self.render_inactive_patch_preview(&request);
-                self.chat_widget.push_approval_request(request);
+                self.chat_widget.push_approval_request_with_sender(
+                    request,
+                    self.app_event_tx
+                        .for_thread_lifecycle_generation(target.lifecycle_generation),
+                );
             }
-            ThreadInteractiveRequest::McpServerElicitation(request) => {
+            ThreadInteractiveRequest::McpServerElicitation { target, request } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    target.thread_id,
+                    target.lifecycle_generation,
+                ) {
+                    tracing::debug!(
+                        thread_id = %target.thread_id,
+                        lifecycle_generation = target.lifecycle_generation,
+                        "dropping stale MCP elicitation prompt"
+                    );
+                    return;
+                }
                 self.chat_widget
-                    .push_mcp_server_elicitation_request(request);
+                    .push_mcp_server_elicitation_request_with_sender(
+                        request,
+                        self.app_event_tx
+                            .for_thread_lifecycle_generation(target.lifecycle_generation),
+                    );
             }
         }
     }
@@ -514,7 +614,9 @@ impl App {
             ));
     }
 
-    pub(super) async fn pending_inactive_thread_requests(&self) -> Vec<(ThreadId, ServerRequest)> {
+    pub(super) async fn pending_inactive_thread_requests(
+        &self,
+    ) -> Vec<(ThreadLifecycleTarget, ServerRequest)> {
         let channels: Vec<(ThreadId, Arc<Mutex<ThreadEventStore>>)> = self
             .thread_event_channels
             .iter()
@@ -532,7 +634,16 @@ impl App {
                 store
                     .pending_replay_requests()
                     .into_iter()
-                    .map(|request| (thread_id, request)),
+                    .map(|request| {
+                        let target = self
+                            .pending_app_server_requests
+                            .thread_target_for_request(&request)
+                            .unwrap_or(ThreadLifecycleTarget {
+                                thread_id,
+                                lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+                            });
+                        (target, request)
+                    }),
             );
         }
         requests
@@ -546,9 +657,9 @@ impl App {
         }
 
         let requests = self.pending_inactive_thread_requests().await;
-        for (thread_id, request) in requests {
+        for (target, request) in requests {
             if let Some(request) = self
-                .interactive_request_for_thread_request(thread_id, &request)
+                .interactive_request_for_thread_request_at_lifecycle(target, &request)
                 .await?
             {
                 self.push_thread_interactive_request(request);
@@ -1383,8 +1494,26 @@ impl App {
             tracing::debug!(%thread_id, "dropping request for discarded thread lifecycle");
             return Ok(());
         }
+        let target = self
+            .pending_app_server_requests
+            .thread_target_for_request(&request)
+            .unwrap_or(ThreadLifecycleTarget {
+                thread_id,
+                lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+            });
+        if !self.thread_accepts_lifecycle_generation(
+            target.thread_id,
+            target.lifecycle_generation,
+        ) {
+            tracing::debug!(
+                thread_id = %target.thread_id,
+                lifecycle_generation = target.lifecycle_generation,
+                "dropping request from a stale thread lifecycle"
+            );
+            return Ok(());
+        }
         let inactive_interactive_request = if self.active_thread_id != Some(thread_id) {
-            self.interactive_request_for_thread_request(thread_id, &request)
+            self.interactive_request_for_thread_request_at_lifecycle(target, &request)
                 .await?
         } else {
             None

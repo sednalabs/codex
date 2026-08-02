@@ -706,13 +706,18 @@ fn parse_single_select_field(
 pub(crate) struct McpServerElicitationOverlay {
     app_event_tx: AppEventSender,
     request: McpServerElicitationFormRequest,
-    queue: VecDeque<McpServerElicitationFormRequest>,
+    queue: VecDeque<QueuedMcpServerElicitationRequest>,
     composer: ChatComposer,
     answers: Vec<McpServerElicitationAnswerState>,
     current_idx: usize,
     done: bool,
     validation_error: Option<String>,
     list_keymap: ListKeymap,
+}
+
+struct QueuedMcpServerElicitationRequest {
+    request: McpServerElicitationFormRequest,
+    app_event_tx: AppEventSender,
 }
 
 impl McpServerElicitationOverlay {
@@ -1145,7 +1150,8 @@ impl McpServerElicitationOverlay {
 
     fn advance_queue_or_complete(&mut self) {
         if let Some(next) = self.queue.pop_front() {
-            self.request = next;
+            self.request = next.request;
+            self.app_event_tx = next.app_event_tx;
             self.reset_for_request();
             self.restore_current_draft();
         } else {
@@ -1220,8 +1226,8 @@ impl McpServerElicitationOverlay {
         };
 
         let queue_len = self.queue.len();
-        self.queue.retain(|queued_request| {
-            queued_request.server_name != *server_name || queued_request.request_id != *request_id
+        self.queue.retain(|queued| {
+            queued.request.server_name != *server_name || queued.request.request_id != *request_id
         });
         if self.request.server_name == *server_name && self.request.request_id == *request_id {
             self.advance_queue_or_complete();
@@ -1683,7 +1689,22 @@ impl BottomPaneView for McpServerElicitationOverlay {
         &mut self,
         request: McpServerElicitationFormRequest,
     ) -> Option<McpServerElicitationFormRequest> {
-        self.queue.push_back(request);
+        self.queue.push_back(QueuedMcpServerElicitationRequest {
+            request,
+            app_event_tx: self.app_event_tx.clone(),
+        });
+        None
+    }
+
+    fn try_consume_mcp_server_elicitation_request_with_sender(
+        &mut self,
+        request: McpServerElicitationFormRequest,
+        app_event_tx: AppEventSender,
+    ) -> Option<(McpServerElicitationFormRequest, AppEventSender)> {
+        self.queue.push_back(QueuedMcpServerElicitationRequest {
+            request,
+            app_event_tx,
+        });
         None
     }
 

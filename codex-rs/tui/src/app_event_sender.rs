@@ -59,6 +59,18 @@ impl AppEventSender {
         self.thread_lifecycle_generation.load(Ordering::Acquire)
     }
 
+    /// Returns a sender permanently scoped to one captured thread lifecycle.
+    ///
+    /// Interactive prompts may be displayed while another thread owns the visible widget. Those
+    /// prompts must retain their target lifecycle rather than reading the widget's later global
+    /// generation when the user answers them.
+    pub(crate) fn for_thread_lifecycle_generation(&self, generation: u64) -> Self {
+        Self {
+            app_event_tx: self.app_event_tx.clone(),
+            thread_lifecycle_generation: Arc::new(AtomicU64::new(generation)),
+        }
+    }
+
     pub(crate) fn interrupt(&self) {
         self.send(AppEvent::CodexOp(AppCommand::interrupt()));
     }

@@ -392,8 +392,16 @@ impl ChatWidget {
     }
 
     pub(crate) fn push_approval_request(&mut self, request: ApprovalRequest) {
+        self.push_approval_request_with_sender(request, self.app_event_tx.clone());
+    }
+
+    pub(crate) fn push_approval_request_with_sender(
+        &mut self,
+        request: ApprovalRequest,
+        app_event_tx: crate::app_event_sender::AppEventSender,
+    ) {
         self.bottom_pane
-            .push_approval_request(request, &self.config.features);
+            .push_approval_request_with_sender(request, app_event_tx, &self.config.features);
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Waiting,
             /*body*/ None,
@@ -405,8 +413,16 @@ impl ChatWidget {
         &mut self,
         request: McpServerElicitationFormRequest,
     ) {
+        self.push_mcp_server_elicitation_request_with_sender(request, self.app_event_tx.clone());
+    }
+
+    pub(crate) fn push_mcp_server_elicitation_request_with_sender(
+        &mut self,
+        request: McpServerElicitationFormRequest,
+        app_event_tx: crate::app_event_sender::AppEventSender,
+    ) {
         self.bottom_pane
-            .push_mcp_server_elicitation_request(request);
+            .push_mcp_server_elicitation_request_with_sender(request, app_event_tx);
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Waiting,
             /*body*/ None,

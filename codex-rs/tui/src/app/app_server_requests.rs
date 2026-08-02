@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use super::App;
+use super::ThreadLifecycleTarget;
 use crate::app_command::AppCommand;
 use crate::app_server_approval_conversions::granted_permission_profile_from_request;
 use crate::app_server_session::AppServerSession;
@@ -86,7 +87,7 @@ pub(super) struct PendingAppServerRequests {
     permissions_approvals: HashMap<String, AppServerRequestId>,
     user_inputs: HashMap<String, VecDeque<PendingUserInputRequest>>,
     mcp_requests: HashMap<McpRequestKey, AppServerRequestId>,
-    request_threads: HashMap<AppServerRequestId, ThreadId>,
+    request_threads: HashMap<AppServerRequestId, ThreadLifecycleTarget>,
 }
 
 impl PendingAppServerRequests {
@@ -94,7 +95,7 @@ impl PendingAppServerRequests {
     pub(super) fn pending_thread_ids(&self) -> Vec<ThreadId> {
         self.request_threads
             .values()
-            .copied()
+            .map(|target| target.thread_id)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect()
@@ -209,13 +210,44 @@ impl PendingAppServerRequests {
         thread_id: ThreadId,
         request: &ServerRequest,
     ) -> Option<UnsupportedAppServerRequest> {
+        self.note_thread_server_request_for_lifecycle(
+            ThreadLifecycleTarget {
+                thread_id,
+                lifecycle_generation: 0,
+            },
+            request,
+        )
+    }
+
+    /// Records a request against the exact thread presentation which received it. This is kept
+    /// beside the global request-id indexes so an inactive prompt can retain its own response
+    /// generation even while another thread is displayed.
+    pub(super) fn note_thread_server_request_for_lifecycle(
+        &mut self,
+        target: ThreadLifecycleTarget,
+        request: &ServerRequest,
+    ) -> Option<UnsupportedAppServerRequest> {
         let unsupported = self.note_server_request(request);
         if unsupported.is_none()
             && let Some(request_id) = pending_server_request_id(request)
         {
-            self.request_threads.insert(request_id, thread_id);
+            self.request_threads.insert(request_id, target);
         }
         unsupported
+    }
+
+    pub(super) fn thread_target_for_request(
+        &self,
+        request: &ServerRequest,
+    ) -> Option<ThreadLifecycleTarget> {
+        self.request_threads.get(request.id()).copied()
+    }
+
+    pub(super) fn thread_target_for_request_id(
+        &self,
+        request_id: &AppServerRequestId,
+    ) -> Option<ThreadLifecycleTarget> {
+        self.request_threads.get(request_id).copied()
     }
 
     /// Removes every locally pending interaction belonging to `thread_id` and returns their UI
@@ -225,8 +257,8 @@ impl PendingAppServerRequests {
         let request_ids = self
             .request_threads
             .iter()
-            .filter_map(|(request_id, request_thread_id)| {
-                (*request_thread_id == thread_id).then(|| request_id.clone())
+            .filter_map(|(request_id, target)| {
+                (target.thread_id == thread_id).then(|| request_id.clone())
             })
             .collect::<Vec<_>>();
         request_ids

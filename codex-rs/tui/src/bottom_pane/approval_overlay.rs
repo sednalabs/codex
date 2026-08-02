@@ -170,7 +170,7 @@ impl ApprovalRequest {
 /// Modal overlay asking the user to approve or deny one or more requests.
 pub(crate) struct ApprovalOverlay {
     current_request: Option<ApprovalRequest>,
-    queue: Vec<ApprovalRequest>,
+    queue: Vec<QueuedApprovalRequest>,
     app_event_tx: AppEventSender,
     list: ListSelectionView,
     options: Vec<ApprovalOption>,
@@ -179,6 +179,12 @@ pub(crate) struct ApprovalOverlay {
     features: Features,
     approval_keymap: ApprovalKeymap,
     list_keymap: ListKeymap,
+}
+
+#[derive(Clone)]
+struct QueuedApprovalRequest {
+    request: ApprovalRequest,
+    app_event_tx: AppEventSender,
 }
 
 impl ApprovalOverlay {
@@ -193,7 +199,11 @@ impl ApprovalOverlay {
             current_request: None,
             queue: Vec::new(),
             app_event_tx: app_event_tx.clone(),
-            list: ListSelectionView::new(Default::default(), app_event_tx, list_keymap.clone()),
+            list: ListSelectionView::new(
+                Default::default(),
+                app_event_tx.clone(),
+                list_keymap.clone(),
+            ),
             options: Vec::new(),
             current_complete: false,
             done: false,
@@ -201,12 +211,23 @@ impl ApprovalOverlay {
             approval_keymap,
             list_keymap,
         };
-        view.set_current(request);
+        view.set_current(request, app_event_tx);
         view
     }
 
-    pub fn enqueue_request(&mut self, req: ApprovalRequest) {
-        self.queue.push(req);
+    pub fn enqueue_request(&mut self, request: ApprovalRequest) {
+        self.enqueue_request_with_sender(request, self.app_event_tx.clone());
+    }
+
+    pub fn enqueue_request_with_sender(
+        &mut self,
+        request: ApprovalRequest,
+        app_event_tx: AppEventSender,
+    ) {
+        self.queue.push(QueuedApprovalRequest {
+            request,
+            app_event_tx,
+        });
     }
 
     fn dismiss_resolved_request(&mut self, request: &ResolvedAppServerRequest) -> bool {
@@ -226,7 +247,7 @@ impl ApprovalOverlay {
         self.queue.len() != queue_len
     }
 
-    fn set_current(&mut self, request: ApprovalRequest) {
+    fn set_current(&mut self, request: ApprovalRequest, app_event_tx: AppEventSender) {
         self.current_complete = false;
         let header = build_header(&request);
         let (options, params) = Self::build_options(
@@ -237,6 +258,7 @@ impl ApprovalOverlay {
             &self.list_keymap,
         );
         self.current_request = Some(request);
+        self.app_event_tx = app_event_tx;
         self.options = options;
         self.list =
             ListSelectionView::new(params, self.app_event_tx.clone(), self.list_keymap.clone());
@@ -476,7 +498,7 @@ impl ApprovalOverlay {
 
     fn advance_queue(&mut self) {
         if let Some(next) = self.queue.pop() {
-            self.set_current(next);
+            self.set_current(next.request, next.app_event_tx);
         } else {
             self.done = true;
         }
@@ -585,8 +607,9 @@ impl BottomPaneView for ApprovalOverlay {
     fn try_consume_approval_request(
         &mut self,
         request: ApprovalRequest,
-    ) -> Option<ApprovalRequest> {
-        self.enqueue_request(request);
+        app_event_tx: AppEventSender,
+    ) -> Option<(ApprovalRequest, AppEventSender)> {
+        self.enqueue_request_with_sender(request, app_event_tx);
         None
     }
 
