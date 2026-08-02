@@ -608,7 +608,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_item_completed(&mut self, payload: &ItemCompletedEvent) {
-        let started_item = self.turn_item_snapshot(&payload.turn_id, payload.item.id());
+        let started_item = self.turn_item_snapshot(&payload.turn_id, &payload.item.id());
         self.handle_materialized_item_lifecycle(
             &payload.turn_id,
             &payload.item,
