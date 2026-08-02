@@ -263,6 +263,17 @@ impl AgentNavigationState {
         true
     }
 
+    #[cfg(test)]
+    pub(crate) fn picker_refresh_ticket_for_test(&self) -> Option<(ThreadId, u64, u64)> {
+        self.picker_refresh.map(|ticket| {
+            (
+                ticket.root_thread_id,
+                ticket.lifecycle_generation,
+                ticket.request_generation,
+            )
+        })
+    }
+
     /// Returns the cached picker entry for a specific thread id.
     ///
     /// Callers use this when they already know which thread they care about and need the last

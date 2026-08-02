@@ -1576,6 +1576,148 @@ async fn open_agent_picker_returns_before_a_busy_live_event_store_unlocks() -> R
     Ok(())
 }
 
+fn background_picker_thread(
+    thread_id: ThreadId,
+    primary_thread_id: ThreadId,
+    display_name: &str,
+) -> Thread {
+    Thread {
+        id: thread_id.to_string(),
+        extra: None,
+        session_id: primary_thread_id.to_string(),
+        forked_from_id: None,
+        parent_thread_id: Some(primary_thread_id.to_string()),
+        preview: display_name.to_string(),
+        ephemeral: false,
+        is_pinned: false,
+        history_mode: Default::default(),
+        model_provider: "test-provider".to_string(),
+        model: None,
+        reasoning_effort: None,
+        created_at: 1,
+        updated_at: 2,
+        recency_at: Some(2),
+        status: ThreadStatus::Idle,
+        path: None,
+        cwd: test_path_buf("/tmp/agent-picker-background").abs(),
+        cli_version: "0.0.0".to_string(),
+        source: codex_app_server_protocol::SessionSource::Unknown,
+        can_accept_direct_input: None,
+        thread_source: None,
+        agent_nickname: Some(display_name.to_string()),
+        agent_role: Some("explorer".to_string()),
+        git_info: None,
+        name: Some(display_name.to_string()),
+        turns: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn empty_agent_picker_open_upgrades_loading_view_when_background_rows_arrive() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    let discovered_thread_id = ThreadId::new();
+    app.config.features.enable(Feature::Collab);
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_eq!(
+        app.chat_widget.selection_view_search_query("agent-picker"),
+        Some(String::new()),
+        "an empty cache must still open the updatable picker surface"
+    );
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Loading subagents..."),
+        "the initial picker should explain that descendant discovery is in progress"
+    );
+    let (refresh_root_thread_id, lifecycle_generation, request_generation) = app
+        .agent_navigation
+        .picker_refresh_ticket_for_test()
+        .expect("opening the picker schedules the first refresh");
+    assert_eq!(refresh_root_thread_id, primary_thread_id);
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![background_picker_thread(
+                discovered_thread_id,
+                primary_thread_id,
+                "discovered worker",
+            )],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(app.agent_navigation.get(&discovered_thread_id).is_some());
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("discovered worker"),
+        "a valid background result must replace the first empty picker without another /agent"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dismissed_empty_agent_picker_is_not_resurrected_by_background_rows() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    let discovered_thread_id = ThreadId::new();
+    app.config.features.enable(Feature::Collab);
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let (_, lifecycle_generation, request_generation) = app
+        .agent_navigation
+        .picker_refresh_ticket_for_test()
+        .expect("opening the picker schedules the first refresh");
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.chat_widget.selection_view_search_query("agent-picker"), None);
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![background_picker_thread(
+                discovered_thread_id,
+                primary_thread_id,
+                "dismissed worker",
+            )],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(
+        app.agent_navigation.get(&discovered_thread_id).is_some(),
+        "the cache may update after dismissal"
+    );
+    assert_eq!(
+        app.chat_widget.selection_view_search_query("agent-picker"),
+        None,
+        "a completed refresh must not resurrect a dismissed picker"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn agent_picker_background_refresh_merges_discovered_rows_into_the_open_picker() {
     let mut app = make_test_app().await;
@@ -1612,35 +1754,11 @@ async fn agent_picker_background_refresh_merges_discovered_rows_into_the_open_pi
         lifecycle_generation,
         request_generation,
         AgentPickerRefreshResult {
-            threads: vec![Thread {
-                id: discovered_thread_id.to_string(),
-                extra: None,
-                session_id: primary_thread_id.to_string(),
-                forked_from_id: None,
-                parent_thread_id: Some(primary_thread_id.to_string()),
-                preview: "discovered worker".to_string(),
-                ephemeral: false,
-                is_pinned: false,
-                history_mode: Default::default(),
-                model_provider: "test-provider".to_string(),
-                model: None,
-                reasoning_effort: None,
-                created_at: 1,
-                updated_at: 2,
-                recency_at: Some(2),
-                status: ThreadStatus::Idle,
-                path: None,
-                cwd: test_path_buf("/tmp/agent-picker-background").abs(),
-                cli_version: "0.0.0".to_string(),
-                source: codex_app_server_protocol::SessionSource::Unknown,
-                can_accept_direct_input: None,
-                thread_source: None,
-                agent_nickname: Some("discovered worker".to_string()),
-                agent_role: Some("explorer".to_string()),
-                git_info: None,
-                name: Some("discovered worker".to_string()),
-                turns: Vec::new(),
-            }],
+            threads: vec![background_picker_thread(
+                discovered_thread_id,
+                primary_thread_id,
+                "discovered worker",
+            )],
             persisted_next_picker_page_cursor: Some(None),
             mark_legacy_relation_fallback_checked: true,
             errors: Vec::new(),
