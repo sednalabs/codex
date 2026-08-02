@@ -281,18 +281,6 @@ impl OutgoingMessageSender {
             .retain(|(_, candidate_thread_id), _| *candidate_thread_id != thread_id);
     }
 
-    async fn thread_subscription_id(
-        &self,
-        connection_id: ConnectionId,
-        thread_id: ThreadId,
-    ) -> Option<String> {
-        self.thread_subscription_ids
-            .lock()
-            .await
-            .get(&(connection_id, thread_id))
-            .cloned()
-    }
-
     pub(crate) async fn register_request_context(&self, request_context: RequestContext) {
         let mut request_contexts = self.request_contexts.lock().await;
         if request_contexts
@@ -396,16 +384,15 @@ impl OutgoingMessageSender {
                 let mut send_error = None;
                 for connection_id in connection_ids {
                     let message = match thread_id {
-                        Some(thread_id) => self
-                            .thread_subscription_id(*connection_id, thread_id)
-                            .await
-                            .map(|thread_subscription_id| {
-                                OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
-                                    request: request.clone(),
-                                    thread_subscription_id,
-                                })
+                        Some(thread_id) => {
+                            let thread_subscription_id = self
+                                .ensure_thread_subscription(*connection_id, thread_id)
+                                .await;
+                            OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+                                request: request.clone(),
+                                thread_subscription_id,
                             })
-                            .unwrap_or_else(|| OutgoingMessage::Request(request.clone())),
+                        }
                         None => OutgoingMessage::Request(request.clone()),
                     };
                     if let Err(err) = self
@@ -446,16 +433,13 @@ impl OutgoingMessageSender {
     ) {
         let requests = self.pending_requests_for_thread(thread_id).await;
         for request in requests {
-            let message = self
-                .thread_subscription_id(connection_id, thread_id)
-                .await
-                .map(|thread_subscription_id| {
-                    OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
-                        request: request.clone(),
-                        thread_subscription_id,
-                    })
-                })
-                .unwrap_or_else(|| OutgoingMessage::Request(request));
+            let thread_subscription_id = self
+                .ensure_thread_subscription(connection_id, thread_id)
+                .await;
+            let message = OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+                request,
+                thread_subscription_id,
+            });
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
@@ -624,15 +608,13 @@ impl OutgoingMessageSender {
         let Some(thread_id) = server_notification_thread_id(notification) else {
             return OutgoingMessage::AppServerNotification(envelope.clone());
         };
-        self.thread_subscription_id(connection_id, thread_id)
-            .await
-            .map(|thread_subscription_id| {
-                OutgoingMessage::ThreadScopedNotification(ThreadScopedServerNotification {
-                    envelope: envelope.clone(),
-                    thread_subscription_id,
-                })
-            })
-            .unwrap_or_else(|| OutgoingMessage::AppServerNotification(envelope.clone()))
+        let thread_subscription_id = self
+            .ensure_thread_subscription(connection_id, thread_id)
+            .await;
+        OutgoingMessage::ThreadScopedNotification(ThreadScopedServerNotification {
+            envelope: envelope.clone(),
+            thread_subscription_id,
+        })
     }
 
     pub(crate) async fn send_response<T>(&self, request_id: ConnectionRequestId, response: T)
@@ -760,6 +742,11 @@ impl OutgoingMessageSender {
                     }
                     return;
                 }
+                tracing::debug!(
+                    %thread_id,
+                    "dropping thread-bound notification without an active subscription"
+                );
+                return;
             }
             if let Err(err) = self
                 .sender
@@ -1542,8 +1529,10 @@ mod tests {
             panic!("expected targeted server notification envelope");
         };
         assert_eq!(connection_id, ConnectionId(42));
-        let OutgoingMessage::AppServerNotification(envelope) = message else {
-            panic!("expected app-server notification");
+        let envelope = match message {
+            OutgoingMessage::AppServerNotification(envelope) => envelope,
+            OutgoingMessage::ThreadScopedNotification(notification) => notification.envelope,
+            _ => panic!("expected app-server notification"),
         };
         assert!(
             envelope

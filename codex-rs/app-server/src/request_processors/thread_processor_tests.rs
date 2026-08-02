@@ -1305,15 +1305,18 @@ mod thread_processor_behavior_tests {
         let request_message = outgoing_rx.recv().await.expect("request should be sent");
         let OutgoingEnvelope::ToConnection {
             connection_id: request_connection_id,
-            message:
-                OutgoingMessage::Request(ServerRequest::ToolRequestUserInput {
-                    request_id: sent_request_id,
-                    ..
-                }),
+            message: OutgoingMessage::ThreadScopedRequest(request),
             ..
         } = request_message
         else {
             panic!("expected tool request to be sent to the subscribed connection");
+        };
+        let ServerRequest::ToolRequestUserInput {
+            request_id: sent_request_id,
+            ..
+        } = request.request
+        else {
+            panic!("expected tool request payload");
         };
         assert_eq!(request_connection_id, connection_id);
         assert_eq!(sent_request_id, request_id);

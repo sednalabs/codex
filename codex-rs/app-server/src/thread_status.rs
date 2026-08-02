@@ -1,4 +1,6 @@
 #[cfg(test)]
+use crate::outgoing_message::ConnectionId;
+#[cfg(test)]
 use crate::outgoing_message::OutgoingEnvelope;
 #[cfg(test)]
 use crate::outgoing_message::OutgoingMessage;
@@ -738,10 +740,18 @@ mod tests {
     #[tokio::test]
     async fn status_change_emits_notification() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
-        let manager = ThreadWatchManager::new_with_outgoing(Arc::new(OutgoingMessageSender::new(
+        let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
-        )));
+        ));
+        outgoing
+            .register_thread_subscription(
+                ConnectionId(1),
+                ThreadId::from_string(INTERACTIVE_THREAD_ID)
+                    .expect("interactive thread id should be valid"),
+            )
+            .await;
+        let manager = ThreadWatchManager::new_with_outgoing(outgoing);
 
         manager.upsert_thread(INTERACTIVE_THREAD_ID).await;
         assert_eq!(
@@ -836,10 +846,18 @@ mod tests {
     #[tokio::test]
     async fn silent_upsert_skips_initial_notification() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
-        let manager = ThreadWatchManager::new_with_outgoing(Arc::new(OutgoingMessageSender::new(
+        let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
-        )));
+        ));
+        outgoing
+            .register_thread_subscription(
+                ConnectionId(1),
+                ThreadId::from_string(INTERACTIVE_THREAD_ID)
+                    .expect("interactive thread id should be valid"),
+            )
+            .await;
+        let manager = ThreadWatchManager::new_with_outgoing(outgoing);
 
         manager.upsert_thread_silently(INTERACTIVE_THREAD_ID).await;
 
@@ -933,12 +951,14 @@ mod tests {
             .await
             .expect("timed out waiting for outgoing notification")
             .expect("outgoing channel closed unexpectedly");
-        let OutgoingEnvelope::Broadcast { message } = envelope else {
-            panic!("expected broadcast notification");
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = envelope
+        else {
+            panic!("expected tagged thread/status/changed notification");
         };
-        let OutgoingMessage::AppServerNotification(envelope) = message else {
-            panic!("expected thread/status/changed notification");
-        };
+        let envelope = notification.envelope;
         let ServerNotification::ThreadStatusChanged(notification) = envelope.notification else {
             panic!("expected thread/status/changed notification");
         };

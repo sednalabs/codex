@@ -731,9 +731,10 @@ mod tests {
             panic!("expected connection-targeted warning notification");
         };
         assert_eq!(connection_id, subscribed_connection);
-        let OutgoingMessage::AppServerNotification(envelope) = message else {
-            panic!("expected app-server warning notification");
+        let OutgoingMessage::ThreadScopedNotification(notification) = message else {
+            panic!("expected tagged app-server warning notification");
         };
+        let envelope = notification.envelope;
         let ServerNotification::Warning(notification) = envelope.notification else {
             panic!("expected warning notification");
         };
@@ -790,9 +791,10 @@ mod tests {
             panic!("expected connection-targeted warning notification");
         };
         assert_eq!(connection_id, subscribed_connection);
-        let OutgoingMessage::AppServerNotification(envelope) = message else {
-            panic!("expected app-server warning notification");
+        let OutgoingMessage::ThreadScopedNotification(notification) = message else {
+            panic!("expected tagged app-server warning notification");
         };
+        let envelope = notification.envelope;
         let ServerNotification::Warning(notification) = envelope.notification else {
             panic!("expected warning notification");
         };
@@ -850,9 +852,10 @@ mod tests {
             panic!("expected connection-targeted warning notification");
         };
         assert_eq!(connection_id, subscribed_connection);
-        let OutgoingMessage::AppServerNotification(envelope) = message else {
-            panic!("expected app-server warning notification");
+        let OutgoingMessage::ThreadScopedNotification(notification) = message else {
+            panic!("expected tagged app-server warning notification");
         };
+        let envelope = notification.envelope;
         let ServerNotification::Warning(notification) = envelope.notification else {
             panic!("expected warning notification");
         };
