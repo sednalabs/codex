@@ -1679,7 +1679,7 @@ mod tests {
             /*created_at*/ None,
             /*updated_at*/ None,
         );
-        state.set_system_error(thread_id, true);
+        state.set_system_error(thread_id, /*has_system_error*/ true);
         let read_generation = state.system_error_observation_generation(thread_id);
 
         // This activity arrives while the read is in flight. Its newer causal observation must
@@ -1794,7 +1794,7 @@ mod tests {
             /*status_revision*/ Some(3),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, true);
+        state.set_system_error(thread_id, /*has_system_error*/ true);
         assert!(!state.accepts_thread_status_change(
             thread_id,
             /*has_system_error*/ false,
@@ -1807,7 +1807,7 @@ mod tests {
             /*status_revision*/ Some(4),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, false);
+        state.set_system_error(thread_id, /*has_system_error*/ false);
         state.mark_running(thread_id);
         assert!(
             state
@@ -1837,7 +1837,7 @@ mod tests {
             /*status_revision*/ Some(3),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, true);
+        state.set_system_error(thread_id, /*has_system_error*/ true);
         state.record_sub_agent_activity(SubAgentActivityDisplay {
             activity_id: "activity-106".to_string(),
             thread_id,
@@ -1854,7 +1854,7 @@ mod tests {
             /*status_revision*/ Some(4),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, false);
+        state.set_system_error(thread_id, /*has_system_error*/ false);
         state.mark_running(thread_id);
         assert!(
             state
@@ -2003,14 +2003,14 @@ mod tests {
             /*status_revision*/ Some(3),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, true);
+        state.set_system_error(thread_id, /*has_system_error*/ true);
         assert!(state.accepts_thread_status_change(
             thread_id,
             /*has_system_error*/ false,
             /*status_revision*/ Some(4),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, false);
+        state.set_system_error(thread_id, /*has_system_error*/ false);
         state.mark_running(thread_id);
 
         // The rev-4 recovery stays active even when the rev-3 epoch is replayed afterward.
@@ -2076,7 +2076,7 @@ mod tests {
             /*status_revision*/ Some(4),
             /*is_closed*/ false,
         ));
-        state.set_system_error(thread_id, false);
+        state.set_system_error(thread_id, /*has_system_error*/ false);
         state.mark_running(thread_id);
         assert!(
             state
@@ -2528,8 +2528,8 @@ mod tests {
             let known_thread_id = ThreadId::new();
             state.upsert(
                 known_thread_id,
-                None,
-                None,
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
                 /*is_closed*/ false,
                 /*created_at*/ None,
                 /*updated_at*/ None,

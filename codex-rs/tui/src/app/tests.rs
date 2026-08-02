@@ -1657,7 +1657,8 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
 
     // A child raw Error/SystemError marks the cached row failed before its parent receives the
     // terminal V2 activity. That terminal activity must not make the row look idle again.
-    app.agent_navigation.set_system_error(thread_id, true);
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
     let errored_item = ThreadItem::SubAgentActivity {
         id: "activity-errored".to_string(),
         kind: SubAgentActivityKind::Errored,
@@ -3029,7 +3030,8 @@ async fn transient_liveness_failure_preserves_known_system_error_status() {
         /*created_at*/ None,
         /*updated_at*/ None,
     );
-    app.agent_navigation.set_system_error(thread_id, true);
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
 
     let err = color_eyre::eyre::eyre!(
         "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
@@ -3070,7 +3072,8 @@ async fn successful_liveness_read_clears_a_prior_system_error_without_newer_evid
         /*created_at*/ None,
         /*updated_at*/ None,
     );
-    app.agent_navigation.set_system_error(thread_id, true);
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
 
     assert!(Box::pin(app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)).await);
     assert!(
@@ -3098,7 +3101,8 @@ async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_m
     );
     app.thread_event_channels
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
-    app.agent_navigation.set_system_error(thread_id, true);
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
 
     let err = color_eyre::eyre::eyre!(
         "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
@@ -5956,7 +5960,7 @@ async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattac
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerRequest {
             thread_subscription_id: old_subscription_id,
-            request: current_time_read_request(thread_id, 41),
+            request: current_time_read_request(thread_id, /*request_id*/ 41),
         },
     )
     .await;
@@ -5969,7 +5973,7 @@ async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattac
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerRequest {
             thread_subscription_id: new_subscription_id,
-            request: current_time_read_request(thread_id, 42),
+            request: current_time_read_request(thread_id, /*request_id*/ 42),
         },
     )
     .await;
@@ -6871,7 +6875,7 @@ async fn replace_goal_confirmation_snapshot() {
     let mut app = make_test_app().await;
     app.show_replace_thread_goal_confirmation(
         ThreadId::new(),
-        0,
+        /*lifecycle_generation*/ 0,
         goal_files::GoalDraft {
             objective: "New goal".to_string(),
             ..Default::default()
@@ -8810,7 +8814,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     };
 
     app.apply_refreshed_snapshot_thread(
-        None,
+        /*app_server*/ None,
         thread_id,
         AppServerStartedThread {
             session: resumed_session.clone(),
