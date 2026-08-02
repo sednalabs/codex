@@ -104,6 +104,9 @@ pub(crate) struct AgentNavigationState {
     picker_refresh: Option<PickerRefreshTicket>,
     /// Source for the monotonic request identity in [`Self::picker_refresh`].
     next_picker_refresh_generation: u64,
+    /// Whether an empty picker is still waiting for discovery or has completed an authoritative
+    /// empty first page. Cache emptiness alone cannot distinguish those user-visible states.
+    picker_empty_state: PickerEmptyState,
 }
 
 /// Correlates one background picker refresh with the root session that requested it.
@@ -112,6 +115,18 @@ struct PickerRefreshTicket {
     root_thread_id: ThreadId,
     lifecycle_generation: u64,
     request_generation: u64,
+}
+
+/// User-visible completion state for an otherwise empty picker cache.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PickerEmptyState {
+    /// No successful, authoritative empty discovery response has been applied yet.
+    #[default]
+    Unknown,
+    /// A root-scoped picker refresh is in flight.
+    Pending,
+    /// A successful, exhausted first page contained no visible descendants.
+    Complete,
 }
 
 /// The causal state for one activity-derived system error.
@@ -130,6 +145,7 @@ enum SystemErrorEpoch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AcceptedThreadStatus {
     has_system_error: bool,
+    is_closed: bool,
     status_revision: Option<u64>,
 }
 
@@ -233,6 +249,7 @@ impl AgentNavigationState {
         if self.picker_refresh.is_some() {
             return None;
         }
+        self.picker_empty_state = PickerEmptyState::Pending;
         self.next_picker_refresh_generation = self.next_picker_refresh_generation.wrapping_add(1);
         let request_generation = self.next_picker_refresh_generation;
         self.picker_refresh = Some(PickerRefreshTicket {
@@ -261,6 +278,26 @@ impl AgentNavigationState {
         }
         self.picker_refresh = None;
         true
+    }
+
+    /// Records whether a completed background refresh authoritatively established that no
+    /// descendants are available. Partial or failed responses remain unknown rather than looking
+    /// like a final empty result.
+    pub(crate) fn complete_picker_refresh_empty_state(
+        &mut self,
+        is_authoritatively_empty: bool,
+    ) {
+        self.picker_empty_state = if is_authoritatively_empty && self.is_empty() {
+            PickerEmptyState::Complete
+        } else {
+            PickerEmptyState::Unknown
+        };
+    }
+
+    /// Returns whether an empty picker should render its stable terminal state rather than an
+    /// in-flight discovery placeholder.
+    pub(crate) fn has_completed_empty_picker_refresh(&self) -> bool {
+        self.picker_empty_state == PickerEmptyState::Complete
     }
 
     #[cfg(test)]
@@ -301,6 +338,23 @@ impl AgentNavigationState {
         self.threads.is_empty()
     }
 
+    /// Returns whether an unversioned `thread/read` or picker-backfill snapshot may update
+    /// liveness. Once a watcher status has a revision, an asynchronous snapshot has no ordering
+    /// evidence to supersede it; callers may still merge the snapshot's descriptive metadata.
+    pub(crate) fn accepts_unversioned_picker_snapshot_liveness(
+        &self,
+        thread_id: ThreadId,
+    ) -> bool {
+        self.revisioned_watcher_status(thread_id).is_none()
+    }
+
+    fn revisioned_watcher_status(&self, thread_id: ThreadId) -> Option<AcceptedThreadStatus> {
+        self.last_accepted_statuses
+            .get(&thread_id)
+            .copied()
+            .filter(|status| status.status_revision.is_some())
+    }
+
     /// Inserts or updates a picker entry while preserving first-seen traversal order.
     ///
     /// The key invariant of this module is enforced here: a thread id is appended to `order` only
@@ -315,6 +369,7 @@ impl AgentNavigationState {
         created_at: Option<i64>,
         updated_at: Option<i64>,
     ) {
+        let revisioned_watcher_status = self.revisioned_watcher_status(thread_id);
         let stale_terminal_metadata = is_closed
             && self
                 .terminal_lifecycle_watermarks
@@ -322,8 +377,14 @@ impl AgentNavigationState {
                 .is_some_and(|watermark| {
                     matches!(watermark, TerminalLifecycleWatermark::Recovered { .. })
                 });
-        let is_closed = is_closed && !stale_terminal_metadata;
-        if is_closed {
+        let records_snapshot_closure = is_closed
+            && revisioned_watcher_status.is_none()
+            && !stale_terminal_metadata;
+        let is_closed = revisioned_watcher_status.map_or(
+            is_closed && !stale_terminal_metadata,
+            |status| status.is_closed,
+        );
+        if records_snapshot_closure {
             self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
             self.system_error_epochs.remove(&thread_id);
             self.last_status_revisions.remove(&thread_id);
@@ -346,7 +407,10 @@ impl AgentNavigationState {
                 is_closed,
                 // A backend metadata refresh can lag the child status watch. Keep an activity-
                 // derived error until a direct recovery event or terminal closure supersedes it.
-                has_system_error: previous_has_system_error && !is_closed,
+                has_system_error: revisioned_watcher_status.map_or(
+                    previous_has_system_error && !is_closed,
+                    |status| status.has_system_error && !is_closed,
+                ),
                 created_at,
                 updated_at,
             },
@@ -619,23 +683,30 @@ impl AgentNavigationState {
         *generation = generation.saturating_add(1);
     }
 
-    /// Records an authoritative `SystemError` obtained during thread/read or persisted-thread
-    /// backfill. Those snapshots do not currently carry a status revision, but they do confirm
-    /// an activity-derived error epoch so a later revisioned status notification can recover it.
+    /// Records an unversioned `SystemError` obtained during thread/read or persisted-thread
+    /// backfill when no newer revisioned watcher state fences it. Such a snapshot confirms an
+    /// activity-derived error epoch so a later revisioned status notification can recover it.
     pub(crate) fn confirm_system_error_from_authoritative_status(
         &mut self,
         thread_id: ThreadId,
         status_revision: Option<u64>,
-    ) {
+    ) -> bool {
         if self
             .threads
             .get(&thread_id)
             .is_none_or(|entry| entry.is_closed)
+            || (status_revision.is_none()
+                && !self.accepts_unversioned_picker_snapshot_liveness(thread_id))
         {
-            return;
+            return false;
         }
 
-        self.record_accepted_status(thread_id, /*has_system_error*/ true, status_revision);
+        self.record_accepted_status(
+            thread_id,
+            /*has_system_error*/ true,
+            /*is_closed*/ false,
+            status_revision,
+        );
         if let Some(epoch) = self.system_error_epochs.get_mut(&thread_id) {
             match epoch {
                 SystemErrorEpoch::AwaitingSystemError => {
@@ -650,6 +721,7 @@ impl AgentNavigationState {
             }
         }
         self.set_system_error(thread_id, /*has_system_error*/ true);
+        true
     }
 
     /// Returns whether a status-watch update can change the picker liveness for this thread.
@@ -720,6 +792,7 @@ impl AgentNavigationState {
             self.record_accepted_status(
                 thread_id,
                 /*has_system_error*/ false,
+                /*is_closed*/ true,
                 status_revision,
             );
             self.record_terminal_lifecycle_closed(thread_id, status_revision);
@@ -784,7 +857,12 @@ impl AgentNavigationState {
         };
 
         if accepts {
-            self.record_accepted_status(thread_id, has_system_error, status_revision);
+            self.record_accepted_status(
+                thread_id,
+                has_system_error,
+                /*is_closed*/ false,
+                status_revision,
+            );
             self.advance_terminal_lifecycle_for_newer_status(thread_id, status_revision);
             if recovered_system_error_lifecycle || recovered_status_first_system_error {
                 self.record_recovered_system_error_lifecycle(thread_id, status_revision);
@@ -798,12 +876,14 @@ impl AgentNavigationState {
         &mut self,
         thread_id: ThreadId,
         has_system_error: bool,
+        is_closed: bool,
         status_revision: Option<u64>,
     ) {
         self.last_accepted_statuses.insert(
             thread_id,
             AcceptedThreadStatus {
                 has_system_error,
+                is_closed,
                 status_revision,
             },
         );
@@ -1185,6 +1265,7 @@ impl AgentNavigationState {
         self.next_picker_page_cursor = None;
         self.legacy_relation_fallback_checked = false;
         self.picker_refresh = None;
+        self.picker_empty_state = PickerEmptyState::Unknown;
     }
 
     /// Stores the server continuation after a bounded `/agent` backfill.
@@ -2129,6 +2210,76 @@ mod tests {
         assert!(state.get(&thread_id).is_some_and(|entry| entry.is_running
             && !entry.has_system_error
             && entry.agent_path.as_deref() == Some("/root/fresh-child")));
+    }
+
+    #[test]
+    fn revisioned_active_status_fences_delayed_not_loaded_snapshot() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000128")
+            .expect("valid thread");
+
+        // A watcher may win the race before picker discovery materializes its row. The later
+        // unversioned snapshot must still contribute its metadata without terminally closing it.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ false,
+        ));
+        state.upsert(
+            thread_id,
+            Some("Delayed snapshot name".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            !entry.is_closed
+                && entry.agent_nickname.as_deref() == Some("Delayed snapshot name")
+                && entry.agent_role.as_deref() == Some("worker")
+        }));
+    }
+
+    #[test]
+    fn recovered_revisioned_status_fences_delayed_system_error_snapshot() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000129")
+            .expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Recovering child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(5),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(6),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+
+        // `thread/read` and picker backfill have no comparable revision. A delayed error
+        // snapshot cannot overwrite the accepted rev-6 recovery.
+        assert!(!state.confirm_system_error_from_authoritative_status(
+            thread_id, /*status_revision*/ None,
+        ));
+        assert!(state
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running && !entry.has_system_error));
     }
 
     #[test]

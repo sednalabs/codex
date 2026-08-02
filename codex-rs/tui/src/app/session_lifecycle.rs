@@ -187,10 +187,12 @@ impl App {
             }
         }
 
-        self.render_agent_picker().await;
         if let Some(primary_thread_id) = self.primary_thread_id {
+            // Register the refresh before rendering an empty cache so the first picker view can
+            // distinguish in-flight discovery from a previously completed empty result.
             self.refresh_agent_picker_threads(app_server, primary_thread_id);
         }
+        self.render_agent_picker().await;
     }
 
     /// Loads one continuation page of persisted descendants without widening
@@ -218,8 +220,24 @@ impl App {
 
         if self.agent_navigation.is_empty() {
             // Keep a stable, searchable picker surface open while the cache-first refresh runs.
-            // Its view id lets a valid background reply replace this loading row with discovered
+            // Its view id lets a valid background reply replace this row with discovered
             // descendants, while a dismissed picker remains dismissed and is never revived.
+            let has_completed_empty_refresh = self
+                .agent_navigation
+                .has_completed_empty_picker_refresh();
+            let (name, description, subtitle) = if has_completed_empty_refresh {
+                (
+                    "No subagents found...",
+                    "No current or saved subagents are available for this thread.".to_string(),
+                    "No subagents are available for this thread.".to_string(),
+                )
+            } else {
+                (
+                    "Loading subagents...",
+                    "This picker updates automatically when descendant sessions load.".to_string(),
+                    "Checking current and saved subagents...".to_string(),
+                )
+            };
             let prior_search_query = self
                 .chat_widget
                 .selection_view_search_query(AGENT_PICKER_VIEW_ID);
@@ -228,17 +246,14 @@ impl App {
                 SelectionViewParams {
                     view_id: Some(AGENT_PICKER_VIEW_ID),
                     title: Some("Subagents".to_string()),
-                    subtitle: Some("Checking current and saved subagents...".to_string()),
+                    subtitle: Some(subtitle),
                     footer_hint: Some(standard_popup_hint_line()),
                     is_searchable: true,
                     initial_search_query: prior_search_query,
                     search_placeholder: Some("Search agents or type 'closed'".to_string()),
                     items: vec![SelectionItem {
-                        name: "Loading subagents...".to_string(),
-                        description: Some(
-                            "This picker updates automatically when descendant sessions load."
-                                .to_string(),
-                        ),
+                        name: name.to_string(),
+                        description: Some(description),
                         is_disabled: true,
                         ..Default::default()
                     }],
@@ -563,6 +578,9 @@ impl App {
         thread_id: ThreadId,
     ) -> bool {
         let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        let accepts_snapshot_liveness = self
+            .agent_navigation
+            .accepts_unversioned_picker_snapshot_liveness(thread_id);
         let error_observation_generation = self
             .agent_navigation
             .system_error_observation_generation(thread_id);
@@ -606,28 +624,30 @@ impl App {
                     Some(thread.created_at),
                     Some(thread.updated_at),
                 );
-                if status.has_system_error {
-                    self.agent_navigation
-                        .confirm_system_error_from_authoritative_status(
-                            thread_id, /*status_revision*/ None,
-                        );
-                } else if !status.is_closed {
-                    self.agent_navigation
-                        .clear_system_error_from_authoritative_read(
-                            thread_id,
-                            error_observation_generation,
-                        );
-                }
                 self.sync_agent_picker_identity(thread_id);
-                let keeps_system_error = self
-                    .agent_navigation
-                    .get(&thread_id)
-                    .is_some_and(|entry| entry.has_system_error);
-                if status.is_running && !keeps_system_error {
-                    self.agent_navigation.mark_running(thread_id);
-                } else {
-                    self.agent_navigation
-                        .set_running(thread_id, /*is_running*/ false);
+                if accepts_snapshot_liveness {
+                    if status.has_system_error {
+                        self.agent_navigation
+                            .confirm_system_error_from_authoritative_status(
+                                thread_id, /*status_revision*/ None,
+                            );
+                    } else if !status.is_closed {
+                        self.agent_navigation
+                            .clear_system_error_from_authoritative_read(
+                                thread_id,
+                                error_observation_generation,
+                            );
+                    }
+                    let keeps_system_error = self
+                        .agent_navigation
+                        .get(&thread_id)
+                        .is_some_and(|entry| entry.has_system_error);
+                    if status.is_running && !keeps_system_error {
+                        self.agent_navigation.mark_running(thread_id);
+                    } else {
+                        self.agent_navigation
+                            .set_running(thread_id, /*is_running*/ false);
+                    }
                 }
                 true
             }
@@ -651,10 +671,21 @@ impl App {
         err: &color_eyre::Report,
     ) -> bool {
         let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        let accepts_snapshot_liveness = self
+            .agent_navigation
+            .accepts_unversioned_picker_snapshot_liveness(thread_id);
         let is_terminal = Self::is_terminal_thread_read_error(err);
         if is_terminal && !has_replay_channel {
-            self.agent_navigation.remove(thread_id);
-            return false;
+            if accepts_snapshot_liveness {
+                self.agent_navigation.remove(thread_id);
+                return false;
+            }
+            return true;
+        }
+        if !accepts_snapshot_liveness {
+            // This read cannot order itself after the accepted watcher state. Retain that
+            // liveness, but leave the existing row available for the next fresh metadata pass.
+            return true;
         }
         let is_closed = Self::closed_state_for_thread_read_error(
             err,
@@ -1477,6 +1508,9 @@ impl App {
             .thread_event_channels
             .get(&thread_id)
             .is_some_and(ThreadEventChannel::has_live_attachment);
+        let accepts_snapshot_liveness = self
+            .agent_navigation
+            .accepts_unversioned_picker_snapshot_liveness(thread_id);
         let status = agent_picker_thread_status(&thread.status, has_live_channel);
         if thread_blocks_direct_input(&thread) {
             self.agent_navigation.mark_parent_owned(thread_id);
@@ -1501,16 +1535,16 @@ impl App {
             Some(thread.created_at),
             Some(thread.updated_at),
         );
-        if status.has_system_error {
-            self.agent_navigation
-                .confirm_system_error_from_authoritative_status(
-                    thread_id, /*status_revision*/ None,
-                );
-        }
         self.sync_agent_picker_identity(thread_id);
         // A live channel can have an empty store after a successful spawn. Only apply server
         // status for channels that would otherwise need another liveness read.
-        if !has_live_channel {
+        if !has_live_channel && accepts_snapshot_liveness {
+            if status.has_system_error {
+                self.agent_navigation
+                    .confirm_system_error_from_authoritative_status(
+                        thread_id, /*status_revision*/ None,
+                    );
+            }
             let keeps_system_error = self
                 .agent_navigation
                 .get(&thread_id)
