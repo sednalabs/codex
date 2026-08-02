@@ -3093,7 +3093,7 @@
     },
     {
       "id": "mcp-json-resource-model-boundary",
-      "title": "MCP JSON resource model-output boundary",
+      "title": "MCP JSON-family resource model-output boundary",
       "status": "live",
       "category": "core-runtime",
       "surface_type": "tool-output",
@@ -3107,7 +3107,7 @@
         "codex-rs/core/src/tools/handlers/mcp_resource/read_mcp_resource.rs",
         "codex-rs/core/src/tools/handlers/mcp_resource_tests.rs"
       ],
-      "behavior": "A bounded read_mcp_resource result never reports success with a truncated application/json resource. If the serialized envelope exceeds the model-output budget and contains a JSON text resource, the model receives a compact structured error with failed success semantics; code mode retains the complete original serialized resource payload. Plain-text and Markdown resources retain generic truncation behavior, and the compact error is small enough to remain valid when persisted through the generic history boundary.",
+      "behavior": "A bounded read_mcp_resource result never reports success with a truncated application/json or application/*+json resource. If the serialized envelope exceeds the model-output budget and contains a JSON-family text resource, the model receives a fixed compact structured error with failed success semantics; code mode retains the complete original serialized resource payload. Plain-text and Markdown resources retain generic truncation behavior, and the fixed error remains valid when persisted through the generic history boundary.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -3117,17 +3117,21 @@
       "tests": [
         "serialize_read_resource_output_preserves_small_json_for_model",
         "large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload",
+        "serialize_read_resource_output_fails_closed_for_vendor_json_media_type",
+        "serialize_read_resource_output_fails_closed_for_problem_json_media_type",
+        "serialize_read_resource_output_keeps_untyped_json_on_generic_truncation",
+        "serialize_read_resource_output_keeps_large_markdown_on_generic_truncation",
         "history_does_not_retruncate_bounded_json_resource_error"
       ],
       "owner": "downstream",
-      "notes": "Preserve this narrow structured-output boundary until upstream provides equivalent model-safe handling for bounded MCP JSON resources. Do not broaden it into a compatibility layer for malformed source resources or alter generic text/Markdown truncation.",
+      "notes": "Preserve this narrow structured-output boundary until upstream provides equivalent model-safe handling for bounded MCP JSON-family resources. Do not broaden it into a compatibility layer for malformed source resources or alter generic text/Markdown truncation.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "structured-output-correctness",
       "hotspot_files": [
         "codex-rs/core/src/tools/handlers/mcp_resource.rs",
         "codex-rs/core/src/context_manager/history.rs"
       ],
-      "extraction_target": "upstream model-safe MCP resource output boundary"
+      "extraction_target": "upstream model-safe MCP JSON-family resource output boundary"
     }
   ]
 }
