@@ -539,8 +539,20 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
     session.services.extensions = Arc::new(builder.build());
 
     std::fs::create_dir_all(&turn.config.codex_home)?;
+    #[cfg(windows)]
+    let hook_script = turn.config.codex_home.join("post_tool_use_hook.cmd");
+    #[cfg(not(windows))]
     let hook_script = turn.config.codex_home.join("post_tool_use_hook.sh");
     let hook_marker = turn.config.codex_home.join("post_tool_use_hook_input.json");
+    #[cfg(windows)]
+    std::fs::write(
+        &hook_script,
+        format!(
+            "@echo off\r\nmore > \"{}\"\r\necho {{\"continue\":true}}\r\n",
+            hook_marker.display(),
+        ),
+    )?;
+    #[cfg(not(windows))]
     std::fs::write(
         &hook_script,
         format!(
@@ -556,6 +568,10 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
         permissions.set_mode(0o755);
         std::fs::set_permissions(&hook_script, permissions)?;
     }
+    #[cfg(windows)]
+    let hook_command = format!(r#""{}""#, hook_script.display());
+    #[cfg(not(windows))]
+    let hook_command = hook_script.display().to_string();
     std::fs::write(
         turn.config.codex_home.join("hooks.json"),
         serde_json::json!({
@@ -564,7 +580,7 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
                     "matcher": "^model_bounded_resource$",
                     "hooks": [{
                         "type": "command",
-                        "command": hook_script.display().to_string(),
+                        "command": hook_command,
                     }],
                 }],
             },
@@ -589,19 +605,28 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
             },
         }))?,
     )?;
+    #[cfg(windows)]
+    let hook_shell_program = None;
+    #[cfg(windows)]
+    let hook_shell_args = Vec::new();
+    #[cfg(not(windows))]
     let mut hook_shell_argv = session
         .user_shell()
         .derive_exec_args("", /*use_login_shell*/ false);
+    #[cfg(not(windows))]
     let hook_shell_program = hook_shell_argv.remove(0);
+    #[cfg(not(windows))]
     let _ = hook_shell_argv.pop();
+    #[cfg(not(windows))]
+    let hook_shell_args = hook_shell_argv;
     session
         .services
         .hooks
         .store(Arc::new(Hooks::new(HooksConfig {
             feature_enabled: true,
             config_layer_stack: Some(trusted_stack),
-            shell_program: Some(hook_shell_program),
-            shell_args: hook_shell_argv,
+            shell_program: hook_shell_program,
+            shell_args: hook_shell_args,
             ..HooksConfig::default()
         })));
 
