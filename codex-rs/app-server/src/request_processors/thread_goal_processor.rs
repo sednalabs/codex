@@ -1,5 +1,5 @@
-use super::*;
 use super::thread_lifecycle::send_captured_thread_goal_notification;
+use super::*;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
 use codex_goal_extension::GoalServiceError;
@@ -428,13 +428,11 @@ impl ThreadGoalRequestProcessor {
         send_captured_thread_goal_notification(
             &self.outgoing,
             &thread_subscriptions,
-            ServerNotification::ThreadGoalUpdated(
-                ThreadGoalUpdatedNotification {
-                    thread_id: thread_id.to_string(),
-                    turn_id: None,
-                    goal,
-                },
-            ),
+            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: None,
+                goal,
+            }),
         )
         .await;
     }
@@ -459,11 +457,9 @@ impl ThreadGoalRequestProcessor {
         send_captured_thread_goal_notification(
             &self.outgoing,
             &thread_subscriptions,
-            ServerNotification::ThreadGoalCleared(
-                ThreadGoalClearedNotification {
-                    thread_id: thread_id.to_string(),
-                },
-            ),
+            ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            }),
         )
         .await;
     }

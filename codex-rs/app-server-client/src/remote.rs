@@ -1410,33 +1410,35 @@ mod tests {
             .expect("initial event should enqueue");
 
         let mut skipped_events = 0usize;
-        let delivery = deliver_event(
-            &event_tx,
-            &mut skipped_events,
-            AppServerEvent::ThreadServerNotification {
-                thread_subscription_id: "thread-subscription".to_string(),
-                notification: ServerNotification::ThreadArchived(
-                    codex_app_server_protocol::ThreadArchivedNotification {
-                        thread_id: "thread".to_string(),
-                    },
-                ),
-            },
-        );
-        tokio::pin!(delivery);
+        {
+            let delivery = deliver_event(
+                &event_tx,
+                &mut skipped_events,
+                AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification: ServerNotification::ThreadArchived(
+                        codex_app_server_protocol::ThreadArchivedNotification {
+                            thread_id: "thread".to_string(),
+                        },
+                    ),
+                },
+            );
+            tokio::pin!(delivery);
 
-        assert!(
-            timeout(Duration::from_millis(20), &mut delivery)
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "terminal thread transitions must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::Lagged { skipped: 1 })
+            ));
+            delivery
                 .await
-                .is_err(),
-            "terminal thread transitions must block rather than be dropped"
-        );
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(AppServerEvent::Lagged { skipped: 1 })
-        ));
-        delivery
-            .await
-            .expect("terminal thread transition should deliver after capacity returns");
+                .expect("terminal thread transition should deliver after capacity returns");
+        }
         assert!(matches!(
             event_rx.recv().await,
             Some(AppServerEvent::ThreadServerNotification {

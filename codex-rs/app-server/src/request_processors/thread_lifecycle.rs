@@ -531,13 +531,11 @@ pub(super) async fn handle_thread_listener_command(
             send_captured_thread_goal_notification(
                 outgoing,
                 &thread_subscriptions,
-                ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
-                        thread_id: conversation_id.to_string(),
-                        turn_id,
-                        goal,
-                    },
-                ),
+                ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id,
+                    goal,
+                }),
             )
             .await;
         }
@@ -550,11 +548,9 @@ pub(super) async fn handle_thread_listener_command(
             send_captured_thread_goal_notification(
                 outgoing,
                 &thread_subscriptions,
-                ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
-                        thread_id: conversation_id.to_string(),
-                    },
-                ),
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: conversation_id.to_string(),
+                }),
             )
             .await;
         }
@@ -858,13 +854,11 @@ pub(super) async fn send_thread_goal_snapshot_notification(
             send_captured_thread_goal_notification(
                 outgoing,
                 thread_subscriptions,
-                ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
-                        thread_id: thread_id.to_string(),
-                        turn_id: None,
-                        goal: api_thread_goal_from_state(goal),
-                    },
-                ),
+                ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn_id: None,
+                    goal: api_thread_goal_from_state(goal),
+                }),
             )
             .await;
         }
@@ -872,11 +866,9 @@ pub(super) async fn send_thread_goal_snapshot_notification(
             send_captured_thread_goal_notification(
                 outgoing,
                 thread_subscriptions,
-                ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
-                        thread_id: thread_id.to_string(),
-                    },
-                ),
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
             )
             .await;
         }
@@ -1038,13 +1030,8 @@ mod tests {
             .register_thread_subscription(connection_id, thread_id)
             .await;
 
-        rollback_failed_thread_attach(
-            &thread_state_manager,
-            &outgoing,
-            thread_id,
-            connection_id,
-        )
-        .await;
+        rollback_failed_thread_attach(&thread_state_manager, &outgoing, thread_id, connection_id)
+            .await;
 
         assert!(!thread_state_manager.has_subscribers(thread_id).await);
         assert!(
@@ -1139,7 +1126,10 @@ mod tests {
                 connection_id: delivered_connection_id,
                 message: OutgoingMessage::ThreadScopedNotification(notification),
                 ..
-            } = outgoing_rx.recv().await.expect("goal notification should enqueue")
+            } = outgoing_rx
+                .recv()
+                .await
+                .expect("goal notification should enqueue")
             else {
                 panic!("expected captured thread-scoped goal notification");
             };
