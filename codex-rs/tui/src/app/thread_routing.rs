@@ -1665,8 +1665,8 @@ impl App {
         presentation: ThreadAttachPresentation,
     ) -> Result<()> {
         self.enqueue_primary_thread_session_with_presentation_and_server(
-            None,
-            None,
+            /*app_server*/ None,
+            /*thread_subscription_id*/ None,
             session,
             turns,
             presentation,

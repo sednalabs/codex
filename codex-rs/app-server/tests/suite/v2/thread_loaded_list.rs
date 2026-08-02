@@ -446,7 +446,7 @@ async fn thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_quer
         .send_thread_loaded_list_request(ThreadLoadedListParams {
             cursor: None,
             limit: Some(1),
-            ancestor_thread_id: Some(root_thread_id),
+            ancestor_thread_id: Some(root_thread_id.clone()),
         })
         .await?;
     let ThreadLoadedListResponse {

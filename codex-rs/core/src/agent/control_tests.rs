@@ -461,7 +461,7 @@ async fn spawn_named_agent_for_tree_inspection(
             text_input("child task"),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
-                depth,
+                depth: depth.try_into().expect("test depth should fit in i32"),
                 agent_path: Some(agent_path),
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),

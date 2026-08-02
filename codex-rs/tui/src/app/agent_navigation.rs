@@ -539,7 +539,7 @@ impl AgentNavigationState {
             return false;
         }
         self.system_error_epochs.remove(&thread_id);
-        self.set_system_error(thread_id, false);
+        self.set_system_error(thread_id, /*has_system_error*/ false);
         true
     }
 
@@ -581,7 +581,7 @@ impl AgentNavigationState {
                 SystemErrorEpoch::ConfirmedSystemError { .. } => {}
             }
         }
-        self.set_system_error(thread_id, true);
+        self.set_system_error(thread_id, /*has_system_error*/ true);
     }
 
     /// Returns whether a status-watch update can change the picker liveness for this thread.

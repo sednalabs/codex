@@ -525,8 +525,8 @@ async fn spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effor
 
     SpawnAgentHandler::default()
         .handle(invocation(
-            Arc::new(session),
-            Arc::new(turn),
+            session,
+            turn,
             "spawn_agent",
             function_payload(json!({"message": "inspect this repo"})),
         ))
@@ -757,7 +757,7 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
         session.thread_id = root.thread_id;
     }
 
-    let error = SpawnAgentHandlerV2::default()
+    let error = match SpawnAgentHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -769,7 +769,10 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
             })),
         ))
         .await
-        .expect_err("initial communication delivery should fail");
+    {
+        Ok(_) => panic!("initial communication delivery should fail"),
+        Err(error) => error,
+    };
     assert_eq!(
         error,
         FunctionCallError::RespondToModel("injected initial communication failure".to_string())
@@ -1007,8 +1010,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     turn.config = Arc::new(config);
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
