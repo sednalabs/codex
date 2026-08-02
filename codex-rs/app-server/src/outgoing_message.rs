@@ -402,11 +402,31 @@ impl OutgoingMessageSender {
         thread_id: ThreadId,
         listener_generation: u64,
     ) {
-        if self
-            .begin_thread_outbound_barrier_release(thread_id, |generation| {
-                generation == listener_generation
-            })
-        {
+        let should_drain = {
+            let mut barriers = self
+                .thread_outbound_barriers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(barrier) = barriers.get_mut(&thread_id) else {
+                return;
+            };
+            if barrier.listener_generation != listener_generation {
+                return;
+            }
+
+            // A detached warning may already have changed the gate to Releasing and be waiting
+            // for a transport permit. Listener exit still owns this generation, so invalidate
+            // the warning at its eventual permit.send linearization point rather than merely
+            // noticing that release had already started.
+            barrier.warning_delivery_invalidated = true;
+            if matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing) {
+                false
+            } else {
+                barrier.phase = ThreadOutboundBarrierPhase::Releasing;
+                true
+            }
+        };
+        if should_drain {
             self.drain_thread_outbound_barrier(thread_id, listener_generation)
                 .await;
         }
@@ -718,21 +738,70 @@ impl OutgoingMessageSender {
             .unwrap_or_default()
     }
 
-    /// Creates a new immutable identity for one connection's presentation of a
-    /// thread. Callers register it before emitting the successful attach
-    /// response, which makes replay sent immediately after that response
-    /// attributable without relying on client-side timing.
+    #[cfg(test)]
+    fn thread_outbound_barrier_is_releasing(&self, thread_id: ThreadId) -> bool {
+        self.thread_outbound_barriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .is_some_and(|barrier| matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing))
+    }
+
+    /// Mints an immutable identity without changing the transport's current owner. Running
+    /// resumes use this provisional token while they hydrate over an existing subscription; it
+    /// becomes visible only at their final success fence.
+    pub(crate) fn mint_thread_subscription(&self) -> String {
+        Uuid::now_v7().to_string()
+    }
+
+    /// Creates and immediately registers a new immutable identity for one connection's
+    /// presentation of a thread. Start, cold resume, and fork use this when they do not preserve
+    /// a live predecessor through a provisional running-resume transaction.
     pub(crate) async fn register_thread_subscription(
         &self,
         connection_id: ConnectionId,
         thread_id: ThreadId,
     ) -> String {
-        let subscription_id = Uuid::now_v7().to_string();
+        let subscription_id = self.mint_thread_subscription();
         self.thread_subscription_ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((connection_id, thread_id), subscription_id.clone());
         subscription_id
+    }
+
+    /// Promotes a minted running-resume token only while the transport still has the predecessor
+    /// observed before B attached. This is the transport half of B's publication fence: C or an
+    /// unsubscribe that wins first leaves its own map state untouched.
+    pub(crate) async fn activate_minted_thread_subscription_if_matches(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+        predecessor_subscription_id: Option<&str>,
+        subscription_id: String,
+    ) -> bool {
+        let mut subscriptions = self
+            .thread_subscription_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (connection_id, thread_id);
+        match predecessor_subscription_id {
+            Some(predecessor_subscription_id)
+                if subscriptions
+                    .get(&key)
+                    .is_some_and(|current_subscription_id| {
+                        current_subscription_id == predecessor_subscription_id
+                    }) =>
+            {
+                subscriptions.insert(key, subscription_id);
+                true
+            }
+            None if !subscriptions.contains_key(&key) => {
+                subscriptions.insert(key, subscription_id);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Returns the existing identity for an already attached thread, or
@@ -3527,6 +3596,111 @@ mod tests {
         assert!(
             timeout(Duration::from_millis(50), rx.recv()).await.is_err(),
             "the invalidated warning must not enqueue through the replacement lifecycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn listener_exit_invalidates_a_releasing_warning_waiting_for_transport_capacity() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let target = ThreadSubscriptionTarget::captured(
+            ConnectionId(1),
+            thread_id,
+            "subscription-a".to_string(),
+        );
+
+        // Fill the transport so the detached warning reaches Releasing, then blocks before its
+        // actual enqueue. Keep a later core output behind the same barrier to prove exit still
+        // releases retained traffic after suppressing the stale warning.
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &[target.clone()],
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        assert!(outgoing.begin_thread_outbound_barrier(thread_id, 1));
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &[target.clone()],
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        assert_eq!(outgoing.deferred_thread_outbound_count(thread_id).await, 1);
+
+        let releasing_outgoing = outgoing.clone();
+        let releasing_target = target.clone();
+        let release = tokio::spawn(async move {
+            releasing_outgoing
+                .release_thread_outbound_barrier(
+                    thread_id,
+                    1,
+                    Some((
+                        vec![releasing_target],
+                        ServerNotification::Warning(WarningNotification {
+                            thread_id: Some(thread_id.to_string()),
+                            message: "listener exited".to_string(),
+                        }),
+                    )),
+                )
+                .await;
+        });
+        for _ in 0..10 {
+            if outgoing.thread_outbound_barrier_is_releasing(thread_id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            outgoing.thread_outbound_barrier_is_releasing(thread_id),
+            "the detached warning must have entered Releasing before listener exit"
+        );
+
+        // This mirrors listener command-channel closure. The barrier is already Releasing, so
+        // merely trying to start another release would miss the reserved transport enqueue.
+        outgoing
+            .release_thread_outbound_barrier_for_listener_generation(thread_id, 1)
+            .await;
+
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = rx.recv().await.expect("the preexisting transport message should drain")
+        else {
+            panic!("expected the preexisting tagged core notification");
+        };
+        assert!(matches!(
+            notification.envelope.notification,
+            ServerNotification::ThreadGoalCleared(_)
+        ));
+        timeout(Duration::from_secs(1), release)
+            .await
+            .expect("invalidated warning release should finish once capacity is available")
+            .expect("warning release task should not panic");
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = rx
+            .recv()
+            .await
+            .expect("listener exit should release retained core output")
+        else {
+            panic!("expected retained tagged core output");
+        };
+        assert!(matches!(
+            notification.envelope.notification,
+            ServerNotification::ThreadGoalCleared(_)
+        ));
+        assert!(
+            timeout(Duration::from_millis(50), rx.recv()).await.is_err(),
+            "listener exit must not permit its stale warning to enqueue"
         );
     }
 

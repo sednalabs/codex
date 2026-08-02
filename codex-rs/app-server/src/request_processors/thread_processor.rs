@@ -1004,13 +1004,24 @@ impl ThreadRequestProcessor {
                 )
                 .await
             {
-                self.thread_state_manager
+                let observed_state_subscription_removed = self.thread_state_manager
                     .unsubscribe_connection_from_thread_if_subscription_matches(
                         thread_id,
                         connection_id,
                         subscription_id,
                     )
-                    .await
+                    .await;
+                if observed_state_subscription_removed {
+                    true
+                } else {
+                    // A provisional running resume keeps published transport A while
+                    // ThreadStateManager has already installed B. Once this unsubscribe removes
+                    // A from the current outgoing map, it must also remove that unpublished B;
+                    // otherwise B's late rollback could recreate A after an explicit unsubscribe.
+                    self.thread_state_manager
+                        .unsubscribe_connection_from_thread(thread_id, connection_id)
+                        .await
+                }
             } else {
                 false
             }
