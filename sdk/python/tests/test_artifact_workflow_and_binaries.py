@@ -489,6 +489,18 @@ class ThreadLoadedListResponse(BaseModel):
 
 class ThreadListResponse(BaseModel):
     backwards_cursor: Annotated[
+
+
+class ThreadStartResponse(BaseModel):
+    thread: Thread
+
+
+class ThreadForkResponse(BaseModel):
+    thread: Thread
+
+
+class ThreadResumeResponse(BaseModel):
+    thread: Thread
 """
     )
 
@@ -503,6 +515,7 @@ class ThreadListResponse(BaseModel):
         "status_revision",
         "ancestor_thread_id",
         "ancestor_filter_applied",
+        "thread_subscription_id",
     ):
         assert field in once
     assert 'alias="requestedModel"' in once
@@ -510,6 +523,7 @@ class ThreadListResponse(BaseModel):
     assert 'alias="statusRevision"' in once
     assert "ge=0" in once
     assert once.count('alias="ancestorFilterApplied"') == 2
+    assert once.count('alias="threadSubscriptionId"') == 3
     assert "Effective model selected for the spawned agent" in once
     assert "Effective reasoning effort selected for the spawned agent" in once
 

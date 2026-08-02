@@ -7240,8 +7240,7 @@ class CollabAgentToolCallThreadItem(BaseModel):
     ]
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
     model: Annotated[
-        str | None,
-        Field(description="Effective model selected for the spawned agent, when available."),
+        str | None, Field(description="Effective model selected for the spawned agent, when available.")
     ] = None
     prompt: Annotated[
         str | None,
