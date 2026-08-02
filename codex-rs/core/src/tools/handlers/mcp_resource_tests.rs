@@ -197,7 +197,10 @@ fn serialize_read_resource_output_preserves_small_json_for_model() {
         .expect("resource text");
     let parsed_resource: serde_json::Value =
         serde_json::from_str(model_resource).expect("parse model resource JSON");
-    assert_eq!(parsed_resource, serde_json::from_str(&resource_json).unwrap());
+    assert_eq!(
+        parsed_resource,
+        serde_json::from_str::<serde_json::Value>(&resource_json).unwrap()
+    );
 }
 
 #[test]
