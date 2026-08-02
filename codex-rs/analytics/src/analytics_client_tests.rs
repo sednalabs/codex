@@ -5166,6 +5166,7 @@ async fn turn_event_counts_completed_tool_items() {
         ThreadItem::SubAgentActivity {
             id: "sub-agent-activity-1".to_string(),
             kind: SubAgentActivityKind::Interacted,
+            terminal_state: None,
             agent_thread_id: "thread-child".to_string(),
             agent_path: "/root/child".to_string(),
             model: None,

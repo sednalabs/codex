@@ -2961,6 +2961,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
         id: "activity-1".to_string(),
         kind: CoreSubAgentActivityKind::Interrupted,
+        terminal_state: None,
         agent_thread_id: receiver_thread_id,
         agent_path: codex_protocol::AgentPath::root()
             .join("worker")
@@ -2974,6 +2975,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         ThreadItem::SubAgentActivity {
             id: "activity-1".to_string(),
             kind: SubAgentActivityKind::Interrupted,
+            terminal_state: None,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
             model: Some("gpt-5.4".to_string()),

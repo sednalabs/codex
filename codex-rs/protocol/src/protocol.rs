@@ -4376,14 +4376,12 @@ pub struct CollabAgentSpawnBeginEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
-    /// Model explicitly requested by the caller, when supplied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub model: Option<String>,
-    /// Reasoning effort explicitly requested by the caller, when supplied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub reasoning_effort: Option<ReasoningEffortConfig>,
+    /// Model explicitly requested by the caller. Older producers use an empty
+    /// string when no override was supplied.
+    pub model: String,
+    /// Reasoning effort explicitly requested by the caller. Older producers
+    /// use the default effort when no override was supplied.
+    pub reasoning_effort: ReasoningEffortConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -4431,16 +4429,14 @@ pub struct CollabAgentSpawnEndEvent {
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
-    /// Effective model used by the spawned agent after inheritance and role overrides.
-    /// Absent when no child was created.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub model: Option<String>,
-    /// Effective reasoning effort used by the spawned agent after inheritance and role overrides.
-    /// Absent when no child was created.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub reasoning_effort: Option<ReasoningEffortConfig>,
+    /// Effective model used by the spawned agent after inheritance and role
+    /// overrides. Older producers use an empty string when no child was
+    /// created.
+    pub model: String,
+    /// Effective reasoning effort used by the spawned agent after inheritance
+    /// and role overrides. Older producers use the default effort when no
+    /// child was created.
+    pub reasoning_effort: ReasoningEffortConfig,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
 }
@@ -4490,6 +4486,17 @@ pub enum SubAgentActivityKind {
     Started,
     Interacted,
     Interrupted,
+}
+
+/// Additive terminal detail for sub-agent activity consumers which understand
+/// failure separately from the legacy activity kind.
+///
+/// `SubAgentActivityKind` intentionally remains the original three-variant
+/// enum so existing Rust consumers can continue to match it exhaustively.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubAgentActivityTerminalState {
     Errored,
 }
 

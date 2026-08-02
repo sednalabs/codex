@@ -104,6 +104,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -1421,10 +1422,11 @@ async fn apply_canonical_item_completed_side_effects(
                 .remove(&item.id);
         }
         CoreTurnItem::SubAgentActivity(activity)
-            if matches!(
-                activity.kind,
-                SubAgentActivityKind::Interrupted | SubAgentActivityKind::Errored
-            ) =>
+            if matches!(activity.kind, SubAgentActivityKind::Interrupted)
+                || matches!(
+                    activity.terminal_state,
+                    Some(SubAgentActivityTerminalState::Errored)
+                ) =>
         {
             remove_missing_thread_watch(
                 thread_manager,
@@ -3510,7 +3512,11 @@ mod tests {
 
     async fn assert_terminal_subagent_activity_removes_missing_thread_watch(
         kind: SubAgentActivityKind,
+        terminal_state: Option<SubAgentActivityTerminalState>,
         expected_kind: codex_app_server_protocol::SubAgentActivityKind,
+        expected_terminal_state: Option<
+            codex_app_server_protocol::SubAgentActivityTerminalState,
+        >,
     ) -> Result<()> {
         let codex_home = TempDir::new()?;
         let config = load_default_config_for_test(&codex_home).await;
@@ -3556,6 +3562,7 @@ mod tests {
                     item: CoreTurnItem::SubAgentActivity(SubAgentActivityItem {
                         id: "activity-1".to_string(),
                         kind,
+                        terminal_state,
                         agent_thread_id: child_thread_id,
                         agent_path: AgentPath::try_from("/root/worker")
                             .expect("agent path should parse"),
@@ -3593,6 +3600,7 @@ mod tests {
                 item: ThreadItem::SubAgentActivity {
                     id: "activity-1".to_string(),
                     kind: expected_kind,
+                    terminal_state: expected_terminal_state,
                     agent_thread_id: child_thread_id_string,
                     agent_path: "/root/worker".to_string(),
                     model: None,
@@ -3610,7 +3618,9 @@ mod tests {
     async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
         assert_terminal_subagent_activity_removes_missing_thread_watch(
             SubAgentActivityKind::Interrupted,
+            None,
             codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+            None,
         )
         .await
     }
@@ -3618,8 +3628,10 @@ mod tests {
     #[tokio::test]
     async fn errored_subagent_activity_removes_missing_thread_watch() -> Result<()> {
         assert_terminal_subagent_activity_removes_missing_thread_watch(
-            SubAgentActivityKind::Errored,
-            codex_app_server_protocol::SubAgentActivityKind::Errored,
+            SubAgentActivityKind::Interrupted,
+            Some(SubAgentActivityTerminalState::Errored),
+            codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+            Some(codex_app_server_protocol::SubAgentActivityTerminalState::Errored),
         )
         .await
     }

@@ -62,7 +62,7 @@ pub(super) async fn make_test_app() -> App {
         discarded_thread_generations: HashMap::new(),
         thread_subscription_targets: HashMap::new(),
         deferred_thread_subscription_events: VecDeque::new(),
-        rejected_stale_thread_subscription_requests: HashSet::new(),
+        rejected_stale_thread_subscription_requests: VecDeque::new(),
         agent_navigation: AgentNavigationState::default(),
         side_threads: HashMap::new(),
         active_thread_id: None,

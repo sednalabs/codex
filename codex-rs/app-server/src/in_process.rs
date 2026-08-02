@@ -122,6 +122,7 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ThreadGoalCleared(_)
             | ServerNotification::ThreadTokenUsageUpdated(_)
             | ServerNotification::ThreadNameUpdated(_)
+            | ServerNotification::ServerRequestResolved(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -1004,6 +1005,15 @@ mod tests {
         )
     }
 
+    fn server_request_resolved_notification() -> ServerNotification {
+        ServerNotification::ServerRequestResolved(
+            codex_app_server_protocol::ServerRequestResolvedNotification {
+                thread_id: "thread".to_string(),
+                request_id: codex_app_server_protocol::RequestId::Integer(7),
+            },
+        )
+    }
+
     #[tokio::test]
     async fn in_process_start_initializes_and_handles_typed_v2_request() {
         let client = start_test_client(SessionSource::Cli).await;
@@ -1199,6 +1209,9 @@ mod tests {
             &thread_name_updated_notification()
         ));
         assert!(server_notification_requires_delivery(
+            &server_request_resolved_notification()
+        ));
+        assert!(server_notification_requires_delivery(
             &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
@@ -1234,11 +1247,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_process_queue_blocks_for_goal_usage_and_name_state_backpressure() {
+    async fn in_process_queue_blocks_for_goal_usage_name_and_request_resolution_backpressure() {
         for (notification, expected_kind) in [
             (thread_goal_updated_notification(), "goal"),
             (thread_token_usage_updated_notification(), "usage"),
             (thread_name_updated_notification(), "name"),
+            (server_request_resolved_notification(), "request resolution"),
         ] {
             let (event_tx, mut event_rx) = mpsc::channel(1);
             event_tx
@@ -1283,6 +1297,12 @@ mod tests {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadNameUpdated(_),
                 }) if expected_kind == "name" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ServerRequestResolved(_),
+                }) if expected_kind == "request resolution" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
                 event => panic!("expected retained {expected_kind} state, got {event:?}"),

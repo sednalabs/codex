@@ -57,6 +57,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
 use crate::protocol::SubAgentActivityEvent;
+use crate::protocol::SubAgentActivityTerminalState;
 use crate::protocol::UserMessageEvent;
 use crate::protocol::ViewImageToolCallEvent;
 use crate::protocol::WebSearchBeginEvent;
@@ -261,11 +262,16 @@ impl CollabAgentToolCallItem {
                     // selected for the child. Before requested identity fields existed, the
                     // in-progress item's model and effort held that caller input, so retain
                     // them only as a backwards-compatible fallback for persisted history.
-                    model: self.requested_model.clone().or_else(|| self.model.clone()),
+                    model: self
+                        .requested_model
+                        .clone()
+                        .or_else(|| self.model.clone())
+                        .unwrap_or_default(),
                     reasoning_effort: self
                         .requested_reasoning_effort
                         .clone()
-                        .or_else(|| self.reasoning_effort.clone()),
+                        .or_else(|| self.reasoning_effort.clone())
+                        .unwrap_or_default(),
                 },
             )),
             CollabAgentTool::SendInput => receiver_thread_id.map(|receiver_thread_id| {
@@ -325,8 +331,8 @@ impl CollabAgentToolCallItem {
                     new_agent_nickname,
                     new_agent_role,
                     prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.model.clone(),
-                    reasoning_effort: self.reasoning_effort.clone(),
+                    model: self.model.clone().unwrap_or_default(),
+                    reasoning_effort: self.reasoning_effort.clone().unwrap_or_default(),
                     status: receiver_thread_id
                         .map(|thread_id| self.agent_status(thread_id))
                         .unwrap_or(AgentStatus::NotFound),
@@ -419,7 +425,15 @@ impl SubAgentActivityItem {
             agent_path: self.agent_path.clone(),
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
-            kind: self.kind,
+            // Legacy consumers only understand the original three activity
+            // kinds. Keep the extension out of the legacy serialized shape
+            // and project a terminal failure onto its historical interruption.
+            kind: match self.terminal_state {
+                Some(SubAgentActivityTerminalState::Errored) => {
+                    crate::protocol::SubAgentActivityKind::Interrupted
+                }
+                None => self.kind,
+            },
         })
     }
 }
@@ -650,6 +664,26 @@ impl HasLegacyEvent for EventMsg {
 mod tests {
     use super::*;
     use crate::openai_models::ReasoningEffort;
+    use crate::protocol::SubAgentActivityKind;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_sub_agent_activity_kind_remains_exhaustively_matchable_and_serialized() {
+        fn legacy_label(kind: SubAgentActivityKind) -> &'static str {
+            match kind {
+                SubAgentActivityKind::Started => "started",
+                SubAgentActivityKind::Interacted => "interacted",
+                SubAgentActivityKind::Interrupted => "interrupted",
+            }
+        }
+
+        assert_eq!(legacy_label(SubAgentActivityKind::Interrupted), "interrupted");
+        assert_eq!(
+            serde_json::to_value(SubAgentActivityKind::Interrupted)
+                .expect("legacy activity kind should serialize"),
+            json!("interrupted")
+        );
+    }
 
     #[test]
     fn legacy_spawn_begin_keeps_requested_identity_separate_from_effective_identity() {
@@ -673,8 +707,8 @@ mod tests {
         else {
             panic!("spawn item should emit a legacy begin event");
         };
-        assert_eq!(begin.model.as_deref(), Some("gpt-requested"));
-        assert_eq!(begin.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(begin.model, "gpt-requested");
+        assert_eq!(begin.reasoning_effort, ReasoningEffort::High);
     }
 
     #[test]
@@ -722,9 +756,9 @@ mod tests {
         };
         assert!(legacy_events.is_empty());
         assert_eq!(
-            begin.model.as_deref(),
-            Some("gpt-requested-before-separation")
+            begin.model,
+            "gpt-requested-before-separation"
         );
-        assert_eq!(begin.reasoning_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(begin.reasoning_effort, ReasoningEffort::Medium);
     }
 }

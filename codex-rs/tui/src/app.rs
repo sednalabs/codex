@@ -241,6 +241,14 @@ use self::thread_events::*;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
+/// Keep delayed subscription traffic bounded while still allowing a large
+/// burst to wait for its authoritative attach response.
+const DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT: usize = 256;
+/// A retired subscription is retained until no deferred traffic references it.
+/// The temporary excess is itself bounded by the deferred-event limit.
+const THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT: usize = 256;
+/// Keep duplicate stale-request rejection receipts bounded per TUI session.
+const REJECTED_STALE_THREAD_SUBSCRIPTION_REQUEST_LIMIT: usize = 512;
 
 /// A thread presentation identity captured when work enters the TUI.
 ///
@@ -606,7 +614,7 @@ pub(crate) struct App {
     deferred_thread_subscription_events: VecDeque<codex_app_server_client::TaggedAppServerEvent>,
     /// A stale request must be rejected once with its original JSON-RPC id,
     /// even if a delayed transport delivery duplicates it.
-    rejected_stale_thread_subscription_requests: HashSet<(String, RequestId)>,
+    rejected_stale_thread_subscription_requests: VecDeque<(String, RequestId)>,
     agent_navigation: AgentNavigationState,
     side_threads: HashMap<ThreadId, SideThreadState>,
     active_thread_id: Option<ThreadId>,
@@ -1125,7 +1133,7 @@ See the Codex keymap documentation for supported actions and examples."
             discarded_thread_generations: HashMap::new(),
             thread_subscription_targets: HashMap::new(),
             deferred_thread_subscription_events: VecDeque::new(),
-            rejected_stale_thread_subscription_requests: HashSet::new(),
+            rejected_stale_thread_subscription_requests: VecDeque::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,

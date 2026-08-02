@@ -65,6 +65,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -799,7 +800,11 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
     let TurnItem::SubAgentActivity(activity) = completed.item else {
         panic!("expected sub-agent activity item");
     };
-    assert_eq!(activity.kind, SubAgentActivityKind::Errored);
+    assert_eq!(activity.kind, SubAgentActivityKind::Interrupted);
+    assert_eq!(
+        activity.terminal_state,
+        Some(SubAgentActivityTerminalState::Errored)
+    );
     assert_eq!(activity.agent_path.as_str(), "/root/delivery_failure");
     let child = manager
         .get_thread(activity.agent_thread_id)
@@ -843,7 +848,7 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
     assert_eq!(legacy_activity.agent_path, activity.agent_path);
     assert_eq!(legacy_activity.model, activity.model);
     assert_eq!(legacy_activity.reasoning_effort, activity.reasoning_effort);
-    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Errored);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
     assert!(rx.try_recv().is_err(), "no extra activity events expected");
 }
 
@@ -945,7 +950,11 @@ async fn multi_agent_v2_spawn_cancellation_waits_for_errored_activity_cleanup() 
     let TurnItem::SubAgentActivity(activity) = completed.item else {
         panic!("expected sub-agent activity item");
     };
-    assert_eq!(activity.kind, SubAgentActivityKind::Errored);
+    assert_eq!(activity.kind, SubAgentActivityKind::Interrupted);
+    assert_eq!(
+        activity.terminal_state,
+        Some(SubAgentActivityTerminalState::Errored)
+    );
     assert_eq!(
         activity.agent_path.as_str(),
         "/root/cancelled_delivery_failure"
@@ -989,7 +998,7 @@ async fn multi_agent_v2_spawn_cancellation_waits_for_errored_activity_cleanup() 
         panic!("expected legacy sub-agent activity");
     };
     assert_eq!(legacy_activity.agent_thread_id, activity.agent_thread_id);
-    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Errored);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
     assert!(rx.try_recv().is_err(), "no extra activity events expected");
 }
 

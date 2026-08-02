@@ -255,6 +255,7 @@ impl App {
             thread_subscription_id,
             ThreadSubscriptionBinding::Active(target),
         );
+        self.prune_thread_subscription_tombstones();
     }
 
     /// Captures the lifecycle expected by an app-server ingress listener. Before the first

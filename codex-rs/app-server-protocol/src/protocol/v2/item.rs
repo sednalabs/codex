@@ -41,6 +41,7 @@ use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState as CoreSubAgentActivityTerminalState;
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_shell_command::parse_command::shlex_join;
@@ -395,6 +396,11 @@ pub enum ThreadItem {
     SubAgentActivity {
         id: String,
         kind: SubAgentActivityKind,
+        /// Additive terminal detail. `kind` intentionally retains the legacy
+        /// three-variant enum for exhaustive existing consumers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        terminal_state: Option<SubAgentActivityTerminalState>,
         agent_thread_id: String,
         agent_path: String,
         /// Effective model selected for the affected child, when known.
@@ -1089,6 +1095,7 @@ impl From<CoreTurnItem> for ThreadItem {
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 id: activity.id,
                 kind: activity.kind.into(),
+                terminal_state: activity.terminal_state.map(Into::into),
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
@@ -1365,7 +1372,6 @@ pub enum SubAgentActivityKind {
     Started,
     Interacted,
     Interrupted,
-    Errored,
 }
 
 impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
@@ -1374,7 +1380,23 @@ impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
             CoreSubAgentActivityKind::Started => SubAgentActivityKind::Started,
             CoreSubAgentActivityKind::Interacted => SubAgentActivityKind::Interacted,
             CoreSubAgentActivityKind::Interrupted => SubAgentActivityKind::Interrupted,
-            CoreSubAgentActivityKind::Errored => SubAgentActivityKind::Errored,
+        }
+    }
+}
+
+/// Additive terminal detail for consumers that distinguish failed sub-agents
+/// from ordinary interruption without extending `SubAgentActivityKind`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum SubAgentActivityTerminalState {
+    Errored,
+}
+
+impl From<CoreSubAgentActivityTerminalState> for SubAgentActivityTerminalState {
+    fn from(value: CoreSubAgentActivityTerminalState) -> Self {
+        match value {
+            CoreSubAgentActivityTerminalState::Errored => Self::Errored,
         }
     }
 }

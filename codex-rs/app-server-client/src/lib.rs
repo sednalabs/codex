@@ -248,6 +248,7 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
             | ServerNotification::ThreadGoalCleared(_)
             | ServerNotification::ThreadTokenUsageUpdated(_)
             | ServerNotification::ThreadNameUpdated(_)
+            | ServerNotification::ServerRequestResolved(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -1349,6 +1350,15 @@ mod tests {
         )
     }
 
+    fn server_request_resolved_notification() -> ServerNotification {
+        ServerNotification::ServerRequestResolved(
+            codex_app_server_protocol::ServerRequestResolvedNotification {
+                thread_id: "thread".to_string(),
+                request_id: codex_app_server_protocol::RequestId::Integer(7),
+            },
+        )
+    }
+
     fn agent_message_delta_notification(delta: &str) -> ServerNotification {
         ServerNotification::AgentMessageDelta(
             codex_app_server_protocol::AgentMessageDeltaNotification {
@@ -1786,11 +1796,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_process_facade_blocks_for_goal_usage_and_name_state_backpressure() {
+    async fn in_process_facade_blocks_for_goal_usage_name_and_request_resolution_backpressure() {
         for (notification, expected_kind) in [
             (thread_goal_updated_notification(), "goal"),
             (thread_token_usage_updated_notification(), "usage"),
             (thread_name_updated_notification(), "name"),
+            (server_request_resolved_notification(), "request resolution"),
         ] {
             let (event_tx, mut event_rx) = mpsc::channel(1);
             event_tx
@@ -1838,6 +1849,12 @@ mod tests {
                     thread_subscription_id,
                     notification: ServerNotification::ThreadNameUpdated(_),
                 }) if expected_kind == "name" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(TaggedAppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ServerRequestResolved(_),
+                }) if expected_kind == "request resolution" => {
                     assert_eq!(thread_subscription_id, "thread-subscription");
                 }
                 event => panic!("expected retained {expected_kind} state, got {event:?}"),
@@ -2673,6 +2690,7 @@ mod tests {
             ),
             thread_token_usage_updated_notification(),
             thread_name_updated_notification(),
+            server_request_resolved_notification(),
         ] {
             assert!(event_requires_delivery(
                 &TaggedAppServerEvent::ThreadServerNotification {

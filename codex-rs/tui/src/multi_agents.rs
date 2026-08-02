@@ -16,6 +16,7 @@ use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::SubAgentActivityKind;
+use codex_app_server_protocol::SubAgentActivityTerminalState;
 use codex_app_server_protocol::ThreadItem;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -548,6 +549,7 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     let ThreadItem::SubAgentActivity {
         id,
         kind,
+        terminal_state,
         agent_thread_id,
         agent_path,
         model,
@@ -557,11 +559,11 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
     else {
         return None;
     };
-    let (is_running_hint, has_system_error) = match kind {
-        SubAgentActivityKind::Started => (true, false),
-        SubAgentActivityKind::Interacted => return None,
-        SubAgentActivityKind::Interrupted => (false, false),
-        SubAgentActivityKind::Errored => (false, true),
+    let (is_running_hint, has_system_error) = match (kind, terminal_state) {
+        (_, Some(SubAgentActivityTerminalState::Errored)) => (false, true),
+        (SubAgentActivityKind::Started, None) => (true, false),
+        (SubAgentActivityKind::Interacted, None) => return None,
+        (SubAgentActivityKind::Interrupted, None) => (false, false),
     };
     Some(SubAgentActivityDisplay {
         activity_id: id.clone(),
@@ -577,6 +579,7 @@ pub(crate) fn sub_agent_activity_display(item: &ThreadItem) -> Option<SubAgentAc
 pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     let ThreadItem::SubAgentActivity {
         kind,
+        terminal_state,
         agent_path,
         model,
         reasoning_effort,
@@ -588,6 +591,7 @@ pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<Plain
     Some(collab_event(
         sub_agent_activity_title(
             *kind,
+            *terminal_state,
             agent_path,
             model.as_deref(),
             reasoning_effort.as_ref(),
@@ -596,26 +600,31 @@ pub(crate) fn sub_agent_activity_history_cell(item: &ThreadItem) -> Option<Plain
     ))
 }
 
-pub(crate) fn sub_agent_activity_summary(kind: SubAgentActivityKind, agent_path: &str) -> String {
-    match kind {
-        SubAgentActivityKind::Started => format!("Started `{agent_path}`"),
-        SubAgentActivityKind::Interacted => format!("Interacted with `{agent_path}`"),
-        SubAgentActivityKind::Interrupted => format!("Interrupted `{agent_path}`"),
-        SubAgentActivityKind::Errored => format!("Failed `{agent_path}`"),
+pub(crate) fn sub_agent_activity_summary(
+    kind: SubAgentActivityKind,
+    terminal_state: Option<SubAgentActivityTerminalState>,
+    agent_path: &str,
+) -> String {
+    match (kind, terminal_state) {
+        (_, Some(SubAgentActivityTerminalState::Errored)) => format!("Failed `{agent_path}`"),
+        (SubAgentActivityKind::Started, None) => format!("Started `{agent_path}`"),
+        (SubAgentActivityKind::Interacted, None) => format!("Interacted with `{agent_path}`"),
+        (SubAgentActivityKind::Interrupted, None) => format!("Interrupted `{agent_path}`"),
     }
 }
 
 fn sub_agent_activity_title(
     kind: SubAgentActivityKind,
+    terminal_state: Option<SubAgentActivityTerminalState>,
     agent_path: &str,
     model: Option<&str>,
     reasoning_effort: Option<&ReasoningEffortConfig>,
 ) -> Line<'static> {
-    let (prefix, path) = match kind {
-        SubAgentActivityKind::Started => ("Started ", agent_path),
-        SubAgentActivityKind::Interacted => ("Interacted with ", agent_path),
-        SubAgentActivityKind::Interrupted => ("Interrupted ", agent_path),
-        SubAgentActivityKind::Errored => ("Failed ", agent_path),
+    let (prefix, path) = match (kind, terminal_state) {
+        (_, Some(SubAgentActivityTerminalState::Errored)) => ("Failed ", agent_path),
+        (SubAgentActivityKind::Started, None) => ("Started ", agent_path),
+        (SubAgentActivityKind::Interacted, None) => ("Interacted with ", agent_path),
+        (SubAgentActivityKind::Interrupted, None) => ("Interrupted ", agent_path),
     };
     let mut spans = vec![
         Span::from(prefix).bold(),
@@ -1737,6 +1746,7 @@ mod tests {
         let item = ThreadItem::SubAgentActivity {
             id: "activity-1".to_string(),
             kind: SubAgentActivityKind::Interacted,
+            terminal_state: None,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/child".to_string(),
             model: None,
@@ -1751,6 +1761,7 @@ mod tests {
         let item = ThreadItem::SubAgentActivity {
             id: "activity-identity".to_string(),
             kind: SubAgentActivityKind::Started,
+            terminal_state: None,
             agent_thread_id: ThreadId::new().to_string(),
             agent_path: "/root/reviewer".to_string(),
             model: Some("gpt-5.4".to_string()),

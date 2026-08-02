@@ -8,7 +8,7 @@ use crate::protocol::item_builders::review_output_text;
 use crate::protocol::spawn_provenance::normalize_legacy_canonical_spawn_start_provenance;
 use crate::protocol::spawn_provenance::normalize_legacy_failed_canonical_spawn_terminal_effective_identity;
 use crate::protocol::spawn_provenance::normalize_legacy_failed_spawn_effective_identity;
-use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
+use crate::protocol::spawn_provenance::normalize_required_legacy_spawn_requested_identity;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
@@ -910,7 +910,7 @@ impl ThreadHistoryBuilder {
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
         let (requested_model, requested_reasoning_effort) =
-            normalize_legacy_spawn_requested_identity(
+            normalize_required_legacy_spawn_requested_identity(
                 payload.model.clone(),
                 payload.reasoning_effort.clone(),
             );
@@ -972,8 +972,8 @@ impl ThreadHistoryBuilder {
             .unwrap_or_default();
         let (model, reasoning_effort) = normalize_legacy_failed_spawn_effective_identity(
             has_receiver,
-            payload.model.clone(),
-            payload.reasoning_effort.clone(),
+            Some(payload.model.clone()),
+            Some(payload.reasoning_effort.clone()),
         );
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
@@ -1042,6 +1042,7 @@ impl ThreadHistoryBuilder {
         self.upsert_item_in_current_turn(ThreadItem::SubAgentActivity {
             id: payload.event_id.clone(),
             kind: payload.kind.into(),
+            terminal_state: None,
             agent_thread_id: payload.agent_thread_id.to_string(),
             agent_path: String::from(payload.agent_path.clone()),
             model: payload.model.clone(),
@@ -4073,8 +4074,8 @@ mod tests {
                 new_agent_nickname: Some("Scout".into()),
                 new_agent_role: Some("explorer".into()),
                 prompt: "inspect the repo".into(),
-                model: Some("gpt-5.4-mini".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                model: "gpt-5.4-mini".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
                 status: AgentStatus::Running,
             }),
         ];
@@ -4132,8 +4133,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect the repo".into(),
-                model: Some(String::new()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                model: String::new(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
                 status: AgentStatus::NotFound,
             }),
         ];
@@ -4178,8 +4179,8 @@ mod tests {
                 started_at_ms: 0,
                 sender_thread_id,
                 prompt: "inspect the repo".into(),
-                model: Some("gpt-requested".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+                model: "gpt-requested".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::High,
             }),
         ];
 
@@ -4229,8 +4230,8 @@ mod tests {
                 started_at_ms: 0,
                 sender_thread_id: sender_thread_id.clone(),
                 prompt: "inspect model".into(),
-                model: Some("gpt-requested-model".into()),
-                reasoning_effort: None,
+                model: "gpt-requested-model".into(),
+                reasoning_effort: Default::default(),
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-model-only".into(),
@@ -4243,8 +4244,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect model".into(),
-                model: Some("gpt-effective-model".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                model: "gpt-effective-model".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
                 status: AgentStatus::Running,
             }),
             EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
@@ -4252,8 +4253,8 @@ mod tests {
                 started_at_ms: 2,
                 sender_thread_id: sender_thread_id.clone(),
                 prompt: "inspect effort".into(),
-                model: None,
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+                model: String::new(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::High,
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-effort-only".into(),
@@ -4266,8 +4267,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect effort".into(),
-                model: Some("gpt-effective-effort".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                model: "gpt-effective-effort".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
                 status: AgentStatus::Running,
             }),
             EventMsg::CollabAgentSpawnBegin(codex_protocol::protocol::CollabAgentSpawnBeginEvent {
@@ -4275,8 +4276,8 @@ mod tests {
                 started_at_ms: 4,
                 sender_thread_id: sender_thread_id.clone(),
                 prompt: "inspect mismatch".into(),
-                model: Some("gpt-requested-pair".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Ultra),
+                model: "gpt-requested-pair".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Ultra,
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-explicit-mismatch".into(),
@@ -4289,8 +4290,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect mismatch".into(),
-                model: Some("gpt-effective-pair".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Low),
+                model: "gpt-effective-pair".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Low,
                 status: AgentStatus::Running,
             }),
         ];
@@ -4385,8 +4386,8 @@ mod tests {
                 started_at_ms: 0,
                 sender_thread_id,
                 prompt: "inspect the repo".into(),
-                model: Some("gpt-requested".into()),
-                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+                model: "gpt-requested".into(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::High,
             }),
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "failed-spawn".into(),
@@ -4396,8 +4397,8 @@ mod tests {
                 new_agent_nickname: None,
                 new_agent_role: None,
                 prompt: "inspect the repo".into(),
-                model: None,
-                reasoning_effort: None,
+                model: String::new(),
+                reasoning_effort: Default::default(),
                 status: AgentStatus::NotFound,
             }),
         ];

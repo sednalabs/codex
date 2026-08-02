@@ -256,6 +256,7 @@ async fn handle_message_submission_inner(
             model: None,
             reasoning_effort: None,
             kind: SubAgentActivityKind::Interacted,
+            terminal_state: None,
         },
     )
     .await;

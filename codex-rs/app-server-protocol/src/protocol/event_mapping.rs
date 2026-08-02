@@ -3,7 +3,7 @@ use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::spawn_provenance::normalize_legacy_failed_spawn_effective_identity;
-use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
+use crate::protocol::spawn_provenance::normalize_required_legacy_spawn_requested_identity;
 use crate::protocol::v2::AgentMessageDeltaNotification;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
@@ -82,9 +82,9 @@ pub fn item_event_to_server_notification(
         }
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
             let (requested_model, requested_reasoning_effort) =
-                normalize_legacy_spawn_requested_identity(
+                normalize_required_legacy_spawn_requested_identity(
                     begin_event.model.clone(),
-                    begin_event.reasoning_effort.clone(),
+                    begin_event.reasoning_effort,
                 );
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
@@ -131,8 +131,8 @@ pub fn item_event_to_server_notification(
             };
             let (model, reasoning_effort) = normalize_legacy_failed_spawn_effective_identity(
                 has_receiver,
-                end_event.model,
-                end_event.reasoning_effort,
+                Some(end_event.model),
+                Some(end_event.reasoning_effort),
             );
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
@@ -210,6 +210,7 @@ pub fn item_event_to_server_notification(
             let item = ThreadItem::SubAgentActivity {
                 id: activity.event_id,
                 kind: activity.kind.into(),
+                terminal_state: None,
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
@@ -515,6 +516,7 @@ pub fn item_event_to_server_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
     use crate::protocol::v2::TerminalWaitInfo;
     use crate::protocol::v2::TerminalWaitPrimitive;
     use codex_protocol::ThreadId;
@@ -580,14 +582,14 @@ mod tests {
     }
 
     #[test]
-    fn collab_spawn_begin_preserves_optional_request_fields() {
+    fn collab_spawn_begin_preserves_required_legacy_request_fields() {
         let event = CollabAgentSpawnBeginEvent {
             call_id: "call-spawn".to_string(),
             started_at_ms: 123,
             sender_thread_id: ThreadId::new(),
             prompt: "inspect the repository".to_string(),
-            model: Some("gpt-caller".to_string()),
-            reasoning_effort: None,
+            model: "gpt-caller".to_string(),
+            reasoning_effort: Default::default(),
         };
 
         let notification = item_event_to_server_notification(
@@ -625,8 +627,8 @@ mod tests {
             started_at_ms: 123,
             sender_thread_id: ThreadId::new(),
             prompt: "inspect the persisted history".to_string(),
-            model: Some(String::new()),
-            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            model: String::new(),
+            reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
         };
 
         let notification = item_event_to_server_notification(
@@ -664,14 +666,14 @@ mod tests {
             started_at_ms: 123,
             sender_thread_id: ThreadId::new(),
             prompt: "use the requested identity".to_string(),
-            model: Some("gpt-requested".to_string()),
-            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            model: "gpt-requested".to_string(),
+            reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
         };
 
         assert_eq!(
             normalize_legacy_spawn_requested_identity(
-                event.model.clone(),
-                event.reasoning_effort.clone(),
+                Some(event.model.clone()),
+                Some(event.reasoning_effort),
             ),
             (
                 Some("gpt-requested".to_string()),
@@ -681,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn collab_spawn_end_preserves_absent_effective_identity() {
+    fn collab_spawn_end_normalizes_required_legacy_absent_identity_sentinel() {
         let event = CollabAgentSpawnEndEvent {
             call_id: "call-spawn".to_string(),
             completed_at_ms: 456,
@@ -690,8 +692,8 @@ mod tests {
             new_agent_nickname: None,
             new_agent_role: None,
             prompt: "inspect the repository".to_string(),
-            model: None,
-            reasoning_effort: None,
+            model: String::new(),
+            reasoning_effort: Default::default(),
             status: codex_protocol::protocol::AgentStatus::NotFound,
         };
 
@@ -733,8 +735,8 @@ mod tests {
             new_agent_nickname: None,
             new_agent_role: None,
             prompt: "inspect the repository".to_string(),
-            model: Some(String::new()),
-            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            model: String::new(),
+            reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
             status: codex_protocol::protocol::AgentStatus::NotFound,
         };
 

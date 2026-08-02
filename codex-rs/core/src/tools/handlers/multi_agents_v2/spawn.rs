@@ -147,7 +147,8 @@ async fn handle_spawn_agent(
                     agent_path: new_agent_path,
                     model: Some(agent.effective_model),
                     reasoning_effort: agent.effective_reasoning_effort,
-                    kind: SubAgentActivityKind::Errored,
+                    kind: SubAgentActivityKind::Interrupted,
+                    terminal_state: Some(SubAgentActivityTerminalState::Errored),
                 },
             )
             .await;
@@ -185,6 +186,7 @@ async fn handle_spawn_agent(
             model: Some(effective_model.clone()),
             reasoning_effort: effective_reasoning_effort.clone(),
             kind: SubAgentActivityKind::Started,
+            terminal_state: None,
         },
     )
     .await;
