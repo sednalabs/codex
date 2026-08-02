@@ -27,8 +27,8 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolPayload;
 use codex_protocol::protocol::McpInvocation;
-use codex_tools::ToolOutput;
 use codex_tools::ToolExecutionStatus;
+use codex_tools::ToolOutput;
 
 mod list_mcp_resource_templates;
 mod list_mcp_resources;
@@ -229,7 +229,9 @@ impl ReadResourceToolOutput {
             crate::tools::context::ToolCallSource::Direct => {
                 ToolExecutionStatus::from_success(self.success_for_logging())
             }
-            crate::tools::context::ToolCallSource::CodeMode { .. } => ToolExecutionStatus::Completed,
+            crate::tools::context::ToolCallSource::CodeMode { .. } => {
+                ToolExecutionStatus::Completed
+            }
         }
     }
 }

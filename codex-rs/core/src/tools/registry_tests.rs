@@ -528,8 +528,8 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changing_model_output(
-) -> anyhow::Result<()> {
+async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changing_model_output()
+-> anyhow::Result<()> {
     let (mut session, turn) = crate::session::tests::make_session_and_context().await;
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
@@ -538,6 +538,7 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
     }));
     session.services.extensions = Arc::new(builder.build());
 
+    std::fs::create_dir_all(&turn.config.codex_home)?;
     let hook_script = turn.config.codex_home.join("post_tool_use_hook.sh");
     let hook_marker = turn.config.codex_home.join("post_tool_use_hook_input.json");
     std::fs::write(
@@ -593,13 +594,16 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
         .derive_exec_args("", /*use_login_shell*/ false);
     let hook_shell_program = hook_shell_argv.remove(0);
     let _ = hook_shell_argv.pop();
-    session.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
-        feature_enabled: true,
-        config_layer_stack: Some(trusted_stack),
-        shell_program: Some(hook_shell_program),
-        shell_args: hook_shell_argv,
-        ..HooksConfig::default()
-    })));
+    session
+        .services
+        .hooks
+        .store(Arc::new(Hooks::new(HooksConfig {
+            feature_enabled: true,
+            config_layer_stack: Some(trusted_stack),
+            shell_program: Some(hook_shell_program),
+            shell_args: hook_shell_argv,
+            ..HooksConfig::default()
+        })));
 
     let tool_name = codex_tools::ToolName::plain("model_bounded_resource");
     let registry = ToolRegistry::with_handler_for_test(Arc::new(ModelBoundedCodeModeHandler {
@@ -642,11 +646,17 @@ async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changin
         panic!("direct invocation should retain a function response");
     };
     assert_eq!(output.success, Some(false));
-    assert_eq!(code_mode.code_mode_result(), serde_json::json!({ "complete": "resource value" }));
+    assert_eq!(
+        code_mode.code_mode_result(),
+        serde_json::json!({ "complete": "resource value" })
+    );
     let hook_input: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&hook_marker)?)?;
     assert_eq!(hook_input["tool_name"], "model_bounded_resource");
-    assert_eq!(hook_input["tool_response"], serde_json::json!({ "projection": "bounded" }));
+    assert_eq!(
+        hook_input["tool_response"],
+        serde_json::json!({ "projection": "bounded" })
+    );
 
     let expected = vec![
         RecordedToolLifecycle::Start {
