@@ -1244,7 +1244,8 @@ impl App {
                 // it rather than leaving a permanently clickable "Load more" item. Other errors
                 // remain retryable.
                 if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
-                    self.agent_navigation.set_next_picker_page_cursor(None);
+                    self.agent_navigation
+                        .set_next_picker_page_cursor(/*next_cursor*/ None);
                 }
                 self.sync_active_agent_label();
                 return LoadedSubagentBackfill {
@@ -1320,7 +1321,8 @@ impl App {
         } else if !ancestor_filter_applied {
             // An older server can silently ignore an unknown ancestorThreadId. Its cursor names
             // an unfiltered global list, so do not present it as a descendant continuation.
-            self.agent_navigation.set_next_picker_page_cursor(None);
+            self.agent_navigation
+                .set_next_picker_page_cursor(/*next_cursor*/ None);
         }
 
         // The historical relation page is sorted by update time, so it can be filled with closed
