@@ -1,10 +1,10 @@
 use super::*;
-use pretty_assertions::assert_eq;
-use rmcp::model::AnnotateAble;
-use rmcp::model::ResourceContents;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ResponseInputItem;
 use codex_tools::ToolOutput;
+use pretty_assertions::assert_eq;
+use rmcp::model::AnnotateAble;
+use rmcp::model::ResourceContents;
 use serde_json::json;
 
 use crate::context_manager::truncate_function_output_payload;

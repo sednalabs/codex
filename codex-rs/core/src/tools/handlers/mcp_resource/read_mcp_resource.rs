@@ -112,7 +112,10 @@ impl ReadMcpResourceHandler {
                         &call_id,
                         invocation,
                         duration,
-                        Ok(call_tool_result_from_content(&content, output.model_success())),
+                        Ok(call_tool_result_from_content(
+                            &content,
+                            output.model_success(),
+                        )),
                     )
                     .await;
                     Ok(boxed_tool_output(output))
