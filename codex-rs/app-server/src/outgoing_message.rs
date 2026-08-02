@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -104,6 +105,11 @@ pub(crate) struct OutgoingMessageSender {
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
+    /// Thread-scoped request envelopes can wait behind a warning barrier after their callback is
+    /// canceled. Keep an await-free ownership mirror so the barrier can drop them before they
+    /// reach the client and wake capacity-blocked producers immediately on cancellation.
+    active_thread_request_ids: StdMutex<HashSet<RequestId>>,
+    thread_request_liveness_changed: watch::Sender<()>,
     /// The immutable subscriber identities through which a thread-scoped
     /// request was issued. Its resolution must close that same lifecycle,
     /// even when the connection has since reattached with a newer token.
@@ -126,6 +132,7 @@ pub(crate) struct OutgoingMessageSender {
 }
 
 pub(crate) const MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES: usize = 256;
+pub(crate) const NO_LISTENER_THREAD_OUTBOUND_BARRIER_GENERATION: u64 = 0;
 
 enum ThreadOutboundBarrierPhase {
     WaitingForWarning,
@@ -305,10 +312,13 @@ impl OutgoingMessageSender {
         sender: mpsc::Sender<OutgoingEnvelope>,
         analytics_events_client: AnalyticsEventsClient,
     ) -> Self {
+        let (thread_request_liveness_changed, _thread_request_liveness_rx) = watch::channel(());
         Self {
             next_server_request_id: AtomicI64::new(0),
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
+            active_thread_request_ids: StdMutex::new(HashSet::new()),
+            thread_request_liveness_changed,
             thread_request_resolution_targets: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
             thread_subscription_ids: StdMutex::new(HashMap::new()),
@@ -354,8 +364,8 @@ impl OutgoingMessageSender {
 
     /// Publishes a resolved targetless warning ahead of every thread message captured while its
     /// barrier was active, or releases those messages after a timeout/drop without a warning.
-    /// This method never waits for a subscriber; the detached warning waiter already performed
-    /// that bounded work before returning to the listener.
+    /// This method never waits for a subscriber; the detached warning control plane already
+    /// performed that bounded work before releasing this transport gate.
     pub(crate) async fn release_thread_outbound_barrier(
         &self,
         thread_id: ThreadId,
@@ -417,7 +427,9 @@ impl OutgoingMessageSender {
             let Some(barrier) = barriers.get_mut(&thread_id) else {
                 return;
             };
-            if barrier.listener_generation >= next_listener_generation {
+            if barrier.listener_generation == NO_LISTENER_THREAD_OUTBOUND_BARRIER_GENERATION
+                || barrier.listener_generation >= next_listener_generation
+            {
                 return;
             }
             barrier.warning_delivery_invalidated = true;
@@ -496,6 +508,9 @@ impl OutgoingMessageSender {
             let Some(deferred) = deferred else {
                 return;
             };
+            if !self.thread_outbound_request_is_active(&deferred) {
+                continue;
+            }
             if let Err(error) = self.sender.send(deferred).await {
                 tracing::warn!(
                     %thread_id,
@@ -513,11 +528,17 @@ impl OutgoingMessageSender {
     ) -> std::result::Result<(), mpsc::error::SendError<OutgoingEnvelope>> {
         let mut outgoing = Some(outgoing);
         loop {
-            let capacity_wait = {
+            let (capacity_wait, request_liveness_wait) = {
                 let mut barriers = self
                     .thread_outbound_barriers
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let request_is_active = outgoing
+                    .as_ref()
+                    .map_or(true, |outgoing| self.thread_outbound_request_is_active(outgoing));
+                if !request_is_active {
+                    return Ok(());
+                }
                 if let Some(barrier) = barriers.get_mut(&thread_id) {
                     if barrier.deferred.len() < MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES {
                         barrier.deferred.push_back(
@@ -527,23 +548,102 @@ impl OutgoingMessageSender {
                         );
                         return Ok(());
                     }
-                    Some(barrier.capacity_changed.subscribe())
+                    (
+                        Some(barrier.capacity_changed.subscribe()),
+                        outgoing.as_ref().and_then(|outgoing| {
+                            self.thread_outbound_request_id(outgoing)
+                                .map(|_| self.thread_request_liveness_changed.subscribe())
+                        }),
+                    )
                 } else {
-                    None
+                    (None, None)
                 }
             };
             // The barrier queue is bounded to prevent warning/flood pressure from consuming
             // unbounded memory. Only after that explicit limit does a producer wait for the
             // already-bounded barrier to release; it never starts another warning timeout.
             if let Some(mut capacity_wait) = capacity_wait {
-                let _ = capacity_wait.changed().await;
+                if let Some(mut request_liveness_wait) = request_liveness_wait {
+                    tokio::select! {
+                        _ = capacity_wait.changed() => {}
+                        _ = request_liveness_wait.changed() => {}
+                    }
+                } else {
+                    let _ = capacity_wait.changed().await;
+                }
             } else {
                 break;
             }
         }
+        if !outgoing
+            .as_ref()
+            .map_or(true, |outgoing| self.thread_outbound_request_is_active(outgoing))
+        {
+            return Ok(());
+        }
         self.sender
             .send(outgoing.expect("outbound envelope should be retained"))
             .await
+    }
+
+    fn thread_outbound_request_id(&self, outgoing: &OutgoingEnvelope) -> Option<&RequestId> {
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedRequest(request),
+            ..
+        } = outgoing
+        else {
+            return None;
+        };
+        Some(request.request.id())
+    }
+
+    fn thread_outbound_request_is_active(&self, outgoing: &OutgoingEnvelope) -> bool {
+        self.thread_outbound_request_id(outgoing).map_or(true, |request_id| {
+            self.active_thread_request_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(request_id)
+        })
+    }
+
+    fn register_active_thread_request(&self, request_id: RequestId) {
+        if self
+            .active_thread_request_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(request_id)
+        {
+            self.thread_request_liveness_changed.send_replace(());
+        }
+    }
+
+    fn remove_active_thread_request(&self, request_id: &RequestId) {
+        if self
+            .active_thread_request_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(request_id)
+        {
+            self.thread_request_liveness_changed.send_replace(());
+        }
+    }
+
+    fn clear_active_thread_requests(&self) {
+        let removed_active_requests = {
+            let mut active_request_ids = self
+                .active_thread_request_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if active_request_ids.is_empty() {
+                false
+            } else {
+                active_request_ids.clear();
+                true
+            }
+        };
+        if removed_active_requests {
+            self.thread_request_liveness_changed.send_replace(());
+        }
     }
 
     async fn send_server_notification_to_thread_subscriptions_direct(
@@ -674,6 +774,29 @@ impl OutgoingMessageSender {
         }
     }
 
+    /// Restores an already-active state-manager subscription only if no newer outgoing owner
+    /// replaced the failed provisional attachment while its rollback was in flight.
+    pub(crate) async fn restore_thread_subscription_if_unclaimed(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+        subscription_id: String,
+    ) -> bool {
+        use std::collections::hash_map::Entry;
+
+        let mut subscriptions = self
+            .thread_subscription_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match subscriptions.entry((connection_id, thread_id)) {
+            Entry::Vacant(entry) => {
+                entry.insert(subscription_id);
+                true
+            }
+            Entry::Occupied(entry) => entry.get() == &subscription_id,
+        }
+    }
+
     /// Returns whether an explicit attach attempt still owns this connection-local identity.
     pub(crate) async fn thread_subscription_matches(
         &self,
@@ -792,13 +915,16 @@ impl OutgoingMessageSender {
         {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.insert(
-                id,
+                id.clone(),
                 PendingCallbackEntry {
                     callback: tx_approve,
                     thread_id: thread_id.clone(),
                     request: request.clone(),
                 },
             );
+        }
+        if thread_id.is_some() {
+            self.register_active_thread_request(outgoing_message_id.clone());
         }
 
         let send_result = match connection_ids {
@@ -856,6 +982,7 @@ impl OutgoingMessageSender {
                 let mut request_id_to_callback = self.request_id_to_callback.lock().await;
                 request_id_to_callback.remove(&outgoing_message_id);
             }
+            self.remove_active_thread_request(&outgoing_message_id);
         }
         (outgoing_message_id, rx_approve)
     }
@@ -879,7 +1006,7 @@ impl OutgoingMessageSender {
         {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.insert(
-                id,
+                id.clone(),
                 PendingCallbackEntry {
                     callback: tx_approve,
                     thread_id: Some(thread_id),
@@ -887,6 +1014,7 @@ impl OutgoingMessageSender {
                 },
             );
         }
+        self.register_active_thread_request(outgoing_message_id.clone());
         {
             let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
             resolution_targets.insert(outgoing_message_id.clone(), thread_subscriptions.to_vec());
@@ -926,6 +1054,7 @@ impl OutgoingMessageSender {
                 let mut request_id_to_callback = self.request_id_to_callback.lock().await;
                 request_id_to_callback.remove(&outgoing_message_id);
             }
+            self.remove_active_thread_request(&outgoing_message_id);
             self.thread_request_resolution_targets
                 .lock()
                 .await
@@ -1069,6 +1198,7 @@ impl OutgoingMessageSender {
                 .map(|(_, entry)| entry)
                 .collect::<Vec<_>>()
         };
+        self.clear_active_thread_requests();
         self.thread_request_resolution_targets.lock().await.clear();
 
         for entry in entries {
@@ -1087,8 +1217,14 @@ impl OutgoingMessageSender {
         &self,
         id: &RequestId,
     ) -> Option<(RequestId, PendingCallbackEntry)> {
-        let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-        request_id_to_callback.remove_entry(id)
+        let entry = {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            request_id_to_callback.remove_entry(id)
+        };
+        if entry.is_some() {
+            self.remove_active_thread_request(id);
+        }
+        entry
     }
 
     /// Takes the immutable targets captured for a thread-scoped request's
@@ -1152,6 +1288,9 @@ impl OutgoingMessageSender {
             }
             (entries, request_ids)
         };
+        for request_id in &request_ids {
+            self.remove_active_thread_request(request_id);
+        }
         {
             let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
             for request_id in request_ids {
@@ -1722,13 +1861,15 @@ fn server_notification_thread_id(notification: &ServerNotification) -> Option<Th
         ServerNotification::McpServerStatusUpdated(notification) => {
             notification.thread_id.as_deref()
         }
+        ServerNotification::EnvironmentConnected(notification)
+        | ServerNotification::EnvironmentDisconnected(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::SkillsChanged(_)
         | ServerNotification::McpServerOauthLoginCompleted(_)
         | ServerNotification::AccountUpdated(_)
         | ServerNotification::AccountRateLimitsUpdated(_)
         | ServerNotification::AppListUpdated(_)
-        | ServerNotification::EnvironmentConnected(_)
-        | ServerNotification::EnvironmentDisconnected(_)
         | ServerNotification::RemoteControlStatusChanged(_)
         | ServerNotification::ExternalAgentConfigImportProgress(_)
         | ServerNotification::ExternalAgentConfigImportCompleted(_)
@@ -1779,6 +1920,7 @@ mod tests {
     use codex_app_server_protocol::ConfigWarningNotification;
     use codex_app_server_protocol::CurrentTimeReadParams;
     use codex_app_server_protocol::DynamicToolCallParams;
+    use codex_app_server_protocol::EnvironmentConnectionNotification;
     use codex_app_server_protocol::FileChangeRequestApprovalParams;
     use codex_app_server_protocol::GuardianWarningNotification;
     use codex_app_server_protocol::ModelRerouteReason;
@@ -1792,6 +1934,7 @@ mod tests {
     use codex_app_server_protocol::ThreadArchivedNotification;
     use codex_app_server_protocol::ThreadClosedNotification;
     use codex_app_server_protocol::ThreadGoal;
+    use codex_app_server_protocol::ThreadGoalClearedNotification;
     use codex_app_server_protocol::ThreadGoalStatus;
     use codex_app_server_protocol::ThreadGoalUpdatedNotification;
     use codex_app_server_protocol::ToolRequestUserInputParams;
@@ -2230,6 +2373,75 @@ mod tests {
         });
 
         assert_eq!(timestamps[0], timestamps[1]);
+    }
+
+    #[tokio::test]
+    async fn environment_connection_notifications_are_scoped_to_their_thread_subscription() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = OutgoingMessageSender::new(tx, AnalyticsEventsClient::disabled());
+        let connected_thread_id = ThreadId::new();
+        let unrelated_thread_id = ThreadId::new();
+        let connected_connection_id = ConnectionId(1);
+        let unrelated_connection_id = ConnectionId(2);
+        let connected_subscription_id = outgoing
+            .register_thread_subscription(connected_connection_id, connected_thread_id)
+            .await;
+        outgoing
+            .register_thread_subscription(unrelated_connection_id, unrelated_thread_id)
+            .await;
+
+        outgoing
+            .send_server_notification(ServerNotification::EnvironmentConnected(
+                EnvironmentConnectionNotification {
+                    thread_id: connected_thread_id.to_string(),
+                    environment_id: "environment-a".to_string(),
+                },
+            ))
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = rx.recv().await.expect("connected environment event should be delivered")
+        else {
+            panic!("environment connection event must be thread scoped");
+        };
+        assert_eq!(connection_id, connected_connection_id);
+        assert_eq!(notification.thread_subscription_id, connected_subscription_id);
+        assert!(matches!(
+            notification.envelope.notification,
+            ServerNotification::EnvironmentConnected(_)
+        ));
+        assert!(
+            timeout(Duration::from_millis(50), rx.recv()).await.is_err(),
+            "an environment connection event must not reach an unrelated thread subscription"
+        );
+
+        outgoing
+            .send_server_notification(ServerNotification::EnvironmentDisconnected(
+                EnvironmentConnectionNotification {
+                    thread_id: connected_thread_id.to_string(),
+                    environment_id: "environment-a".to_string(),
+                },
+            ))
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = rx
+            .recv()
+            .await
+            .expect("disconnected environment event should be delivered")
+        else {
+            panic!("environment disconnection event must be thread scoped");
+        };
+        assert_eq!(connection_id, connected_connection_id);
+        assert_eq!(notification.thread_subscription_id, connected_subscription_id);
+        assert!(matches!(
+            notification.envelope.notification,
+            ServerNotification::EnvironmentDisconnected(_)
+        ));
     }
 
     #[tokio::test]
@@ -3105,6 +3317,107 @@ mod tests {
                 .pending_requests_for_thread(thread_id)
                 .await
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn canceling_a_257th_thread_request_drops_it_and_unblocks_the_full_barrier_wait() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(300);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let target = ThreadSubscriptionTarget::captured(
+            ConnectionId(1),
+            thread_id,
+            "subscription-a".to_string(),
+        );
+        assert!(outgoing.begin_thread_outbound_barrier(thread_id, 1));
+        let thread_outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            vec![target.clone()],
+            thread_id,
+        );
+        for _ in 0..MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES {
+            thread_outgoing
+                .send_server_notification(ServerNotification::ThreadGoalCleared(
+                    ThreadGoalClearedNotification {
+                        thread_id: thread_id.to_string(),
+                    },
+                ))
+                .await;
+        }
+
+        let request_outgoing = outgoing.clone();
+        let request_thread_id = thread_id;
+        let blocked_request = tokio::spawn(async move {
+            request_outgoing
+                .send_request_to_thread_subscriptions(
+                    &[target],
+                    ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                        thread_id: request_thread_id.to_string(),
+                    }),
+                    request_thread_id,
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked_request.is_finished(),
+            "the 257th request must wait for barrier capacity before cancellation"
+        );
+        let request_id = RequestId::Integer(0);
+        assert_eq!(
+            outgoing.pending_requests_for_thread(thread_id).await.len(),
+            1,
+            "the blocked request must retain its callback until cancellation"
+        );
+
+        assert!(
+            outgoing.cancel_request(&request_id).await,
+            "the capacity-blocked request must remain cancelable before it reaches transport"
+        );
+        let (returned_request_id, response_waiter) = timeout(Duration::from_secs(1), blocked_request)
+            .await
+            .expect("cancellation must wake the capacity-blocked producer")
+            .expect("blocked request task should not panic");
+        assert_eq!(returned_request_id, request_id);
+        assert!(
+            response_waiter.await.is_err(),
+            "cancellation must drop the blocked request callback rather than leave it unresolved"
+        );
+        assert!(outgoing.pending_requests_for_thread(thread_id).await.is_empty());
+        assert!(
+            outgoing
+                .take_thread_request_resolution_targets(&request_id)
+                .await
+                .is_none(),
+            "cancellation must not leak callback targets for an envelope that never reached a client"
+        );
+
+        outgoing
+            .release_thread_outbound_barrier(thread_id, 1, None)
+            .await;
+        for _ in 0..MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES {
+            let OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::ThreadScopedNotification(notification),
+                ..
+            } = rx
+                .recv()
+                .await
+                .expect("retained notifications should release after cancellation")
+            else {
+                panic!("the canceled request must not be released to the client");
+            };
+            assert!(matches!(
+                notification.envelope.notification,
+                ServerNotification::ThreadGoalCleared(_)
+            ));
+        }
+        assert!(
+            timeout(Duration::from_millis(50), rx.recv()).await.is_err(),
+            "no stale request envelope may follow the retained notifications"
         );
     }
 }

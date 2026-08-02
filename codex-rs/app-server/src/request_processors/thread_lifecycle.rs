@@ -1,9 +1,7 @@
 use super::*;
 
-use crate::extensions::deliver_targetless_warning_barrier_resolution;
 use crate::extensions::send_thread_warning;
 use crate::extensions::spawn_thread_warning_barrier_resolution;
-use crate::extensions::TargetlessWarningBarrierResolution;
 use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_protocol::config_types::MultiAgentMode;
 
@@ -260,10 +258,11 @@ pub(super) async fn ensure_conversation_listener(
 /// Removes the connection-local state created by a failed start, resume, or fork
 /// attachment before the caller can publish a response containing its token.
 ///
-/// Drop the outgoing identity first: listener fanout uses that identity map, so
-/// this fences any event accepted while hydration, cursor construction, or
-/// response assembly failed. The state-manager removal then makes the
-/// connection ineligible for future listener fanout.
+/// Drop the failed outgoing identity first: listener fanout uses that map, so this fences any
+/// event accepted while hydration, cursor construction, or response assembly failed. The
+/// state-manager removal then makes that failed attachment ineligible for future fanout. If the
+/// state manager still owns an earlier live identity, restore it only while the outgoing map is
+/// unclaimed so a concurrent replacement cannot be overwritten.
 pub(super) async fn rollback_failed_thread_attach(
     thread_state_manager: &ThreadStateManager,
     outgoing: &Arc<OutgoingMessageSender>,
@@ -271,14 +270,14 @@ pub(super) async fn rollback_failed_thread_attach(
     connection_id: ConnectionId,
     expected_subscription_id: &str,
 ) {
-    if outgoing
+    let removed_failed_subscription = outgoing
         .unregister_thread_subscription_if_matches(
             connection_id,
             thread_id,
             expected_subscription_id,
         )
-        .await
-    {
+        .await;
+    if removed_failed_subscription {
         let _ = thread_state_manager
             .unsubscribe_connection_from_thread_if_subscription_matches(
                 thread_id,
@@ -286,6 +285,37 @@ pub(super) async fn rollback_failed_thread_attach(
                 expected_subscription_id,
             )
             .await;
+    }
+
+    if let Some(active_subscription_id) = thread_state_manager
+        .connection_thread_subscription_id(thread_id, connection_id)
+        .await
+        .filter(|subscription_id| subscription_id.as_str() != expected_subscription_id)
+    {
+        // A failed provisional resume can have displaced this map entry while an older attachment
+        // is still live in ThreadStateManager. Put that active owner back only when a competing
+        // replacement has not claimed the outgoing map in the meantime.
+        if outgoing
+            .restore_thread_subscription_if_unclaimed(
+                connection_id,
+                thread_id,
+                active_subscription_id.clone(),
+            )
+            .await
+            && thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await
+                .as_deref()
+                != Some(active_subscription_id.as_str())
+        {
+            outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    &active_subscription_id,
+                )
+                .await;
+        }
     }
 }
 
@@ -429,26 +459,12 @@ pub(super) async fn ensure_listener_task_running(
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
     tokio::spawn(async move {
-        let (targetless_warning_resolution_tx, mut targetless_warning_resolution_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TargetlessWarningBarrierResolution>();
         loop {
             tokio::select! {
                 biased;
                 _ = &mut cancel_rx => {
                     // Listener was superseded or the thread is being torn down.
                     break;
-                }
-                targetless_warning_resolution = targetless_warning_resolution_rx.recv() => {
-                    let Some(targetless_warning_resolution) = targetless_warning_resolution else {
-                        break;
-                    };
-                    deliver_targetless_warning_barrier_resolution(
-                        &outgoing_for_task,
-                        &thread_state_manager,
-                        conversation_id,
-                        targetless_warning_resolution,
-                    )
-                    .await;
                 }
                 listener_command = listener_command_rx.recv() => {
                     let Some(listener_command) = listener_command else {
@@ -464,7 +480,6 @@ pub(super) async fn ensure_listener_task_running(
                         &outgoing_for_task,
                         &pending_thread_unloads,
                         listener_generation,
-                        &targetless_warning_resolution_tx,
                         listener_command,
                     )
                     .await;
@@ -481,7 +496,6 @@ pub(super) async fn ensure_listener_task_running(
                             &outgoing_for_task,
                             &pending_thread_unloads,
                             listener_generation,
-                            &targetless_warning_resolution_tx,
                             post_commit_command,
                         )
                         .await;
@@ -675,9 +689,6 @@ pub(super) async fn handle_thread_listener_command(
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
     listener_generation: u64,
-    targetless_warning_resolution_tx: &tokio::sync::mpsc::UnboundedSender<
-        TargetlessWarningBarrierResolution,
-    >,
     listener_command: ThreadListenerCommand,
 ) -> ThreadListenerCommandOutcome {
     match listener_command {
@@ -757,7 +768,6 @@ pub(super) async fn handle_thread_listener_command(
                         conversation_id,
                         message,
                         lease,
-                        targetless_warning_resolution_tx.clone(),
                     );
                 }
             }
@@ -1819,6 +1829,131 @@ mod tests {
         assert!(
             outgoing_rx.try_recv().is_err(),
             "a failed attach must not leave a token that can emit tagged traffic"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_provisional_resume_restores_the_still_active_subscription_identity() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let active_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(active_subscription_id.clone()),
+            )
+            .await
+            .expect("the original subscription should remain active");
+
+        // A provisional resume mints B in the outgoing map before it completes, but does not
+        // replace the live A state-manager attachment. Its later failure must put A back.
+        let provisional_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        assert_ne!(provisional_subscription_id, active_subscription_id);
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &provisional_subscription_id,
+        )
+        .await;
+
+        assert!(
+            outgoing
+                .thread_subscription_matches(connection_id, thread_id, &active_subscription_id)
+                .await,
+            "rollback must restore the token that still owns the active state-manager attachment"
+        );
+        assert_eq!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await,
+            Some(active_subscription_id),
+            "rollback must not tear down the active A attachment while cleaning provisional B"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_provisional_resume_never_overwrites_a_competing_replacement() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let active_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(active_subscription_id.clone()),
+            )
+            .await
+            .expect("the original subscription should remain active");
+        let failed_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let competing_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &failed_subscription_id,
+        )
+        .await;
+        assert!(
+            outgoing
+                .thread_subscription_matches(
+                    connection_id,
+                    thread_id,
+                    &competing_subscription_id,
+                )
+                .await,
+            "a failed B rollback must not overwrite a newer outgoing C owner"
+        );
+
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &competing_subscription_id,
+        )
+        .await;
+        assert!(
+            outgoing
+                .thread_subscription_matches(connection_id, thread_id, &active_subscription_id)
+                .await,
+            "once C fails too, the transaction may restore active A"
         );
     }
 
