@@ -491,8 +491,10 @@ result. The downstream boundary retains complete payloads for code mode, but
 returns a fixed compact failed structured result to the model when a JSON-family
 resource does not fit its output budget. Plain text and Markdown resources keep
 their existing bounded rendering. The history copy receives the compact error,
-so the generic history bound cannot re-corrupt a nested JSON resource. Preserve
-this carry until upstream has equivalent model-safe resource bounding.
+so the generic history bound cannot re-corrupt a nested JSON resource. Code
+Mode retains the complete value and records a successful execution; the direct
+model invocation remains a failed bounded projection. Preserve this carry until
+upstream has equivalent model-safe resource bounding.
 
 ## Validation policy
 

@@ -1,5 +1,7 @@
 use super::*;
 use crate::session::step_context::StepContext;
+use codex_hooks::Hooks;
+use codex_hooks::HooksConfig;
 use pretty_assertions::assert_eq;
 
 struct TestHandler {
@@ -39,6 +41,73 @@ struct LifecycleTestHandler {
     tool_name: codex_tools::ToolName,
     result: LifecycleTestResult,
 }
+
+struct ModelBoundedCodeModeOutput {
+    model_output: crate::tools::context::FunctionToolOutput,
+    code_mode_value: serde_json::Value,
+}
+
+impl crate::tools::context::ToolOutput for ModelBoundedCodeModeOutput {
+    fn log_preview(&self) -> String {
+        self.model_output.log_preview()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.model_output.success_for_logging()
+    }
+
+    fn code_mode_execution_status(&self) -> codex_tools::ToolExecutionStatus {
+        codex_tools::ToolExecutionStatus::Completed
+    }
+
+    fn to_response_item(
+        &self,
+        call_id: &str,
+        payload: &ToolPayload,
+    ) -> codex_protocol::models::ResponseInputItem {
+        self.model_output.to_response_item(call_id, payload)
+    }
+
+    fn post_tool_use_response(
+        &self,
+        _call_id: &str,
+        _payload: &ToolPayload,
+    ) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "projection": "bounded" }))
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> serde_json::Value {
+        self.code_mode_value.clone()
+    }
+}
+
+struct ModelBoundedCodeModeHandler {
+    tool_name: codex_tools::ToolName,
+}
+
+impl ToolExecutor<ToolInvocation> for ModelBoundedCodeModeHandler {
+    fn tool_name(&self) -> codex_tools::ToolName {
+        self.tool_name.clone()
+    }
+
+    fn spec(&self) -> codex_tools::ToolSpec {
+        test_spec(&self.tool_name)
+    }
+
+    fn handle(&self, _invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async {
+            Ok(Box::new(ModelBoundedCodeModeOutput {
+                model_output: crate::tools::context::FunctionToolOutput::from_text(
+                    "{\"error\":\"bounded\"}".to_string(),
+                    Some(false),
+                ),
+                code_mode_value: serde_json::json!({ "complete": "resource value" }),
+            }) as Box<dyn crate::tools::context::ToolOutput>)
+        })
+    }
+}
+
+impl CoreToolRuntime for ModelBoundedCodeModeHandler {}
 
 impl ToolExecutor<ToolInvocation> for LifecycleTestHandler {
     fn tool_name(&self) -> codex_tools::ToolName {
@@ -458,11 +527,178 @@ async fn dispatch_notifies_tool_lifecycle_contributors() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn code_mode_execution_status_controls_hooks_and_lifecycle_without_changing_model_output(
+) -> anyhow::Result<()> {
+    let (mut session, turn) = crate::session::tests::make_session_and_context().await;
+    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+    builder.tool_lifecycle_contributor(Arc::new(ToolLifecycleRecorder {
+        records: Arc::clone(&records),
+    }));
+    session.services.extensions = Arc::new(builder.build());
+
+    let hook_script = turn.config.codex_home.join("post_tool_use_hook.sh");
+    let hook_marker = turn.config.codex_home.join("post_tool_use_hook_input.json");
+    std::fs::write(
+        &hook_script,
+        format!(
+            "#!/bin/sh\ncat > {}\nprintf '%s\\n' '{{\"continue\":true}}'\n",
+            shlex::try_quote(hook_marker.to_string_lossy().as_ref())?,
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(&hook_script)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&hook_script, permissions)?;
+    }
+    std::fs::write(
+        turn.config.codex_home.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "^model_bounded_resource$",
+                    "hooks": [{
+                        "type": "command",
+                        "command": hook_script.display().to_string(),
+                    }],
+                }],
+            },
+        })
+        .to_string(),
+    )?;
+    let hook_list = codex_hooks::list_hooks(HooksConfig {
+        feature_enabled: true,
+        config_layer_stack: Some(turn.config.config_layer_stack.clone()),
+        ..HooksConfig::default()
+    });
+    assert_eq!(hook_list.hooks.len(), 1);
+    let trusted_stack = turn.config.config_layer_stack.with_user_config(
+        &turn.config.codex_home.join(codex_config::CONFIG_TOML_FILE),
+        serde_json::from_value(serde_json::json!({
+            "hooks": {
+                "state": {
+                    hook_list.hooks[0].key.clone(): {
+                        "trusted_hash": hook_list.hooks[0].current_hash.clone(),
+                    },
+                },
+            },
+        }))?,
+    )?;
+    let mut hook_shell_argv = session
+        .user_shell()
+        .derive_exec_args("", /*use_login_shell*/ false);
+    let hook_shell_program = hook_shell_argv.remove(0);
+    let _ = hook_shell_argv.pop();
+    session.services.hooks.store(Arc::new(Hooks::new(HooksConfig {
+        feature_enabled: true,
+        config_layer_stack: Some(trusted_stack),
+        shell_program: Some(hook_shell_program),
+        shell_args: hook_shell_argv,
+        ..HooksConfig::default()
+    })));
+
+    let tool_name = codex_tools::ToolName::plain("model_bounded_resource");
+    let registry = ToolRegistry::with_handler_for_test(Arc::new(ModelBoundedCodeModeHandler {
+        tool_name: tool_name.clone(),
+    }));
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let direct = registry
+        .dispatch_any_with_terminal_outcome(
+            test_invocation_with_source(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "direct-model-projection",
+                tool_name.clone(),
+                crate::tools::context::ToolCallSource::Direct,
+            ),
+            /*terminal_outcome_reached*/ None,
+        )
+        .await?;
+    let code_mode = registry
+        .dispatch_any_with_terminal_outcome(
+            test_invocation_with_source(
+                session,
+                turn,
+                "code-mode-resource-read",
+                tool_name.clone(),
+                crate::tools::context::ToolCallSource::CodeMode {
+                    cell_id: "cell-1".to_string(),
+                    runtime_tool_call_id: "tool-1".to_string(),
+                },
+            ),
+            /*terminal_outcome_reached*/ None,
+        )
+        .await?;
+
+    let codex_protocol::models::ResponseInputItem::FunctionCallOutput { output, .. } =
+        direct.into_response()
+    else {
+        panic!("direct invocation should retain a function response");
+    };
+    assert_eq!(output.success, Some(false));
+    assert_eq!(code_mode.code_mode_result(), serde_json::json!({ "complete": "resource value" }));
+    let hook_input: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hook_marker)?)?;
+    assert_eq!(hook_input["tool_name"], "model_bounded_resource");
+    assert_eq!(hook_input["tool_response"], serde_json::json!({ "projection": "bounded" }));
+
+    let expected = vec![
+        RecordedToolLifecycle::Start {
+            call_id: "direct-model-projection".to_string(),
+            tool_name: tool_name.clone(),
+        },
+        RecordedToolLifecycle::Finish {
+            call_id: "direct-model-projection".to_string(),
+            tool_name: tool_name.clone(),
+            outcome: codex_extension_api::ToolCallOutcome::Completed { success: false },
+        },
+        RecordedToolLifecycle::Start {
+            call_id: "code-mode-resource-read".to_string(),
+            tool_name: tool_name.clone(),
+        },
+        RecordedToolLifecycle::Finish {
+            call_id: "code-mode-resource-read".to_string(),
+            tool_name,
+            outcome: codex_extension_api::ToolCallOutcome::Completed { success: true },
+        },
+    ];
+    let actual = records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .drain(..)
+        .collect::<Vec<_>>();
+    assert_eq!(expected, actual);
+
+    Ok(())
+}
+
 fn test_invocation(
     session: Arc<crate::session::session::Session>,
     turn: Arc<crate::session::turn_context::TurnContext>,
     call_id: &str,
     tool_name: codex_tools::ToolName,
+) -> ToolInvocation {
+    test_invocation_with_source(
+        session,
+        turn,
+        call_id,
+        tool_name,
+        crate::tools::context::ToolCallSource::Direct,
+    )
+}
+
+fn test_invocation_with_source(
+    session: Arc<crate::session::session::Session>,
+    turn: Arc<crate::session::turn_context::TurnContext>,
+    call_id: &str,
+    tool_name: codex_tools::ToolName,
+    source: crate::tools::context::ToolCallSource,
 ) -> ToolInvocation {
     let step_context = StepContext::for_test(Arc::clone(&turn));
     ToolInvocation {
@@ -475,7 +711,7 @@ fn test_invocation(
         )),
         call_id: call_id.to_string(),
         tool_name,
-        source: crate::tools::context::ToolCallSource::Direct,
+        source,
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },

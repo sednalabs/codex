@@ -46,7 +46,8 @@ decisions.
 - A model-visible `read_mcp_resource` result must not report success after
   generic envelope truncation has cut a nested `application/json` or
   `application/*+json` text resource. The raw source payload remains available
-  to code mode, while the model receives a fixed compact failed structured
+  to code mode and records a successful execution for hooks, lifecycle, and
+  rollout tracing, while the model receives a fixed compact failed structured
   result whenever that resource does not fit the model-output budget.
 - The stored history receives only that compact error, so the generic history
   output cap cannot reintroduce malformed nested JSON. Plain text and Markdown
