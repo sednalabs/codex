@@ -38,7 +38,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
-use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadStateManager;
 
@@ -270,22 +270,18 @@ pub(crate) fn app_server_extension_event_sink(
 
 pub(crate) async fn send_thread_warning(
     outgoing: &Arc<OutgoingMessageSender>,
+    thread_subscriptions: &[ThreadSubscriptionTarget],
     thread_id: ThreadId,
     message: String,
 ) {
-    let thread_subscriptions = outgoing
-        .thread_subscription_targets_for_thread(thread_id)
-        .await;
-    let thread_outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
-        Arc::clone(outgoing),
-        thread_subscriptions,
-        thread_id,
-    );
-    thread_outgoing
-        .send_server_notification(ServerNotification::Warning(WarningNotification {
-            thread_id: Some(thread_id.to_string()),
-            message,
-        }))
+    outgoing
+        .send_server_notification_to_thread_subscriptions(
+            thread_subscriptions,
+            ServerNotification::Warning(WarningNotification {
+                thread_id: Some(thread_id.to_string()),
+                message,
+            }),
+        )
         .await;
 }
 
@@ -368,12 +364,18 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
             }
             message.truncate(truncate_at);
         }
+        // Capture at extension ingress just as goal updates do. A queued listener command must
+        // not look up a replacement token after the original connection unsubscribes or reattaches.
+        let thread_subscriptions = self
+            .outgoing
+            .thread_subscription_targets_for_thread_now(thread_id);
         if let Some(listener_command_tx) = self
             .thread_state_manager
             .current_listener_command_tx(thread_id)
         {
             let command = ThreadListenerCommand::EmitWarning {
                 message: message.clone(),
+                thread_subscriptions: thread_subscriptions.clone(),
             };
             if listener_command_tx.send(command).is_ok() {
                 return;
@@ -381,6 +383,13 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
             tracing::warn!(
                 "failed to enqueue extension warning for {thread_id}: listener command channel is closed"
             );
+        }
+        if !thread_subscriptions.is_empty() {
+            let outgoing = Arc::clone(&self.outgoing);
+            tokio::spawn(async move {
+                send_thread_warning(&outgoing, &thread_subscriptions, thread_id, message).await;
+            });
+            return;
         }
         let outgoing = Arc::clone(&self.outgoing);
         let thread_state_manager = self.thread_state_manager.clone();
@@ -399,7 +408,19 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 );
                 return;
             }
-            send_thread_warning(&outgoing, thread_id, message).await;
+            // There was no subscription at ingress, so capture only after a subscriber exists.
+            // This is a current warning rather than a stale queued lifecycle event.
+            let thread_subscriptions = outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await;
+            if thread_subscriptions.is_empty() {
+                tracing::warn!(
+                    %thread_id,
+                    "dropping extension warning without a thread subscription identity"
+                );
+                return;
+            }
+            send_thread_warning(&outgoing, &thread_subscriptions, thread_id, message).await;
         });
     }
 }
@@ -648,7 +669,7 @@ mod tests {
                 ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, .. } => {
                     observed.push(turn_id.expect("extension goal updates should include turn ids"));
                 }
-                ThreadListenerCommand::EmitWarning { message } => observed.push(message),
+                ThreadListenerCommand::EmitWarning { message, .. } => observed.push(message),
                 ThreadListenerCommand::EmitThreadGoalCleared { .. } => {
                     observed.push("cleared".to_string())
                 }
@@ -690,10 +711,69 @@ mod tests {
             .await
             .expect("timed out waiting for listener command")
             .expect("listener command channel closed unexpectedly");
-        let ThreadListenerCommand::EmitWarning { message } = command else {
+        let ThreadListenerCommand::EmitWarning { message, .. } = command else {
             panic!("expected warning listener command");
         };
         assert_eq!(message, "🙂".repeat(64));
+    }
+
+    #[tokio::test]
+    async fn queued_warning_keeps_its_ingress_subscription_after_reattach() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let thread_state_manager = ThreadStateManager::new();
+        let (listener_command_tx, mut listener_command_rx) = mpsc::unbounded_channel();
+        thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx);
+        let sink = app_server_extension_event_sink(outgoing.clone(), thread_state_manager);
+
+        sink.emit_warning(ExtensionWarning {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-1".to_string()),
+            message: "queued before reattach".to_string(),
+        });
+        let command = listener_command_rx
+            .recv()
+            .await
+            .expect("warning should enter the listener FIFO");
+
+        outgoing
+            .unregister_thread_subscription(connection_id, thread_id)
+            .await;
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        let ThreadListenerCommand::EmitWarning {
+            message,
+            thread_subscriptions,
+        } = command
+        else {
+            panic!("expected queued warning command");
+        };
+        send_thread_warning(&outgoing, &thread_subscriptions, thread_id, message).await;
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id: received_connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx
+            .recv()
+            .await
+            .expect("queued warning should be delivered through its captured target")
+        else {
+            panic!("expected tagged warning notification");
+        };
+        assert_eq!(received_connection_id, connection_id);
+        assert_eq!(notification.thread_subscription_id, old_subscription_id);
+        assert_ne!(notification.thread_subscription_id, replacement_subscription_id);
     }
 
     #[tokio::test]
@@ -720,6 +800,9 @@ mod tests {
             )
             .await
             .expect("connection should be subscribed");
+        outgoing
+            .register_thread_subscription(subscribed_connection, thread_id)
+            .await;
         let sink = app_server_extension_event_sink(outgoing, thread_state_manager);
 
         sink.emit_warning(ExtensionWarning {
@@ -771,7 +854,7 @@ mod tests {
         thread_state_manager
             .connection_initialized(subscribed_connection, ConnectionCapabilities::default())
             .await;
-        let sink = app_server_extension_event_sink(outgoing, thread_state_manager.clone());
+        let sink = app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
 
         sink.emit_warning(ExtensionWarning {
             thread_id: thread_id.to_string(),
@@ -787,6 +870,9 @@ mod tests {
             )
             .await
             .expect("connection should be subscribed");
+        outgoing
+            .register_thread_subscription(subscribed_connection, thread_id)
+            .await;
 
         let envelope = timeout(Duration::from_secs(1), outgoing_rx.recv())
             .await
@@ -838,6 +924,9 @@ mod tests {
             )
             .await
             .expect("connection should be subscribed");
+        outgoing
+            .register_thread_subscription(subscribed_connection, thread_id)
+            .await;
         let (listener_command_tx, listener_command_rx) = mpsc::unbounded_channel();
         drop(listener_command_rx);
         thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx);

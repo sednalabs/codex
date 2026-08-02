@@ -150,6 +150,7 @@ enum SystemErrorEpoch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AcceptedThreadStatus {
     has_system_error: bool,
+    is_running: bool,
     is_closed: bool,
     status_revision: Option<u64>,
 }
@@ -740,6 +741,49 @@ impl AgentNavigationState {
         true
     }
 
+    /// Records the running bit of a status watcher update that has already passed
+    /// [`Self::accepts_thread_status_change`]. Keeping it with the accepted revision lets a
+    /// later backend row materialize the watcher liveness without re-accepting the status.
+    pub(crate) fn record_accepted_status_running(
+        &mut self,
+        thread_id: ThreadId,
+        is_running: bool,
+    ) {
+        if let Some(status) = self.last_accepted_statuses.get_mut(&thread_id) {
+            status.is_running = is_running;
+        }
+    }
+
+    /// Applies retained revisioned watcher liveness when a picker row appears after the watcher
+    /// status. This is reconciliation only: it neither advances revisions nor accepts a delayed
+    /// snapshot status over the watcher state.
+    pub(crate) fn reconcile_revisioned_watcher_liveness(&mut self, thread_id: ThreadId) {
+        let Some(status) = self.revisioned_watcher_status(thread_id) else {
+            return;
+        };
+        if !self.threads.contains_key(&thread_id) {
+            return;
+        }
+
+        if status.is_closed {
+            if let Some(entry) = self.threads.get_mut(&thread_id) {
+                entry.is_closed = true;
+                entry.is_running = false;
+                entry.has_system_error = false;
+            }
+            self.stopped_threads.insert(thread_id);
+            return;
+        }
+
+        self.reopen_after_newer_status(thread_id);
+        self.set_system_error(thread_id, status.has_system_error);
+        if status.is_running && !status.has_system_error {
+            self.mark_running(thread_id);
+        } else {
+            self.set_running(thread_id, /*is_running*/ false);
+        }
+    }
+
     /// Returns whether a status-watch update can change the picker liveness for this thread.
     ///
     /// The V2 activity stream and the child status watcher are independent. An `Errored` activity
@@ -901,6 +945,7 @@ impl AgentNavigationState {
             thread_id,
             AcceptedThreadStatus {
                 has_system_error,
+                is_running: false,
                 is_closed,
                 status_revision,
             },

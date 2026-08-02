@@ -520,6 +520,8 @@ impl App {
         ) {
             return;
         }
+        self.agent_navigation
+            .record_accepted_status_running(thread_id, status.is_running);
         if status.is_closed {
             if self.agent_navigation.get(&thread_id).is_some() {
                 self.mark_agent_picker_thread_closed(thread_id);
@@ -1552,6 +1554,12 @@ impl App {
             Some(thread.updated_at),
         );
         self.sync_agent_picker_identity(thread_id);
+        // A revisioned watcher can arrive before any backend row. Its accepted state is newer
+        // than this revisionless row, so materialization must adopt that retained liveness rather
+        // than starting idle or trusting the snapshot's status.
+        self.agent_navigation
+            .reconcile_revisioned_watcher_liveness(thread_id);
+        self.sync_active_agent_label();
         // A live channel can have an empty store after a successful spawn. Only apply server
         // status for channels that would otherwise need another liveness read.
         if !has_live_channel && accepts_snapshot_liveness {

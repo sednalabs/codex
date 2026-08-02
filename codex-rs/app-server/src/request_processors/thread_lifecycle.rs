@@ -149,6 +149,7 @@ pub(super) async fn ensure_conversation_listener(
     conversation_id: ThreadId,
     connection_id: ConnectionId,
     raw_events_enabled: bool,
+    expected_subscription_id: Option<&str>,
 ) -> Result<EnsureConversationListenerResult, JSONRPCErrorError> {
     let conversation = match listener_task_context
         .thread_manager
@@ -162,7 +163,7 @@ pub(super) async fn ensure_conversation_listener(
             )));
         }
     };
-    let thread_state = {
+    let (thread_state, thread_subscription_id) = {
         let pending_thread_unloads = listener_task_context.pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
             return Err(invalid_request(format!(
@@ -174,22 +175,62 @@ pub(super) async fn ensure_conversation_listener(
         // server-owned identity before publishing the connection to a running
         // listener, so no thread event can observe a subscribed connection
         // without an immutable subscription identity.
-        listener_task_context
-            .outgoing
-            .ensure_thread_subscription(connection_id, conversation_id)
-            .await;
+        let thread_subscription_id = match expected_subscription_id {
+            Some(expected_subscription_id) => {
+                if !listener_task_context
+                    .outgoing
+                    .thread_subscription_matches(
+                        connection_id,
+                        conversation_id,
+                        expected_subscription_id,
+                    )
+                    .await
+                {
+                    return Ok(EnsureConversationListenerResult::ConnectionClosed);
+                }
+                expected_subscription_id.to_string()
+            }
+            None => listener_task_context
+                .outgoing
+                .ensure_thread_subscription(connection_id, conversation_id)
+                .await,
+        };
         let Some(thread_state) = listener_task_context
             .thread_state_manager
-            .try_ensure_connection_subscribed(conversation_id, connection_id, raw_events_enabled)
+            .try_ensure_connection_subscribed_with_subscription(
+                conversation_id,
+                connection_id,
+                raw_events_enabled,
+                Some(thread_subscription_id.clone()),
+            )
             .await
         else {
             listener_task_context
                 .outgoing
-                .unregister_thread_subscription(connection_id, conversation_id)
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    conversation_id,
+                    &thread_subscription_id,
+                )
                 .await;
             return Ok(EnsureConversationListenerResult::ConnectionClosed);
         };
-        thread_state
+        if !listener_task_context
+            .outgoing
+            .thread_subscription_matches(connection_id, conversation_id, &thread_subscription_id)
+            .await
+        {
+            let _ = listener_task_context
+                .thread_state_manager
+                .unsubscribe_connection_from_thread_if_subscription_matches(
+                    conversation_id,
+                    connection_id,
+                    &thread_subscription_id,
+                )
+                .await;
+            return Ok(EnsureConversationListenerResult::ConnectionClosed);
+        }
+        (thread_state, thread_subscription_id)
     };
     if let Err(error) = ensure_listener_task_running(
         listener_task_context.clone(),
@@ -199,20 +240,20 @@ pub(super) async fn ensure_conversation_listener(
     )
     .await
     {
-        listener_task_context
-            .outgoing
-            .unregister_thread_subscription(connection_id, conversation_id)
-            .await;
-        let _ = listener_task_context
-            .thread_state_manager
-            .unsubscribe_connection_from_thread(conversation_id, connection_id)
-            .await;
+        rollback_failed_thread_attach(
+            &listener_task_context.thread_state_manager,
+            &listener_task_context.outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
         return Err(error);
     }
     Ok(EnsureConversationListenerResult::Attached)
 }
 
-/// Removes the connection-local state created by a failed resume or fork
+/// Removes the connection-local state created by a failed start, resume, or fork
 /// attachment before the caller can publish a response containing its token.
 ///
 /// Drop the outgoing identity first: listener fanout uses that identity map, so
@@ -224,13 +265,24 @@ pub(super) async fn rollback_failed_thread_attach(
     outgoing: &Arc<OutgoingMessageSender>,
     thread_id: ThreadId,
     connection_id: ConnectionId,
+    expected_subscription_id: &str,
 ) {
-    outgoing
-        .unregister_thread_subscription(connection_id, thread_id)
-        .await;
-    let _ = thread_state_manager
-        .unsubscribe_connection_from_thread(thread_id, connection_id)
-        .await;
+    if outgoing
+        .unregister_thread_subscription_if_matches(
+            connection_id,
+            thread_id,
+            expected_subscription_id,
+        )
+        .await
+    {
+        let _ = thread_state_manager
+            .unsubscribe_connection_from_thread_if_subscription_matches(
+                thread_id,
+                connection_id,
+                expected_subscription_id,
+            )
+            .await;
+    }
 }
 
 /// Gates `thread/start` publication on listener attachment and rolls back the pre-minted
@@ -243,19 +295,32 @@ pub(super) async fn gate_thread_start_listener_attachment(
     outgoing: &Arc<OutgoingMessageSender>,
     thread_id: ThreadId,
     connection_id: ConnectionId,
+    thread_subscription_id: &str,
 ) -> Result<ThreadStartAttachmentPublication, JSONRPCErrorError> {
     match listener_result {
         Ok(EnsureConversationListenerResult::Attached) => {
             Ok(ThreadStartAttachmentPublication::Publish)
         }
         Ok(EnsureConversationListenerResult::ConnectionClosed) => {
-            rollback_failed_thread_attach(thread_state_manager, outgoing, thread_id, connection_id)
-                .await;
+            rollback_failed_thread_attach(
+                thread_state_manager,
+                outgoing,
+                thread_id,
+                connection_id,
+                thread_subscription_id,
+            )
+            .await;
             Ok(ThreadStartAttachmentPublication::Suppress)
         }
         Err(error) => {
-            rollback_failed_thread_attach(thread_state_manager, outgoing, thread_id, connection_id)
-                .await;
+            rollback_failed_thread_attach(
+                thread_state_manager,
+                outgoing,
+                thread_id,
+                connection_id,
+                thread_subscription_id,
+            )
+            .await;
             Err(error)
         }
     }
@@ -574,8 +639,11 @@ pub(super) async fn handle_thread_listener_command(
             )
             .await;
         }
-        ThreadListenerCommand::EmitWarning { message } => {
-            send_thread_warning(outgoing, conversation_id, message).await;
+        ThreadListenerCommand::EmitWarning {
+            message,
+            thread_subscriptions,
+        } => {
+            send_thread_warning(outgoing, &thread_subscriptions, conversation_id, message).await;
         }
         ThreadListenerCommand::EmitThreadGoalCleared {
             thread_subscriptions,
@@ -742,7 +810,11 @@ pub(super) async fn handle_pending_thread_resume_request(
         if pending_thread_unloads.contains(&conversation_id) {
             drop(pending_thread_unloads);
             outgoing
-                .unregister_thread_subscription(connection_id, conversation_id)
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    conversation_id,
+                    &thread_subscription_id,
+                )
                 .await;
             outgoing
                 .send_error(
@@ -755,12 +827,20 @@ pub(super) async fn handle_pending_thread_resume_request(
             return;
         }
         thread_state_manager
-            .try_add_connection_to_thread(conversation_id, connection_id)
+            .try_add_connection_to_thread_with_subscription(
+                conversation_id,
+                connection_id,
+                Some(thread_subscription_id.clone()),
+            )
             .await
     };
     if !connection_added {
         outgoing
-            .unregister_thread_subscription(connection_id, conversation_id)
+            .unregister_thread_subscription_if_matches(
+                connection_id,
+                conversation_id,
+                &thread_subscription_id,
+            )
             .await;
         tracing::debug!(
             thread_id = %conversation_id,
@@ -786,6 +866,7 @@ pub(super) async fn handle_pending_thread_resume_request(
                     outgoing,
                     conversation_id,
                     connection_id,
+                    &thread_subscription_id,
                 )
                 .await;
                 outgoing.send_error(request_id, error).await;
@@ -1047,26 +1128,32 @@ mod tests {
         thread_state_manager
             .connection_initialized(connection_id, ConnectionCapabilities::default())
             .await;
-        thread_state_manager
-            .try_ensure_connection_subscribed(
-                thread_id,
-                connection_id,
-                /*experimental_raw_events*/ false,
-            )
-            .await
-            .expect("test connection should attach");
-
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
         ));
-        outgoing
+        let thread_subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
             .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(thread_subscription_id.clone()),
+            )
+            .await
+            .expect("test connection should attach");
 
-        rollback_failed_thread_attach(&thread_state_manager, &outgoing, thread_id, connection_id)
-            .await;
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &thread_subscription_id,
+        )
+        .await;
 
         assert!(!thread_state_manager.has_subscribers(thread_id).await);
         assert!(
@@ -1094,6 +1181,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_old_attach_cannot_unregister_a_replacement_subscription() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(old_subscription_id.clone()),
+            )
+            .await
+            .expect("old attach should establish its owned connection state");
+
+        // A second overlapping attach replaces the token and its connection ownership before the
+        // first attempt learns that its later hydration failed.
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(replacement_subscription_id.clone()),
+            )
+            .await
+            .expect("replacement attach should supersede the old ownership");
+
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &old_subscription_id,
+        )
+        .await;
+
+        assert_eq!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .map(|target| target.thread_subscription_id),
+            Some(replacement_subscription_id),
+            "old cleanup must not unregister the replacement token"
+        );
+        assert!(
+            thread_state_manager.has_subscribers(thread_id).await,
+            "old cleanup must not unsubscribe the replacement listener"
+        );
+    }
+
+    #[tokio::test]
     async fn thread_start_connection_closed_attach_suppresses_receipt_and_started_event() {
         let thread_id = ThreadId::new();
         let connection_id = ConnectionId(1);
@@ -1101,22 +1253,23 @@ mod tests {
         thread_state_manager
             .connection_initialized(connection_id, ConnectionCapabilities::default())
             .await;
-        thread_state_manager
-            .try_ensure_connection_subscribed(
-                thread_id,
-                connection_id,
-                /*experimental_raw_events*/ false,
-            )
-            .await
-            .expect("test connection should begin attached");
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
         ));
-        outgoing
+        let thread_subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
             .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(thread_subscription_id.clone()),
+            )
+            .await
+            .expect("test connection should begin attached");
 
         assert_eq!(
             gate_thread_start_listener_attachment(
@@ -1125,6 +1278,7 @@ mod tests {
                 &outgoing,
                 thread_id,
                 connection_id,
+                &thread_subscription_id,
             )
             .await
             .expect("a closed connection is not an RPC failure"),
@@ -1152,22 +1306,23 @@ mod tests {
         thread_state_manager
             .connection_initialized(connection_id, ConnectionCapabilities::default())
             .await;
-        thread_state_manager
-            .try_ensure_connection_subscribed(
-                thread_id,
-                connection_id,
-                /*experimental_raw_events*/ false,
-            )
-            .await
-            .expect("test connection should begin attached");
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
         ));
-        outgoing
+        let thread_subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
             .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(thread_subscription_id.clone()),
+            )
+            .await
+            .expect("test connection should begin attached");
 
         let error = gate_thread_start_listener_attachment(
             Err(invalid_request("listener attach failed")),
@@ -1175,6 +1330,7 @@ mod tests {
             &outgoing,
             thread_id,
             connection_id,
+            &thread_subscription_id,
         )
         .await
         .expect_err("listener attach failure must abort thread/start publication");

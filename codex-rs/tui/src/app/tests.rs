@@ -2374,6 +2374,50 @@ async fn picker_backfill_cannot_overwrite_newer_watcher_recovery() -> Result<()>
 }
 
 #[tokio::test]
+async fn picker_backend_row_reconciles_status_first_active_watcher_liveness() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+
+    // The watcher can learn the child is active before a background relation query discovers
+    // its picker row. Its revision is authoritative over the later revisionless row snapshot.
+    app.apply_agent_picker_thread_status_change(
+        child_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: child_thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(17),
+        },
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    let mut refreshed_thread_ids = std::collections::HashSet::new();
+    let mut stale_backend_row =
+        background_picker_thread(child_thread_id, primary_thread_id, "Status-first active child");
+    stale_backend_row.status = ThreadStatus::NotLoaded;
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        stale_backend_row,
+        /*apply_snapshot_liveness*/ true,
+        &mut refreshed_thread_ids,
+    );
+
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_nickname.as_deref() == Some("Status-first active child")
+    }));
+    assert!(
+        !refreshed_thread_ids.contains(&child_thread_id),
+        "the stale backend status must not be treated as a newer liveness refresh"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();

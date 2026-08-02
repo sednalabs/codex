@@ -77,6 +77,7 @@ pub(crate) enum ThreadListenerCommand {
     // EmitWarning is used to order extension warnings with other thread notifications.
     EmitWarning {
         message: String,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
     },
     // EmitThreadGoalCleared is used to order app-server goal clears with running-thread resume responses.
     EmitThreadGoalCleared {
@@ -569,6 +570,9 @@ mod tests {
 struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
     connection_ids: HashSet<ConnectionId>,
+    /// Identity that established each connection's current listener attachment. Explicit
+    /// start/resume/fork cleanup must match this before removing a shared connection.
+    connection_subscription_ids: HashMap<ConnectionId, String>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -577,6 +581,7 @@ impl Default for ThreadEntry {
         Self {
             state: Arc::new(Mutex::new(ThreadState::default())),
             connection_ids: HashSet::new(),
+            connection_subscription_ids: HashMap::new(),
             has_connections_watcher: watch::channel(false).0,
         }
     }
@@ -789,10 +794,46 @@ impl ThreadStateManager {
             }
             if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
                 thread_entry.connection_ids.remove(&connection_id);
+                thread_entry.connection_subscription_ids.remove(&connection_id);
                 thread_entry.update_has_connections();
             }
         };
 
+        true
+    }
+
+    /// Removes an explicit attachment only when its immutable subscription identity still owns
+    /// this connection/thread pair. A newer overlapping attach replaces this id before it becomes
+    /// live, so an older rollback cannot tear down that newer listener.
+    pub(crate) async fn unsubscribe_connection_from_thread_if_subscription_matches(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        expected_subscription_id: &str,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(thread_entry) = state.threads.get(&thread_id) else {
+            return false;
+        };
+        if thread_entry
+            .connection_subscription_ids
+            .get(&connection_id)
+            .is_none_or(|subscription_id| subscription_id != expected_subscription_id)
+        {
+            return false;
+        }
+
+        if let Some(thread_ids) = state.thread_ids_by_connection.get_mut(&connection_id) {
+            thread_ids.remove(&thread_id);
+            if thread_ids.is_empty() {
+                state.thread_ids_by_connection.remove(&connection_id);
+            }
+        }
+        if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
+            thread_entry.connection_ids.remove(&connection_id);
+            thread_entry.connection_subscription_ids.remove(&connection_id);
+            thread_entry.update_has_connections();
+        }
         true
     }
 
@@ -812,6 +853,24 @@ impl ThreadStateManager {
         connection_id: ConnectionId,
         experimental_raw_events: bool,
     ) -> Option<Arc<Mutex<ThreadState>>> {
+        self.try_ensure_connection_subscribed_with_subscription(
+            thread_id,
+            connection_id,
+            experimental_raw_events,
+            None,
+        )
+        .await
+    }
+
+    /// Adds a listener connection while recording the token that owns an explicit attachment.
+    /// Background callers without an explicit token pass `None` and retain the legacy semantics.
+    pub(crate) async fn try_ensure_connection_subscribed_with_subscription(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        experimental_raw_events: bool,
+        subscription_id: Option<String>,
+    ) -> Option<Arc<Mutex<ThreadState>>> {
         let thread_state = {
             let mut state = self.state.lock().await;
             if !state.live_connections.contains_key(&connection_id) {
@@ -824,6 +883,16 @@ impl ThreadStateManager {
                 .insert(thread_id);
             let thread_entry = state.threads.entry(thread_id).or_default();
             thread_entry.connection_ids.insert(connection_id);
+            match subscription_id {
+                Some(subscription_id) => {
+                    thread_entry
+                        .connection_subscription_ids
+                        .insert(connection_id, subscription_id);
+                }
+                None => {
+                    thread_entry.connection_subscription_ids.remove(&connection_id);
+                }
+            }
             thread_entry.update_has_connections();
             thread_entry.state.clone()
         };
@@ -841,6 +910,17 @@ impl ThreadStateManager {
         thread_id: ThreadId,
         connection_id: ConnectionId,
     ) -> bool {
+        self.try_add_connection_to_thread_with_subscription(thread_id, connection_id, None)
+            .await
+    }
+
+    /// Adds a connection to an existing listener and records explicit attachment ownership.
+    pub(crate) async fn try_add_connection_to_thread_with_subscription(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        subscription_id: Option<String>,
+    ) -> bool {
         let mut state = self.state.lock().await;
         if !state.live_connections.contains_key(&connection_id) {
             return false;
@@ -852,6 +932,16 @@ impl ThreadStateManager {
             .insert(thread_id);
         let thread_entry = state.threads.entry(thread_id).or_default();
         thread_entry.connection_ids.insert(connection_id);
+        match subscription_id {
+            Some(subscription_id) => {
+                thread_entry
+                    .connection_subscription_ids
+                    .insert(connection_id, subscription_id);
+            }
+            None => {
+                thread_entry.connection_subscription_ids.remove(&connection_id);
+            }
+        }
         thread_entry.update_has_connections();
         true
     }
@@ -867,6 +957,7 @@ impl ThreadStateManager {
             for thread_id in &thread_ids {
                 if let Some(thread_entry) = state.threads.get_mut(thread_id) {
                     thread_entry.connection_ids.remove(&connection_id);
+                    thread_entry.connection_subscription_ids.remove(&connection_id);
                     thread_entry.update_has_connections();
                 }
             }

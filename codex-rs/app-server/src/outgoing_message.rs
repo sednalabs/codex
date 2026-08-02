@@ -351,6 +351,44 @@ impl OutgoingMessageSender {
             .remove(&(connection_id, thread_id));
     }
 
+    /// Removes a connection-local thread identity only when it is still the identity owned by
+    /// the caller. Overlapping resume/start/fork attempts can replace this map entry before an
+    /// older attempt discovers that its attach or hydration failed.
+    pub(crate) async fn unregister_thread_subscription_if_matches(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+        expected_subscription_id: &str,
+    ) -> bool {
+        let mut subscriptions = self
+            .thread_subscription_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if subscriptions
+            .get(&(connection_id, thread_id))
+            .is_some_and(|subscription_id| subscription_id == expected_subscription_id)
+        {
+            subscriptions.remove(&(connection_id, thread_id));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns whether an explicit attach attempt still owns this connection-local identity.
+    pub(crate) async fn thread_subscription_matches(
+        &self,
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+        expected_subscription_id: &str,
+    ) -> bool {
+        self.thread_subscription_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(connection_id, thread_id))
+            .is_some_and(|subscription_id| subscription_id == expected_subscription_id)
+    }
+
     pub(crate) async fn unregister_thread_subscriptions_for_thread(&self, thread_id: ThreadId) {
         self.thread_subscription_ids
             .lock()
@@ -656,6 +694,9 @@ impl OutgoingMessageSender {
 
     pub(crate) async fn notify_client_error(&self, id: RequestId, error: JSONRPCErrorError) {
         let entry = self.take_request_callback(&id).await;
+        // A client rejection has no listener-side resolution notification. Drop the immutable
+        // recipients now rather than retaining a target list until broad thread teardown.
+        self.discard_thread_request_resolution_targets(&id).await;
 
         match entry {
             Some((id, entry)) => {
@@ -2512,6 +2553,90 @@ mod tests {
             .expect("wait should not time out")
             .expect("waiter should receive a callback");
         assert_eq!(result, Err(error));
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_request_completion_discards_only_rejected_resolution_targets() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("thread request should capture the registered target");
+
+        let (rejected_request_id, rejected_waiter) = outgoing
+            .send_request_to_thread_subscriptions(
+                &[target.clone()],
+                ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                }),
+                thread_id,
+            )
+            .await;
+        let _ = rx
+            .recv()
+            .await
+            .expect("bounded queue should contain the rejected request");
+        let rejected_error = internal_error("request rejected");
+        outgoing
+            .notify_client_error(rejected_request_id.clone(), rejected_error.clone())
+            .await;
+        assert_eq!(
+            rejected_waiter
+                .await
+                .expect("rejected request waiter should complete"),
+            Err(rejected_error)
+        );
+        assert!(
+            outgoing
+                .take_thread_request_resolution_targets(&rejected_request_id)
+                .await
+                .is_none(),
+            "a rejected request must discard its immutable resolution recipients exactly once"
+        );
+
+        let (successful_request_id, successful_waiter) = outgoing
+            .send_request_to_thread_subscriptions(
+                &[target],
+                ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                }),
+                thread_id,
+            )
+            .await;
+        let _ = rx
+            .recv()
+            .await
+            .expect("bounded queue should contain the successful request");
+        outgoing
+            .notify_client_response(successful_request_id.clone(), serde_json::json!({}))
+            .await;
+        successful_waiter
+            .await
+            .expect("successful request waiter should complete")
+            .expect("successful request should receive its result");
+        assert!(
+            outgoing
+                .take_thread_request_resolution_targets(&successful_request_id)
+                .await
+                .is_some(),
+            "the listener still needs successful request recipients for its resolution event"
+        );
+        assert!(
+            outgoing
+                .take_thread_request_resolution_targets(&successful_request_id)
+                .await
+                .is_none(),
+            "the successful listener resolution consumes its recipients without teardown"
+        );
     }
 
     #[tokio::test]
