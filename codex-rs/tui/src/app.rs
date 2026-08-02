@@ -88,7 +88,6 @@ use crate::workspace_command::AppServerWorkspaceCommandRunner;
 use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_client::AppServerRequestHandle;
-use codex_app_server_client::ThreadEventIngressRegistry;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AskForApproval;
@@ -119,6 +118,7 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallParams;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode as AppServerSandboxMode;
 use codex_app_server_protocol::SendAddCreditsNudgeEmailParams;
 use codex_app_server_protocol::ServerNotification;
@@ -596,9 +596,17 @@ pub(crate) struct App {
     thread_lifecycle_generations: HashMap<ThreadId, u64>,
     /// A local discard tombstone. Only an authoritative attach/recovery may remove it.
     discarded_thread_generations: HashMap<ThreadId, u64>,
-    /// The app-server client's transport-facing thread ingress registry. It snapshots the local
-    /// lifecycle before a server event enters the central TUI queue.
-    thread_event_ingress_registry: Option<ThreadEventIngressRegistry>,
+    /// Server-minted subscription identities bound to their local lifecycle.
+    /// Old identities remain tombstoned after discard so delayed traffic cannot
+    /// be reclassified as a newer attachment of the same thread id.
+    thread_subscription_targets: HashMap<String, ThreadSubscriptionBinding>,
+    /// Thread traffic that arrived before the corresponding start/resume/fork
+    /// response gave us its subscription identity. It is replayed only after
+    /// that identity is bound to an authoritative local lifecycle.
+    deferred_thread_subscription_events: VecDeque<codex_app_server_client::AppServerEvent>,
+    /// A stale request must be rejected once with its original JSON-RPC id,
+    /// even if a delayed transport delivery duplicates it.
+    rejected_stale_thread_subscription_requests: HashSet<(String, RequestId)>,
     agent_navigation: AgentNavigationState,
     side_threads: HashMap<ThreadId, SideThreadState>,
     active_thread_id: Option<ThreadId>,
@@ -629,6 +637,12 @@ pub(crate) struct PendingPrimaryThreadEvent {
     pub(crate) thread_id: ThreadId,
     pub(crate) lifecycle_generation: u64,
     pub(crate) event: ThreadBufferedEvent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ThreadSubscriptionBinding {
+    Active(ThreadLifecycleTarget),
+    Tombstoned(ThreadLifecycleTarget),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1109,7 +1123,9 @@ See the Codex keymap documentation for supported actions and examples."
             thread_event_channels: HashMap::new(),
             thread_lifecycle_generations: HashMap::new(),
             discarded_thread_generations: HashMap::new(),
-            thread_event_ingress_registry: None,
+            thread_subscription_targets: HashMap::new(),
+            deferred_thread_subscription_events: VecDeque::new(),
+            rejected_stale_thread_subscription_requests: HashSet::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,
@@ -1124,7 +1140,6 @@ See the Codex keymap documentation for supported actions and examples."
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
         };
-        app.set_thread_event_ingress_registry(app_server.thread_event_ingress_registry());
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
         }
@@ -1136,6 +1151,7 @@ See the Codex keymap documentation for supported actions and examples."
             }
             app.enqueue_primary_thread_session_with_presentation_and_server(
                 Some(&app_server),
+                started.thread_subscription_id,
                 started.session,
                 started.turns,
                 crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,

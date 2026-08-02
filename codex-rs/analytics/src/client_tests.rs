@@ -505,6 +505,7 @@ fn sample_thread(thread_id: &str) -> Thread {
 fn sample_thread_start_response() -> ClientResponsePayload {
     ClientResponsePayload::ThreadStart(ThreadStartResponse {
         thread: sample_thread("thread-1"),
+        thread_subscription_id: None,
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -523,6 +524,7 @@ fn sample_thread_start_response() -> ClientResponsePayload {
 fn sample_thread_resume_response() -> ClientResponsePayload {
     ClientResponsePayload::ThreadResume(ThreadResumeResponse {
         thread: sample_thread("thread-2"),
+        thread_subscription_id: None,
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -544,6 +546,7 @@ fn sample_thread_resume_response() -> ClientResponsePayload {
 fn sample_thread_fork_response() -> ClientResponsePayload {
     ClientResponsePayload::ThreadFork(ThreadForkResponse {
         thread: sample_thread("thread-3"),
+        thread_subscription_id: None,
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,

@@ -55,26 +55,23 @@ impl App {
                     .await;
             }
             AppServerEvent::ThreadServerNotification {
-                target,
+                thread_subscription_id,
                 notification,
             } => {
-                self.handle_thread_server_notification_at_ingress(
+                self.handle_thread_subscription_notification(
                     app_server_client,
-                    ThreadLifecycleTarget {
-                        thread_id: target.thread_id,
-                        lifecycle_generation: target.subscription_epoch,
-                    },
+                    thread_subscription_id,
                     notification,
                 )
                 .await;
             }
-            AppServerEvent::ThreadServerRequest { target, request } => {
-                self.handle_thread_server_request_at_ingress(
+            AppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request,
+            } => {
+                self.handle_thread_subscription_request(
                     app_server_client,
-                    ThreadLifecycleTarget {
-                        thread_id: target.thread_id,
-                        lifecycle_generation: target.subscription_epoch,
-                    },
+                    thread_subscription_id,
                     request,
                 )
                 .await;
@@ -83,6 +80,109 @@ impl App {
                 tracing::warn!("app-server event stream disconnected: {message}");
                 self.chat_widget.add_error_message(message.clone());
                 self.app_event_tx.send(AppEvent::FatalExitRequest(message));
+            }
+        }
+    }
+
+    /// Completes the response-to-event registration handshake. App-server
+    /// registers and returns the identity before it replays pending requests;
+    /// the TUI installs the matching lifecycle before draining frames that may
+    /// have arrived around that response.
+    pub(super) async fn bind_thread_subscription_and_flush(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_id: codex_protocol::ThreadId,
+        thread_subscription_id: Option<String>,
+    ) {
+        let Some(thread_subscription_id) = thread_subscription_id else {
+            return;
+        };
+        self.bind_thread_subscription(thread_id, Some(thread_subscription_id.clone()));
+
+        let deferred = std::mem::take(&mut self.deferred_thread_subscription_events);
+        for event in deferred {
+            if thread_subscription_id_for_event(&event)
+                .is_some_and(|candidate| candidate == thread_subscription_id.as_str())
+            {
+                self.handle_app_server_event(app_server_client, event).await;
+            } else {
+                self.deferred_thread_subscription_events.push_back(event);
+            }
+        }
+    }
+
+    async fn handle_thread_subscription_notification(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        notification: ServerNotification,
+    ) {
+        match self
+            .thread_subscription_targets
+            .get(&thread_subscription_id)
+            .copied()
+        {
+            Some(super::ThreadSubscriptionBinding::Active(target))
+            | Some(super::ThreadSubscriptionBinding::Tombstoned(target)) => {
+                self.handle_thread_server_notification_at_ingress(
+                    app_server_client,
+                    target,
+                    notification,
+                )
+                .await;
+            }
+            None => {
+                self.deferred_thread_subscription_events.push_back(
+                    AppServerEvent::ThreadServerNotification {
+                        thread_subscription_id,
+                        notification,
+                    },
+                );
+            }
+        }
+    }
+
+    async fn handle_thread_subscription_request(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        request: ServerRequest,
+    ) {
+        match self
+            .thread_subscription_targets
+            .get(&thread_subscription_id)
+            .copied()
+        {
+            Some(super::ThreadSubscriptionBinding::Active(target)) => {
+                self.handle_thread_server_request_at_ingress(app_server_client, target, request)
+                    .await;
+            }
+            Some(super::ThreadSubscriptionBinding::Tombstoned(target)) => {
+                if self
+                    .rejected_stale_thread_subscription_requests
+                    .insert((thread_subscription_id.clone(), request.id().clone()))
+                {
+                    self.handle_thread_server_request_at_ingress(
+                        app_server_client,
+                        target,
+                        request,
+                    )
+                    .await;
+                } else {
+                    tracing::debug!(
+                        request_id = ?request.id(),
+                        thread_subscription_id,
+                        "dropping duplicate stale app-server request"
+                    );
+                }
+            }
+            None => {
+                self.deferred_thread_subscription_events.push_back(
+                    AppServerEvent::ThreadServerRequest {
+                        thread_subscription_id,
+                        request,
+                    },
+                );
             }
         }
     }
@@ -460,5 +560,19 @@ impl App {
         if let Err(err) = result {
             tracing::warn!("failed to enqueue app-server request: {err}");
         }
+    }
+}
+
+fn thread_subscription_id_for_event(event: &AppServerEvent) -> Option<&str> {
+    match event {
+        AppServerEvent::ThreadServerNotification {
+            thread_subscription_id,
+            ..
+        }
+        | AppServerEvent::ThreadServerRequest {
+            thread_subscription_id,
+            ..
+        } => Some(thread_subscription_id),
+        _ => None,
     }
 }

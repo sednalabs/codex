@@ -208,6 +208,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             name: None,
             turns: Vec::new(),
         },
+        thread_subscription_id: None,
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -231,6 +232,22 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
     assert_eq!(value["thread"]["isPinned"], json!(true));
+    assert!(
+        value.get("threadSubscriptionId").is_none(),
+        "the optional identity must not change legacy response JSON"
+    );
+    let legacy_response = serde_json::from_value::<ThreadResumeResponse>(value.clone())
+        .expect("legacy response should deserialize without an identity");
+    assert_eq!(legacy_response.thread_subscription_id, None);
+
+    let mut response_with_identity = response.clone();
+    response_with_identity.thread_subscription_id = Some("subscription-123".to_string());
+    assert_eq!(
+        serde_json::to_value(response_with_identity)
+            .expect("serialize identity-bearing thread resume response")
+            .get("threadSubscriptionId"),
+        Some(&json!("subscription-123"))
+    );
 
     let mut legacy_thread = value["thread"].clone();
     legacy_thread

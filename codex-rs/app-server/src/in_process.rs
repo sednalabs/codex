@@ -161,8 +161,20 @@ pub struct InProcessStartArgs {
 pub enum InProcessServerEvent {
     /// Server request that requires client response/rejection.
     ServerRequest(ServerRequest),
+    /// Thread-bound server request carrying the immutable identity of the
+    /// subscription that emitted it.
+    ThreadServerRequest {
+        request: ServerRequest,
+        thread_subscription_id: String,
+    },
     /// App-server notification directed to the embedded client.
     ServerNotification(ServerNotification),
+    /// Thread-bound notification carrying the immutable identity of the
+    /// subscription that emitted it.
+    ThreadServerNotification {
+        notification: ServerNotification,
+        thread_subscription_id: String,
+    },
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
 }
@@ -668,6 +680,41 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 };
                                 outgoing_message_sender
                                     .notify_client_error(request_id, error)
+                                .await;
+                            }
+                        }
+                        OutgoingMessage::ThreadScopedRequest(request) => {
+                            let request_id = request.request.id().clone();
+                            if let Err(send_error) = event_tx.try_send(
+                                InProcessServerEvent::ThreadServerRequest {
+                                    request: request.request,
+                                    thread_subscription_id: request.thread_subscription_id,
+                                },
+                            ) {
+                                let (error, inner) = match send_error {
+                                    mpsc::error::TrySendError::Full(inner) => (
+                                        JSONRPCErrorError {
+                                            code: OVERLOADED_ERROR_CODE,
+                                            message: "in-process server request queue is full".to_string(),
+                                            data: None,
+                                        },
+                                        inner,
+                                    ),
+                                    mpsc::error::TrySendError::Closed(inner) => (
+                                        internal_error(
+                                            "in-process server request consumer is closed",
+                                        ),
+                                        inner,
+                                    ),
+                                };
+                                let request_id = match inner {
+                                    InProcessServerEvent::ThreadServerRequest { request, .. } => {
+                                        request.id().clone()
+                                    }
+                                    _ => request_id,
+                                };
+                                outgoing_message_sender
+                                    .notify_client_error(request_id, error)
                                     .await;
                             }
                         }
@@ -684,6 +731,32 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             } else if let Err(send_error) =
                                 event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
                             {
+                                match send_error {
+                                    mpsc::error::TrySendError::Full(_) => {
+                                        warn!("dropping in-process server notification (queue full)");
+                                    }
+                                    mpsc::error::TrySendError::Closed(_) => {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        OutgoingMessage::ThreadScopedNotification(notification) => {
+                            let event = InProcessServerEvent::ThreadServerNotification {
+                                notification: notification.envelope.notification,
+                                thread_subscription_id: notification.thread_subscription_id,
+                            };
+                            let requires_delivery = match &event {
+                                InProcessServerEvent::ThreadServerNotification { notification, .. } => {
+                                    server_notification_requires_delivery(notification)
+                                }
+                                _ => unreachable!("constructed thread notification event"),
+                            };
+                            if requires_delivery {
+                                if event_tx.send(event).await.is_err() {
+                                    break;
+                                }
+                            } else if let Err(send_error) = event_tx.try_send(event) {
                                 match send_error {
                                     mpsc::error::TrySendError::Full(_) => {
                                         warn!("dropping in-process server notification (queue full)");

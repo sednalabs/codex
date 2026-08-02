@@ -924,6 +924,9 @@ impl ThreadRequestProcessor {
     async fn finalize_thread_teardown(&self, thread_id: ThreadId) {
         self.pending_thread_unloads.lock().await.remove(&thread_id);
         self.outgoing
+            .unregister_thread_subscriptions_for_thread(thread_id)
+            .await;
+        self.outgoing
             .cancel_requests_for_thread(thread_id, /*error*/ None)
             .await;
         self.thread_state_manager
@@ -943,6 +946,9 @@ impl ThreadRequestProcessor {
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
         if self.thread_manager.get_thread(thread_id).await.is_err() {
+            self.outgoing
+                .unregister_thread_subscription(connection_id, thread_id)
+                .await;
             self.finalize_thread_teardown(thread_id).await;
             return Ok(ThreadUnsubscribeResponse {
                 status: ThreadUnsubscribeStatus::NotLoaded,
@@ -952,6 +958,9 @@ impl ThreadRequestProcessor {
         let was_subscribed = self
             .thread_state_manager
             .unsubscribe_connection_from_thread(thread_id, connection_id)
+            .await;
+        self.outgoing
+            .unregister_thread_subscription(connection_id, thread_id)
             .await;
 
         let status = if was_subscribed {
@@ -1378,6 +1387,12 @@ impl ThreadRequestProcessor {
             session_configured.rollout_path.clone(),
         );
 
+        // Mint the connection-local identity before attaching the listener:
+        // listener startup may replay thread traffic before the start response.
+        let thread_subscription_id = listener_task_context
+            .outgoing
+            .register_thread_subscription(request_id.connection_id, thread_id)
+            .await;
         // Auto-attach a thread listener when starting a thread.
         log_listener_attach_result(
             super::thread_lifecycle::ensure_conversation_listener(
@@ -1423,9 +1438,9 @@ impl ThreadRequestProcessor {
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
-
         let response = ThreadStartResponse {
             thread: thread.clone(),
+            thread_subscription_id: Some(thread_subscription_id),
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,
             service_tier: config_snapshot.service_tier,
@@ -3566,6 +3581,12 @@ impl ThreadRequestProcessor {
                 } else {
                     None
                 };
+                // Register before listener attach because resume may replay a
+                // pending request while its response is still in flight.
+                let thread_subscription_id = self
+                    .outgoing
+                    .register_thread_subscription(request_id.connection_id, thread_id)
+                    .await;
                 // Auto-attach a thread listener when resuming a thread.
                 log_listener_attach_result(
                     self.ensure_conversation_listener(
@@ -3578,7 +3599,6 @@ impl ThreadRequestProcessor {
                     request_id.connection_id,
                     "thread",
                 );
-
                 let mut thread = match self
                     .load_thread_from_resume_source_or_send_internal(
                         thread_id,
@@ -3682,6 +3702,7 @@ impl ThreadRequestProcessor {
                 let thread_originator = config_snapshot.originator.clone();
                 let response = ThreadResumeResponse {
                     thread,
+                    thread_subscription_id: Some(thread_subscription_id),
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,
                     service_tier: session_configured.service_tier,
@@ -4676,6 +4697,12 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = forked_thread.instruction_sources().await;
 
+        // Register before listener attach because forked thread traffic can be
+        // emitted before the fork response reaches the client.
+        let thread_subscription_id = self
+            .outgoing
+            .register_thread_subscription(request_id.connection_id, thread_id)
+            .await;
         // Auto-attach a conversation listener when forking a thread.
         log_listener_attach_result(
             self.ensure_conversation_listener(
@@ -4688,7 +4715,6 @@ impl ThreadRequestProcessor {
             request_id.connection_id,
             "thread",
         );
-
         let config_snapshot = forked_thread.config_snapshot().await;
 
         // Persistent forks materialize their own rollout immediately. Ephemeral forks stay
@@ -4756,6 +4782,7 @@ impl ThreadRequestProcessor {
 
         let response = ThreadForkResponse {
             thread: thread.clone(),
+            thread_subscription_id: Some(thread_subscription_id),
             model: session_configured.model,
             model_provider: session_configured.model_provider_id,
             service_tier: session_configured.service_tier,

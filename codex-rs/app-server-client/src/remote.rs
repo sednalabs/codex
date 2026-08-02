@@ -20,7 +20,6 @@ use std::time::Duration;
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
-use crate::ThreadEventIngressRegistry;
 use crate::TypedRequestError;
 use crate::server_notification_requires_delivery;
 use codex_app_server_protocol::ClientInfo;
@@ -44,6 +43,7 @@ use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
@@ -153,7 +153,6 @@ pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
     event_rx: mpsc::Receiver<AppServerEvent>,
     pending_events: VecDeque<AppServerEvent>,
-    thread_event_ingress_registry: ThreadEventIngressRegistry,
     server_version: Option<String>,
     codex_home: Option<String>,
     worker_handle: tokio::task::JoinHandle<()>,
@@ -214,8 +213,6 @@ impl RemoteAppServerClient {
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
-        let thread_event_ingress_registry = ThreadEventIngressRegistry::default();
-        let worker_ingress_registry = thread_event_ingress_registry.clone();
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
@@ -329,20 +326,23 @@ impl RemoteAppServerClient {
                     message = stream.next() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
-                                match serde_json::from_str::<JSONRPCMessage>(&text) {
-                                    Ok(JSONRPCMessage::Response(response)) => {
+                                match server_message_and_subscription_id(&text) {
+                                    Ok((message, thread_subscription_id)) => match message {
+                                    JSONRPCMessage::Response(response) => {
                                         if let Some(response_tx) = pending_requests.remove(&response.id) {
                                             let _ = response_tx.send(Ok(Ok(response.result)));
                                         }
                                     }
-                                    Ok(JSONRPCMessage::Error(error)) => {
+                                    JSONRPCMessage::Error(error) => {
                                         if let Some(response_tx) = pending_requests.remove(&error.id) {
                                             let _ = response_tx.send(Ok(Err(error.error)));
                                         }
                                     }
-                                    Ok(JSONRPCMessage::Notification(notification)) => {
-                                        if let Some(event) = app_server_event_from_notification(notification)
-                                            .map(|event| worker_ingress_registry.annotate_event(event))
+                                    JSONRPCMessage::Notification(notification) => {
+                                        if let Some(event) = app_server_event_from_notification(
+                                            notification,
+                                            thread_subscription_id,
+                                        )
                                         {
                                             if let Err(err) = deliver_event(
                                                 &event_tx,
@@ -356,14 +356,20 @@ impl RemoteAppServerClient {
                                             }
                                         }
                                     }
-                                    Ok(JSONRPCMessage::Request(request)) => {
+                                    JSONRPCMessage::Request(request) => {
                                         let request_id = request.id.clone();
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
-                                                let event = worker_ingress_registry.annotate_event(
-                                                    AppServerEvent::ServerRequest(request),
-                                                );
+                                                let event = match thread_subscription_id {
+                                                    Some(thread_subscription_id) => {
+                                                        AppServerEvent::ThreadServerRequest {
+                                                            thread_subscription_id,
+                                                            request,
+                                                        }
+                                                    }
+                                                    None => AppServerEvent::ServerRequest(request),
+                                                };
                                                 if let Err(err) = deliver_event(
                                                     &event_tx,
                                                     &mut skipped_events,
@@ -415,6 +421,7 @@ impl RemoteAppServerClient {
                                             }
                                         }
                                     }
+                                    },
                                     Err(err) => {
                                         let message = format!(
                                             "remote app server at `{endpoint}` sent invalid JSON-RPC: {err}"
@@ -522,7 +529,6 @@ impl RemoteAppServerClient {
             command_tx,
             event_rx,
             pending_events: pending_events.into(),
-            thread_event_ingress_registry,
             server_version,
             codex_home,
             worker_handle,
@@ -644,16 +650,11 @@ impl RemoteAppServerClient {
         self.event_rx.recv().await
     }
 
-    pub fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
-        self.thread_event_ingress_registry.clone()
-    }
-
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
             command_tx,
             event_rx,
             pending_events: _pending_events,
-            thread_event_ingress_registry: _thread_event_ingress_registry,
             server_version: _server_version,
             codex_home: _codex_home,
             worker_handle,
@@ -874,7 +875,7 @@ where
         loop {
             match stream.next().await {
                 Some(Ok(Message::Text(text))) => {
-                    let message = serde_json::from_str::<JSONRPCMessage>(&text).map_err(|err| {
+                    let (message, thread_subscription_id) = server_message_and_subscription_id(&text).map_err(|err| {
                         IoError::other(format!(
                             "remote app server at `{endpoint}` sent invalid initialize response: {err}"
                         ))
@@ -904,7 +905,10 @@ where
                             )));
                         }
                         JSONRPCMessage::Notification(notification) => {
-                            if let Some(event) = app_server_event_from_notification(notification) {
+                            if let Some(event) = app_server_event_from_notification(
+                                notification,
+                                thread_subscription_id,
+                            ) {
                                 pending_events.push(event);
                             }
                         }
@@ -913,7 +917,15 @@ where
                             let method = request.method.clone();
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
-                                    pending_events.push(AppServerEvent::ServerRequest(request));
+                                    pending_events.push(match thread_subscription_id {
+                                        Some(thread_subscription_id) => {
+                                            AppServerEvent::ThreadServerRequest {
+                                                thread_subscription_id,
+                                                request,
+                                            }
+                                        }
+                                        None => AppServerEvent::ServerRequest(request),
+                                    });
                                 }
                                 Err(err) => {
                                     warn!(%err, method, "rejecting unknown remote app-server request during initialize");
@@ -989,9 +1001,33 @@ where
     Ok((pending_events, server_version, codex_home))
 }
 
-fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadSubscriptionExtension {
+    thread_subscription_id: Option<String>,
+}
+
+fn server_message_and_subscription_id(
+    text: &str,
+) -> std::result::Result<(JSONRPCMessage, Option<String>), serde_json::Error> {
+    let thread_subscription_id =
+        serde_json::from_str::<ThreadSubscriptionExtension>(text)?.thread_subscription_id;
+    let message = serde_json::from_str::<JSONRPCMessage>(text)?;
+    Ok((message, thread_subscription_id))
+}
+
+fn app_server_event_from_notification(
+    notification: JSONRPCNotification,
+    thread_subscription_id: Option<String>,
+) -> Option<AppServerEvent> {
     match ServerNotification::try_from(notification) {
-        Ok(notification) => Some(AppServerEvent::ServerNotification(notification)),
+        Ok(notification) => Some(match thread_subscription_id {
+            Some(thread_subscription_id) => AppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification,
+            },
+            None => AppServerEvent::ServerNotification(notification),
+        }),
         Err(_) => None,
     }
 }
@@ -1130,28 +1166,30 @@ mod tests {
     use tokio::io::duplex;
     use tokio_tungstenite::tungstenite::protocol::Role;
 
-    fn jsonrpc_notification_from_server_notification(
-        notification: ServerNotification,
-    ) -> JSONRPCMessage {
-        let notification = serde_json::from_value(serde_json::to_value(notification).unwrap())
-            .expect("server notification should use JSON-RPC notification encoding");
-        JSONRPCMessage::Notification(notification)
-    }
-
-    fn jsonrpc_request_from_server_request(request: ServerRequest) -> JSONRPCMessage {
-        let request = serde_json::from_value(serde_json::to_value(request).unwrap())
-            .expect("server request should use JSON-RPC request encoding");
-        JSONRPCMessage::Request(request)
+    fn thread_scoped_server_message<T: serde::Serialize>(
+        message: T,
+        thread_subscription_id: &str,
+    ) -> serde_json::Value {
+        let mut message = serde_json::to_value(message)
+            .expect("server message should serialize as JSON-RPC");
+        message
+            .as_object_mut()
+            .expect("server message should be a JSON-RPC object")
+            .insert(
+                "threadSubscriptionId".to_string(),
+                serde_json::Value::String(thread_subscription_id.to_string()),
+            );
+        message
     }
 
     #[tokio::test]
-    async fn transport_worker_stamps_thread_events_before_consumer_queue() {
+    async fn transport_worker_preserves_server_subscription_identity() {
         let (client_io, server_io) = duplex(64 * 1024);
         let client_stream =
             WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
         let mut server_stream =
             WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
-        let (server_event_tx, mut server_event_rx) = mpsc::unbounded_channel::<JSONRPCMessage>();
+        let (server_event_tx, mut server_event_rx) = mpsc::unbounded_channel::<serde_json::Value>();
         let (server_message_tx, mut server_message_rx) =
             mpsc::unbounded_channel::<JSONRPCMessage>();
         let (initialized_tx, initialized_rx) = oneshot::channel();
@@ -1253,13 +1291,13 @@ mod tests {
             .expect("server should observe the initialized notification");
 
         let thread_id = ThreadId::new();
-        let registry = client.thread_event_ingress_registry();
-        registry.bind(thread_id, 41);
+        let old_subscription_id = "old-subscription";
         server_event_tx
-            .send(jsonrpc_notification_from_server_notification(
+            .send(thread_scoped_server_message(
                 ServerNotification::ThreadClosed(ThreadClosedNotification {
                     thread_id: thread_id.to_string(),
                 }),
+                old_subscription_id,
             ))
             .expect("test server channel should be open");
         let delayed_notification =
@@ -1269,7 +1307,7 @@ mod tests {
                 .expect("client event stream should stay open");
 
         server_event_tx
-            .send(jsonrpc_request_from_server_request(
+            .send(thread_scoped_server_message(
                 ServerRequest::ToolRequestUserInput {
                     request_id: RequestId::Integer(7),
                     params: ToolRequestUserInputParams {
@@ -1280,6 +1318,7 @@ mod tests {
                         auto_resolution_ms: None,
                     },
                 },
+                old_subscription_id,
             ))
             .expect("test server channel should be open");
         let delayed_request = tokio::time::timeout(Duration::from_secs(1), client.next_event())
@@ -1287,27 +1326,22 @@ mod tests {
             .expect("thread request should reach the client queue")
             .expect("client event stream should stay open");
 
-        // Simulate teardown and same-id reattach after the worker already placed both old
-        // events on the consumer side. Rebinding must not alter their captured targets.
-        registry.bind(thread_id, 42);
         match delayed_notification {
             AppServerEvent::ThreadServerNotification {
-                target,
+                thread_subscription_id,
                 notification: ServerNotification::ThreadClosed(notification),
             } => {
-                assert_eq!(target.thread_id, thread_id);
-                assert_eq!(target.subscription_epoch, 41);
+                assert_eq!(thread_subscription_id, old_subscription_id);
                 assert_eq!(notification.thread_id, thread_id.to_string());
             }
             event => panic!("expected transport-stamped thread close, got {event:?}"),
         }
         match delayed_request {
             AppServerEvent::ThreadServerRequest {
-                target,
+                thread_subscription_id,
                 request: ServerRequest::ToolRequestUserInput { request_id, .. },
             } => {
-                assert_eq!(target.thread_id, thread_id);
-                assert_eq!(target.subscription_epoch, 41);
+                assert_eq!(thread_subscription_id, old_subscription_id);
                 assert_eq!(request_id, RequestId::Integer(7));
             }
             event => panic!("expected transport-stamped thread request, got {event:?}"),
@@ -1337,10 +1371,11 @@ mod tests {
         }
 
         server_event_tx
-            .send(jsonrpc_notification_from_server_notification(
+            .send(thread_scoped_server_message(
                 ServerNotification::ThreadClosed(ThreadClosedNotification {
                     thread_id: thread_id.to_string(),
                 }),
+                "new-subscription",
             ))
             .expect("test server channel should be open");
         match tokio::time::timeout(Duration::from_secs(1), client.next_event())
@@ -1348,9 +1383,11 @@ mod tests {
             .expect("replacement thread notification should reach the client queue")
             .expect("client event stream should stay open")
         {
-            AppServerEvent::ThreadServerNotification { target, .. } => {
-                assert_eq!(target.thread_id, thread_id);
-                assert_eq!(target.subscription_epoch, 42);
+            AppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                ..
+            } => {
+                assert_eq!(thread_subscription_id, "new-subscription");
             }
             event => panic!("expected current transport-stamped thread close, got {event:?}"),
         }
@@ -1376,7 +1413,6 @@ mod tests {
             command_tx,
             event_rx,
             pending_events: VecDeque::new(),
-            thread_event_ingress_registry: ThreadEventIngressRegistry::default(),
             server_version: None,
             codex_home: None,
             worker_handle,

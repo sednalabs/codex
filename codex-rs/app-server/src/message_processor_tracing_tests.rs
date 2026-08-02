@@ -472,10 +472,14 @@ async fn read_thread_started_notification(
                 if connection_id != TEST_CONNECTION_ID {
                     continue;
                 }
-                let crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) =
-                    message
-                else {
-                    continue;
+                let notification = match message {
+                    crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) => {
+                        notification
+                    }
+                    crate::outgoing_message::OutgoingMessage::ThreadScopedNotification(notification) => {
+                        notification.envelope
+                    }
+                    _ => continue,
                 };
                 if matches!(
                     notification.notification,

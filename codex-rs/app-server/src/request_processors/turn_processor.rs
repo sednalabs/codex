@@ -1332,6 +1332,13 @@ impl TurnRequestProcessor {
             }
         };
 
+        // Review start has no thread attach response, but it emits a
+        // thread/started notification before installing its listener. Mint
+        // the connection-scoped identity first so that notification and every
+        // later listener event carry the same authoritative identity.
+        self.outgoing
+            .register_thread_subscription(request_id.connection_id, thread_id)
+            .await;
         if let Some(mut thread) = stored_thread {
             thread.session_id = review_thread.session_configured().session_id.to_string();
             self.thread_watch_manager
