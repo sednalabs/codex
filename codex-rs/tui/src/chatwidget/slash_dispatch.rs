@@ -110,6 +110,7 @@ impl ChatWidget {
         self.request_redraw();
         self.app_event_tx.send(AppEvent::StartSide {
             parent_thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation,
             user_message,
         });
     }

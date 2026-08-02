@@ -997,6 +997,28 @@ async fn inspect_agent_tree_discards_persisted_cycle_edges_before_counting() {
         .expect("child row");
     assert_eq!(child.direct_child_count, 0);
     assert_eq!(child.descendant_count, 0);
+
+    let stale = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 3,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("stale inspection should exclude its live context root");
+    assert_eq!(stale.root_agent_name, "/root");
+    assert_eq!(stale.summary.live_agents, 0);
+    assert_eq!(stale.summary.stale_agents, 1);
+    assert_eq!(stale.agents.len(), 1);
+    assert_eq!(stale.agents[0].agent_name, "/root/cycle");
+    assert_eq!(stale.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(stale.agents[0].direct_child_count, 0);
+    assert_eq!(stale.agents[0].descendant_count, 0);
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {

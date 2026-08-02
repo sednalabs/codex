@@ -40,6 +40,7 @@ impl App {
         app_server: &AppServerSession,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        lifecycle_generation: Option<u64>,
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
@@ -52,6 +53,7 @@ impl App {
                 result,
                 detail,
                 thread_id,
+                lifecycle_generation,
             });
         });
     }
@@ -559,6 +561,8 @@ impl App {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         let origin_thread_id = self.chat_widget.thread_id();
+        let origin_lifecycle_generation =
+            origin_thread_id.map(|thread_id| self.thread_lifecycle_generation(thread_id));
         let rollout_path = if include_logs {
             self.chat_widget.rollout_path()
         } else {
@@ -579,6 +583,7 @@ impl App {
                 .map_err(|err| err.to_string());
             app_event_tx.send(AppEvent::FeedbackSubmitted {
                 origin_thread_id,
+                origin_lifecycle_generation,
                 category,
                 include_logs,
                 result,

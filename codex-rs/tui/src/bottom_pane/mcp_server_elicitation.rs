@@ -2180,6 +2180,7 @@ mod tests {
         let AppEvent::SubmitThreadOp {
             thread_id: resolved_thread_id,
             op,
+            ..
         } = event
         else {
             panic!("expected SubmitThreadOp");
@@ -2271,6 +2272,7 @@ mod tests {
         let AppEvent::SubmitThreadOp {
             thread_id: resolved_thread_id,
             op,
+            ..
         } = event
         else {
             panic!("expected SubmitThreadOp");
@@ -2325,6 +2327,7 @@ mod tests {
         let AppEvent::SubmitThreadOp {
             thread_id: resolved_thread_id,
             op,
+            ..
         } = event
         else {
             panic!("expected SubmitThreadOp");
@@ -2378,6 +2381,7 @@ mod tests {
         let AppEvent::SubmitThreadOp {
             thread_id: resolved_thread_id,
             op,
+            ..
         } = event
         else {
             panic!("expected SubmitThreadOp");

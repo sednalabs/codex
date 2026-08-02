@@ -216,6 +216,7 @@ pub(crate) enum AppEvent {
     /// Fork the current thread into a persisted side conversation.
     StartSide {
         parent_thread_id: ThreadId,
+        lifecycle_generation: u64,
         user_message: Option<UserMessage>,
     },
 
@@ -225,12 +226,14 @@ pub(crate) enum AppEvent {
     /// Submit an op to the specified thread, regardless of current focus.
     SubmitThreadOp {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         op: AppCommand,
     },
 
     /// Interrupt, fork, and retry a safety-buffered turn with the server-selected model.
     RetrySafetyBufferedTurn {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         turn_id: String,
         model: String,
         turn: AppCommand,
@@ -247,6 +250,7 @@ pub(crate) enum AppEvent {
     /// Persist a submitted prompt in the cross-session message history.
     AppendMessageHistoryEntry {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         text: String,
     },
 
@@ -260,6 +264,7 @@ pub(crate) enum AppEvent {
     /// Fetch a persistent cross-session message history entry by offset.
     LookupMessageHistoryEntry {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         offset: usize,
         log_id: u64,
     },
@@ -267,6 +272,7 @@ pub(crate) enum AppEvent {
     /// Fetch a bounded batch of persistent history entries for reverse search.
     LookupMessageHistoryBatch {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         cursor: HistoryBatchCursor,
         log_id: u64,
     },
@@ -323,6 +329,7 @@ pub(crate) enum AppEvent {
     /// Branch before a selected prompt and reopen it in the new thread's composer.
     ForkSessionForPromptEdit {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         nth_user_message: usize,
         prompt: UserMessage,
     },
@@ -349,6 +356,7 @@ pub(crate) enum AppEvent {
     /// Approve one retry of a recent auto-review denial selected in the TUI.
     ApproveRecentAutoReviewDenial {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         id: String,
     },
 
@@ -745,6 +753,7 @@ pub(crate) enum AppEvent {
     FetchMcpInventory {
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        lifecycle_generation: Option<u64>,
     },
 
     /// Result of fetching MCP inventory via app-server RPCs.
@@ -752,6 +761,7 @@ pub(crate) enum AppEvent {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        lifecycle_generation: Option<u64>,
     },
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
@@ -1131,6 +1141,7 @@ pub(crate) enum AppEvent {
     /// Result of a feedback upload request initiated by the TUI.
     FeedbackSubmitted {
         origin_thread_id: Option<ThreadId>,
+        origin_lifecycle_generation: Option<u64>,
         category: FeedbackCategory,
         include_logs: bool,
         result: Result<String, String>,

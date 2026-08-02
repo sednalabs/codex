@@ -1,4 +1,5 @@
 use super::super::agent_navigation::AgentNavigationDirection;
+use super::super::session_lifecycle::ThreadAttachPresentation;
 use super::super::thread_events::ThreadEventAttachment;
 use super::*;
 use app_test_support::create_fake_parented_rollout_with_source;
@@ -383,7 +384,11 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
                         )?)
                         .await?;
                 }
-                JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_) => {}
+                JSONRPCMessage::Response(_) => {}
+                JSONRPCMessage::Error(_) => request_sink
+                    .lock()
+                    .expect("request recorder lock")
+                    .push("server-request/error".to_string()),
             }
         }
         embedded.shutdown().await?;
@@ -403,6 +408,137 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
         requests,
         proxy,
     ))
+}
+
+#[tokio::test]
+async fn primary_reset_rejects_buffered_request_before_a_different_primary_attaches() -> Result<()> {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let (mut app_server, requests, proxy) = start_recording_app_server(&app.config).await?;
+    let startup_thread_a = ThreadId::new();
+    let request = request_user_input_request(startup_thread_a, "turn-a", "input-a");
+
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_thread_server_request(startup_thread_a, &request),
+        None
+    );
+    app.enqueue_primary_thread_request(startup_thread_a, request)
+        .await?;
+    assert_eq!(app.pending_primary_events.len(), 1);
+
+    app.reset_thread_event_state(Some(&app_server)).await;
+    assert!(app.thread_is_discarded(startup_thread_a));
+    assert!(app.pending_primary_events.is_empty());
+    assert!(app.pending_app_server_requests.pending_thread_ids().is_empty());
+
+    let thread_b = app_server.start_thread(&app.config).await?;
+    let thread_b_id = thread_b.session.thread_id;
+    app.enqueue_primary_thread_session_with_presentation_and_server(
+        Some(&app_server),
+        thread_b.session,
+        thread_b.turns,
+        ThreadAttachPresentation::SessionLineage,
+    )
+    .await?;
+    assert_eq!(app.primary_thread_id, Some(thread_b_id));
+    assert!(app.chat_widget.pending_thread_approvals().is_empty());
+
+    let recorded = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|event| event.as_str() == "server-request/error")
+            .count(),
+        1,
+        "discarding startup thread A must reject its buffered request exactly once: {recorded:?}"
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_thread_operation_after_reattach_cannot_issue_an_rpc_but_current_generation_can(
+) -> Result<()> {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let (mut app_server, requests, proxy) = start_recording_app_server(&app.config).await?;
+    let started = app_server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
+    app.enqueue_primary_thread_session_with_presentation_and_server(
+        Some(&app_server),
+        started.session,
+        started.turns,
+        ThreadAttachPresentation::SessionLineage,
+    )
+    .await?;
+    let stale_generation = app.thread_lifecycle_generation(thread_id);
+    app.discard_thread_local_state(&app_server, thread_id).await;
+    app.mark_thread_attached(thread_id);
+    app.ensure_thread_channel(thread_id).mark_live();
+    app.active_thread_id = Some(thread_id);
+    app.primary_thread_id = Some(thread_id);
+    let live_generation = app.thread_lifecycle_generation(thread_id);
+    app.chat_widget
+        .set_thread_lifecycle_generation(live_generation);
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    let _ = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
+    let control = app
+        .handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::SubmitThreadOp {
+                thread_id,
+                lifecycle_generation: stale_generation,
+                op: AppCommand::interrupt(),
+            },
+        )
+        .await?;
+    assert!(matches!(control, AppRunControl::Continue));
+    tokio::task::yield_now().await;
+    assert!(
+        !requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|method| method == "turn/interrupt"),
+        "a stale UI operation must not reach the reattached lifecycle"
+    );
+
+    let control = app
+        .handle_event(
+            &mut tui,
+            &mut app_server,
+            AppEvent::SubmitThreadOp {
+                thread_id,
+                lifecycle_generation: live_generation,
+                op: AppCommand::interrupt(),
+            },
+        )
+        .await?;
+    assert!(matches!(control, AppRunControl::Continue));
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .any(|method| method == "turn/interrupt"),
+        "the current lifecycle generation must retain its normal RPC path"
+    );
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
 }
 
 #[test]
@@ -1373,6 +1509,7 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     &mut app_server,
                     AppEvent::ForkSessionForPromptEdit {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                         nth_user_message: 0,
                         prompt: prompt.clone(),
                     },
@@ -1387,6 +1524,7 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                     &mut app_server,
                     AppEvent::RetrySafetyBufferedTurn {
                         thread_id: child_thread_id,
+                        lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                         turn_id: "replay-only-turn".to_string(),
                         model: "gpt-5.4".to_string(),
                         turn: AppCommand::run_user_shell_command(
@@ -1407,6 +1545,7 @@ fn select_agent_thread_replays_a_closed_persisted_sidecar() -> Result<()> {
                         &mut app_server,
                         AppEvent::StartSide {
                             parent_thread_id: child_thread_id,
+                            lifecycle_generation: app.thread_lifecycle_generation(child_thread_id),
                             user_message,
                         },
                     ))

@@ -17,12 +17,19 @@ use codex_app_server_protocol::WarningNotification;
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
         let selected_thread_id = self.chat_widget.thread_id();
-        let selected_thread_is_replay_only =
-            selected_thread_id.is_some_and(|thread_id| self.thread_is_replay_only(thread_id));
-        let selected_thread_is_side_thread =
-            selected_thread_id.is_some_and(|thread_id| self.side_threads.contains_key(&thread_id));
         let side_thread_ids: Vec<ThreadId> = self.side_threads.keys().copied().collect();
-        for side_thread_id in side_thread_ids {
+        let mut main_thread_ids = HashSet::new();
+        main_thread_ids.extend(
+            [
+                selected_thread_id,
+                self.active_thread_id,
+                self.primary_thread_id,
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|thread_id| !side_thread_ids.contains(thread_id)),
+        );
+        for side_thread_id in side_thread_ids.iter().copied() {
             if self.thread_is_replay_only(side_thread_id) {
                 // Saved side transcripts have no live app-server attachment. Keep shutdown local
                 // so a replay-only selection cannot issue a startup or turn interrupt while the
@@ -32,13 +39,13 @@ impl App {
                 self.discard_side_thread(app_server, side_thread_id).await;
             }
         }
-        if let Some(thread_id) = selected_thread_id {
-            if !selected_thread_is_replay_only && !selected_thread_is_side_thread {
+        for thread_id in main_thread_ids {
+            if !self.thread_is_replay_only(thread_id) {
                 if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
                     tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
                 }
             }
-            self.abort_thread_event_listener(thread_id);
+            self.discard_thread_local_state(app_server, thread_id).await;
         }
     }
 
@@ -220,6 +227,12 @@ impl App {
             .get(&thread_id)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// The generation that a buffered server event expects the next authoritative attachment to
+    /// receive. This is captured before a primary session exists and checked again at delivery.
+    fn next_thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
+        self.thread_lifecycle_generation(thread_id).wrapping_add(1)
     }
 
     pub(super) fn thread_accepts_lifecycle_generation(
@@ -601,8 +614,13 @@ impl App {
     }
 
     /// Persist prompt text in the local cross-session message history.
-    pub(super) fn append_message_history_entry(&self, thread_id: ThreadId, text: String) {
-        if self.thread_is_discarded(thread_id) {
+    pub(super) async fn append_message_history_entry(
+        &self,
+        thread_id: ThreadId,
+        lifecycle_generation: u64,
+        text: String,
+    ) {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
             tracing::debug!(%thread_id, "dropping history write for discarded thread lifecycle");
             return;
         }
@@ -610,30 +628,31 @@ impl App {
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
         );
-        tokio::spawn(async move {
-            if let Err(err) =
-                codex_message_history::append_entry(&text, thread_id, &history_config).await
-            {
-                tracing::warn!(
-                    thread_id = %thread_id,
-                    error = %err,
-                    "failed to append to message history"
-                );
-            }
-        });
+        let result = codex_message_history::append_entry(&text, thread_id, &history_config).await;
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            tracing::debug!(%thread_id, "history append completed after its lifecycle was discarded");
+            return;
+        }
+        if let Err(err) = result {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %err,
+                "failed to append to message history"
+            );
+        }
     }
 
     /// Fetch one local cross-session message history entry for the requesting thread.
     pub(super) async fn lookup_message_history_entry(
         &mut self,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         offset: usize,
         log_id: u64,
     ) -> Result<()> {
-        if self.thread_is_discarded(thread_id) {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
             return Ok(());
         }
-        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -666,13 +685,13 @@ impl App {
     pub(super) async fn lookup_message_history_batch(
         &mut self,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         cursor: codex_message_history::HistoryBatchCursor,
         log_id: u64,
     ) -> Result<()> {
-        if self.thread_is_discarded(thread_id) {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
             return Ok(());
         }
-        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -1487,6 +1506,22 @@ impl App {
         turns: Vec<Turn>,
         presentation: ThreadAttachPresentation,
     ) -> Result<()> {
+        self.enqueue_primary_thread_session_with_presentation_and_server(
+            None,
+            session,
+            turns,
+            presentation,
+        )
+        .await
+    }
+
+    pub(super) async fn enqueue_primary_thread_session_with_presentation_and_server(
+        &mut self,
+        app_server: Option<&AppServerSession>,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+        presentation: ThreadAttachPresentation,
+    ) -> Result<()> {
         let thread_id = session.thread_id;
         self.mark_thread_attached(thread_id);
         self.chat_widget
@@ -1529,7 +1564,38 @@ impl App {
             self.chat_widget.emit_prompt_edit_thread_event();
         }
         let pending = std::mem::take(&mut self.pending_primary_events);
+        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
+        let mut matching_events = Vec::new();
+        let mut stale_thread_ids = HashSet::new();
         for pending_event in pending {
+            if pending_event.thread_id == thread_id
+                && pending_event.lifecycle_generation == lifecycle_generation
+            {
+                matching_events.push(pending_event.event);
+            } else {
+                stale_thread_ids.insert(pending_event.thread_id);
+            }
+        }
+        for stale_thread_id in stale_thread_ids {
+            if stale_thread_id == thread_id {
+                // A same-id mismatch is necessarily an earlier attachment. Its request ledger is
+                // still scoped by id, so do not discard the just-attached lifecycle while draining
+                // it; production resets clear and reject this state before reattachment.
+                tracing::warn!(
+                    %thread_id,
+                    "dropping a mismatched buffered primary event for the newly attached lifecycle"
+                );
+                continue;
+            }
+            if let Some(app_server) = app_server {
+                self.discard_thread_local_state(app_server, stale_thread_id)
+                    .await;
+            } else {
+                self.mark_thread_discarded(stale_thread_id);
+                self.pending_app_server_requests.clear_thread(stale_thread_id);
+            }
+        }
+        for pending_event in matching_events {
             match pending_event {
                 ThreadBufferedEvent::Notification(notification) => {
                     self.enqueue_thread_notification(thread_id, notification)
@@ -1555,27 +1621,41 @@ impl App {
 
     pub(super) async fn enqueue_primary_thread_notification(
         &mut self,
+        thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
-        if let Some(thread_id) = self.primary_thread_id {
+        if let Some(primary_thread_id) = self.primary_thread_id {
+            if primary_thread_id != thread_id {
+                return self.enqueue_thread_notification(thread_id, notification).await;
+            }
             return self
-                .enqueue_thread_notification(thread_id, notification)
+                .enqueue_thread_notification(primary_thread_id, notification)
                 .await;
         }
-        self.pending_primary_events
-            .push_back(ThreadBufferedEvent::Notification(notification));
+        self.pending_primary_events.push_back(PendingPrimaryThreadEvent {
+            thread_id,
+            lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
+            event: ThreadBufferedEvent::Notification(notification),
+        });
         Ok(())
     }
 
     pub(super) async fn enqueue_primary_thread_request(
         &mut self,
+        thread_id: ThreadId,
         request: ServerRequest,
     ) -> Result<()> {
-        if let Some(thread_id) = self.primary_thread_id {
-            return self.enqueue_thread_request(thread_id, request).await;
+        if let Some(primary_thread_id) = self.primary_thread_id {
+            if primary_thread_id != thread_id {
+                return self.enqueue_thread_request(thread_id, request).await;
+            }
+            return self.enqueue_thread_request(primary_thread_id, request).await;
         }
-        self.pending_primary_events
-            .push_back(ThreadBufferedEvent::Request(request));
+        self.pending_primary_events.push_back(PendingPrimaryThreadEvent {
+            thread_id,
+            lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
+            event: ThreadBufferedEvent::Request(request),
+        });
         Ok(())
     }
 

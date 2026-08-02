@@ -2,6 +2,7 @@ use crate::protocol::common::ServerNotification;
 use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::convert_patch_changes;
+use crate::protocol::spawn_provenance::normalize_legacy_failed_spawn_effective_identity;
 use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
 use crate::protocol::v2::AgentMessageDeltaNotification;
 use crate::protocol::v2::CollabAgentState;
@@ -128,6 +129,11 @@ pub fn item_event_to_server_notification(
                 }
                 None => (Vec::new(), HashMap::new()),
             };
+            let (model, reasoning_effort) = normalize_legacy_failed_spawn_effective_identity(
+                has_receiver,
+                end_event.model,
+                end_event.reasoning_effort,
+            );
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
                 tool: CollabAgentTool::SpawnAgent,
@@ -135,8 +141,8 @@ pub fn item_event_to_server_notification(
                 sender_thread_id: end_event.sender_thread_id.to_string(),
                 receiver_thread_ids,
                 prompt: Some(end_event.prompt),
-                model: end_event.model,
-                reasoning_effort: end_event.reasoning_effort,
+                model,
+                reasoning_effort,
                 requested_model: None,
                 requested_reasoning_effort: None,
                 agents_states,
@@ -715,6 +721,46 @@ mod tests {
                 },
             },
         );
+    }
+
+    #[test]
+    fn collab_spawn_end_normalizes_the_legacy_sentinel_without_a_receiver() {
+        let event = CollabAgentSpawnEndEvent {
+            call_id: "call-failed-v1-sentinel".to_string(),
+            completed_at_ms: 456,
+            sender_thread_id: ThreadId::new(),
+            new_thread_id: None,
+            new_agent_nickname: None,
+            new_agent_role: None,
+            prompt: "inspect the repository".to_string(),
+            model: Some(String::new()),
+            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            status: codex_protocol::protocol::AgentStatus::NotFound,
+        };
+
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabAgentSpawnEnd(event),
+            "thread-1",
+            "turn-1",
+        );
+        let ServerNotification::ItemCompleted(ItemCompletedNotification {
+            item:
+                ThreadItem::CollabAgentToolCall {
+                    status,
+                    receiver_thread_ids,
+                    model,
+                    reasoning_effort,
+                    ..
+                },
+            ..
+        }) = notification.expect("spawn terminal should map")
+        else {
+            panic!("expected completed failed spawn notification");
+        };
+        assert_eq!(status, CollabAgentToolCallStatus::Failed);
+        assert!(receiver_thread_ids.is_empty());
+        assert_eq!(model, None);
+        assert_eq!(reasoning_effort, None);
     }
 
     #[test]

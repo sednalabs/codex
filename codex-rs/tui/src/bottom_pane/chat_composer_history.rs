@@ -722,11 +722,7 @@ impl ChatComposerHistory {
                             boundary_if_exhausted,
                         });
                     }
-                    app_event_tx.send(AppEvent::LookupMessageHistoryEntry {
-                        thread_id,
-                        offset,
-                        log_id,
-                    });
+                    app_event_tx.lookup_message_history_entry(thread_id, offset, log_id);
                     return HistorySearchResult::Pending;
                 }
             }
@@ -857,11 +853,7 @@ impl ChatComposerHistory {
 
             if let (Some(thread_id), Some(log_id)) = (self.thread_id, self.persistent_log_id) {
                 self.pending_navigation_direction = Some(direction);
-                app_event_tx.send(AppEvent::LookupMessageHistoryEntry {
-                    thread_id,
-                    offset: global_idx,
-                    log_id,
-                });
+                app_event_tx.lookup_message_history_entry(thread_id, global_idx, log_id);
             }
             return None;
         }
@@ -1098,6 +1090,7 @@ mod tests {
             thread_id: response_thread_id,
             offset,
             log_id,
+            ..
         } = event
         else {
             panic!("unexpected event variant");
@@ -1126,6 +1119,7 @@ mod tests {
             thread_id: response_thread_id,
             offset,
             log_id,
+            ..
         } = event2
         else {
             panic!("unexpected event variant");
@@ -1370,6 +1364,7 @@ mod tests {
             thread_id: response_thread_id,
             offset,
             log_id,
+            ..
         } = rx.try_recv().expect("expected latest lookup")
         else {
             panic!("unexpected event variant");
@@ -1391,6 +1386,7 @@ mod tests {
             thread_id: response_thread_id,
             cursor,
             log_id,
+            ..
         } = rx.try_recv().expect("expected next lookup")
         else {
             panic!("unexpected event variant");

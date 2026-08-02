@@ -291,6 +291,81 @@ fn projects_legacy_canonical_spawn_start_provenance_without_reclassifying_comple
 }
 
 #[test]
+fn projects_legacy_canonical_spawn_start_sentinel_without_promoting_it_to_requested_identity() {
+    let thread_id = ThreadId::default();
+    let mut projector = ThreadHistoryProjector::default();
+
+    for (id, legacy_model, legacy_effort, expected_model, expected_effort) in [
+        (
+            "legacy-omitted-override",
+            Some(""),
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            None,
+            None,
+        ),
+        (
+            "legacy-real-medium-override",
+            Some("gpt-requested-model"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            Some("gpt-requested-model"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        ),
+    ] {
+        let started = projector.project_rollout_line(&rollout_line(RolloutItem::EventMsg(
+            EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: format!("turn-{id}"),
+                item: legacy_canonical_spawn_start_item(id, legacy_model, legacy_effort),
+                started_at_ms: 1,
+            }),
+        )));
+        let ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } = &started.changed_items[0].item
+        else {
+            panic!("expected canonical spawn start");
+        };
+        assert_eq!(model, &None);
+        assert_eq!(reasoning_effort, &None);
+        assert_eq!(requested_model.as_deref(), expected_model);
+        assert_eq!(requested_reasoning_effort, &expected_effort);
+    }
+}
+
+#[test]
+fn projects_failed_no_receiver_canonical_spawn_without_a_legacy_effective_identity() {
+    let thread_id = ThreadId::default();
+    let changes = project(item_completed(
+        thread_id,
+        "turn-failed-spawn",
+        canonical_spawn_item(
+            "failed-spawn",
+            CoreCollabAgentToolCallStatus::Failed,
+            Some(""),
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        ),
+    ));
+    let ThreadItem::CollabAgentToolCall {
+        status,
+        receiver_thread_ids,
+        model,
+        reasoning_effort,
+        ..
+    } = &changes.changed_items[0].item
+    else {
+        panic!("expected failed canonical spawn projection");
+    };
+    assert_eq!(status, &crate::protocol::v2::CollabAgentToolCallStatus::Failed);
+    assert!(receiver_thread_ids.is_empty());
+    assert_eq!(model, &None);
+    assert_eq!(reasoning_effort, &None);
+}
+
+#[test]
 fn ignores_legacy_abort_without_turn_id_and_context_only_records() {
     let aborted = project(RolloutItem::EventMsg(EventMsg::TurnAborted(
         TurnAbortedEvent {

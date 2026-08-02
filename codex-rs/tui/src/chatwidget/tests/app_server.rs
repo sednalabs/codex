@@ -152,6 +152,7 @@ async fn safety_buffering_offers_one_retry_with_app_wording() {
                 model,
                 turn,
                 prompt,
+                ..
             }) => break (thread_id, turn_id, model, turn, prompt),
             Ok(_) => continue,
             Err(err) => panic!("expected safety-buffering retry event: {err}"),
@@ -384,6 +385,7 @@ async fn invalid_url_elicitation_is_declined() {
                 content: None,
                 meta: None,
             },
+            ..
         }) if op_thread_id == request_thread_id && server_name == "payments"
     );
 }

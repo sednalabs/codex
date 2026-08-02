@@ -203,6 +203,7 @@ impl App {
                             match self
                                 .replace_chat_widget_with_app_server_thread(
                                     tui,
+                                    app_server,
                                     forked,
                                     ThreadAttachPresentation::SessionLineage,
                                     /*initial_user_message*/ None,
@@ -249,10 +250,14 @@ impl App {
             }
             AppEvent::ForkSessionForPromptEdit {
                 thread_id,
+                lifecycle_generation,
                 nth_user_message,
                 mut prompt,
             } => {
-                if self.chat_widget.thread_id() != Some(thread_id) {
+                if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation)
+                    || self.chat_widget.thread_id() != Some(thread_id)
+                {
+                    tracing::debug!(%thread_id, lifecycle_generation, "dropping stale prompt-edit fork action");
                     return Ok(AppRunControl::Continue);
                 }
                 if self.reject_replay_only_thread_write(thread_id) {
@@ -304,6 +309,7 @@ impl App {
                         match self
                             .replace_chat_widget_with_app_server_thread(
                                 tui,
+                                app_server,
                                 forked,
                                 ThreadAttachPresentation::PromptEdit,
                                 /*initial_user_message*/ None,
@@ -465,26 +471,36 @@ impl App {
             }
             AppEvent::RetrySafetyBufferedTurn {
                 thread_id,
+                lifecycle_generation,
                 turn_id,
                 model,
                 turn,
                 prompt,
             } => {
-                self.retry_safety_buffered_turn(
-                    tui,
-                    app_server,
-                    super::safety_buffering::SafetyBufferedRetry {
-                        thread_id,
-                        turn_id,
-                        model,
-                        turn,
-                        prompt,
-                    },
-                )
-                .await;
+                if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+                    self.retry_safety_buffered_turn(
+                        tui,
+                        app_server,
+                        super::safety_buffering::SafetyBufferedRetry {
+                            thread_id,
+                            turn_id,
+                            model,
+                            turn,
+                            prompt,
+                        },
+                    )
+                    .await;
+                } else {
+                    tracing::debug!(%thread_id, lifecycle_generation, "dropping stale safety-buffer retry action");
+                }
             }
-            AppEvent::AppendMessageHistoryEntry { thread_id, text } => {
-                self.append_message_history_entry(thread_id, text);
+            AppEvent::AppendMessageHistoryEntry {
+                thread_id,
+                lifecycle_generation,
+                text,
+            } => {
+                self.append_message_history_entry(thread_id, lifecycle_generation, text)
+                    .await;
             }
             AppEvent::SyncThreadGitBranch {
                 thread_id,
@@ -511,26 +527,51 @@ impl App {
             }
             AppEvent::LookupMessageHistoryEntry {
                 thread_id,
+                lifecycle_generation,
                 offset,
                 log_id,
             } => {
-                self.lookup_message_history_entry(thread_id, offset, log_id)
-                    .await?;
+                if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+                    self.lookup_message_history_entry(thread_id, lifecycle_generation, offset, log_id)
+                        .await?;
+                }
             }
             AppEvent::LookupMessageHistoryBatch {
                 thread_id,
+                lifecycle_generation,
                 cursor,
                 log_id,
             } => {
-                self.lookup_message_history_batch(thread_id, cursor, log_id)
-                    .await?;
+                if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+                    self.lookup_message_history_batch(thread_id, lifecycle_generation, cursor, log_id)
+                        .await?;
+                }
             }
-            AppEvent::ApproveRecentAutoReviewDenial { thread_id, id } => {
-                self.chat_widget
-                    .approve_recent_auto_review_denial(thread_id, id);
+            AppEvent::ApproveRecentAutoReviewDenial {
+                thread_id,
+                lifecycle_generation,
+                id,
+            } => {
+                if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+                    self.chat_widget.approve_recent_auto_review_denial(
+                        thread_id,
+                        lifecycle_generation,
+                        id,
+                    );
+                } else {
+                    tracing::debug!(%thread_id, lifecycle_generation, "dropping stale auto-review approval action");
+                }
             }
-            AppEvent::SubmitThreadOp { thread_id, op } => {
-                self.submit_thread_op(app_server, thread_id, op).await?;
+            AppEvent::SubmitThreadOp {
+                thread_id,
+                lifecycle_generation,
+                op,
+            } => {
+                if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+                    self.submit_thread_op(app_server, thread_id, op).await?;
+                } else {
+                    tracing::debug!(%thread_id, lifecycle_generation, "dropping stale thread operation");
+                }
             }
             AppEvent::ThreadHistoryEntryResponse {
                 thread_id,
@@ -863,15 +904,38 @@ impl App {
                         .on_plugin_enabled_set(cwd, plugin_id, enabled, result);
                 }
             }
-            AppEvent::FetchMcpInventory { detail, thread_id } => {
-                self.fetch_mcp_inventory(app_server, detail, thread_id);
+            AppEvent::FetchMcpInventory {
+                detail,
+                thread_id,
+                lifecycle_generation,
+            } => {
+                let lifecycle_is_current = match (thread_id, lifecycle_generation) {
+                    (Some(thread_id), Some(generation)) => {
+                        self.thread_accepts_lifecycle_generation(thread_id, generation)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                if lifecycle_is_current {
+                    self.fetch_mcp_inventory(app_server, detail, thread_id, lifecycle_generation);
+                }
             }
             AppEvent::McpInventoryLoaded {
                 result,
                 detail,
                 thread_id,
+                lifecycle_generation,
             } => {
-                self.handle_mcp_inventory_result(result, detail, thread_id);
+                let lifecycle_is_current = match (thread_id, lifecycle_generation) {
+                    (Some(thread_id), Some(generation)) => {
+                        self.thread_accepts_lifecycle_generation(thread_id, generation)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                if lifecycle_is_current {
+                    self.handle_mcp_inventory_result(result, detail, thread_id);
+                }
             }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
@@ -1304,12 +1368,29 @@ impl App {
             }
             AppEvent::FeedbackSubmitted {
                 origin_thread_id,
+                origin_lifecycle_generation,
                 category,
                 include_logs,
                 result,
             } => {
-                self.handle_feedback_submitted(origin_thread_id, category, include_logs, result)
-                    .await;
+                let lifecycle_is_current = match (origin_thread_id, origin_lifecycle_generation) {
+                    (Some(thread_id), Some(generation)) => {
+                        self.thread_accepts_lifecycle_generation(thread_id, generation)
+                    }
+                    // Threadless feedback is app-scoped, not a presentation-scoped result.
+                    (None, None) => true,
+                    _ => false,
+                };
+                if lifecycle_is_current {
+                    self.handle_feedback_submitted(origin_thread_id, category, include_logs, result)
+                        .await;
+                } else {
+                    tracing::debug!(
+                        ?origin_thread_id,
+                        ?origin_lifecycle_generation,
+                        "dropping feedback result for a stale thread lifecycle"
+                    );
+                }
             }
             AppEvent::LaunchExternalEditor => {
                 if self.chat_widget.external_editor_state() == ExternalEditorState::Active {
@@ -2118,8 +2199,16 @@ impl App {
             }
             AppEvent::StartSide {
                 parent_thread_id,
+                lifecycle_generation,
                 user_message,
             } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    parent_thread_id,
+                    lifecycle_generation,
+                ) {
+                    tracing::debug!(%parent_thread_id, lifecycle_generation, "dropping stale side-conversation action");
+                    return Ok(AppRunControl::Continue);
+                }
                 return self
                     .handle_start_side(tui, app_server, parent_thread_id, user_message)
                     .await;

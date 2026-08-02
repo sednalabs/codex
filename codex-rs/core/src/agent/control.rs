@@ -869,6 +869,14 @@ impl AgentControl {
         let mut depth_by_thread_id = HashMap::<ThreadId, usize>::new();
         let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
         let mut parent_by_thread_id = HashMap::<ThreadId, ThreadId>::new();
+        if target_path.is_none()
+            && !agent_tree_scope_includes(scope, tree_root_session_state)
+        {
+            // The live context root is intentionally omitted from a stale-only result, but it
+            // still anchors the persisted forest. Seed it into the ancestry guard so malformed
+            // closed edges cannot reintroduce that live root through a stale descendant.
+            parent_by_thread_id.insert(tree_root_thread_id, tree_root_thread_id);
+        }
         let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
         while let Some((thread_id, session_state, depth)) = queue.pop_front() {
             if tree_records.contains_key(&thread_id) {
