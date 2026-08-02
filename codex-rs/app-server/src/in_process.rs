@@ -26,10 +26,11 @@
 //! # Backpressure
 //!
 //! Command submission uses `try_send` and can return `WouldBlock`, while event
-//! fanout may drop notifications under saturation. Server requests are never
-//! silently abandoned: if they cannot be queued they are failed back into
-//! `MessageProcessor` with overload or internal errors so approval flows do
-//! not hang indefinitely.
+//! fanout may drop best-effort notifications under saturation. Authoritative
+//! transcript, lifecycle, goal, and usage state blocks until it can be
+//! delivered. Server requests are never silently abandoned: if they cannot be
+//! queued they are failed back into `MessageProcessor` with overload or
+//! internal errors so approval flows do not hang indefinitely.
 //!
 //! # Relationship to `codex-app-server-client`
 //!
@@ -107,8 +108,8 @@ type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorErro
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     // Keep this in exact parity with the facade classifier in
     // `codex-app-server-client`: this runtime queue is upstream of that
-    // facade, so it cannot discard a transcript delta or lifecycle handshake
-    // that the facade later treats as lossless.
+    // facade, so it cannot discard transcript, lifecycle, goal, or usage
+    // state that the facade later treats as lossless.
     matches!(
         notification,
         ServerNotification::ThreadStarted(_)
@@ -117,6 +118,9 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadUnarchived(_)
             | ServerNotification::ThreadStatusChanged(_)
+            | ServerNotification::ThreadGoalUpdated(_)
+            | ServerNotification::ThreadGoalCleared(_)
+            | ServerNotification::ThreadTokenUsageUpdated(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -126,6 +130,33 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ReasoningSummaryTextDelta(_)
             | ServerNotification::ReasoningTextDelta(_)
     )
+}
+
+/// Delivers authoritative app-server notification state without allowing a
+/// saturated in-process queue to discard it. Progress-only notifications stay
+/// best-effort so a slow consumer does not stall unrelated live output.
+async fn forward_in_process_server_notification(
+    event_tx: &mpsc::Sender<InProcessServerEvent>,
+    event: InProcessServerEvent,
+) -> bool {
+    let notification = match &event {
+        InProcessServerEvent::ServerNotification(notification)
+        | InProcessServerEvent::ThreadServerNotification { notification, .. } => notification,
+        _ => unreachable!("only notification events reach the notification queue"),
+    };
+
+    if server_notification_requires_delivery(notification) {
+        return event_tx.send(event).await.is_ok();
+    }
+
+    match event_tx.try_send(event) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!("dropping best-effort in-process server notification (queue full)");
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -734,26 +765,13 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
-                            let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
+                            if !forward_in_process_server_notification(
+                                &event_tx,
+                                InProcessServerEvent::ServerNotification(envelope.notification),
+                            )
+                            .await
                             {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
+                                break;
                             }
                         }
                         OutgoingMessage::ThreadScopedNotification(notification) => {
@@ -761,25 +779,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 notification: notification.envelope.notification,
                                 thread_subscription_id: notification.thread_subscription_id,
                             };
-                            let requires_delivery = match &event {
-                                InProcessServerEvent::ThreadServerNotification { notification, .. } => {
-                                    server_notification_requires_delivery(notification)
-                                }
-                                _ => unreachable!("constructed thread notification event"),
-                            };
-                            if requires_delivery {
-                                if event_tx.send(event).await.is_err() {
-                                    break;
-                                }
-                            } else if let Err(send_error) = event_tx.try_send(event) {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
+                            if !forward_in_process_server_notification(&event_tx, event).await {
+                                break;
                             }
                         }
                     }
@@ -910,6 +911,47 @@ mod tests {
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    fn thread_goal_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: Some("turn".to_string()),
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread".to_string(),
+                    objective: "finish the task".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 25,
+                    time_used_seconds: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            },
+        )
+    }
+
+    fn thread_token_usage_updated_notification() -> ServerNotification {
+        let usage = codex_app_server_protocol::TokenUsageBreakdown {
+            total_tokens: 25,
+            input_tokens: 20,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 5,
+            reasoning_output_tokens: 0,
+        };
+        ServerNotification::ThreadTokenUsageUpdated(
+            codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                token_usage: codex_app_server_protocol::ThreadTokenUsage {
+                    total: usage.clone(),
+                    last: usage,
+                    model_context_window: Some(100),
+                },
+            },
+        )
     }
 
     #[tokio::test]
@@ -1091,6 +1133,19 @@ mod tests {
             )
         ));
         assert!(server_notification_requires_delivery(
+            &thread_goal_updated_notification()
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &thread_token_usage_updated_notification()
+        ));
+        assert!(server_notification_requires_delivery(
             &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
@@ -1123,5 +1178,55 @@ mod tests {
                 },
             )
         ));
+    }
+
+    #[tokio::test]
+    async fn in_process_queue_blocks_for_goal_and_usage_state_backpressure() {
+        for (notification, expected_kind) in [
+            (thread_goal_updated_notification(), "goal"),
+            (thread_token_usage_updated_notification(), "usage"),
+        ] {
+            let (event_tx, mut event_rx) = mpsc::channel(1);
+            event_tx
+                .send(InProcessServerEvent::Lagged { skipped: 1 })
+                .await
+                .expect("initial event should enqueue");
+
+            let delivery = forward_in_process_server_notification(
+                &event_tx,
+                InProcessServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification,
+                },
+            );
+            tokio::pin!(delivery);
+
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "{expected_kind} state must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(InProcessServerEvent::Lagged { skipped: 1 })
+            ));
+            assert!(delivery.await);
+            match event_rx.recv().await {
+                Some(InProcessServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadGoalUpdated(_),
+                }) if expected_kind == "goal" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(InProcessServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadTokenUsageUpdated(_),
+                }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                event => panic!("expected retained {expected_kind} state, got {event:?}"),
+            }
+        }
     }
 }

@@ -8,6 +8,10 @@
 //! - Typed and raw request/notification dispatch.
 //! - Server request resolution and rejection.
 //! - Event consumption with backpressure signaling ([`InProcessServerEvent::Lagged`]).
+//!   [`InProcessAppServerClient::next_event`] keeps its legacy
+//!   [`InProcessServerEvent`] return type, while
+//!   [`InProcessAppServerClient::next_app_server_event`] exposes the tagged
+//!   transport-neutral [`AppServerEvent`] surface.
 //! - Bounded graceful shutdown with abort fallback.
 //!
 //! The facade interposes a worker task between the caller and the underlying
@@ -144,11 +148,43 @@ impl From<InProcessServerEvent> for AppServerEvent {
     }
 }
 
+fn into_legacy_in_process_event(event: AppServerEvent) -> Option<InProcessServerEvent> {
+    match event {
+        AppServerEvent::Lagged { skipped } => Some(InProcessServerEvent::Lagged { skipped }),
+        AppServerEvent::ServerNotification(notification) => {
+            Some(InProcessServerEvent::ServerNotification(notification))
+        }
+        AppServerEvent::ServerRequest(request) => {
+            Some(InProcessServerEvent::ServerRequest(request))
+        }
+        AppServerEvent::ThreadServerNotification {
+            notification,
+            thread_subscription_id,
+        } => Some(InProcessServerEvent::ThreadServerNotification {
+            notification,
+            thread_subscription_id,
+        }),
+        AppServerEvent::ThreadServerRequest {
+            request,
+            thread_subscription_id,
+        } => Some(InProcessServerEvent::ThreadServerRequest {
+            request,
+            thread_subscription_id,
+        }),
+        AppServerEvent::Disconnected { message } => {
+            warn!(
+                "in-process app-server client received an unexpected transport disconnect: {message}"
+            );
+            None
+        }
+    }
+}
+
 fn event_requires_delivery(event: &AppServerEvent) -> bool {
-    // These transcript and terminal events must remain lossless. Dropping
-    // streamed assistant text or the authoritative completed item can leave
-    // the TUI with permanently corrupted markdown, while dropping completion
-    // notifications can leave surfaces waiting forever.
+    // These transcript and authoritative state events must remain lossless.
+    // Dropping streamed assistant text or an active goal/usage snapshot can
+    // leave the TUI permanently stale, while dropping completion notifications
+    // can leave surfaces waiting forever.
     match event {
         AppServerEvent::ServerNotification(notification)
         | AppServerEvent::ThreadServerNotification { notification, .. } => {
@@ -161,17 +197,18 @@ fn event_requires_delivery(event: &AppServerEvent) -> bool {
 /// Returns `true` for notifications that must survive backpressure.
 ///
 /// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas), the
-/// authoritative `ItemCompleted` / `TurnCompleted`, and thread lifecycle
-/// handshakes and terminal transitions form the lossless tier of the event
-/// stream. Dropping any of these corrupts visible output, leaves a surface
-/// waiting for completion, or lets a route and picker retain an obsolete
-/// thread state. Everything else
+/// authoritative `ItemCompleted` / `TurnCompleted`, and thread lifecycle,
+/// goal, and token-usage state form the lossless tier of the event stream.
+/// Dropping any of these corrupts visible output, leaves a surface waiting for
+/// completion, or leaves it with stale active state. Progress-only traffic
 /// (`CommandExecutionOutputDelta`, progress, etc.) is best-effort and may be
-/// dropped with only cosmetic impact.
+/// dropped when a bounded queue is saturated.
 ///
 /// The in-process runtime maintains the same classification at its upstream
 /// queue boundary; keep the two lists in exact parity so neither transport can
-/// drop a notification that the other retains.
+/// drop a notification that the other retains. `ThreadGoalSnapshot` is a
+/// listener command rather than a wire notification; it emits the updated or
+/// cleared state variants listed here.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
@@ -181,6 +218,9 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
             | ServerNotification::ThreadArchived(_)
             | ServerNotification::ThreadUnarchived(_)
             | ServerNotification::ThreadStatusChanged(_)
+            | ServerNotification::ThreadGoalUpdated(_)
+            | ServerNotification::ThreadGoalCleared(_)
+            | ServerNotification::ThreadTokenUsageUpdated(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -763,12 +803,23 @@ impl InProcessAppServerClient {
         })?
     }
 
-    /// Returns the next in-process event, or `None` when worker exits.
+    /// Returns the next legacy in-process event, or `None` when worker exits.
+    ///
+    /// This preserves the established [`InProcessServerEvent`] API for direct
+    /// embedders. Call [`next_app_server_event`](Self::next_app_server_event)
+    /// when the tagged, transport-neutral event surface is required.
+    pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
+        self.next_app_server_event()
+            .await
+            .and_then(into_legacy_in_process_event)
+    }
+
+    /// Returns the next tagged, transport-neutral facade event.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
     /// the worker emits [`AppServerEvent::Lagged`] markers and may reject
     /// pending server requests rather than letting approval flows hang.
-    pub async fn next_event(&mut self) -> Option<AppServerEvent> {
+    pub async fn next_app_server_event(&mut self) -> Option<AppServerEvent> {
         self.event_rx.recv().await
     }
 
@@ -934,7 +985,7 @@ impl AppServerClient {
 
     pub async fn next_event(&mut self) -> Option<AppServerEvent> {
         match self {
-            Self::InProcess(client) => client.next_event().await,
+            Self::InProcess(client) => client.next_app_server_event().await,
             Self::Remote(client) => client.next_event().await,
         }
     }
@@ -1199,6 +1250,47 @@ mod tests {
                 turn_id: "turn".to_string(),
                 item_id: "item".to_string(),
                 delta: delta.to_string(),
+            },
+        )
+    }
+
+    fn thread_goal_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: Some("turn".to_string()),
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread".to_string(),
+                    objective: "finish the task".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 25,
+                    time_used_seconds: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            },
+        )
+    }
+
+    fn thread_token_usage_updated_notification() -> ServerNotification {
+        let usage = codex_app_server_protocol::TokenUsageBreakdown {
+            total_tokens: 25,
+            input_tokens: 20,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 5,
+            reasoning_output_tokens: 0,
+        };
+        ServerNotification::ThreadTokenUsageUpdated(
+            codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                token_usage: codex_app_server_protocol::ThreadTokenUsage {
+                    total: usage.clone(),
+                    last: usage,
+                    model_context_window: Some(100),
+                },
             },
         )
     }
@@ -1637,6 +1729,60 @@ mod tests {
             }) if thread_subscription_id == "thread-subscription"
         ));
         assert_eq!(skipped_events, 0);
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_blocks_for_goal_and_usage_state_backpressure() {
+        for (notification, expected_kind) in [
+            (thread_goal_updated_notification(), "goal"),
+            (thread_token_usage_updated_notification(), "usage"),
+        ] {
+            let (event_tx, mut event_rx) = mpsc::channel(1);
+            event_tx
+                .send(AppServerEvent::Lagged { skipped: 1 })
+                .await
+                .expect("initial event should enqueue");
+
+            let mut skipped_events = 0usize;
+            let delivery = forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification,
+                },
+                |_| {},
+            );
+            tokio::pin!(delivery);
+
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "{expected_kind} state must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::Lagged { skipped: 1 })
+            ));
+            assert_eq!(delivery.await, ForwardEventResult::Continue);
+            match event_rx.recv().await {
+                Some(AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadGoalUpdated(_),
+                }) if expected_kind == "goal" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadTokenUsageUpdated(_),
+                }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                event => panic!("expected retained {expected_kind} state, got {event:?}"),
+            }
+            assert_eq!(skipped_events, 0);
+        }
     }
 
     #[tokio::test]
@@ -2297,9 +2443,13 @@ mod tests {
 
     #[tokio::test]
     async fn next_event_surfaces_lagged_markers() {
-        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (command_tx, mut command_rx) = mpsc::channel(1);
         let (event_tx, event_rx) = mpsc::channel(1);
-        let worker_handle = tokio::spawn(async {});
+        let worker_handle = tokio::spawn(async move {
+            if let Some(ClientCommand::Shutdown { response_tx }) = command_rx.recv().await {
+                let _ = response_tx.send(Ok(()));
+            }
+        });
         event_tx
             .send(AppServerEvent::Lagged { skipped: 3 })
             .await
@@ -2312,10 +2462,49 @@ mod tests {
             worker_handle,
         };
 
-        let event = timeout(Duration::from_secs(2), client.next_event())
+        let event: Option<InProcessServerEvent> =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("lagged marker should arrive before timeout");
+        assert!(matches!(
+            event,
+            Some(InProcessServerEvent::Lagged { skipped: 3 })
+        ));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn next_app_server_event_preserves_tagged_thread_events() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let worker_handle = tokio::spawn(async move {
+            if let Some(ClientCommand::Shutdown { response_tx }) = command_rx.recv().await {
+                let _ = response_tx.send(Ok(()));
+            }
+        });
+        event_tx
+            .send(AppServerEvent::ThreadServerNotification {
+                thread_subscription_id: "thread-subscription".to_string(),
+                notification: thread_goal_updated_notification(),
+            })
             .await
-            .expect("lagged marker should arrive before timeout");
-        assert!(matches!(event, Some(AppServerEvent::Lagged { skipped: 3 })));
+            .expect("tagged event should enqueue");
+        drop(event_tx);
+
+        let mut client = InProcessAppServerClient {
+            command_tx,
+            event_rx,
+            worker_handle,
+        };
+
+        assert!(matches!(
+            client.next_app_server_event().await,
+            Some(AppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification: ServerNotification::ThreadGoalUpdated(_),
+            }) if thread_subscription_id == "thread-subscription"
+        ));
 
         client.shutdown().await.expect("shutdown should complete");
     }
@@ -2356,6 +2545,13 @@ mod tests {
                     status_revision: Some(1),
                 },
             ),
+            thread_goal_updated_notification(),
+            codex_app_server_protocol::ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: "thread".to_string(),
+                },
+            ),
+            thread_token_usage_updated_notification(),
         ] {
             assert!(event_requires_delivery(
                 &AppServerEvent::ThreadServerNotification {

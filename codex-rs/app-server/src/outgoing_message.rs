@@ -236,10 +236,6 @@ impl ThreadScopedOutgoingMessageSender {
             .await;
     }
 
-    pub(crate) async fn send_global_server_notification(&self, notification: ServerNotification) {
-        self.outgoing.send_server_notification(notification).await;
-    }
-
     pub(crate) async fn abort_pending_server_requests(&self) {
         self.outgoing
             .cancel_requests_for_thread(
@@ -1409,6 +1405,9 @@ mod tests {
     use codex_app_server_protocol::ServerResponse;
     use codex_app_server_protocol::ThreadArchivedNotification;
     use codex_app_server_protocol::ThreadClosedNotification;
+    use codex_app_server_protocol::ThreadGoal;
+    use codex_app_server_protocol::ThreadGoalStatus;
+    use codex_app_server_protocol::ThreadGoalUpdatedNotification;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
@@ -2090,6 +2089,94 @@ mod tests {
             subscription_ids[3..]
                 .iter()
                 .all(|subscription_id| subscription_id == &new_subscription_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_goal_update_keeps_its_captured_token_after_reattach() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let delayed_listener = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await,
+            thread_id,
+        );
+
+        let new_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let current_listener = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await,
+            thread_id,
+        );
+
+        let goal_update = |objective: &str| {
+            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: None,
+                goal: ThreadGoal {
+                    thread_id: thread_id.to_string(),
+                    objective: objective.to_string(),
+                    status: ThreadGoalStatus::Active,
+                    token_budget: None,
+                    tokens_used: 0,
+                    time_used_seconds: 0,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            })
+        };
+
+        // The old listener emits only after the replacement has attached.
+        // The captured target must fence it to the old subscription token.
+        delayed_listener.send_server_notification(goal_update("old")).await;
+        current_listener.send_server_notification(goal_update("new")).await;
+
+        let subscription_and_objective = |envelope: OutgoingEnvelope| match envelope {
+            OutgoingEnvelope::ToConnection {
+                connection_id: received_connection_id,
+                message: OutgoingMessage::ThreadScopedNotification(thread_notification),
+                ..
+            } => {
+                assert_eq!(received_connection_id, connection_id);
+                let subscription_id = thread_notification.thread_subscription_id;
+                let ServerNotification::ThreadGoalUpdated(goal_notification) = thread_notification.envelope.notification
+                else {
+                    panic!("expected tagged goal update");
+                };
+                (subscription_id, goal_notification.goal.objective)
+            }
+            envelope => panic!("expected tagged goal update, got {envelope:?}"),
+        };
+
+        assert_eq!(
+            subscription_and_objective(
+                rx.recv()
+                    .await
+                    .expect("delayed goal update should be queued"),
+            ),
+            (old_subscription_id, "old".to_string())
+        );
+        assert_eq!(
+            subscription_and_objective(
+                rx.recv()
+                    .await
+                    .expect("replacement goal update should be queued"),
+            ),
+            (new_subscription_id, "new".to_string())
         );
     }
 

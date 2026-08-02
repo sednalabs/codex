@@ -1281,7 +1281,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 goal: thread_goal_event.goal.clone().into(),
             };
             outgoing
-                .send_global_server_notification(ServerNotification::ThreadGoalUpdated(
+                .send_server_notification(ServerNotification::ThreadGoalUpdated(
                     notification,
                 ))
                 .await;
