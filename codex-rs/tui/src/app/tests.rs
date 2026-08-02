@@ -1668,6 +1668,52 @@ async fn empty_agent_picker_open_upgrades_loading_view_when_background_rows_arri
 }
 
 #[tokio::test]
+async fn empty_agent_picker_becomes_terminal_after_an_exhausted_empty_refresh() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    app.config.features.enable(Feature::Collab);
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let (_, lifecycle_generation, request_generation) = app
+        .agent_navigation
+        .picker_refresh_ticket_for_test()
+        .expect("opening the picker schedules the first refresh");
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: Vec::new(),
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("No subagents found..."));
+    assert!(!picker.contains("Loading subagents..."));
+    assert_eq!(
+        app.chat_widget.selection_view_search_query("agent-picker"),
+        Some(String::new()),
+        "the terminal empty result must retain the picker input surface"
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.chat_widget.selection_view_search_query("agent-picker"), None);
+
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn dismissed_empty_agent_picker_is_not_resurrected_by_background_rows() -> Result<()> {
     let mut app = make_test_app().await;
     let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
@@ -2166,6 +2212,64 @@ async fn thread_status_revisions_gate_error_recovery_picker_liveness() -> Result
             .get(&thread_id)
             .is_some_and(|entry| !entry.has_system_error && entry.is_running)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn picker_backfill_cannot_overwrite_newer_watcher_recovery() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.upsert_agent_picker_thread(
+        child_thread_id,
+        Some("Initial child".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    // The watcher is revisioned and therefore proves this is newer than a picker request that
+    // was already in flight. Both delayed terminal snapshot shapes must preserve it.
+    app.apply_agent_picker_thread_status_change(
+        child_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: child_thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(12),
+        },
+    );
+
+    let mut refreshed_thread_ids = std::collections::HashSet::new();
+    let mut stale_not_loaded =
+        background_picker_thread(child_thread_id, primary_thread_id, "Stale not-loaded name");
+    stale_not_loaded.status = ThreadStatus::NotLoaded;
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        stale_not_loaded,
+        &mut refreshed_thread_ids,
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        !entry.is_closed
+            && !entry.has_system_error
+            && entry.is_running
+            && entry.agent_nickname.as_deref() == Some("Stale not-loaded name")
+    }));
+
+    let mut stale_system_error =
+        background_picker_thread(child_thread_id, primary_thread_id, "Stale system-error name");
+    stale_system_error.status = ThreadStatus::SystemError;
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        stale_system_error,
+        &mut refreshed_thread_ids,
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        !entry.is_closed
+            && !entry.has_system_error
+            && entry.is_running
+            && entry.agent_nickname.as_deref() == Some("Stale system-error name")
+    }));
     Ok(())
 }
 

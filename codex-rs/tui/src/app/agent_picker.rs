@@ -109,6 +109,10 @@ impl App {
             return;
         }
 
+        let response_was_authoritatively_exhausted = result
+            .persisted_next_picker_page_cursor
+            .is_some_and(|next_cursor| next_cursor.is_none())
+            && result.errors.is_empty();
         let mut refreshed_thread_ids = HashSet::new();
         for thread in result.threads {
             self.register_agent_picker_thread_from_backend(
@@ -125,6 +129,9 @@ impl App {
                 self.agent_navigation.set_next_picker_page_cursor(next_cursor);
             }
         }
+        self.agent_navigation.complete_picker_refresh_empty_state(
+            response_was_authoritatively_exhausted,
+        );
         if result.mark_legacy_relation_fallback_checked {
             self.agent_navigation.mark_legacy_relation_fallback_checked();
         }
