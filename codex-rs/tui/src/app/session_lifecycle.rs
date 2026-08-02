@@ -1444,6 +1444,7 @@ impl App {
                 self.register_agent_picker_thread_from_backend(
                     primary_thread_id,
                     thread,
+                    /*apply_snapshot_liveness*/ true,
                     &mut refreshed_thread_ids,
                 );
             }
@@ -1467,6 +1468,7 @@ impl App {
                     self.register_agent_picker_thread_from_backend(
                         primary_thread_id,
                         thread,
+                        /*apply_snapshot_liveness*/ true,
                         &mut refreshed_thread_ids,
                     );
                 }
@@ -1498,10 +1500,13 @@ impl App {
     }
 
     /// Applies one app-server thread row to picker state while preserving any attached live channel.
+    /// When `apply_snapshot_liveness` is false, the row may enrich descriptive metadata only;
+    /// its revisionless status must not change running, terminal, or error state.
     pub(super) fn register_agent_picker_thread_from_backend(
         &mut self,
         primary_thread_id: ThreadId,
         thread: Thread,
+        apply_snapshot_liveness: bool,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) {
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
@@ -1518,9 +1523,10 @@ impl App {
             .thread_event_channels
             .get(&thread_id)
             .is_some_and(ThreadEventChannel::has_live_attachment);
-        let accepts_snapshot_liveness = self
-            .agent_navigation
-            .accepts_unversioned_picker_snapshot_liveness(thread_id);
+        let accepts_snapshot_liveness = apply_snapshot_liveness
+            && self
+                .agent_navigation
+                .accepts_unversioned_picker_snapshot_liveness(thread_id);
         let status = agent_picker_thread_status(&thread.status, has_live_channel);
         if thread_blocks_direct_input(&thread) {
             self.agent_navigation.mark_parent_owned(thread_id);
@@ -1529,7 +1535,7 @@ impl App {
             thread_id,
             thread.agent_nickname,
             thread.agent_role,
-            status.is_closed,
+            accepts_snapshot_liveness && status.is_closed,
         );
         self.agent_navigation
             .set_agent_path(thread_id, source_agent_path(&thread.source));
@@ -1634,6 +1640,7 @@ impl App {
                         self.register_agent_picker_thread_from_backend(
                             primary_thread_id,
                             thread,
+                            /*apply_snapshot_liveness*/ true,
                             refreshed_thread_ids,
                         );
                         loaded_descendant_count += 1;
@@ -1741,6 +1748,7 @@ impl App {
                 self.register_agent_picker_thread_from_backend(
                     primary_thread_id,
                     thread,
+                    /*apply_snapshot_liveness*/ true,
                     refreshed_thread_ids,
                 );
             }

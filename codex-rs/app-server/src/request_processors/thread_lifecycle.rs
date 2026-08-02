@@ -133,6 +133,13 @@ pub(super) enum EnsureConversationListenerResult {
     ConnectionClosed,
 }
 
+/// Whether `thread/start` may publish its connection-bound receipt and lifecycle notification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ThreadStartAttachmentPublication {
+    Publish,
+    Suppress,
+}
+
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "listener subscription must be serialized against pending unloads"
@@ -224,6 +231,34 @@ pub(super) async fn rollback_failed_thread_attach(
     let _ = thread_state_manager
         .unsubscribe_connection_from_thread(thread_id, connection_id)
         .await;
+}
+
+/// Gates `thread/start` publication on listener attachment and rolls back the pre-minted
+/// connection-local identity on every non-publishing path. A successful start may replay traffic
+/// before its receipt, so the identity must exist before attachment; it must never escape in a
+/// response or `ThreadStarted` notification if attachment did not succeed.
+pub(super) async fn gate_thread_start_listener_attachment(
+    listener_result: Result<EnsureConversationListenerResult, JSONRPCErrorError>,
+    thread_state_manager: &ThreadStateManager,
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_id: ThreadId,
+    connection_id: ConnectionId,
+) -> Result<ThreadStartAttachmentPublication, JSONRPCErrorError> {
+    match listener_result {
+        Ok(EnsureConversationListenerResult::Attached) => {
+            Ok(ThreadStartAttachmentPublication::Publish)
+        }
+        Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+            rollback_failed_thread_attach(thread_state_manager, outgoing, thread_id, connection_id)
+                .await;
+            Ok(ThreadStartAttachmentPublication::Suppress)
+        }
+        Err(error) => {
+            rollback_failed_thread_attach(thread_state_manager, outgoing, thread_id, connection_id)
+                .await;
+            Err(error)
+        }
+    }
 }
 
 pub(super) fn log_listener_attach_result(
@@ -1055,6 +1090,107 @@ mod tests {
         assert!(
             outgoing_rx.try_recv().is_err(),
             "a failed attach must not leave a token that can emit tagged traffic"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_start_connection_closed_attach_suppresses_receipt_and_started_event() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("test connection should begin attached");
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        assert_eq!(
+            gate_thread_start_listener_attachment(
+                Ok(EnsureConversationListenerResult::ConnectionClosed),
+                &thread_state_manager,
+                &outgoing,
+                thread_id,
+                connection_id,
+            )
+            .await
+            .expect("a closed connection is not an RPC failure"),
+            ThreadStartAttachmentPublication::Suppress
+        );
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+        assert!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .is_none(),
+            "a suppressed start must not return a dangling subscription receipt"
+        );
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "a suppressed start must return before publishing ThreadStarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_start_attach_error_rolls_back_before_receipt_or_started_event() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("test connection should begin attached");
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        let error = gate_thread_start_listener_attachment(
+            Err(invalid_request("listener attach failed")),
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+        )
+        .await
+        .expect_err("listener attach failure must abort thread/start publication");
+
+        assert_eq!(error.message, "listener attach failed");
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+        assert!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .is_none(),
+            "a failed start must not expose a dangling subscription receipt"
+        );
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "a failed start must return before publishing ThreadStarted"
         );
     }
 

@@ -1823,9 +1823,10 @@ async fn agent_picker_background_refresh_merges_discovered_rows_into_the_open_pi
 }
 
 #[tokio::test]
-async fn agent_picker_background_refresh_cannot_erase_a_newer_continuation_cursor() {
+async fn agent_picker_background_refresh_cannot_overwrite_newer_continuation_liveness() {
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
     app.primary_thread_id = Some(primary_thread_id);
     app.agent_navigation
         .set_next_picker_page_cursor(Some("cursor-C1".to_string()));
@@ -1835,16 +1836,34 @@ async fn agent_picker_background_refresh_cannot_erase_a_newer_continuation_curso
         .begin_picker_refresh(primary_thread_id, lifecycle_generation)
         .expect("first refresh starts");
 
+    // This `Started` activity and the later C2 continuation both arrive after the root request.
+    // Either must make the root response metadata-only because that response carries no liveness
+    // revision or ordering proof.
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "newer-child-started".to_string(),
+            thread_id: child_thread_id,
+            agent_path: "/root/current-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
     // The user consumes C1 before the background first page returns. Its continuation response
-    // is newer picker-cursor authority and must keep C2 even when the stale first page is empty.
+    // is newer picker authority. A late root NotLoaded row may refresh its descriptive name, but
+    // cannot erase C2 or close the child that the newer Started activity marked running.
     app.agent_navigation
         .set_next_picker_page_cursor_from_continuation(Some("cursor-C2".to_string()));
+    let mut late_not_loaded =
+        background_picker_thread(child_thread_id, primary_thread_id, "Late not-loaded name");
+    late_not_loaded.status = ThreadStatus::NotLoaded;
     app.apply_agent_picker_thread_refresh(
         primary_thread_id,
         lifecycle_generation,
         request_generation,
         AgentPickerRefreshResult {
-            threads: Vec::new(),
+            threads: vec![late_not_loaded],
             persisted_next_picker_page_cursor: Some(None),
             mark_legacy_relation_fallback_checked: false,
             errors: Vec::new(),
@@ -1857,6 +1876,48 @@ async fn agent_picker_background_refresh_cannot_erase_a_newer_continuation_curso
         Some("cursor-C2".to_string()),
         "a stale root response must not erase a newer continuation"
     );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_nickname.as_deref() == Some("Late not-loaded name")
+    }));
+
+    // The same non-owner rule covers a stale SystemError: it may merge safe descriptive
+    // metadata, but it cannot fail a child whose newer lifecycle is already established.
+    let second_request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, lifecycle_generation)
+        .expect("second refresh starts after the first completes");
+    app.agent_navigation
+        .set_next_picker_page_cursor_from_continuation(Some("cursor-C3".to_string()));
+    let mut late_system_error =
+        background_picker_thread(child_thread_id, primary_thread_id, "Late system-error name");
+    late_system_error.status = ThreadStatus::SystemError;
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        second_request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![late_system_error],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: false,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        app.agent_navigation.next_picker_page_cursor(),
+        Some("cursor-C3".to_string()),
+        "a stale root response must not rewind a second continuation"
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_nickname.as_deref() == Some("Late system-error name")
+    }));
 }
 
 #[tokio::test]
@@ -2284,6 +2345,7 @@ async fn picker_backfill_cannot_overwrite_newer_watcher_recovery() -> Result<()>
     app.register_agent_picker_thread_from_backend(
         primary_thread_id,
         stale_not_loaded,
+        /*apply_snapshot_liveness*/ true,
         &mut refreshed_thread_ids,
     );
     assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
@@ -2299,6 +2361,7 @@ async fn picker_backfill_cannot_overwrite_newer_watcher_recovery() -> Result<()>
     app.register_agent_picker_thread_from_backend(
         primary_thread_id,
         stale_system_error,
+        /*apply_snapshot_liveness*/ true,
         &mut refreshed_thread_ids,
     );
     assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
@@ -2810,6 +2873,7 @@ async fn request_first_not_loaded_keeps_synthetic_buffer_non_live_across_backfil
             name: Some("saved child".to_string()),
             turns: Vec::new(),
         },
+        /*apply_snapshot_liveness*/ true,
         &mut refreshed_thread_ids,
     );
     assert!(refreshed_thread_ids.contains(&thread_id));
