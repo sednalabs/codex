@@ -2,6 +2,7 @@
 
 use super::thread_processor::unsupported_thread_store_operation;
 use super::*;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 
 impl ThreadRequestProcessor {
     pub(crate) async fn thread_delete(
@@ -9,10 +10,10 @@ impl ThreadRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadDeleteParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let mut deleted_thread_ids = Vec::new();
+        let mut deleted_threads = Vec::new();
         let result = {
             let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
-            self.thread_delete_response(params, &mut deleted_thread_ids)
+            self.thread_delete_response(params, &mut deleted_threads)
                 .await
         };
         match result {
@@ -20,7 +21,7 @@ impl ThreadRequestProcessor {
                 self.outgoing
                     .send_response(request_id.clone(), response)
                     .await;
-                self.send_thread_deleted_notifications(deleted_thread_ids)
+                self.send_thread_deleted_notifications(deleted_threads)
                     .await;
                 Ok(None)
             }
@@ -31,7 +32,7 @@ impl ThreadRequestProcessor {
     async fn thread_delete_response(
         &self,
         params: ThreadDeleteParams,
-        deleted_thread_ids: &mut Vec<String>,
+        deleted_threads: &mut Vec<(String, Vec<ThreadSubscriptionTarget>)>,
     ) -> Result<ThreadDeleteResponse, JSONRPCErrorError> {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
@@ -40,8 +41,12 @@ impl ThreadRequestProcessor {
 
         self.validate_root_thread_delete(thread_id, thread_ids.len() > 1)
             .await?;
+        let mut terminal_recipients = HashMap::new();
         for thread_id_to_delete in thread_ids.iter().copied() {
-            self.prepare_thread_for_delete(thread_id_to_delete).await;
+            terminal_recipients.insert(
+                thread_id_to_delete,
+                self.prepare_thread_for_delete(thread_id_to_delete).await,
+            );
         }
 
         let mut delete_order: Vec<_> = thread_ids.iter().skip(1).rev().copied().collect();
@@ -65,20 +70,28 @@ impl ThreadRequestProcessor {
                 })?;
         }
 
-        deleted_thread_ids.extend(
+        deleted_threads.extend(
             delete_order
                 .into_iter()
-                .map(|thread_id| thread_id.to_string()),
+                .map(|thread_id| {
+                    let thread_id_string = thread_id.to_string();
+                    let recipients = terminal_recipients.remove(&thread_id).unwrap_or_default();
+                    (thread_id_string, recipients)
+                }),
         );
         Ok(ThreadDeleteResponse {})
     }
 
-    async fn send_thread_deleted_notifications(&self, deleted_thread_ids: Vec<String>) {
-        for thread_id in deleted_thread_ids {
+    async fn send_thread_deleted_notifications(
+        &self,
+        deleted_threads: Vec<(String, Vec<ThreadSubscriptionTarget>)>,
+    ) {
+        for (thread_id, terminal_recipients) in deleted_threads {
             self.outgoing
-                .send_server_notification(ServerNotification::ThreadDeleted(
-                    ThreadDeletedNotification { thread_id },
-                ))
+                .send_server_notification_to_thread_subscriptions(
+                    &terminal_recipients,
+                    ServerNotification::ThreadDeleted(ThreadDeletedNotification { thread_id }),
+                )
                 .await;
         }
     }
@@ -136,11 +149,12 @@ impl ThreadRequestProcessor {
         }
     }
 
-    async fn prepare_thread_for_delete(&self, thread_id: ThreadId) {
-        self.prepare_thread_for_removal(thread_id, "delete").await;
+    async fn prepare_thread_for_delete(&self, thread_id: ThreadId) -> Vec<ThreadSubscriptionTarget> {
+        let terminal_recipients = self.prepare_thread_for_removal(thread_id, "delete").await;
         if let Some(log_db) = self.log_db.as_ref() {
             log_db.flush().await;
         }
+        terminal_recipients
     }
 }
 

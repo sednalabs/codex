@@ -105,11 +105,21 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
+    // Keep this in exact parity with the facade classifier in
+    // `codex-app-server-client`: this runtime queue is upstream of that
+    // facade, so it cannot discard a transcript delta or lifecycle handshake
+    // that the facade later treats as lossless.
     matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
+        ServerNotification::ThreadStarted(_)
+            | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
+            | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::AgentMessageDelta(_)
+            | ServerNotification::PlanDelta(_)
+            | ServerNotification::ReasoningSummaryTextDelta(_)
+            | ServerNotification::ReasoningTextDelta(_)
     )
 }
 
@@ -819,17 +829,21 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::ThreadStartedNotification;
+    use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1000,6 +1014,48 @@ mod tests {
 
     #[test]
     fn guaranteed_delivery_helpers_cover_terminal_server_notifications() {
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: Thread {
+                    id: "thread-1".to_string(),
+                    extra: None,
+                    session_id: "thread-1".to_string(),
+                    forked_from_id: None,
+                    parent_thread_id: Some("parent".to_string()),
+                    preview: "child".to_string(),
+                    ephemeral: false,
+                    is_pinned: false,
+                    history_mode: Default::default(),
+                    model_provider: "openai".to_string(),
+                    model: Some("gpt-test".to_string()),
+                    reasoning_effort: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    recency_at: None,
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    path: None,
+                    cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                        .expect("test cwd should be absolute"),
+                    cli_version: "test".to_string(),
+                    source: ApiSessionSource::Unknown,
+                    can_accept_direct_input: None,
+                    thread_source: None,
+                    agent_nickname: Some("Child".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    git_info: None,
+                    name: None,
+                    turns: Vec::new(),
+                },
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                delta: "hello".to_string(),
+            })
+        ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::TurnCompleted(TurnCompletedNotification {
                 thread_id: "thread-1".to_string(),

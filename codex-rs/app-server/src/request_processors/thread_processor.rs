@@ -3,6 +3,7 @@ use super::turn_processor::can_accept_direct_input;
 use super::*;
 use crate::error_code::method_not_found;
 use crate::extensions::app_server_hooks;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
@@ -606,15 +607,18 @@ impl ThreadRequestProcessor {
         params: ThreadArchiveParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         match self.thread_archive_inner(params).await {
-            Ok((response, archived_thread_ids)) => {
+            Ok((response, archived_threads)) => {
                 self.outgoing
                     .send_response(request_id.clone(), response)
                     .await;
-                for thread_id in archived_thread_ids {
+                for (thread_id, terminal_recipients) in archived_threads {
                     self.outgoing
-                        .send_server_notification(ServerNotification::ThreadArchived(
-                            ThreadArchivedNotification { thread_id },
-                        ))
+                        .send_server_notification_to_thread_subscriptions(
+                            &terminal_recipients,
+                            ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                                thread_id,
+                            }),
+                        )
                         .await;
                 }
                 Ok(None)
@@ -971,11 +975,26 @@ impl ThreadRequestProcessor {
         Ok(ThreadUnsubscribeResponse { status })
     }
 
-    async fn prepare_thread_for_archive(&self, thread_id: ThreadId) {
-        self.prepare_thread_for_removal(thread_id, "archive").await;
+    async fn prepare_thread_for_archive(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<ThreadSubscriptionTarget> {
+        self.prepare_thread_for_removal(thread_id, "archive").await
     }
 
-    pub(super) async fn prepare_thread_for_removal(&self, thread_id: ThreadId, operation: &str) {
+    pub(super) async fn prepare_thread_for_removal(
+        &self,
+        thread_id: ThreadId,
+        operation: &str,
+    ) -> Vec<ThreadSubscriptionTarget> {
+        // Preserve the exact recipient identities before finalization removes
+        // them. The terminal archive/delete notification must close the
+        // lifecycle those clients actually observed; it must never recreate a
+        // subscription after teardown.
+        let terminal_recipients = self
+            .outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
         let removed_conversation = self.thread_manager.remove_thread(&thread_id).await;
         if let Some(conversation) = removed_conversation {
             info!("thread {thread_id} was active; shutting down");
@@ -992,6 +1011,7 @@ impl ThreadRequestProcessor {
             }
         }
         self.finalize_thread_teardown(thread_id).await;
+        terminal_recipients
     }
 
     fn listener_task_context(&self) -> ListenerTaskContext {
@@ -1520,7 +1540,13 @@ impl ThreadRequestProcessor {
     async fn thread_archive_inner(
         &self,
         params: ThreadArchiveParams,
-    ) -> Result<(ThreadArchiveResponse, Vec<String>), JSONRPCErrorError> {
+    ) -> Result<
+        (
+            ThreadArchiveResponse,
+            Vec<(String, Vec<ThreadSubscriptionTarget>)>,
+        ),
+        JSONRPCErrorError,
+    > {
         let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
         self.thread_archive_response(params).await
     }
@@ -1528,7 +1554,13 @@ impl ThreadRequestProcessor {
     async fn thread_archive_response(
         &self,
         params: ThreadArchiveParams,
-    ) -> Result<(ThreadArchiveResponse, Vec<String>), JSONRPCErrorError> {
+    ) -> Result<
+        (
+            ThreadArchiveResponse,
+            Vec<(String, Vec<ThreadSubscriptionTarget>)>,
+        ),
+        JSONRPCErrorError,
+    > {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid session id: {err}")))?;
 
@@ -1579,8 +1611,12 @@ impl ThreadRequestProcessor {
         }
 
         archive_thread_ids[1..].reverse();
+        let mut terminal_recipients = HashMap::new();
         for &thread_id_to_archive in &archive_thread_ids {
-            self.prepare_thread_for_archive(thread_id_to_archive).await;
+            terminal_recipients.insert(
+                thread_id_to_archive,
+                self.prepare_thread_for_archive(thread_id_to_archive).await,
+            );
         }
 
         let archived_thread_ids = self
@@ -1592,7 +1628,11 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| thread_store_archive_error("archive", err))?
             .into_iter()
-            .map(|thread_id| thread_id.to_string())
+            .map(|thread_id| {
+                let thread_id_string = thread_id.to_string();
+                let recipients = terminal_recipients.remove(&thread_id).unwrap_or_default();
+                (thread_id_string, recipients)
+            })
             .collect();
         Ok((ThreadArchiveResponse {}, archived_thread_ids))
     }
@@ -3363,17 +3403,24 @@ impl ThreadRequestProcessor {
             // initiated child attachment, which needs a tagged ThreadStarted
             // handshake so the TUI can bind and flush its deferred traffic.
             let created_subscription = if automatic_thread_started.is_some() {
-                self.outgoing
+                let (thread_subscription_id, created_subscription) = self
+                    .outgoing
                     .ensure_thread_subscription_with_status(connection_id, thread_id)
-                    .await
-                    .1
+                    .await;
+                created_subscription.then(|| {
+                    ThreadSubscriptionTarget::captured(
+                        connection_id,
+                        thread_id,
+                        thread_subscription_id,
+                    )
+                })
             } else {
-                false
+                None
             };
             let attach_result = self
                 .ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
                 .await;
-            if created_subscription
+            if let Some(thread_subscription) = created_subscription
                 && matches!(
                     &attach_result,
                     Ok(EnsureConversationListenerResult::Attached)
@@ -3381,8 +3428,8 @@ impl ThreadRequestProcessor {
                 && let Some(notification) = automatic_thread_started.clone()
             {
                 self.outgoing
-                    .send_server_notification_to_connection(
-                        connection_id,
+                    .send_server_notification_to_thread_subscriptions(
+                        &[thread_subscription],
                         ServerNotification::ThreadStarted(notification),
                     )
                     .await;
@@ -5871,7 +5918,7 @@ fn paginate_background_terminals(
     Ok((terminals[start..end].to_vec(), next_cursor))
 }
 
-fn build_thread_from_loaded_snapshot(
+pub(super) fn build_thread_from_loaded_snapshot(
     thread_id: ThreadId,
     config_snapshot: &ThreadConfigSnapshot,
     loaded_thread: &CodexThread,
