@@ -367,7 +367,7 @@ async fn emit_failed_spawn_agent_lifecycle(
         prompt,
         requested_model,
         requested_reasoning_effort,
-        None,
+        /*created_agent*/ None,
     )
     .await;
 }

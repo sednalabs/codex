@@ -264,9 +264,10 @@ impl ThreadState {
             if pending_item_ids.is_empty() {
                 self.current_turn_history.reset();
             } else {
+                let history = std::mem::take(&mut self.current_turn_history);
                 self.insert_terminal_turn_history(
                     terminal_turn_id.to_string(),
-                    std::mem::take(&mut self.current_turn_history),
+                    history,
                     pending_item_ids,
                 );
             }
