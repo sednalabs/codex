@@ -12,7 +12,7 @@ data: Array<string>,
  *
  * Older servers omit this field. Clients must treat an omitted acknowledgement as false.
  */
-ancestorFilterApplied: boolean,
+ancestorFilterApplied?: boolean,
 /**
  * Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate
  * window inspected by the server, which can include loaded sessions that did not match an

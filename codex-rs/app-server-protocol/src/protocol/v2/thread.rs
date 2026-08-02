@@ -1263,6 +1263,7 @@ pub struct ThreadListResponse {
     ///
     /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
     pub ancestor_filter_applied: bool,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
@@ -1377,6 +1378,7 @@ pub struct ThreadLoadedListResponse {
     ///
     /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
     pub ancestor_filter_applied: bool,
     /// Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate
     /// window inspected by the server, which can include loaded sessions that did not match an
