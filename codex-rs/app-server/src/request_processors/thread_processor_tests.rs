@@ -95,6 +95,55 @@ mod background_terminal_pagination_tests {
     }
 }
 
+mod automatic_thread_attachment_tests {
+    use super::super::automatic_thread_started_subscription_is_current;
+    use crate::outgoing_message::ConnectionId;
+    use crate::outgoing_message::OutgoingMessageSender;
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_protocol::ThreadId;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn automatic_thread_started_suppresses_a_stale_reattached_subscription() {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let (subscription_a, created) = outgoing
+            .ensure_thread_subscription_with_status(connection_id, thread_id)
+            .await;
+        assert!(created, "automatic attachment should mint its initial token");
+
+        // Simulate the overlapping reattach that wins while listener attachment for token A is
+        // awaiting. The old path must not publish a ThreadStarted handshake tagged with A.
+        let subscription_b = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        assert!(
+            !automatic_thread_started_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_a,
+            )
+            .await
+        );
+        assert!(
+            automatic_thread_started_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_b,
+            )
+            .await
+        );
+    }
+}
+
 mod thread_processor_behavior_tests {
     async fn forked_from_id_from_rollout(path: &Path) -> Option<String> {
         codex_core::read_session_meta_line(path)

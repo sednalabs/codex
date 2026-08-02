@@ -1,6 +1,11 @@
+use std::collections::VecDeque;
+
 use super::*;
+
+use crate::extensions::deliver_targetless_warning_barrier_resolution;
 use crate::extensions::send_thread_warning;
-use crate::extensions::spawn_thread_warning_after_subscriber;
+use crate::extensions::spawn_thread_warning_barrier_resolution;
+use crate::extensions::TargetlessWarningBarrierResolution;
 use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_protocol::config_types::MultiAgentMode;
 
@@ -400,7 +405,11 @@ pub(super) async fn ensure_listener_task_running(
         };
         listener_task_context
             .thread_state_manager
-            .register_listener_command_tx(conversation_id, listener_command_tx);
+            .register_listener_command_tx(
+                conversation_id,
+                listener_generation,
+                listener_command_tx.clone(),
+            );
         (listener_command_rx, listener_generation)
     };
     let ListenerTaskContext {
@@ -416,6 +425,10 @@ pub(super) async fn ensure_listener_task_running(
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
     tokio::spawn(async move {
+        let (targetless_warning_resolution_tx, mut targetless_warning_resolution_rx) =
+            tokio::sync::mpsc::unbounded_channel::<TargetlessWarningBarrierResolution>();
+        let mut targetless_warning_barrier_active = false;
+        let mut deferred_notification_commands = VecDeque::new();
         loop {
             tokio::select! {
                 biased;
@@ -423,22 +436,124 @@ pub(super) async fn ensure_listener_task_running(
                     // Listener was superseded or the thread is being torn down.
                     break;
                 }
+                targetless_warning_resolution = targetless_warning_resolution_rx.recv() => {
+                    let Some(targetless_warning_resolution) = targetless_warning_resolution else {
+                        break;
+                    };
+                    deliver_targetless_warning_barrier_resolution(
+                        &outgoing_for_task,
+                        &thread_state_manager,
+                        conversation_id,
+                        targetless_warning_resolution,
+                    )
+                    .await;
+                    targetless_warning_barrier_active = false;
+
+                    // A targetless warning is an ordering barrier only for client-visible thread
+                    // notifications. Drain the commands that arrived after it in FIFO order, but
+                    // stop immediately if another targetless warning establishes the next barrier.
+                    while !targetless_warning_barrier_active {
+                        let Some(deferred_notification_command) =
+                            deferred_notification_commands.pop_front()
+                        else {
+                            break;
+                        };
+                        let command_outcome = handle_thread_listener_command(
+                            conversation_id,
+                            &conversation,
+                            codex_home.as_path(),
+                            &thread_state_manager,
+                            &thread_state,
+                            &thread_watch_manager,
+                            &outgoing_for_task,
+                            &pending_thread_unloads,
+                            listener_generation,
+                            &targetless_warning_resolution_tx,
+                            deferred_notification_command,
+                        )
+                        .await;
+                        match command_outcome {
+                            ThreadListenerCommandOutcome::Complete => {}
+                            ThreadListenerCommandOutcome::StartedTargetlessWarningBarrier => {
+                                targetless_warning_barrier_active = true;
+                            }
+                            ThreadListenerCommandOutcome::PostCommit(post_commit_command) => {
+                                let post_commit_outcome = handle_thread_listener_command(
+                                    conversation_id,
+                                    &conversation,
+                                    codex_home.as_path(),
+                                    &thread_state_manager,
+                                    &thread_state,
+                                    &thread_watch_manager,
+                                    &outgoing_for_task,
+                                    &pending_thread_unloads,
+                                    listener_generation,
+                                    &targetless_warning_resolution_tx,
+                                    post_commit_command,
+                                )
+                                .await;
+                                debug_assert!(matches!(
+                                    post_commit_outcome,
+                                    ThreadListenerCommandOutcome::Complete
+                                ));
+                            }
+                        }
+                    }
+                }
                 listener_command = listener_command_rx.recv() => {
                     let Some(listener_command) = listener_command else {
                         break;
                     };
-                    handle_thread_listener_command(
-                        conversation_id,
-                        &conversation,
-                        codex_home.as_path(),
-                        &thread_state_manager,
-                        &thread_state,
-                        &thread_watch_manager,
-                        &outgoing_for_task,
-                        &pending_thread_unloads,
-                        listener_command,
-                    )
-                    .await;
+                    if targetless_warning_barrier_active
+                        && thread_listener_command_emits_thread_notification(&listener_command)
+                    {
+                        deferred_notification_commands.push_back(listener_command);
+                    } else {
+                        let command_outcome = handle_thread_listener_command(
+                            conversation_id,
+                            &conversation,
+                            codex_home.as_path(),
+                            &thread_state_manager,
+                            &thread_state,
+                            &thread_watch_manager,
+                            &outgoing_for_task,
+                            &pending_thread_unloads,
+                            listener_generation,
+                            &targetless_warning_resolution_tx,
+                            listener_command,
+                        )
+                        .await;
+                        match command_outcome {
+                            ThreadListenerCommandOutcome::Complete => {}
+                            ThreadListenerCommandOutcome::StartedTargetlessWarningBarrier => {
+                                targetless_warning_barrier_active = true;
+                            }
+                            ThreadListenerCommandOutcome::PostCommit(post_commit_command) => {
+                                if targetless_warning_barrier_active {
+                                    deferred_notification_commands.push_back(post_commit_command);
+                                } else {
+                                    let post_commit_outcome = handle_thread_listener_command(
+                                        conversation_id,
+                                        &conversation,
+                                        codex_home.as_path(),
+                                        &thread_state_manager,
+                                        &thread_state,
+                                        &thread_watch_manager,
+                                        &outgoing_for_task,
+                                        &pending_thread_unloads,
+                                        listener_generation,
+                                        &targetless_warning_resolution_tx,
+                                        post_commit_command,
+                                    )
+                                    .await;
+                                    debug_assert!(matches!(
+                                        post_commit_outcome,
+                                        ThreadListenerCommandOutcome::Complete
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
                 event = conversation.next_event() => {
                     let event = match event {
@@ -530,7 +645,8 @@ pub(super) async fn ensure_listener_task_running(
 
         let mut thread_state = thread_state.lock().await;
         if thread_state.listener_generation == listener_generation {
-            thread_state_manager.unregister_listener_command_tx(conversation_id);
+            thread_state_manager
+                .unregister_listener_command_tx_if_generation(conversation_id, listener_generation);
             thread_state.clear_listener();
         }
     });
@@ -607,10 +723,15 @@ pub(super) async fn handle_thread_listener_command(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    listener_generation: u64,
+    targetless_warning_resolution_tx: &tokio::sync::mpsc::UnboundedSender<
+        TargetlessWarningBarrierResolution,
+    >,
     listener_command: ThreadListenerCommand,
-) {
+) -> ThreadListenerCommandOutcome {
     match listener_command {
         ThreadListenerCommand::SendThreadResumeResponse(resume_request) => {
+            let mut post_commit_command = None;
             handle_pending_thread_resume_request(
                 conversation_id,
                 conversation,
@@ -620,7 +741,28 @@ pub(super) async fn handle_thread_listener_command(
                 thread_watch_manager,
                 outgoing,
                 pending_thread_unloads,
+                &mut post_commit_command,
                 *resume_request,
+            )
+            .await;
+            if let Some(post_commit_command) = post_commit_command {
+                return ThreadListenerCommandOutcome::PostCommit(post_commit_command);
+            }
+        }
+        ThreadListenerCommand::CompleteThreadResume {
+            thread_subscription,
+            token_usage_turn_id,
+            emit_thread_goal_update,
+            thread_goal_state_db,
+        } => {
+            complete_committed_thread_resume(
+                conversation_id,
+                conversation,
+                outgoing,
+                thread_subscription,
+                token_usage_turn_id,
+                emit_thread_goal_update,
+                thread_goal_state_db,
             )
             .await;
         }
@@ -650,12 +792,18 @@ pub(super) async fn handle_thread_listener_command(
                         .await;
                 }
                 crate::thread_state::ThreadWarningDelivery::AwaitCurrentSubscriber => {
-                    spawn_thread_warning_after_subscriber(
+                    return if spawn_thread_warning_barrier_resolution(
                         Arc::clone(outgoing),
                         thread_state_manager.clone(),
                         conversation_id,
+                        listener_generation,
                         message,
-                    );
+                        targetless_warning_resolution_tx.clone(),
+                    ) {
+                        ThreadListenerCommandOutcome::StartedTargetlessWarningBarrier
+                    } else {
+                        ThreadListenerCommandOutcome::Complete
+                    };
                 }
             }
         }
@@ -691,6 +839,28 @@ pub(super) async fn handle_thread_listener_command(
             let _ = completion_tx.send(());
         }
     }
+    ThreadListenerCommandOutcome::Complete
+}
+
+enum ThreadListenerCommandOutcome {
+    Complete,
+    StartedTargetlessWarningBarrier,
+    PostCommit(ThreadListenerCommand),
+}
+
+/// These commands have thread-scoped client-visible output. Once a targetless warning has
+/// entered the listener order, they must wait for that warning's bounded delivery or timeout;
+/// ordinary listener ingress remains free to process meanwhile.
+fn thread_listener_command_emits_thread_notification(command: &ThreadListenerCommand) -> bool {
+    matches!(
+        command,
+        ThreadListenerCommand::CompleteThreadResume { .. }
+            | ThreadListenerCommand::EmitThreadGoalUpdated { .. }
+            | ThreadListenerCommand::EmitWarning { .. }
+            | ThreadListenerCommand::EmitThreadGoalCleared { .. }
+            | ThreadListenerCommand::EmitThreadGoalSnapshot { .. }
+            | ThreadListenerCommand::ResolveServerRequest { .. }
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -707,6 +877,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     thread_watch_manager: &ThreadWatchManager,
     outgoing: &Arc<OutgoingMessageSender>,
     pending_thread_unloads: &Arc<Mutex<HashSet<ThreadId>>>,
+    post_commit_command: &mut Option<ThreadListenerCommand>,
     mut pending: crate::thread_state::PendingThreadResumeRequest,
 ) {
     let reservation_id = pending.reservation_id.clone();
@@ -1088,7 +1259,10 @@ pub(super) async fn handle_pending_thread_resume_request(
         turns_backwards_cursor,
         items_backwards_cursor,
     };
-    if !pending_thread_resume_is_current_or_reply(
+    // This is the logical commit point for a deferred running-thread resume. Once it wins, the
+    // success response and every captured follow-up belong to this lifecycle; a later
+    // unsubscribe or replacement owns its own work and must not make us roll back this response.
+    if !commit_pending_thread_resume_or_reply(
         thread_state_manager,
         outgoing,
         conversation_id,
@@ -1110,25 +1284,32 @@ pub(super) async fn handle_pending_thread_resume_request(
     outgoing
         .send_response_with_thread_originator(request_id, response, originator)
         .await;
-    if !thread_state_manager
-        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-        .await
-    {
-        rollback_failed_thread_attach(
-            thread_state_manager,
-            outgoing,
-            conversation_id,
-            connection_id,
-            &thread_subscription_id,
-        )
-        .await;
-        return;
-    }
-    // Match cold resume: metadata-only resume should attach the listener without
-    // paying the cost of turn reconstruction for historical usage replay.
+    // Keep post-response notifications in the listener state machine. It publishes them
+    // immediately in the usual case, or places them after a preceding targetless-warning
+    // barrier without withholding the response that established this subscription.
+    *post_commit_command = Some(ThreadListenerCommand::CompleteThreadResume {
+            thread_subscription,
+            token_usage_turn_id,
+            emit_thread_goal_update: pending.emit_thread_goal_update,
+            thread_goal_state_db: pending.thread_goal_state_db,
+        });
+}
+
+/// Emits only the captured post-response effects of a committed running-thread resume. This is
+/// deliberately a distinct listener command so a prior targetless-warning barrier can release it
+/// after the warning while response/attachment liveness remains immediate.
+async fn complete_committed_thread_resume(
+    conversation_id: ThreadId,
+    conversation: &Arc<CodexThread>,
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_subscription: ThreadSubscriptionTarget,
+    token_usage_turn_id: Option<String>,
+    emit_thread_goal_update: bool,
+    thread_goal_state_db: Option<StateDbHandle>,
+) {
+    // Match cold resume: metadata-only resume should attach the listener without paying the cost
+    // of turn reconstruction for historical usage replay.
     if let Some(token_usage_turn_id) = token_usage_turn_id {
-        // Rejoining a loaded thread has the same UI contract as a cold resume, but
-        // uses the live conversation state instead of reconstructing a new session.
         send_thread_token_usage_update_to_subscription(
             outgoing,
             &thread_subscription,
@@ -1138,8 +1319,8 @@ pub(super) async fn handle_pending_thread_resume_request(
         )
         .await;
     }
-    if pending.emit_thread_goal_update {
-        if let Some(state_db) = pending.thread_goal_state_db {
+    if emit_thread_goal_update {
+        if let Some(state_db) = thread_goal_state_db {
             send_thread_goal_snapshot_notification(
                 outgoing,
                 std::slice::from_ref(&thread_subscription),
@@ -1154,31 +1335,14 @@ pub(super) async fn handle_pending_thread_resume_request(
             );
         }
     }
-    if !thread_state_manager
-        .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-        .await
-    {
-        rollback_failed_thread_attach(
-            thread_state_manager,
-            outgoing,
-            conversation_id,
-            connection_id,
-            &thread_subscription_id,
-        )
-        .await;
-        return;
-    }
     outgoing
-        .replay_requests_to_connection_for_thread(connection_id, conversation_id)
+        .replay_requests_to_thread_subscription(&thread_subscription)
         .await;
-    // App-server owns resume response and snapshot ordering, so wait until
-    // replay completes before letting extensions react to the idle thread.
-    if pending.emit_thread_goal_update {
+    // App-server owns resume response and snapshot ordering, so wait until replay completes
+    // before letting extensions react to the idle thread.
+    if emit_thread_goal_update {
         conversation.emit_thread_idle_lifecycle_if_idle().await;
     }
-    thread_state_manager
-        .clear_pending_thread_resume_if_matches(conversation_id, connection_id, &reservation_id)
-        .await;
 }
 
 /// Deferred running-thread resume has already returned `Handled` to the request processor. If
@@ -1200,21 +1364,56 @@ async fn pending_thread_resume_is_current_or_reply(
         .await
     {
         crate::thread_state::PendingThreadResumeReservationState::Current => true,
+        reservation_state => {
+            reject_lost_pending_thread_resume(
+                outgoing,
+                thread_id,
+                request_id,
+                reservation_state,
+            )
+            .await;
+            false
+        }
+    }
+}
+
+/// Atomically removes the provisional reservation immediately before the normal success
+/// response. This seals the successful lifecycle so post-response cleanup cannot retract it;
+/// cancellation or replacement that wins first still receives the original terminal error.
+async fn commit_pending_thread_resume_or_reply(
+    thread_state_manager: &ThreadStateManager,
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_id: ThreadId,
+    request_id: &ConnectionRequestId,
+    reservation_id: &RequestId,
+) -> bool {
+    match thread_state_manager
+        .commit_pending_thread_resume(thread_id, request_id.connection_id, reservation_id)
+        .await
+    {
+        crate::thread_state::PendingThreadResumeReservationState::Current => true,
+        reservation_state => {
+            reject_lost_pending_thread_resume(outgoing, thread_id, request_id, reservation_state)
+                .await;
+            false
+        }
+    }
+}
+
+async fn reject_lost_pending_thread_resume(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_id: ThreadId,
+    request_id: &ConnectionRequestId,
+    reservation_state: crate::thread_state::PendingThreadResumeReservationState,
+) {
+    let message = match reservation_state {
         crate::thread_state::PendingThreadResumeReservationState::Canceled => {
             tracing::debug!(
                 thread_id = %thread_id,
                 request_id = ?request_id,
                 "rejecting canceled running thread resume before listener effects"
             );
-            outgoing
-                .send_error(
-                    request_id.clone(),
-                    invalid_request(format!(
-                        "thread {thread_id} resume was canceled before it could complete"
-                    )),
-                )
-                .await;
-            false
+            format!("thread {thread_id} resume was canceled before it could complete")
         }
         crate::thread_state::PendingThreadResumeReservationState::Superseded => {
             tracing::debug!(
@@ -1222,17 +1421,15 @@ async fn pending_thread_resume_is_current_or_reply(
                 request_id = ?request_id,
                 "rejecting superseded running thread resume before listener effects"
             );
-            outgoing
-                .send_error(
-                    request_id.clone(),
-                    invalid_request(format!(
-                        "thread {thread_id} resume was superseded by a newer thread/resume request"
-                    )),
-                )
-                .await;
-            false
+            format!("thread {thread_id} resume was superseded by a newer thread/resume request")
         }
-    }
+        crate::thread_state::PendingThreadResumeReservationState::Current => {
+            unreachable!("a current reservation must not be rejected")
+        }
+    };
+    outgoing
+        .send_error(request_id.clone(), invalid_request(message))
+        .await;
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(
@@ -1526,6 +1723,103 @@ mod tests {
                 .await
                 .is_err(),
             "the old handler must send exactly one terminal outcome"
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_running_resume_preserves_its_success_lifecycle_across_later_overlap() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let committed_request_id = RequestId::Integer(54);
+        let replacement_request_id = RequestId::Integer(55);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        thread_state_manager
+            .reserve_pending_thread_resume(
+                thread_id,
+                connection_id,
+                committed_request_id.clone(),
+            )
+            .await;
+        let committed_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(committed_subscription_id.clone()),
+            )
+            .await
+            .expect("the committed lifecycle should attach before responding");
+
+        assert_eq!(
+            thread_state_manager
+                .commit_pending_thread_resume(thread_id, connection_id, &committed_request_id)
+                .await,
+            crate::thread_state::PendingThreadResumeReservationState::Current,
+            "the final pre-response check must atomically become the success commit"
+        );
+
+        // A newer resume and an unsubscribe-like cancellation happen while the old success is
+        // leaving the transport. They own their later lifecycle, not cleanup of the committed
+        // response's A token.
+        thread_state_manager
+            .reserve_pending_thread_resume(
+                thread_id,
+                connection_id,
+                replacement_request_id.clone(),
+            )
+            .await;
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed_with_subscription(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+                Some(replacement_subscription_id.clone()),
+            )
+            .await
+            .expect("the replacement lifecycle should own its attachment");
+        assert!(
+            thread_state_manager
+                .cancel_pending_thread_resume(thread_id, connection_id)
+                .await,
+            "the later cancellation should affect only the later provisional reservation"
+        );
+
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &committed_subscription_id,
+        )
+        .await;
+        assert!(
+            outgoing
+                .thread_subscription_matches(
+                    connection_id,
+                    thread_id,
+                    &replacement_subscription_id,
+                )
+                .await,
+            "any owned provisional cleanup must not retract the replacement attachment"
+        );
+        assert!(
+            thread_state_manager.has_subscribers(thread_id).await,
+            "a committed response must not be made to point at a torn-down attachment"
         );
     }
 
