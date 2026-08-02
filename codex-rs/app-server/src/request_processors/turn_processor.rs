@@ -20,6 +20,30 @@ use crate::outgoing_message::ThreadSubscriptionTarget;
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
 
+/// The only point at which a detached review may become client-visible.
+/// Keeping this gate separate makes it impossible for the thread mapping,
+/// binding handshake, or `review/start` response below to run on a failed
+/// listener attachment path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DetachedReviewLifecycleGate {
+    Publish,
+    Suppress,
+}
+
+fn detached_review_lifecycle_gate(
+    listener_result: Result<EnsureConversationListenerResult, JSONRPCErrorError>,
+) -> Result<DetachedReviewLifecycleGate, JSONRPCErrorError> {
+    match listener_result {
+        Ok(EnsureConversationListenerResult::Attached) => {
+            Ok(DetachedReviewLifecycleGate::Publish)
+        }
+        Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+            Ok(DetachedReviewLifecycleGate::Suppress)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Mirrors the direct-input policy in both request validation and thread capability responses.
 pub(super) fn can_accept_direct_input(
     multi_agent_version: Option<MultiAgentVersion>,
@@ -1383,11 +1407,11 @@ impl TurnRequestProcessor {
             }
         };
 
-        // Review start has no thread attach response, so the creator of its
-        // connection-scoped identity emits the one authoritative
-        // thread/started notification before a listener can publish traffic.
-        // A concurrent automatic attach that already created the identity
-        // owns that handshake and must not receive a duplicate here.
+        // Review start has no thread attach response, so retain the creator's
+        // connection-scoped identity until attachment succeeds. It then emits
+        // the one authoritative thread/started notification. A concurrent
+        // automatic attach that already created the identity owns that
+        // handshake and must not receive a duplicate here.
         let (thread_subscription_id, created_subscription) = self
             .outgoing
             .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
@@ -1399,6 +1423,31 @@ impl TurnRequestProcessor {
                 thread_subscription_id,
             )
         });
+
+        // The review is already running, but its lifecycle must remain
+        // invisible to this client until the listener is actually attached.
+        // In particular, do not send a binding handshake or review/start
+        // response that points at a connection which could not subscribe.
+        match detached_review_lifecycle_gate(
+            self.ensure_conversation_listener(
+                thread_id,
+                request_id.connection_id,
+                /*raw_events_enabled*/ false,
+            )
+            .await,
+        ) {
+            Ok(DetachedReviewLifecycleGate::Publish) => {}
+            Ok(DetachedReviewLifecycleGate::Suppress) => return Ok(()),
+            Err(error) => {
+                if created_subscription {
+                    self.outgoing
+                        .unregister_thread_subscription(request_id.connection_id, thread_id)
+                        .await;
+                }
+                return Err(error);
+            }
+        }
+
         thread.session_id = review_thread.session_configured().session_id.to_string();
         self.thread_watch_manager
             .upsert_thread_silently(&thread.id)
@@ -1418,18 +1467,6 @@ impl TurnRequestProcessor {
                 )
                 .await;
         }
-
-        log_listener_attach_result(
-            self.ensure_conversation_listener(
-                thread_id,
-                request_id.connection_id,
-                /*raw_events_enabled*/ false,
-            )
-            .await,
-            thread_id,
-            request_id.connection_id,
-            "review thread",
-        );
 
         let turn = Self::build_review_turn(turn_id, prompt);
         let review_thread_id = thread_id.to_string();
@@ -1587,4 +1624,29 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detached_review_lifecycle_is_suppressed_when_listener_attachment_fails() {
+        assert_eq!(
+            detached_review_lifecycle_gate(Ok(EnsureConversationListenerResult::ConnectionClosed))
+                .expect("a closed connection is not an RPC failure"),
+            DetachedReviewLifecycleGate::Suppress,
+            "the mapping, ThreadStarted handshake, and ReviewStarted response must not publish"
+        );
+        assert_eq!(
+            detached_review_lifecycle_gate(Ok(EnsureConversationListenerResult::Attached))
+                .expect("an attached listener should allow publication"),
+            DetachedReviewLifecycleGate::Publish,
+            "the successful path binds exactly once before publishing lifecycle output"
+        );
+        assert!(
+            detached_review_lifecycle_gate(Err(invalid_request("listener attach failed"))).is_err(),
+            "a listener error must propagate before any lifecycle output can publish"
+        );
+    }
 }

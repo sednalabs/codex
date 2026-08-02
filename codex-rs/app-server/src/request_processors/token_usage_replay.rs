@@ -48,9 +48,23 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
         turn_id: token_usage_turn_id,
         token_usage: ThreadTokenUsage::from(info),
     };
+    // This follows an attach snapshot. Preserve the exact identity that was
+    // already bound by that attach instead of allowing the generic targeted
+    // sender to create a token without a matching lifecycle handshake.
+    let Some(thread_subscription) = outgoing
+        .thread_subscription_target_for_connection(connection_id, thread_id)
+        .await
+    else {
+        tracing::debug!(
+            ?connection_id,
+            %thread_id,
+            "dropping token-usage replay without an active thread subscription"
+        );
+        return;
+    };
     outgoing
-        .send_server_notification_to_connections(
-            &[connection_id],
+        .send_server_notification_to_thread_subscriptions(
+            &[thread_subscription],
             ServerNotification::ThreadTokenUsageUpdated(notification),
         )
         .await;
