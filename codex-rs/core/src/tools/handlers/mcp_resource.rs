@@ -243,21 +243,11 @@ impl ToolOutput for ReadResourceToolOutput {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BoundedReadResourceErrorPayload {
-    server: String,
-    uri: String,
-    error: BoundedReadResourceError,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BoundedReadResourceError {
-    code: &'static str,
-    message: &'static str,
-    truncated: bool,
-}
+// This is deliberately a fixed string rather than a serialized subset of the
+// resource metadata. A server name and resource URI are supplied by an MCP
+// server and may be arbitrarily large. Including either in the model-facing
+// error would let an otherwise bounded failure exceed the history cap.
+const BOUNDED_JSON_RESOURCE_MODEL_ERROR: &str = r#"{"error":{"code":"mcp_resource_model_output_too_large","message":"The resource contains JSON that exceeds the model output limit.","truncated":true}}"#;
 
 fn call_tool_result_from_content(content: &str, success: Option<bool>) -> CallToolResult {
     CallToolResult {
@@ -397,29 +387,12 @@ fn serialize_read_resource_output(
                 rmcp::model::ResourceContents::TextResourceContents {
                     mime_type: Some(mime_type),
                     ..
-                } if mime_type
-                    .split(';')
-                    .next()
-                    .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
+                } if is_json_media_type(mime_type)
             )
         });
 
     let model_output = if requires_structured_failure {
-        let error = BoundedReadResourceErrorPayload {
-            server: payload.server,
-            uri: payload.uri,
-            error: BoundedReadResourceError {
-                code: "mcp_resource_model_output_too_large",
-                message: "The resource contains JSON that exceeds the model output limit.",
-                truncated: true,
-            },
-        };
-        let error_content = serde_json::to_string(&error).map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "failed to serialize bounded MCP resource error: {err}"
-            ))
-        })?;
-        FunctionToolOutput::from_text(error_content, Some(false))
+        FunctionToolOutput::from_text(BOUNDED_JSON_RESOURCE_MODEL_ERROR.to_string(), Some(false))
     } else {
         FunctionToolOutput::from_text(bounded_content, Some(true))
     };
@@ -428,6 +401,24 @@ fn serialize_read_resource_output(
         model_output,
         raw_content,
     })
+}
+
+fn is_json_media_type(mime_type: &str) -> bool {
+    let essence = mime_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    essence == "application/json"
+        || essence
+            .strip_prefix("application/")
+            .is_some_and(|subtype| {
+                subtype
+                    .strip_suffix("+json")
+                    .is_some_and(|prefix| !prefix.is_empty())
+            })
 }
 
 fn parse_arguments(raw_args: &str) -> Result<Option<Value>, FunctionCallError> {

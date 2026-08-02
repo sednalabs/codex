@@ -41,21 +41,25 @@ decisions.
 
 ## Current Downstream Guardrails
 
-### MCP JSON Resource Output Boundary
+### MCP JSON-family Resource Output Boundary
 
 - A model-visible `read_mcp_resource` result must not report success after
-  generic envelope truncation has cut a nested `application/json` text
-  resource. The raw source payload remains available to code mode, while the
-  model receives a compact failed structured result whenever that resource does
-  not fit the model-output budget.
+  generic envelope truncation has cut a nested `application/json` or
+  `application/*+json` text resource. The raw source payload remains available
+  to code mode, while the model receives a fixed compact failed structured
+  result whenever that resource does not fit the model-output budget.
 - The stored history receives only that compact error, so the generic history
   output cap cannot reintroduce malformed nested JSON. Plain text and Markdown
   resource rendering remains on the existing generic truncation path.
 - `serialize_read_resource_output_preserves_small_json_for_model`,
   `large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload`,
-  and `history_does_not_retruncate_bounded_json_resource_error` are the
-  focused hosted guardrails. Drop this narrow carry when upstream provides an
-  equivalent structured-output boundary.
+  `serialize_read_resource_output_fails_closed_for_vendor_json_media_type`,
+  `serialize_read_resource_output_fails_closed_for_problem_json_media_type`,
+  `serialize_read_resource_output_keeps_untyped_json_on_generic_truncation`,
+  `serialize_read_resource_output_keeps_large_markdown_on_generic_truncation`,
+  and `history_does_not_retruncate_bounded_json_resource_error` are the focused
+  hosted guardrails. Drop this narrow carry when upstream provides an equivalent
+  structured-output boundary.
 
 ### Agent-Tree Usage Lineage Telemetry
 

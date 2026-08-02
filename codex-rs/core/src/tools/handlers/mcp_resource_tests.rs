@@ -1,13 +1,13 @@
 use super::*;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::models::FunctionCallOutputBody;
-use codex_protocol::models::ResponseInputItem;
 use codex_tools::ToolOutput;
 use pretty_assertions::assert_eq;
 use rmcp::model::AnnotateAble;
 use rmcp::model::ResourceContents;
 use serde_json::json;
 
-use crate::context_manager::truncate_function_output_payload;
+use crate::context_manager::ContextManager;
 use crate::tools::context::ToolPayload;
 
 fn resource(uri: &str, name: &str) -> Resource {
@@ -167,17 +167,31 @@ fn serialize_function_output_caps_read_resource_payload() {
     assert_eq!(output, expected);
 }
 
-fn json_resource_payload(text: String) -> ReadResourcePayload {
+fn text_resource_payload(
+    server: &str,
+    uri: &str,
+    mime_type: Option<&str>,
+    text: String,
+) -> ReadResourcePayload {
     ReadResourcePayload {
-        server: "hosted".to_string(),
-        uri: "ops://work_item/w10190/tree".to_string(),
+        server: server.to_string(),
+        uri: uri.to_string(),
         result: ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
-            uri: "ops://work_item/w10190/tree".to_string(),
-            mime_type: Some("application/json; charset=utf-8".to_string()),
+            uri: uri.to_string(),
+            mime_type: mime_type.map(str::to_string),
             text,
             meta: None,
         }]),
     }
+}
+
+fn json_resource_payload(text: String) -> ReadResourcePayload {
+    text_resource_payload(
+        "hosted",
+        "ops://work_item/w10190/tree",
+        Some("application/json; charset=utf-8"),
+        text,
+    )
 }
 
 #[test]
@@ -220,8 +234,6 @@ fn large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload() 
     assert_eq!(
         model_error,
         json!({
-            "server": "hosted",
-            "uri": "ops://work_item/w10190/tree",
             "error": {
                 "code": "mcp_resource_model_output_too_large",
                 "message": "The resource contains JSON that exceeds the model output limit.",
@@ -245,27 +257,114 @@ fn large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload() 
 }
 
 #[test]
-fn history_does_not_retruncate_bounded_json_resource_error() {
+fn serialize_read_resource_output_fails_closed_for_vendor_json_media_type() {
     let output = serialize_read_resource_output(
-        json_resource_payload(json!({"items": ["x".repeat(255 * 1024)]}).to_string()),
+        text_resource_payload(
+            "hosted",
+            "ops://work_item/w10190/tree",
+            Some("Application/Vnd.Sedna+Json; Charset=UTF-8"),
+            json!({"items": ["x".repeat(255 * 1024)]}).to_string(),
+        ),
         TruncationPolicy::Bytes(8_000),
     )
     .expect("serialize resource output");
-    let response = output.to_response_item(
+
+    assert_eq!(output.model_success(), Some(false));
+    let _: serde_json::Value =
+        serde_json::from_str(&output.model_content()).expect("parse bounded model error");
+}
+
+#[test]
+fn serialize_read_resource_output_fails_closed_for_problem_json_media_type() {
+    let output = serialize_read_resource_output(
+        text_resource_payload(
+            "hosted",
+            "ops://work_item/w10190/tree",
+            Some("APPLICATION/PROBLEM+JSON; charset=utf-8"),
+            json!({"items": ["x".repeat(255 * 1024)]}).to_string(),
+        ),
+        TruncationPolicy::Bytes(8_000),
+    )
+    .expect("serialize resource output");
+
+    assert_eq!(output.model_success(), Some(false));
+    let _: serde_json::Value =
+        serde_json::from_str(&output.model_content()).expect("parse bounded model error");
+}
+
+#[test]
+fn serialize_read_resource_output_keeps_untyped_json_on_generic_truncation() {
+    let truncation_policy = TruncationPolicy::Bytes(8_000);
+    let payload = text_resource_payload(
+        "hosted",
+        "ops://work_item/w10190/tree",
+        None,
+        json!({"items": ["x".repeat(255 * 1024)]}).to_string(),
+    );
+    let expected = truncate_text(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+        truncation_policy * 1.2,
+    );
+    let output = serialize_read_resource_output(payload, truncation_policy)
+        .expect("serialize resource output");
+
+    assert_eq!(output.model_success(), Some(true));
+    assert_eq!(output.model_content(), expected);
+}
+
+#[test]
+fn serialize_read_resource_output_keeps_large_markdown_on_generic_truncation() {
+    let truncation_policy = TruncationPolicy::Bytes(8_000);
+    let payload = text_resource_payload(
+        "hosted",
+        "skill://large/SKILL.md",
+        Some("text/markdown"),
+        "x".repeat(16_000),
+    );
+    let expected = truncate_text(
+        &serde_json::to_string(&payload).expect("serialize payload"),
+        truncation_policy * 1.2,
+    );
+    let output = serialize_read_resource_output(payload, truncation_policy)
+        .expect("serialize resource output");
+
+    assert_eq!(output.model_success(), Some(true));
+    assert_eq!(output.model_content(), expected);
+}
+
+#[test]
+fn history_does_not_retruncate_bounded_json_resource_error() {
+    let output = serialize_read_resource_output(
+        text_resource_payload(
+            &"server-".repeat(64 * 1024),
+            &format!("ops://{}", "resource-".repeat(64 * 1024)),
+            Some("application/json"),
+            json!({"items": ["x".repeat(255 * 1024)]}).to_string(),
+        ),
+        TruncationPolicy::Bytes(8_000),
+    )
+    .expect("serialize resource output");
+    let expected_model_content = output.model_content();
+    assert!(expected_model_content.len() < 1_024);
+    assert!(!expected_model_content.contains("server-server"));
+    assert!(!expected_model_content.contains("ops://resource"));
+    let response_item = ResponseItem::from(output.to_response_item(
         "call-1",
         &ToolPayload::Function {
             arguments: "{}".to_string(),
         },
-    );
-    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
-        panic!("expected function call output");
+    ));
+    let mut history = ContextManager::new();
+    history.record_items([&response_item], TruncationPolicy::Bytes(9_600));
+    let prompt = history.for_prompt(&[]);
+    let [ResponseItem::FunctionCallOutput { output: recorded, .. }] = prompt.as_slice() else {
+        panic!("expected function call output in model prompt");
     };
-    let recorded = truncate_function_output_payload(&output, TruncationPolicy::Bytes(9_600));
 
-    assert_eq!(recorded, output);
     assert_eq!(recorded.success, Some(false));
-    let FunctionCallOutputBody::Text(recorded_text) = recorded.body else {
+    let FunctionCallOutputBody::Text(recorded_text) = &recorded.body else {
         panic!("expected text output");
     };
-    let _: serde_json::Value = serde_json::from_str(&recorded_text).expect("parse history error");
+    assert_eq!(recorded_text, &expected_model_content);
+    let _: serde_json::Value = serde_json::from_str(recorded_text).expect("parse history error");
 }

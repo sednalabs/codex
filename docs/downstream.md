@@ -481,13 +481,14 @@ items. Downstream adopts this boundary without a carry-specific patch;
 capacity retry, realtime world state, hooks, dynamic media, compaction
 metadata, and step-scoped extension data remain composed around it.
 
-## MCP JSON resource model-output boundary
+## MCP JSON-family resource model-output boundary
 
 `read_mcp_resource` is a model-visible structured-output boundary. When a
-resource advertises `application/json`, generic middle truncation of the
-serialized resource envelope can cut the nested JSON text and leave a false
-successful result. The downstream boundary retains complete payloads for code
-mode, but returns a compact failed structured result to the model when a JSON
+resource advertises `application/json` or a case-insensitive
+`application/*+json` media type, generic middle truncation of the serialized
+resource envelope can cut the nested JSON text and leave a false successful
+result. The downstream boundary retains complete payloads for code mode, but
+returns a fixed compact failed structured result to the model when a JSON-family
 resource does not fit its output budget. Plain text and Markdown resources keep
 their existing bounded rendering. The history copy receives the compact error,
 so the generic history bound cannot re-corrupt a nested JSON resource. Preserve
