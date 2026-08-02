@@ -17416,7 +17416,12 @@
         "enum": [
           "started",
           "interacted",
-          "interrupted",
+          "interrupted"
+        ],
+        "type": "string"
+      },
+      "SubAgentActivityTerminalState": {
+        "enum": [
           "errored"
         ],
         "type": "string"
@@ -18956,6 +18961,17 @@
                   }
                 ],
                 "description": "Effective reasoning effort selected for the affected child, when known."
+              },
+              "terminalState": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/SubAgentActivityTerminalState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Additive terminal detail. `kind` intentionally retains the legacy\nthree-variant enum for exhaustive existing consumers."
               },
               "type": {
                 "const": "subAgentActivity",
