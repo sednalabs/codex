@@ -86,8 +86,8 @@ pub(crate) enum PendingThreadResumeReservationState {
 /// Immutable ownership of one bounded targetless-warning wait.
 ///
 /// A warning accepted by a listener must not survive that listener being replaced or cleared.
-/// The generation is absent only for the no-listener fallback path; registering a listener still
-/// invalidates that fallback lease before it can deliver through the new lifecycle.
+/// The generation is absent only for the no-listener fallback path; that lease survives listener
+/// registration so its central barrier can deliver the warning ahead of newly attached output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TargetlessWarningWaitLease {
     wait_id: u64,
@@ -1001,6 +1001,26 @@ impl ThreadStateManager {
             .unwrap_or_default()
     }
 
+    /// Returns the active state-manager subscription token for one connection, if any. This is
+    /// deliberately separate from the outgoing map because a provisional resume may temporarily
+    /// overwrite that transport identity before failing while an earlier attachment remains live.
+    pub(crate) async fn connection_thread_subscription_id(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> Option<String> {
+        let state = self.state.lock().await;
+        let thread_entry = state.threads.get(&thread_id)?;
+        if thread_entry.connection_ids.contains(&connection_id) {
+            thread_entry
+                .connection_subscription_ids
+                .get(&connection_id)
+                .cloned()
+        } else {
+            None
+        }
+    }
+
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {
         let mut state = self.state.lock().await;
         state.threads.entry(thread_id).or_default().state.clone()
@@ -1036,7 +1056,7 @@ impl ThreadStateManager {
         listener_generation: u64,
         tx: mpsc::UnboundedSender<ThreadListenerCommand>,
     ) {
-        self.cancel_targetless_warning_wait(thread_id);
+        self.cancel_listener_owned_targetless_warning_wait(thread_id, listener_generation);
         self.listener_commands
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1050,7 +1070,7 @@ impl ThreadStateManager {
         tracing::debug!(
             %thread_id,
             listener_generation,
-            "registered thread listener command sender and invalidated prior warning wait"
+            "registered thread listener command sender and fenced prior listener-owned warning wait"
         );
     }
 
@@ -1186,6 +1206,27 @@ impl ThreadStateManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&thread_id);
+    }
+
+    /// Listener replacement must fence a waiter owned by a prior listener generation, while a
+    /// no-listener waiter deliberately survives registration so its central outbound barrier can
+    /// publish the warning ahead of the first newly attached thread output.
+    fn cancel_listener_owned_targetless_warning_wait(
+        &self,
+        thread_id: ThreadId,
+        listener_generation: u64,
+    ) {
+        let mut waits = self
+            .targetless_warning_waits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if waits.get(&thread_id).is_some_and(|lease| {
+            lease
+                .listener_generation
+                .is_some_and(|generation| generation != listener_generation)
+        }) {
+            waits.remove(&thread_id);
+        }
     }
 
     pub(crate) async fn remove_thread_state(&self, thread_id: ThreadId) {

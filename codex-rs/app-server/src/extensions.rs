@@ -37,6 +37,7 @@ use codex_thread_store::ThreadStore;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::outgoing_message::ConnectionId;
+use crate::outgoing_message::NO_LISTENER_THREAD_OUTBOUND_BARRIER_GENERATION;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadSubscriptionTarget;
 use crate::thread_state::ThreadListenerCommand;
@@ -372,9 +373,8 @@ impl Drop for TargetlessWarningWaitGuard {
     }
 }
 
-/// A detached waiter resolves this record back to its listener. It deliberately does not write
-/// to the outgoing transport: the listener must publish the waiting warning before later queued
-/// thread-notification commands can continue.
+/// A detached waiter resolves this record directly to the outgoing control plane. That control
+/// plane publishes the waiting warning before it releases later queued thread notifications.
 pub(crate) struct TargetlessWarningBarrierResolution {
     lease: TargetlessWarningWaitLease,
     message: String,
@@ -403,15 +403,13 @@ pub(crate) async fn deliver_targetless_warning_barrier_resolution(
     } else {
         None
     };
-    if let Some(listener_generation) = resolution.lease.listener_generation() {
-        outgoing
-            .release_thread_outbound_barrier(thread_id, listener_generation, warning)
-            .await;
-    } else if let Some((thread_subscriptions, warning)) = warning {
-        outgoing
-            .send_server_notification_to_thread_subscriptions(&thread_subscriptions, warning)
-            .await;
-    }
+    let listener_generation = resolution
+        .lease
+        .listener_generation()
+        .unwrap_or(NO_LISTENER_THREAD_OUTBOUND_BARRIER_GENERATION);
+    outgoing
+        .release_thread_outbound_barrier(thread_id, listener_generation, warning)
+        .await;
     thread_state_manager.finish_targetless_warning_wait(thread_id, resolution.lease);
 }
 
@@ -430,6 +428,30 @@ pub(crate) fn spawn_thread_warning_after_subscriber(
         );
         return;
     };
+    if !outgoing.begin_thread_outbound_barrier(
+        thread_id,
+        NO_LISTENER_THREAD_OUTBOUND_BARRIER_GENERATION,
+    ) {
+        thread_state_manager.finish_targetless_warning_wait(thread_id, lease);
+        tracing::debug!(
+            %thread_id,
+            "coalescing targetless warning while no-listener outbound barrier is active"
+        );
+        return;
+    }
+    spawn_thread_warning_barrier_resolution(outgoing, thread_state_manager, thread_id, message, lease);
+}
+
+/// Starts the detached control-plane half of a targetless-warning ordering barrier. It releases
+/// the central transport gate itself, so a listener blocked by a full outbound gate never needs
+/// to consume an in-band resolution command before retained traffic can make progress.
+pub(crate) fn spawn_thread_warning_barrier_resolution(
+    outgoing: Arc<OutgoingMessageSender>,
+    thread_state_manager: ThreadStateManager,
+    thread_id: ThreadId,
+    message: String,
+    lease: TargetlessWarningWaitLease,
+) {
     tokio::spawn(async move {
         let _wait_guard = TargetlessWarningWaitGuard {
             thread_state_manager: thread_state_manager.clone(),
@@ -444,42 +466,13 @@ pub(crate) fn spawn_thread_warning_after_subscriber(
             lease,
         )
         .await;
-        if let Some(thread_subscriptions) = resolution.thread_subscriptions
-            && thread_state_manager.targetless_warning_wait_is_current(thread_id, lease)
-        {
-            send_thread_warning(
-                &outgoing,
-                &thread_subscriptions,
-                thread_id,
-                resolution.message,
-            )
-            .await;
-        }
-    });
-}
-
-/// Starts the detached half of a listener-owned ordering barrier. The listener receives the
-/// resolution and publishes it before releasing later queued notification commands.
-pub(crate) fn spawn_thread_warning_barrier_resolution(
-    outgoing: Arc<OutgoingMessageSender>,
-    thread_state_manager: ThreadStateManager,
-    thread_id: ThreadId,
-    message: String,
-    lease: TargetlessWarningWaitLease,
-    resolution_tx: tokio::sync::mpsc::UnboundedSender<TargetlessWarningBarrierResolution>,
-) {
-    tokio::spawn(async move {
-        let resolution = wait_for_targetless_warning_subscriber(
+        deliver_targetless_warning_barrier_resolution(
             &outgoing,
             &thread_state_manager,
             thread_id,
-            message,
-            lease,
+            resolution,
         )
         .await;
-        if let Err(error) = resolution_tx.send(resolution) {
-            thread_state_manager.finish_targetless_warning_wait(thread_id, error.0.lease);
-        }
     });
 }
 
@@ -1055,14 +1048,12 @@ mod tests {
         // Extension ingress installed the central transport barrier before this listener
         // command. Core event and request senders below use the same
         // ThreadScopedOutgoingMessageSender as conversation.next_event bespoke handling.
-        let (warning_resolution_tx, mut warning_resolution_rx) = mpsc::unbounded_channel();
         spawn_thread_warning_barrier_resolution(
             outgoing.clone(),
             thread_state_manager.clone(),
             thread_id,
             message,
             lease,
-            warning_resolution_tx,
         );
         tokio::task::yield_now().await;
         listener_command_tx
@@ -1084,18 +1075,6 @@ mod tests {
         let subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
             .await;
-        thread_state_manager
-            .connection_initialized(connection_id, ConnectionCapabilities::default())
-            .await;
-        thread_state_manager
-            .try_ensure_connection_subscribed(
-                thread_id,
-                connection_id,
-                /*experimental_raw_events*/ false,
-            )
-            .await
-            .expect("current subscriber should attach");
-
         let core_event_outgoing =
             ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
                 outgoing.clone(),
@@ -1130,17 +1109,17 @@ mod tests {
             "the central barrier should hold the later core event and server request"
         );
 
-        let warning_resolution = timeout(Duration::from_secs(1), warning_resolution_rx.recv())
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
             .await
-            .expect("current subscriber should resolve the warning barrier")
-            .expect("warning barrier resolver should remain connected");
-        deliver_targetless_warning_barrier_resolution(
-            &outgoing,
-            &thread_state_manager,
-            thread_id,
-            warning_resolution,
-        )
-        .await;
+            .expect("current subscriber should attach and release the detached warning barrier");
 
         let OutgoingEnvelope::ToConnection {
             connection_id: received_connection_id,
@@ -1194,6 +1173,215 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detached_warning_control_plane_releases_a_listener_full_gate() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(300);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        let (listener_command_tx, mut listener_command_rx) = mpsc::unbounded_channel();
+        thread_state_manager.register_listener_command_tx(thread_id, 1, listener_command_tx);
+        let sink = app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
+
+        sink.emit_warning(ExtensionWarning {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-1".to_string()),
+            message: "warning ahead of saturated listener output".to_string(),
+        });
+        let ThreadListenerCommand::EmitWarning { message, delivery } = listener_command_rx
+            .recv()
+            .await
+            .expect("warning should enter the listener FIFO")
+        else {
+            panic!("expected targetless listener warning");
+        };
+        let ThreadWarningDelivery::AwaitCurrentSubscriber(lease) = delivery else {
+            panic!("expected a listener-owned targetless warning lease");
+        };
+        spawn_thread_warning_barrier_resolution(
+            outgoing.clone(),
+            thread_state_manager.clone(),
+            thread_id,
+            message,
+            lease,
+        );
+        tokio::task::yield_now().await;
+
+        let subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let core_output = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await,
+            thread_id,
+        );
+        for _ in 0..MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES {
+            core_output
+                .send_server_notification(ServerNotification::ThreadGoalCleared(
+                    codex_app_server_protocol::ThreadGoalClearedNotification {
+                        thread_id: thread_id.to_string(),
+                    },
+                ))
+                .await;
+        }
+        let blocked_listener_core_output = core_output.clone();
+        let blocked_listener = tokio::spawn(async move {
+            blocked_listener_core_output
+                .send_server_notification(ServerNotification::ThreadGoalCleared(
+                    codex_app_server_protocol::ThreadGoalClearedNotification {
+                        thread_id: thread_id.to_string(),
+                    },
+                ))
+                .await;
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !blocked_listener.is_finished(),
+            "the listener's 257th core output must be pressure-blocked before a subscriber exists"
+        );
+
+        // This is the formerly deadlocking point: attachment resolves on the detached control
+        // plane, not by asking the listener to consume a command after its producer is blocked.
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("the subscriber should attach without waiting for the blocked listener");
+        timeout(Duration::from_secs(1), blocked_listener)
+            .await
+            .expect("detached warning release must unblock the listener's 257th producer")
+            .expect("blocked listener producer should not panic");
+
+        let OutgoingEnvelope::ToConnection {
+            connection_id: warning_connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(warning),
+            ..
+        } = outgoing_rx.recv().await.expect("warning should release first")
+        else {
+            panic!("expected tagged warning notification");
+        };
+        assert_eq!(warning_connection_id, connection_id);
+        assert_eq!(warning.thread_subscription_id, subscription_id);
+        assert!(matches!(warning.envelope.notification, ServerNotification::Warning(_)));
+        for _ in 0..=MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES {
+            let OutgoingEnvelope::ToConnection {
+                message: OutgoingMessage::ThreadScopedNotification(notification),
+                ..
+            } = outgoing_rx
+                .recv()
+                .await
+                .expect("all retained listener output should release after the warning")
+            else {
+                panic!("expected retained tagged core notification");
+            };
+            assert!(matches!(
+                notification.envelope.notification,
+                ServerNotification::ThreadGoalCleared(_)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn no_listener_warning_gates_later_core_output_until_its_warning_is_released() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        let sink = app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
+
+        // No listener exists at ingress. The warning still claims a real central barrier before
+        // later core output obtains a subscription target.
+        sink.emit_warning(ExtensionWarning {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-1".to_string()),
+            message: "warning before listener attach".to_string(),
+        });
+        let subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let core_output = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await,
+            thread_id,
+        );
+        core_output
+            .send_server_notification(ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                },
+            ))
+            .await;
+        let (_request_id, _response_rx) = core_output
+            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        assert_eq!(outgoing.deferred_thread_outbound_count(thread_id).await, 2);
+
+        // Listener registration must preserve the no-listener lease rather than releasing its
+        // queued output ahead of the warning.
+        let (listener_command_tx, _listener_command_rx) = mpsc::unbounded_channel();
+        thread_state_manager.register_listener_command_tx(thread_id, 1, listener_command_tx);
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("subscriber should wake the no-listener warning waiter");
+
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(warning),
+            ..
+        } = outgoing_rx.recv().await.expect("warning should release first")
+        else {
+            panic!("expected tagged warning notification");
+        };
+        assert_eq!(warning.thread_subscription_id, subscription_id);
+        assert!(matches!(warning.envelope.notification, ServerNotification::Warning(_)));
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx.recv().await.expect("core event should follow the warning")
+        else {
+            panic!("expected tagged core notification");
+        };
+        assert!(matches!(
+            notification.envelope.notification,
+            ServerNotification::ThreadGoalCleared(_)
+        ));
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedRequest(request),
+            ..
+        } = outgoing_rx.recv().await.expect("core request should follow the warning")
+        else {
+            panic!("expected tagged core request");
+        };
+        assert_eq!(request.thread_subscription_id, subscription_id);
+    }
+
+    #[tokio::test]
     async fn listener_replacement_fences_pending_targetless_warning_delivery() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
         let outgoing = Arc::new(OutgoingMessageSender::new(
@@ -1203,8 +1391,6 @@ mod tests {
         let thread_id = ThreadId::new();
         let connection_id = ConnectionId(1);
         let thread_state_manager = ThreadStateManager::new();
-        let (warning_resolution_tx, mut warning_resolution_rx) = mpsc::unbounded_channel();
-
         let lease = thread_state_manager
             .try_begin_targetless_warning_wait(thread_id, Some(1))
             .expect("old listener should own the targetless warning wait");
@@ -1214,7 +1400,6 @@ mod tests {
             thread_id,
             "old listener warning".to_string(),
             lease,
-            warning_resolution_tx,
         );
         let (replacement_listener_tx, _replacement_listener_rx) = mpsc::unbounded_channel();
         thread_state_manager.register_listener_command_tx(thread_id, 2, replacement_listener_tx);
@@ -1234,17 +1419,7 @@ mod tests {
             .await
             .expect("replacement listener should attach a current subscriber");
 
-        let warning_resolution = timeout(Duration::from_secs(1), warning_resolution_rx.recv())
-            .await
-            .expect("old waiter should resolve after the replacement attachment")
-            .expect("old waiter should report back to its listener");
-        deliver_targetless_warning_barrier_resolution(
-            &outgoing,
-            &thread_state_manager,
-            thread_id,
-            warning_resolution,
-        )
-        .await;
+        tokio::task::yield_now().await;
         assert!(
             timeout(Duration::from_millis(50), outgoing_rx.recv())
                 .await
