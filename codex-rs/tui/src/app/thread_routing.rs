@@ -204,7 +204,7 @@ impl App {
         self.discarded_thread_generations.contains_key(&thread_id)
     }
 
-    pub(super) fn thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
+    pub(crate) fn thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
         self.thread_lifecycle_generations
             .get(&thread_id)
             .copied()

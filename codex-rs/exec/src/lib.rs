@@ -22,7 +22,7 @@ use codex_app_server_client::EnvironmentManager;
 use codex_app_server_client::ExecServerRuntimePaths;
 use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
-use codex_app_server_client::InProcessServerEvent;
+use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
@@ -1004,8 +1004,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         };
 
         match server_event {
-            InProcessServerEvent::ServerRequest(request)
-            | InProcessServerEvent::ThreadServerRequest { request, .. } => {
+            AppServerEvent::ServerRequest(request)
+            | AppServerEvent::ThreadServerRequest { request, .. } => {
                 handle_server_request(
                     &client,
                     request,
@@ -1014,8 +1014,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 )
                 .await;
             }
-            InProcessServerEvent::ServerNotification(mut notification)
-            | InProcessServerEvent::ThreadServerNotification {
+            AppServerEvent::ServerNotification(mut notification)
+            | AppServerEvent::ThreadServerNotification {
                 notification: mut notification,
                 ..
             } => {
@@ -1068,7 +1068,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     }
                 }
             }
-            InProcessServerEvent::Lagged { skipped } => {
+            AppServerEvent::Lagged { skipped } => {
                 let message = lagged_event_warning_message(skipped);
                 warn!("{message}");
                 event_processor.process_warning(message);
