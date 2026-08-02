@@ -1,5 +1,6 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
@@ -71,16 +72,20 @@ pub(crate) enum ThreadListenerCommand {
     EmitThreadGoalUpdated {
         turn_id: Option<String>,
         goal: ThreadGoal,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
     },
     // EmitWarning is used to order extension warnings with other thread notifications.
     EmitWarning {
         message: String,
     },
     // EmitThreadGoalCleared is used to order app-server goal clears with running-thread resume responses.
-    EmitThreadGoalCleared,
+    EmitThreadGoalCleared {
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
+    },
     // EmitThreadGoalSnapshot is used to read and emit the latest goal state in the listener order.
     EmitThreadGoalSnapshot {
         state_db: StateDbHandle,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
     },
     // ResolveServerRequest is used to notify the client that the request has been resolved.
     // It is executed in the thread listener's context to ensure that the resolved notification is ordered with regard to the request itself.

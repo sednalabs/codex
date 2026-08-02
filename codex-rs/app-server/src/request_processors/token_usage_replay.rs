@@ -23,19 +23,19 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 
-use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 
-/// Sends a restored token usage update to the connection that attached to a thread.
+/// Sends a restored token usage update through the identity attached to a thread.
 ///
 /// This is lifecycle replay rather than a model event: the rollout already contains
 /// the original `TokenCount`, and emitting through `send_event` here would duplicate
 /// persisted usage records. Keeping replay connection-scoped also avoids
 /// surprising other subscribers with a historical usage update while they may be
 /// rendering live turn events.
-pub(super) async fn send_thread_token_usage_update_to_connection(
+pub(super) async fn send_thread_token_usage_update_to_subscription(
     outgoing: &Arc<OutgoingMessageSender>,
-    connection_id: ConnectionId,
+    thread_subscription: &ThreadSubscriptionTarget,
     thread_id: ThreadId,
     conversation: &CodexThread,
     token_usage_turn_id: String,
@@ -48,23 +48,12 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
         turn_id: token_usage_turn_id,
         token_usage: ThreadTokenUsage::from(info),
     };
-    // This follows an attach snapshot. Preserve the exact identity that was
-    // already bound by that attach instead of allowing the generic targeted
-    // sender to create a token without a matching lifecycle handshake.
-    let Some(thread_subscription) = outgoing
-        .thread_subscription_target_for_connection(connection_id, thread_id)
-        .await
-    else {
-        tracing::debug!(
-            ?connection_id,
-            %thread_id,
-            "dropping token-usage replay without an active thread subscription"
-        );
-        return;
-    };
+    // This follows an attach response. Carry its exact identity so an
+    // unsubscribe/reattach cannot relabel this delayed replay with a token the
+    // client did not receive in that response.
     outgoing
         .send_server_notification_to_thread_subscriptions(
-            &[thread_subscription],
+            std::slice::from_ref(thread_subscription),
             ServerNotification::ThreadTokenUsageUpdated(notification),
         )
         .await;

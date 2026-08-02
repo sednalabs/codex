@@ -161,11 +161,11 @@ fn event_requires_delivery(event: &AppServerEvent) -> bool {
 /// Returns `true` for notifications that must survive backpressure.
 ///
 /// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas), the
-/// authoritative `ItemCompleted` / `TurnCompleted`, and automatic
-/// `ThreadStarted` lifecycle handshakes form the lossless tier of the event
+/// authoritative `ItemCompleted` / `TurnCompleted`, and thread lifecycle
+/// handshakes and terminal transitions form the lossless tier of the event
 /// stream. Dropping any of these corrupts visible output, leaves a surface
-/// waiting for completion, or strands an already-retained child approval
-/// behind an unknown subscription identity. Everything else
+/// waiting for completion, or lets a route and picker retain an obsolete
+/// thread state. Everything else
 /// (`CommandExecutionOutputDelta`, progress, etc.) is best-effort and may be
 /// dropped with only cosmetic impact.
 ///
@@ -176,6 +176,11 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
     matches!(
         notification,
         ServerNotification::ThreadStarted(_)
+            | ServerNotification::ThreadClosed(_)
+            | ServerNotification::ThreadDeleted(_)
+            | ServerNotification::ThreadArchived(_)
+            | ServerNotification::ThreadUnarchived(_)
+            | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -1586,6 +1591,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn in_process_facade_blocks_for_terminal_thread_transition_backpressure() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(AppServerEvent::Lagged { skipped: 1 })
+            .await
+            .expect("initial event should enqueue");
+
+        let mut skipped_events = 0usize;
+        let delivery = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            AppServerEvent::ThreadServerNotification {
+                thread_subscription_id: "thread-subscription".to_string(),
+                notification: ServerNotification::ThreadStatusChanged(
+                    codex_app_server_protocol::ThreadStatusChangedNotification {
+                        thread_id: "thread".to_string(),
+                        status: codex_app_server_protocol::ThreadStatus::Idle,
+                        status_revision: Some(1),
+                    },
+                ),
+            },
+            |_| {},
+        );
+        tokio::pin!(delivery);
+
+        assert!(
+            timeout(Duration::from_millis(20), &mut delivery)
+                .await
+                .is_err(),
+            "terminal thread transitions must block rather than be dropped"
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(AppServerEvent::Lagged { skipped: 1 })
+        ));
+        assert_eq!(delivery.await, ForwardEventResult::Continue);
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(AppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification: ServerNotification::ThreadStatusChanged(_),
+            }) if thread_subscription_id == "thread-subscription"
+        ));
+        assert_eq!(skipped_events, 0);
+    }
+
+    #[tokio::test]
     async fn remote_typed_request_roundtrip_works() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
@@ -2274,6 +2326,42 @@ mod tests {
                 notification: automatic_child_started_notification(),
             }
         ));
+        for notification in [
+            codex_app_server_protocol::ServerNotification::ThreadClosed(
+                codex_app_server_protocol::ThreadClosedNotification {
+                    thread_id: "thread".to_string(),
+                },
+            ),
+            codex_app_server_protocol::ServerNotification::ThreadDeleted(
+                codex_app_server_protocol::ThreadDeletedNotification {
+                    thread_id: "thread".to_string(),
+                },
+            ),
+            codex_app_server_protocol::ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: "thread".to_string(),
+                },
+            ),
+            codex_app_server_protocol::ServerNotification::ThreadUnarchived(
+                codex_app_server_protocol::ThreadUnarchivedNotification {
+                    thread_id: "thread".to_string(),
+                },
+            ),
+            codex_app_server_protocol::ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: "thread".to_string(),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    status_revision: Some(1),
+                },
+            ),
+        ] {
+            assert!(event_requires_delivery(
+                &AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification,
+                }
+            ));
+        }
         assert!(event_requires_delivery(
             &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::TurnCompleted(

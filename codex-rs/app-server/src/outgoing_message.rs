@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -112,7 +113,7 @@ pub(crate) struct OutgoingMessageSender {
     /// Fresh, connection-local identities for active thread subscriptions.
     /// A queued event keeps the identity with which it was emitted; replacing
     /// this map entry therefore cannot relabel old traffic.
-    thread_subscription_ids: Mutex<HashMap<(ConnectionId, ThreadId), String>>,
+    thread_subscription_ids: StdMutex<HashMap<(ConnectionId, ThreadId), String>>,
     analytics_events_client: AnalyticsEventsClient,
 }
 
@@ -283,7 +284,7 @@ impl OutgoingMessageSender {
             request_id_to_callback: Mutex::new(HashMap::new()),
             thread_request_resolution_targets: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
-            thread_subscription_ids: Mutex::new(HashMap::new()),
+            thread_subscription_ids: StdMutex::new(HashMap::new()),
             analytics_events_client,
         }
     }
@@ -300,7 +301,7 @@ impl OutgoingMessageSender {
         let subscription_id = Uuid::now_v7().to_string();
         self.thread_subscription_ids
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert((connection_id, thread_id), subscription_id.clone());
         subscription_id
     }
@@ -329,7 +330,10 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         thread_id: ThreadId,
     ) -> (String, bool) {
-        let mut subscriptions = self.thread_subscription_ids.lock().await;
+        let mut subscriptions = self
+            .thread_subscription_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match subscriptions.entry((connection_id, thread_id)) {
             std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -347,14 +351,14 @@ impl OutgoingMessageSender {
     ) {
         self.thread_subscription_ids
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(connection_id, thread_id));
     }
 
     pub(crate) async fn unregister_thread_subscriptions_for_thread(&self, thread_id: ThreadId) {
         self.thread_subscription_ids
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(_, candidate_thread_id), _| *candidate_thread_id != thread_id);
     }
 
@@ -374,7 +378,7 @@ impl OutgoingMessageSender {
         drop(request_contexts);
         self.thread_subscription_ids
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(candidate_connection_id, _), _| *candidate_connection_id != connection_id);
     }
 
@@ -799,9 +803,19 @@ impl OutgoingMessageSender {
         &self,
         thread_id: ThreadId,
     ) -> Vec<ThreadSubscriptionTarget> {
+        self.thread_subscription_targets_for_thread_now(thread_id)
+    }
+
+    /// Captures active thread targets without waiting. This is used by the
+    /// synchronous extension event sink so it can preserve listener-command
+    /// ordering while still carrying the token present at event ingress.
+    pub(crate) fn thread_subscription_targets_for_thread_now(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<ThreadSubscriptionTarget> {
         self.thread_subscription_ids
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|((connection_id, candidate_thread_id), subscription_id)| {
                 (*candidate_thread_id == thread_id).then(|| {
@@ -826,7 +840,7 @@ impl OutgoingMessageSender {
     ) -> Option<ThreadSubscriptionTarget> {
         self.thread_subscription_ids
             .lock()
-            .await
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&(connection_id, thread_id))
             .cloned()
             .map(|thread_subscription_id| {

@@ -1,4 +1,5 @@
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
+use super::thread_lifecycle::rollback_failed_thread_attach;
 use super::turn_processor::can_accept_direct_input;
 use super::*;
 use crate::error_code::method_not_found;
@@ -3685,18 +3686,46 @@ impl ThreadRequestProcessor {
                     .outgoing
                     .register_thread_subscription(request_id.connection_id, thread_id)
                     .await;
-                // Auto-attach a thread listener when resuming a thread.
-                log_listener_attach_result(
-                    self.ensure_conversation_listener(
+                let thread_subscription = ThreadSubscriptionTarget::captured(
+                    request_id.connection_id,
+                    thread_id,
+                    thread_subscription_id.clone(),
+                );
+                // Auto-attach a thread listener before response hydration. A
+                // successful attach may replay pending traffic, but every
+                // later hydration failure must roll that attachment back
+                // without exposing its identity in a resume response.
+                match self
+                    .ensure_conversation_listener(
                         thread_id,
                         request_id.connection_id,
                         /*raw_events_enabled*/ false,
                     )
-                    .await,
-                    thread_id,
-                    request_id.connection_id,
-                    "thread",
-                );
+                    .await
+                {
+                    Ok(EnsureConversationListenerResult::Attached) => {}
+                    Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+                        rollback_failed_thread_attach(
+                            &self.thread_state_manager,
+                            &self.outgoing,
+                            thread_id,
+                            request_id.connection_id,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        rollback_failed_thread_attach(
+                            &self.thread_state_manager,
+                            &self.outgoing,
+                            thread_id,
+                            request_id.connection_id,
+                        )
+                        .await;
+                        self.outgoing.send_error(request_id, error).await;
+                        return Ok(());
+                    }
+                }
                 let mut thread = match self
                     .load_thread_from_resume_source_or_send_internal(
                         thread_id,
@@ -3710,6 +3739,13 @@ impl ThreadRequestProcessor {
                 {
                     Ok(thread) => thread,
                     Err(message) => {
+                        rollback_failed_thread_attach(
+                            &self.thread_state_manager,
+                            &self.outgoing,
+                            thread_id,
+                            request_id.connection_id,
+                        )
+                        .await;
                         self.outgoing
                             .send_error(request_id, internal_error(message))
                             .await;
@@ -3753,6 +3789,13 @@ impl ThreadRequestProcessor {
                         {
                             Ok(cursors) => cursors,
                             Err(error) => {
+                                rollback_failed_thread_attach(
+                                    &self.thread_state_manager,
+                                    &self.outgoing,
+                                    thread_id,
+                                    request_id.connection_id,
+                                )
+                                .await;
                                 self.outgoing.send_error(request_id, error).await;
                                 return Ok(());
                             }
@@ -3783,6 +3826,13 @@ impl ThreadRequestProcessor {
                     match initial_turns_page_result {
                         Ok(page) => Some(page),
                         Err(error) => {
+                            rollback_failed_thread_attach(
+                                &self.thread_state_manager,
+                                &self.outgoing,
+                                thread_id,
+                                request_id.connection_id,
+                            )
+                            .await;
                             self.outgoing.send_error(request_id, error).await;
                             return Ok(());
                         }
@@ -3818,7 +3868,6 @@ impl ThreadRequestProcessor {
                     items_backwards_cursor,
                 };
 
-                let connection_id = request_id.connection_id;
                 self.outgoing
                     .send_response_with_thread_originator(request_id, response, thread_originator)
                     .await;
@@ -3828,9 +3877,9 @@ impl ThreadRequestProcessor {
                     // The client needs restored usage before it starts another turn.
                     // Sending after the response preserves JSON-RPC request ordering while
                     // still filling the status line before the next turn lifecycle begins.
-                    send_thread_token_usage_update_to_connection(
+                    send_thread_token_usage_update_to_subscription(
                         &self.outgoing,
-                        connection_id,
+                        &thread_subscription,
                         thread_id,
                         codex_thread.as_ref(),
                         token_usage_turn_id,
@@ -3838,7 +3887,11 @@ impl ThreadRequestProcessor {
                     .await;
                 }
                 self.thread_goal_processor
-                    .emit_resume_goal_snapshot_and_continue(thread_id, codex_thread.as_ref())
+                    .emit_resume_goal_snapshot_and_continue(
+                        thread_id,
+                        codex_thread.as_ref(),
+                        vec![thread_subscription],
+                    )
                     .await;
             }
             Err(err) => {
@@ -4801,26 +4854,65 @@ impl ThreadRequestProcessor {
             .outgoing
             .register_thread_subscription(request_id.connection_id, thread_id)
             .await;
-        // Auto-attach a conversation listener when forking a thread.
-        log_listener_attach_result(
-            self.ensure_conversation_listener(
+        let thread_subscription = ThreadSubscriptionTarget::captured(
+            request_id.connection_id,
+            thread_id,
+            thread_subscription_id.clone(),
+        );
+        // A fork response may not publish this identity until its thread
+        // hydration succeeds. Roll the listener and subscription back if the
+        // connection closes or a later read/page operation fails.
+        match self
+            .ensure_conversation_listener(
                 thread_id,
                 request_id.connection_id,
                 /*raw_events_enabled*/ false,
             )
-            .await,
-            thread_id,
-            request_id.connection_id,
-            "thread",
-        );
+            .await
+        {
+            Ok(EnsureConversationListenerResult::Attached) => {}
+            Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+                rollback_failed_thread_attach(
+                    &self.thread_state_manager,
+                    &self.outgoing,
+                    thread_id,
+                    request_id.connection_id,
+                )
+                .await;
+                return Ok(());
+            }
+            Err(error) => {
+                rollback_failed_thread_attach(
+                    &self.thread_state_manager,
+                    &self.outgoing,
+                    thread_id,
+                    request_id.connection_id,
+                )
+                .await;
+                return Err(error);
+            }
+        }
         let config_snapshot = forked_thread.config_snapshot().await;
 
         // Persistent forks materialize their own rollout immediately. Ephemeral forks stay
         // pathless, so they rebuild their visible history from the copied source history instead.
         let mut thread = if session_configured.rollout_path.is_some() {
-            let stored_thread = self
+            let stored_thread = match self
                 .read_stored_thread_for_new_fork(thread_id, include_turns && !paginated_source)
-                .await?;
+                .await
+            {
+                Ok(stored_thread) => stored_thread,
+                Err(error) => {
+                    rollback_failed_thread_attach(
+                        &self.thread_state_manager,
+                        &self.outgoing,
+                        thread_id,
+                        request_id.connection_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             self.stored_thread_to_api_thread(
                 stored_thread,
                 fallback_model_provider.as_str(),
@@ -4851,7 +4943,19 @@ impl ThreadRequestProcessor {
             thread
         };
         if paginated_source && include_turns {
-            thread.turns = self.paginated_thread_full_turns(thread_id).await?;
+            thread.turns = match self.paginated_thread_full_turns(thread_id).await {
+                Ok(turns) => turns,
+                Err(error) => {
+                    rollback_failed_thread_attach(
+                        &self.thread_state_manager,
+                        &self.outgoing,
+                        thread_id,
+                        request_id.connection_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
         }
         if let Some(name) = source_thread_name {
             set_thread_name_from_title(&mut thread, name);
@@ -4896,7 +5000,6 @@ impl ThreadRequestProcessor {
         };
 
         let notif = thread_started_notification(thread);
-        let connection_id = request_id.connection_id;
         let token_usage_turn_id =
             include_turns.then(|| restored_token_usage_turn_id(&history_items, &response.thread));
         self.outgoing
@@ -4907,9 +5010,9 @@ impl ThreadRequestProcessor {
         if let Some(token_usage_turn_id) = token_usage_turn_id {
             // Mirror the resume contract for forks: the new thread is usable as soon
             // as the response arrives, so restored usage must follow immediately.
-            send_thread_token_usage_update_to_connection(
+            send_thread_token_usage_update_to_subscription(
                 &self.outgoing,
-                connection_id,
+                &thread_subscription,
                 thread_id,
                 forked_thread.as_ref(),
                 token_usage_turn_id,
@@ -4918,11 +5021,14 @@ impl ThreadRequestProcessor {
         }
 
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
+            .send_server_notification_to_thread_subscriptions(
+                std::slice::from_ref(&thread_subscription),
+                ServerNotification::ThreadStarted(notif),
+            )
             .await;
         if inherited_goal {
             self.thread_goal_processor
-                .emit_thread_goal_snapshot(thread_id)
+                .emit_thread_goal_snapshot(thread_id, vec![thread_subscription])
                 .await;
         }
         Ok(())
