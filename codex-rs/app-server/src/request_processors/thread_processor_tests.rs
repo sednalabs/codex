@@ -98,15 +98,20 @@ mod background_terminal_pagination_tests {
 mod automatic_thread_attachment_tests {
     use super::super::automatic_thread_started_subscription_is_current;
     use crate::outgoing_message::ConnectionId;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
     use crate::outgoing_message::OutgoingMessageSender;
+    use crate::outgoing_message::ThreadSubscriptionTarget;
     use codex_analytics::AnalyticsEventsClient;
+    use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ThreadGoalClearedNotification;
     use codex_protocol::ThreadId;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
     #[tokio::test]
-    async fn automatic_thread_started_suppresses_a_stale_reattached_subscription() {
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+    async fn thread_started_publication_uses_one_captured_subscription_across_reattach() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             AnalyticsEventsClient::disabled(),
@@ -117,9 +122,27 @@ mod automatic_thread_attachment_tests {
             .ensure_thread_subscription_with_status(connection_id, thread_id)
             .await;
         assert!(created, "automatic attachment should mint its initial token");
+        assert!(
+            automatic_thread_started_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_a,
+            )
+            .await,
+            "the normal thread/start response and ThreadStarted publication should share A"
+        );
 
-        // Simulate the overlapping reattach that wins while listener attachment for token A is
-        // awaiting. The old path must not publish a ThreadStarted handshake tagged with A.
+        let thread_started_target = ThreadSubscriptionTarget::captured(
+            connection_id,
+            thread_id,
+            subscription_a.clone(),
+        );
+
+        // Simulate the response-notification window after A won thread/start's publication
+        // check. A concurrent replacement must not relabel ThreadStarted to B: its targeted
+        // transport envelope retains A. The real ThreadStarted call uses this exact captured
+        // target sender; ThreadGoalCleared keeps this assertion independent of a full Thread.
         let subscription_b = outgoing
             .register_thread_subscription(connection_id, thread_id)
             .await;
@@ -141,6 +164,28 @@ mod automatic_thread_attachment_tests {
             )
             .await
         );
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &[thread_started_target],
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id: received_connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx
+            .recv()
+            .await
+            .expect("captured post-response lifecycle notification should be emitted")
+        else {
+            panic!("expected captured thread-scoped lifecycle notification");
+        };
+        assert_eq!(received_connection_id, connection_id);
+        assert_eq!(notification.thread_subscription_id, subscription_a);
+        assert_ne!(notification.thread_subscription_id, subscription_b);
     }
 }
 

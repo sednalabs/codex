@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicI64;
@@ -25,6 +26,7 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
@@ -114,7 +116,28 @@ pub(crate) struct OutgoingMessageSender {
     /// A queued event keeps the identity with which it was emitted; replacing
     /// this map entry therefore cannot relabel old traffic.
     thread_subscription_ids: StdMutex<HashMap<(ConnectionId, ThreadId), String>>,
+    /// A targetless extension warning reserves a short, ordered barrier for a thread. Every
+    /// captured thread-scoped notification and server request passes through this gate, so core
+    /// listener events cannot overtake the warning while the listener itself keeps consuming
+    /// input. The queue is bounded; pressure waits for release rather than silently dropping a
+    /// meaningful later message.
+    thread_outbound_barriers: StdMutex<HashMap<ThreadId, ThreadOutboundBarrier>>,
     analytics_events_client: AnalyticsEventsClient,
+}
+
+pub(crate) const MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES: usize = 256;
+
+enum ThreadOutboundBarrierPhase {
+    WaitingForWarning,
+    Releasing,
+}
+
+struct ThreadOutboundBarrier {
+    listener_generation: u64,
+    phase: ThreadOutboundBarrierPhase,
+    warning_delivery_invalidated: bool,
+    deferred: VecDeque<OutgoingEnvelope>,
+    capacity_changed: watch::Sender<()>,
 }
 
 #[derive(Clone)]
@@ -289,8 +312,276 @@ impl OutgoingMessageSender {
             thread_request_resolution_targets: Mutex::new(HashMap::new()),
             request_contexts: Mutex::new(HashMap::new()),
             thread_subscription_ids: StdMutex::new(HashMap::new()),
+            thread_outbound_barriers: StdMutex::new(HashMap::new()),
             analytics_events_client,
         }
+    }
+
+    /// Starts the central outbound ordering barrier for one listener generation. Extension
+    /// ingress calls this synchronously after claiming the matching warning lease, before a
+    /// later listener event can reach the transport. A second targetless warning is coalesced
+    /// before it can create another barrier or enter a listener queue.
+    pub(crate) fn begin_thread_outbound_barrier(
+        &self,
+        thread_id: ThreadId,
+        listener_generation: u64,
+    ) -> bool {
+        let mut barriers = self
+            .thread_outbound_barriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if barriers.contains_key(&thread_id) {
+            tracing::debug!(
+                %thread_id,
+                listener_generation,
+                "coalescing targetless warning while an outbound barrier is already active"
+            );
+            return false;
+        }
+        let (capacity_changed, _capacity_changed_rx) = watch::channel(());
+        barriers.insert(
+            thread_id,
+            ThreadOutboundBarrier {
+                listener_generation,
+                phase: ThreadOutboundBarrierPhase::WaitingForWarning,
+                warning_delivery_invalidated: false,
+                deferred: VecDeque::new(),
+                capacity_changed,
+            },
+        );
+        true
+    }
+
+    /// Publishes a resolved targetless warning ahead of every thread message captured while its
+    /// barrier was active, or releases those messages after a timeout/drop without a warning.
+    /// This method never waits for a subscriber; the detached warning waiter already performed
+    /// that bounded work before returning to the listener.
+    pub(crate) async fn release_thread_outbound_barrier(
+        &self,
+        thread_id: ThreadId,
+        listener_generation: u64,
+        warning: Option<(Vec<ThreadSubscriptionTarget>, ServerNotification)>,
+    ) {
+        if !self
+            .begin_thread_outbound_barrier_release(thread_id, |generation| {
+                generation == listener_generation
+            })
+        {
+            return;
+        }
+
+        if let Some((thread_subscriptions, notification)) = warning
+            && self
+                .thread_outbound_warning_delivery_is_current(thread_id, listener_generation)
+        {
+            self.send_server_notification_to_thread_subscriptions_direct(
+                &thread_subscriptions,
+                notification,
+            )
+            .await;
+        }
+        self.drain_thread_outbound_barrier(thread_id, listener_generation)
+            .await;
+    }
+
+    /// A listener replacement or failure drops the pending warning but must promptly release
+    /// later client-visible output. Generation matching prevents an old task from releasing a
+    /// replacement listener's newly established barrier.
+    pub(crate) async fn release_thread_outbound_barrier_for_listener_generation(
+        &self,
+        thread_id: ThreadId,
+        listener_generation: u64,
+    ) {
+        if self
+            .begin_thread_outbound_barrier_release(thread_id, |generation| {
+                generation == listener_generation
+            })
+        {
+            self.drain_thread_outbound_barrier(thread_id, listener_generation)
+                .await;
+        }
+    }
+
+    /// A new listener invalidates older generation leases. Release their held traffic before
+    /// registering the replacement so an abandoned warning cannot strand output until timeout.
+    pub(crate) async fn release_thread_outbound_barriers_before_generation(
+        &self,
+        thread_id: ThreadId,
+        next_listener_generation: u64,
+    ) {
+        let released_generation = {
+            let mut barriers = self
+                .thread_outbound_barriers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(barrier) = barriers.get_mut(&thread_id) else {
+                return;
+            };
+            if barrier.listener_generation >= next_listener_generation {
+                return;
+            }
+            barrier.warning_delivery_invalidated = true;
+            if matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing) {
+                return;
+            }
+            barrier.phase = ThreadOutboundBarrierPhase::Releasing;
+            Some(barrier.listener_generation)
+        };
+        if let Some(released_generation) = released_generation {
+            self.drain_thread_outbound_barrier(thread_id, released_generation)
+                .await;
+        }
+    }
+
+    fn begin_thread_outbound_barrier_release(
+        &self,
+        thread_id: ThreadId,
+        generation_matches: impl FnOnce(u64) -> bool,
+    ) -> bool {
+        let mut barriers = self
+            .thread_outbound_barriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(barrier) = barriers.get_mut(&thread_id) else {
+            return false;
+        };
+        if !generation_matches(barrier.listener_generation)
+            || matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing)
+        {
+            return false;
+        }
+        barrier.phase = ThreadOutboundBarrierPhase::Releasing;
+        true
+    }
+
+    fn thread_outbound_warning_delivery_is_current(
+        &self,
+        thread_id: ThreadId,
+        listener_generation: u64,
+    ) -> bool {
+        self.thread_outbound_barriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .is_some_and(|barrier| {
+                barrier.listener_generation == listener_generation
+                    && matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing)
+                    && !barrier.warning_delivery_invalidated
+            })
+    }
+
+    async fn drain_thread_outbound_barrier(&self, thread_id: ThreadId, listener_generation: u64) {
+        loop {
+            let deferred = {
+                let mut barriers = self
+                    .thread_outbound_barriers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(barrier) = barriers.get_mut(&thread_id) else {
+                    return;
+                };
+                if barrier.listener_generation != listener_generation
+                    || !matches!(barrier.phase, ThreadOutboundBarrierPhase::Releasing)
+                {
+                    return;
+                }
+                let deferred = barrier.deferred.pop_front();
+                barrier.capacity_changed.send_replace(());
+                if deferred.is_none() {
+                    barrier.capacity_changed.send_replace(());
+                    barriers.remove(&thread_id);
+                }
+                deferred
+            };
+            let Some(deferred) = deferred else {
+                return;
+            };
+            if let Err(error) = self.sender.send(deferred).await {
+                tracing::warn!(
+                    %thread_id,
+                    listener_generation,
+                    "failed to release deferred thread output to client: {error:?}"
+                );
+            }
+        }
+    }
+
+    async fn send_or_defer_thread_outbound(
+        &self,
+        thread_id: ThreadId,
+        outgoing: OutgoingEnvelope,
+    ) -> std::result::Result<(), mpsc::error::SendError<OutgoingEnvelope>> {
+        let mut outgoing = Some(outgoing);
+        loop {
+            let capacity_wait = {
+                let mut barriers = self
+                    .thread_outbound_barriers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(barrier) = barriers.get_mut(&thread_id) {
+                    if barrier.deferred.len() < MAX_DEFERRED_THREAD_OUTBOUND_MESSAGES {
+                        barrier.deferred.push_back(
+                            outgoing
+                                .take()
+                                .expect("outbound envelope should be retained"),
+                        );
+                        return Ok(());
+                    }
+                    Some(barrier.capacity_changed.subscribe())
+                } else {
+                    None
+                }
+            };
+            // The barrier queue is bounded to prevent warning/flood pressure from consuming
+            // unbounded memory. Only after that explicit limit does a producer wait for the
+            // already-bounded barrier to release; it never starts another warning timeout.
+            if let Some(mut capacity_wait) = capacity_wait {
+                let _ = capacity_wait.changed().await;
+            } else {
+                break;
+            }
+        }
+        self.sender
+            .send(outgoing.expect("outbound envelope should be retained"))
+            .await
+    }
+
+    async fn send_server_notification_to_thread_subscriptions_direct(
+        &self,
+        thread_subscriptions: &[ThreadSubscriptionTarget],
+        notification: ServerNotification,
+    ) {
+        let envelope = timestamped_server_notification_envelope(notification);
+        for thread_subscription in thread_subscriptions {
+            if let Err(error) = self
+                .sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id: thread_subscription.connection_id,
+                    message: OutgoingMessage::ThreadScopedNotification(
+                        ThreadScopedServerNotification {
+                            envelope: envelope.clone(),
+                            thread_subscription_id: thread_subscription
+                                .thread_subscription_id
+                                .clone(),
+                        },
+                    ),
+                    write_complete_tx: None,
+                })
+                .await
+            {
+                tracing::warn!("failed to send released targetless warning to client: {error:?}");
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn deferred_thread_outbound_count(&self, thread_id: ThreadId) -> usize {
+        self.thread_outbound_barriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .map(|barrier| barrier.deferred.len())
+            .unwrap_or_default()
     }
 
     /// Creates a new immutable identity for one connection's presentation of a
@@ -533,15 +824,18 @@ impl OutgoingMessageSender {
                         }
                         None => OutgoingMessage::Request(request.clone()),
                     };
-                    if let Err(err) = self
-                        .sender
-                        .send(OutgoingEnvelope::ToConnection {
-                            connection_id: *connection_id,
-                            message,
-                            write_complete_tx: None,
-                        })
-                        .await
-                    {
+                    let outgoing = OutgoingEnvelope::ToConnection {
+                        connection_id: *connection_id,
+                        message,
+                        write_complete_tx: None,
+                    };
+                    let send_result = match thread_id {
+                        Some(thread_id) => {
+                            self.send_or_defer_thread_outbound(thread_id, outgoing).await
+                        }
+                        None => self.sender.send(outgoing).await,
+                    };
+                    if let Err(err) = send_result {
                         send_error = Some(err);
                         break;
                     } else {
@@ -606,12 +900,14 @@ impl OutgoingMessageSender {
                 thread_subscription_id: thread_subscription.thread_subscription_id.clone(),
             });
             if let Err(err) = self
-                .sender
-                .send(OutgoingEnvelope::ToConnection {
-                    connection_id: thread_subscription.connection_id,
-                    message,
-                    write_complete_tx: None,
-                })
+                .send_or_defer_thread_outbound(
+                    thread_id,
+                    OutgoingEnvelope::ToConnection {
+                        connection_id: thread_subscription.connection_id,
+                        message,
+                        write_complete_tx: None,
+                    },
+                )
                 .await
             {
                 send_error = Some(err);
@@ -688,12 +984,14 @@ impl OutgoingMessageSender {
                 thread_subscription_id: replay_target.thread_subscription_id.clone(),
             });
             if let Err(err) = self
-                .sender
-                .send(OutgoingEnvelope::ToConnection {
-                    connection_id,
-                    message,
-                    write_complete_tx: None,
-                })
+                .send_or_defer_thread_outbound(
+                    thread_id,
+                    OutgoingEnvelope::ToConnection {
+                        connection_id,
+                        message,
+                        write_complete_tx: None,
+                    },
+                )
                 .await
             {
                 if replay_target_added {
@@ -979,42 +1277,26 @@ impl OutgoingMessageSender {
         let envelope = timestamped_server_notification_envelope(notification);
         for thread_subscription in thread_subscriptions {
             if let Err(err) = self
-                .sender
-                .send(OutgoingEnvelope::ToConnection {
-                    connection_id: thread_subscription.connection_id,
-                    message: OutgoingMessage::ThreadScopedNotification(
-                        ThreadScopedServerNotification {
-                            envelope: envelope.clone(),
-                            thread_subscription_id: thread_subscription
-                                .thread_subscription_id
-                                .clone(),
+                .send_or_defer_thread_outbound(
+                    thread_subscription.thread_id,
+                    OutgoingEnvelope::ToConnection {
+                        connection_id: thread_subscription.connection_id,
+                        message: OutgoingMessage::ThreadScopedNotification(
+                            ThreadScopedServerNotification {
+                                envelope: envelope.clone(),
+                                thread_subscription_id: thread_subscription
+                                    .thread_subscription_id
+                                    .clone(),
+                            },
                         },
-                    ),
-                    write_complete_tx: None,
-                })
+                        write_complete_tx: None,
+                    },
+                )
                 .await
             {
                 warn!("failed to send captured thread notification to client: {err:?}");
             }
         }
-    }
-
-    async fn thread_scoped_notification_message(
-        &self,
-        connection_id: ConnectionId,
-        notification: &ServerNotification,
-        envelope: &ServerNotificationEnvelope,
-    ) -> OutgoingMessage {
-        let Some(thread_id) = server_notification_thread_id(notification) else {
-            return OutgoingMessage::AppServerNotification(envelope.clone());
-        };
-        let thread_subscription_id = self
-            .ensure_thread_subscription(connection_id, thread_id)
-            .await;
-        OutgoingMessage::ThreadScopedNotification(ThreadScopedServerNotification {
-            envelope: envelope.clone(),
-            thread_subscription_id,
-        })
     }
 
     pub(crate) async fn send_response<T>(&self, request_id: ConnectionRequestId, response: T)
@@ -1117,38 +1399,40 @@ impl OutgoingMessageSender {
             targeted_connections = connection_ids.len(),
             "app-server event: {notification}"
         );
-        let envelope = timestamped_server_notification_envelope(notification.clone());
-        if connection_ids.is_empty() {
-            if let Some(thread_id) = server_notification_thread_id(&notification) {
-                let subscriptions = self.thread_subscription_targets_for_thread(thread_id).await;
-                if !subscriptions.is_empty() {
-                    for thread_subscription in subscriptions {
-                        if let Err(err) = self
-                            .sender
-                            .send(OutgoingEnvelope::ToConnection {
-                                connection_id: thread_subscription.connection_id,
-                                message: OutgoingMessage::ThreadScopedNotification(
-                                    ThreadScopedServerNotification {
-                                        envelope: envelope.clone(),
-                                        thread_subscription_id: thread_subscription
-                                            .thread_subscription_id,
-                                    },
-                                ),
-                                write_complete_tx: None,
-                            })
-                            .await
-                        {
-                            warn!("failed to send server notification to client: {err:?}");
-                        }
-                    }
-                    return;
+        if let Some(thread_id) = server_notification_thread_id(&notification) {
+            let thread_subscriptions = if connection_ids.is_empty() {
+                self.thread_subscription_targets_for_thread(thread_id).await
+            } else {
+                let mut thread_subscriptions = Vec::with_capacity(connection_ids.len());
+                for connection_id in connection_ids {
+                    let thread_subscription_id = self
+                        .ensure_thread_subscription(*connection_id, thread_id)
+                        .await;
+                    thread_subscriptions.push(ThreadSubscriptionTarget::captured(
+                        *connection_id,
+                        thread_id,
+                        thread_subscription_id,
+                    ));
                 }
+                thread_subscriptions
+            };
+            if thread_subscriptions.is_empty() {
                 tracing::debug!(
                     %thread_id,
                     "dropping thread-bound notification without an active subscription"
                 );
                 return;
             }
+            self.send_server_notification_to_thread_subscriptions(
+                &thread_subscriptions,
+                notification,
+            )
+            .await;
+            return;
+        }
+
+        let envelope = timestamped_server_notification_envelope(notification);
+        if connection_ids.is_empty() {
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::Broadcast {
@@ -1161,14 +1445,11 @@ impl OutgoingMessageSender {
             return;
         }
         for connection_id in connection_ids {
-            let message = self
-                .thread_scoped_notification_message(*connection_id, &notification, &envelope)
-                .await;
             if let Err(err) = self
                 .sender
                 .send(OutgoingEnvelope::ToConnection {
                     connection_id: *connection_id,
-                    message,
+                    message: OutgoingMessage::AppServerNotification(envelope.clone()),
                     write_complete_tx: None,
                 })
                 .await
@@ -1184,15 +1465,28 @@ impl OutgoingMessageSender {
         notification: ServerNotification,
     ) {
         tracing::trace!("app-server event: {notification}");
-        let envelope = timestamped_server_notification_envelope(notification.clone());
-        let outgoing_message = self
-            .thread_scoped_notification_message(connection_id, &notification, &envelope)
+        if let Some(thread_id) = server_notification_thread_id(&notification) {
+            let thread_subscription_id = self
+                .ensure_thread_subscription(connection_id, thread_id)
+                .await;
+            let thread_subscription = ThreadSubscriptionTarget::captured(
+                connection_id,
+                thread_id,
+                thread_subscription_id,
+            );
+            self.send_server_notification_to_thread_subscriptions(
+                &[thread_subscription],
+                notification,
+            )
             .await;
+            return;
+        }
+        let envelope = timestamped_server_notification_envelope(notification.clone());
         if let Err(err) = self
             .sender
             .send(OutgoingEnvelope::ToConnection {
                 connection_id,
-                message: outgoing_message,
+                message: OutgoingMessage::AppServerNotification(envelope),
                 write_complete_tx: None,
             })
             .await
@@ -1208,19 +1502,35 @@ impl OutgoingMessageSender {
     ) {
         tracing::trace!("app-server event: {notification}");
         let envelope = timestamped_server_notification_envelope(notification.clone());
-        let outgoing_message = self
-            .thread_scoped_notification_message(connection_id, &notification, &envelope)
-            .await;
         let (write_complete_tx, write_complete_rx) = oneshot::channel();
-        if let Err(err) = self
-            .sender
-            .send(OutgoingEnvelope::ToConnection {
-                connection_id,
-                message: outgoing_message,
-                write_complete_tx: Some(write_complete_tx),
-            })
+        let send_result = if let Some(thread_id) = server_notification_thread_id(&notification) {
+            let thread_subscription_id = self
+                .ensure_thread_subscription(connection_id, thread_id)
+                .await;
+            self.send_or_defer_thread_outbound(
+                thread_id,
+                OutgoingEnvelope::ToConnection {
+                    connection_id,
+                    message: OutgoingMessage::ThreadScopedNotification(
+                        ThreadScopedServerNotification {
+                            envelope,
+                            thread_subscription_id,
+                        },
+                    ),
+                    write_complete_tx: Some(write_complete_tx),
+                },
+            )
             .await
-        {
+        } else {
+            self.sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id,
+                    message: OutgoingMessage::AppServerNotification(envelope),
+                    write_complete_tx: Some(write_complete_tx),
+                })
+                .await
+        };
+        if let Err(err) = send_result {
             warn!("failed to send server notification to client: {err:?}");
         }
         let _ = write_complete_rx.await;
