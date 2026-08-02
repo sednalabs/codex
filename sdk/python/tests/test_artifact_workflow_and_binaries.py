@@ -461,7 +461,9 @@ def test_generate_v2_all_uses_titles_for_generated_names() -> None:
     assert "ruff-format" in source
 
 
-def test_generation_preserves_current_agent_picker_protocol_fields(tmp_path: Path) -> None:
+def test_generation_preserves_current_agent_picker_protocol_fields(
+    tmp_path: Path,
+) -> None:
     """Pinned runtimes must not erase newer ancestor and spawn-request fields."""
     script = _load_update_script_module()
     generated = tmp_path / "v2_all.py"
