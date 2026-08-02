@@ -578,7 +578,7 @@ use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadState;
 use crate::thread_state::ThreadStateManager;
 use token_usage_replay::restored_token_usage_turn_id;
-use token_usage_replay::send_thread_token_usage_update_to_connection;
+use token_usage_replay::send_thread_token_usage_update_to_subscription;
 
 fn resolve_request_cwd(cwd: Option<PathBuf>) -> Result<Option<AbsolutePathBuf>, JSONRPCErrorError> {
     cwd.map(|cwd| {

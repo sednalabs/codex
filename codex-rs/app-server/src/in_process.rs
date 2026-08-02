@@ -112,6 +112,11 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
     matches!(
         notification,
         ServerNotification::ThreadStarted(_)
+            | ServerNotification::ThreadClosed(_)
+            | ServerNotification::ThreadDeleted(_)
+            | ServerNotification::ThreadArchived(_)
+            | ServerNotification::ThreadUnarchived(_)
+            | ServerNotification::ThreadStatusChanged(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
@@ -1047,6 +1052,43 @@ mod tests {
                     turns: Vec::new(),
                 },
             })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadClosed(
+                codex_app_server_protocol::ThreadClosedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadDeleted(
+                codex_app_server_protocol::ThreadDeletedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadUnarchived(
+                codex_app_server_protocol::ThreadUnarchivedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: "thread-1".to_string(),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    status_revision: Some(1),
+                },
+            )
         ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {

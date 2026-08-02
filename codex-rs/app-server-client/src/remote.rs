@@ -1402,6 +1402,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_thread_transition_blocks_for_remote_consumer_backpressure() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(AppServerEvent::Lagged { skipped: 1 })
+            .await
+            .expect("initial event should enqueue");
+
+        let mut skipped_events = 0usize;
+        let delivery = deliver_event(
+            &event_tx,
+            &mut skipped_events,
+            AppServerEvent::ThreadServerNotification {
+                thread_subscription_id: "thread-subscription".to_string(),
+                notification: ServerNotification::ThreadArchived(
+                    codex_app_server_protocol::ThreadArchivedNotification {
+                        thread_id: "thread".to_string(),
+                    },
+                ),
+            },
+        );
+        tokio::pin!(delivery);
+
+        assert!(
+            timeout(Duration::from_millis(20), &mut delivery)
+                .await
+                .is_err(),
+            "terminal thread transitions must block rather than be dropped"
+        );
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(AppServerEvent::Lagged { skipped: 1 })
+        ));
+        delivery
+            .await
+            .expect("terminal thread transition should deliver after capacity returns");
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(AppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification: ServerNotification::ThreadArchived(_),
+            }) if thread_subscription_id == "thread-subscription"
+        ));
+        assert_eq!(skipped_events, 0);
+    }
+
+    #[tokio::test]
     async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
         let (command_tx, mut command_rx) = mpsc::channel(1);
         let (_event_tx, event_rx) = mpsc::channel::<AppServerEvent>(1);

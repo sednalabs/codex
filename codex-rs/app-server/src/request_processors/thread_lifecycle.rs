@@ -1,5 +1,6 @@
 use super::*;
 use crate::extensions::send_thread_warning;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_protocol::config_types::MultiAgentMode;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
@@ -191,17 +192,38 @@ pub(super) async fn ensure_conversation_listener(
     )
     .await
     {
-        let _ = listener_task_context
-            .thread_state_manager
-            .unsubscribe_connection_from_thread(conversation_id, connection_id)
-            .await;
         listener_task_context
             .outgoing
             .unregister_thread_subscription(connection_id, conversation_id)
             .await;
+        let _ = listener_task_context
+            .thread_state_manager
+            .unsubscribe_connection_from_thread(conversation_id, connection_id)
+            .await;
         return Err(error);
     }
     Ok(EnsureConversationListenerResult::Attached)
+}
+
+/// Removes the connection-local state created by a failed resume or fork
+/// attachment before the caller can publish a response containing its token.
+///
+/// Drop the outgoing identity first: listener fanout uses that identity map, so
+/// this fences any event accepted while hydration, cursor construction, or
+/// response assembly failed. The state-manager removal then makes the
+/// connection ineligible for future listener fanout.
+pub(super) async fn rollback_failed_thread_attach(
+    thread_state_manager: &ThreadStateManager,
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_id: ThreadId,
+    connection_id: ConnectionId,
+) {
+    outgoing
+        .unregister_thread_subscription(connection_id, thread_id)
+        .await;
+    let _ = thread_state_manager
+        .unsubscribe_connection_from_thread(thread_id, connection_id)
+        .await;
 }
 
 pub(super) fn log_listener_attach_result(
@@ -501,31 +523,52 @@ pub(super) async fn handle_thread_listener_command(
             )
             .await;
         }
-        ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, goal } => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
+        ThreadListenerCommand::EmitThreadGoalUpdated {
+            turn_id,
+            goal,
+            thread_subscriptions,
+        } => {
+            send_captured_thread_goal_notification(
+                outgoing,
+                &thread_subscriptions,
+                ServerNotification::ThreadGoalUpdated(
                     ThreadGoalUpdatedNotification {
                         thread_id: conversation_id.to_string(),
                         turn_id,
                         goal,
                     },
-                ))
-                .await;
+                ),
+            )
+            .await;
         }
         ThreadListenerCommand::EmitWarning { message } => {
             send_thread_warning(outgoing, conversation_id, message).await;
         }
-        ThreadListenerCommand::EmitThreadGoalCleared => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
+        ThreadListenerCommand::EmitThreadGoalCleared {
+            thread_subscriptions,
+        } => {
+            send_captured_thread_goal_notification(
+                outgoing,
+                &thread_subscriptions,
+                ServerNotification::ThreadGoalCleared(
                     ThreadGoalClearedNotification {
                         thread_id: conversation_id.to_string(),
                     },
-                ))
-                .await;
+                ),
+            )
+            .await;
         }
-        ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+        ThreadListenerCommand::EmitThreadGoalSnapshot {
+            state_db,
+            thread_subscriptions,
+        } => {
+            send_thread_goal_snapshot_notification(
+                outgoing,
+                &thread_subscriptions,
+                conversation_id,
+                &state_db,
+            )
+            .await;
         }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,
@@ -658,6 +701,11 @@ pub(super) async fn handle_pending_thread_resume_request(
     let thread_subscription_id = outgoing
         .register_thread_subscription(connection_id, conversation_id)
         .await;
+    let thread_subscription = ThreadSubscriptionTarget::captured(
+        connection_id,
+        conversation_id,
+        thread_subscription_id.clone(),
+    );
     let connection_added = {
         let pending_thread_unloads = pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
@@ -702,9 +750,13 @@ pub(super) async fn handle_pending_thread_resume_request(
         {
             Ok(cursors) => cursors,
             Err(error) => {
-                outgoing
-                    .unregister_thread_subscription(connection_id, conversation_id)
-                    .await;
+                rollback_failed_thread_attach(
+                    thread_state_manager,
+                    outgoing,
+                    conversation_id,
+                    connection_id,
+                )
+                .await;
                 outgoing.send_error(request_id, error).await;
                 return;
             }
@@ -760,9 +812,9 @@ pub(super) async fn handle_pending_thread_resume_request(
     if let Some(token_usage_turn_id) = token_usage_turn_id {
         // Rejoining a loaded thread has the same UI contract as a cold resume, but
         // uses the live conversation state instead of reconstructing a new session.
-        send_thread_token_usage_update_to_connection(
+        send_thread_token_usage_update_to_subscription(
             outgoing,
-            connection_id,
+            &thread_subscription,
             conversation_id,
             conversation.as_ref(),
             token_usage_turn_id,
@@ -771,7 +823,13 @@ pub(super) async fn handle_pending_thread_resume_request(
     }
     if pending.emit_thread_goal_update {
         if let Some(state_db) = pending.thread_goal_state_db {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
+            send_thread_goal_snapshot_notification(
+                outgoing,
+                std::slice::from_ref(&thread_subscription),
+                conversation_id,
+                &state_db,
+            )
+            .await;
         } else {
             tracing::warn!(
                 thread_id = %conversation_id,
@@ -791,29 +849,36 @@ pub(super) async fn handle_pending_thread_resume_request(
 
 pub(super) async fn send_thread_goal_snapshot_notification(
     outgoing: &Arc<OutgoingMessageSender>,
+    thread_subscriptions: &[ThreadSubscriptionTarget],
     thread_id: ThreadId,
     state_db: &StateDbHandle,
 ) {
     match state_db.thread_goals().get_thread_goal(thread_id).await {
         Ok(Some(goal)) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
+            send_captured_thread_goal_notification(
+                outgoing,
+                thread_subscriptions,
+                ServerNotification::ThreadGoalUpdated(
                     ThreadGoalUpdatedNotification {
                         thread_id: thread_id.to_string(),
                         turn_id: None,
                         goal: api_thread_goal_from_state(goal),
                     },
-                ))
-                .await;
+                ),
+            )
+            .await;
         }
         Ok(None) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
+            send_captured_thread_goal_notification(
+                outgoing,
+                thread_subscriptions,
+                ServerNotification::ThreadGoalCleared(
                     ThreadGoalClearedNotification {
                         thread_id: thread_id.to_string(),
                     },
-                ))
-                .await;
+                ),
+            )
+            .await;
         }
         Err(err) => {
             tracing::warn!(
@@ -822,6 +887,20 @@ pub(super) async fn send_thread_goal_snapshot_notification(
             );
         }
     }
+}
+
+/// Sends a goal notification through the identities captured at the command or
+/// snapshot ingress. Goal state reads and listener FIFO delivery can both
+/// yield, so this is the single path that prevents a delayed event from
+/// acquiring a replacement subscription token.
+pub(super) async fn send_captured_thread_goal_notification(
+    outgoing: &Arc<OutgoingMessageSender>,
+    thread_subscriptions: &[ThreadSubscriptionTarget],
+    notification: ServerNotification,
+) {
+    outgoing
+        .send_server_notification_to_thread_subscriptions(thread_subscriptions, notification)
+        .await;
 }
 
 pub(crate) fn populate_thread_turns_from_history(
@@ -908,4 +987,179 @@ pub(super) fn set_thread_status_and_interrupt_stale_turns(
         }
     }
     thread.status = status;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
+    use crate::thread_state::ConnectionCapabilities;
+    use codex_app_server_protocol::ThreadGoal;
+    use codex_app_server_protocol::ThreadGoalStatus;
+    use tokio::sync::mpsc;
+
+    fn goal(thread_id: ThreadId, objective: &str) -> ThreadGoal {
+        ThreadGoal {
+            thread_id: thread_id.to_string(),
+            objective: objective.to_string(),
+            status: ThreadGoalStatus::Active,
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_post_attach_hydration_removes_subscription_and_fences_traffic() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        thread_state_manager
+            .try_ensure_connection_subscribed(
+                thread_id,
+                connection_id,
+                /*experimental_raw_events*/ false,
+            )
+            .await
+            .expect("test connection should attach");
+
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        rollback_failed_thread_attach(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+        )
+        .await;
+
+        assert!(!thread_state_manager.has_subscribers(thread_id).await);
+        assert!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .is_none()
+        );
+        let captured_after_rollback = outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
+        assert!(captured_after_rollback.is_empty());
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &captured_after_rollback,
+            ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        )
+        .await;
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "a failed attach must not leave a token that can emit tagged traffic"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_goal_update_clear_and_snapshot_fence_replaced_subscriptions() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let old_targets = outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
+        let current_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let current_targets = outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
+
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &old_targets,
+            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: None,
+                goal: goal(thread_id, "ordered-update"),
+            }),
+        )
+        .await;
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &old_targets,
+            ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        )
+        .await;
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &old_targets,
+            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: None,
+                goal: goal(thread_id, "resume-snapshot"),
+            }),
+        )
+        .await;
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &current_targets,
+            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: None,
+                goal: goal(thread_id, "current-update"),
+            }),
+        )
+        .await;
+
+        let mut delivered = Vec::new();
+        for _ in 0..4 {
+            let OutgoingEnvelope::ToConnection {
+                connection_id: delivered_connection_id,
+                message: OutgoingMessage::ThreadScopedNotification(notification),
+                ..
+            } = outgoing_rx.recv().await.expect("goal notification should enqueue")
+            else {
+                panic!("expected captured thread-scoped goal notification");
+            };
+            assert_eq!(delivered_connection_id, connection_id);
+            let name = match notification.envelope.notification {
+                ServerNotification::ThreadGoalUpdated(notification) => notification.goal.objective,
+                ServerNotification::ThreadGoalCleared(_) => "cleared".to_string(),
+                notification => panic!("expected goal notification, got {notification:?}"),
+            };
+            delivered.push((notification.thread_subscription_id, name));
+        }
+
+        assert_eq!(
+            delivered,
+            vec![
+                (old_subscription_id.clone(), "ordered-update".to_string()),
+                (old_subscription_id.clone(), "cleared".to_string()),
+                (old_subscription_id, "resume-snapshot".to_string()),
+                (current_subscription_id, "current-update".to_string()),
+            ]
+        );
+    }
 }

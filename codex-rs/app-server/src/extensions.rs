@@ -304,6 +304,13 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 let thread_id = thread_goal_event.thread_id;
                 let turn_id = thread_goal_event.turn_id;
                 let goal: ThreadGoal = thread_goal_event.goal.into();
+                // `ExtensionEventSink::emit` is synchronous. Capture the
+                // token map here, before queueing an ordered listener command
+                // or spawning a fallback, so either path preserves this
+                // event's original lifecycle identity.
+                let thread_subscriptions = self
+                    .outgoing
+                    .thread_subscription_targets_for_thread_now(thread_id);
                 if let Some(listener_command_tx) = self
                     .thread_state_manager
                     .current_listener_command_tx(thread_id)
@@ -311,6 +318,7 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                     let command = ThreadListenerCommand::EmitThreadGoalUpdated {
                         turn_id: turn_id.clone(),
                         goal: goal.clone(),
+                        thread_subscriptions: thread_subscriptions.clone(),
                     };
                     if listener_command_tx.send(command).is_ok() {
                         return;
@@ -322,13 +330,16 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 let outgoing = Arc::clone(&self.outgoing);
                 tokio::spawn(async move {
                     outgoing
-                        .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                            ThreadGoalUpdatedNotification {
-                                thread_id: thread_id.to_string(),
-                                turn_id,
-                                goal,
-                            },
-                        ))
+                        .send_server_notification_to_thread_subscriptions(
+                            &thread_subscriptions,
+                            ServerNotification::ThreadGoalUpdated(
+                                ThreadGoalUpdatedNotification {
+                                    thread_id: thread_id.to_string(),
+                                    turn_id,
+                                    goal,
+                                },
+                            ),
+                        )
                         .await;
                 });
             }
@@ -624,7 +635,9 @@ mod tests {
         });
         sink.emit(thread_goal_updated_event(thread_id, "turn-2"));
         listener_command_tx
-            .send(ThreadListenerCommand::EmitThreadGoalCleared)
+            .send(ThreadListenerCommand::EmitThreadGoalCleared {
+                thread_subscriptions: Vec::new(),
+            })
             .expect("listener command channel should be open");
 
         let mut observed = Vec::new();
@@ -638,7 +651,7 @@ mod tests {
                     observed.push(turn_id.expect("extension goal updates should include turn ids"));
                 }
                 ThreadListenerCommand::EmitWarning { message } => observed.push(message),
-                ThreadListenerCommand::EmitThreadGoalCleared => {
+                ThreadListenerCommand::EmitThreadGoalCleared { .. } => {
                     observed.push("cleared".to_string())
                 }
                 _ => panic!("unexpected listener command"),
