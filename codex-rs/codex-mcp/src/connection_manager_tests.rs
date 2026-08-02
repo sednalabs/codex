@@ -58,10 +58,16 @@ use rmcp::model::ElicitationCapability;
 use rmcp::model::Implementation;
 use rmcp::model::InitializeRequestParams;
 use rmcp::model::JsonObject;
+use rmcp::model::ListResourceTemplatesResult;
+use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
 use rmcp::model::NumberOrString;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ProtocolVersion;
+use rmcp::model::RawResource;
+use rmcp::model::RawResourceTemplate;
+use rmcp::model::Resource;
+use rmcp::model::ResourceTemplate;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
 use rmcp::model::Tool;
@@ -223,6 +229,96 @@ impl InProcessTransportFactory for TestInProcessTransportFactory {
 }
 
 #[derive(Clone)]
+struct ResourceCatalogueTransportFactory {
+    server_name: String,
+}
+
+impl ServerHandler for ResourceCatalogueTransportFactory {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::default())
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            resources: vec![Resource::new(
+                RawResource {
+                    uri: format!("memo://{}", self.server_name),
+                    name: self.server_name.clone(),
+                    title: None,
+                    description: None,
+                    mime_type: Some("text/plain".to_string()),
+                    size: None,
+                    icons: None,
+                    meta: None,
+                },
+                /*annotations*/ None,
+            )],
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult {
+            resource_templates: vec![ResourceTemplate::new(
+                RawResourceTemplate {
+                    uri_template: format!("memo://{}/{{id}}", self.server_name),
+                    name: self.server_name.clone(),
+                    title: None,
+                    description: None,
+                    mime_type: Some("text/plain".to_string()),
+                    icons: None,
+                },
+                /*annotations*/ None,
+            )],
+            next_cursor: None,
+            meta: None,
+        })
+    }
+}
+
+impl InProcessTransportFactory for ResourceCatalogueTransportFactory {
+    fn open(&self) -> BoxFuture<'static, io::Result<DuplexStream>> {
+        let server = self.clone();
+        async move {
+            let (client_stream, server_stream) = tokio::io::duplex(4096);
+            tokio::spawn(async move {
+                server
+                    .serve(server_stream)
+                    .await
+                    .expect("serve resource catalogue MCP server")
+                    .waiting()
+                    .await
+                    .expect("resource catalogue MCP server completes");
+            });
+            Ok(client_stream)
+        }
+        .boxed()
+    }
+}
+
+#[derive(Clone)]
 struct RefreshTestTransportFactory {
     tool: Tool,
     list_started: Option<Arc<Notify>>,
@@ -372,6 +468,43 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
         codex_apps_tools_cache_context: None,
         tool_catalog_cache_context: None,
     }
+}
+
+async fn create_resource_managed_client(server_name: &str) -> anyhow::Result<ManagedClient> {
+    let client = Arc::new(
+        RmcpClient::new_in_process_client(Arc::new(ResourceCatalogueTransportFactory {
+            server_name: server_name.to_string(),
+        }))
+        .await?,
+    );
+    client
+        .initialize(
+            InitializeRequestParams::new(
+                ClientCapabilities::default(),
+                Implementation::new("codex-test", "0.0.0-test"),
+            )
+            .with_protocol_version(ProtocolVersion::V_2025_06_18),
+            Some(Duration::from_secs(5)),
+            Box::new(|_, _| async { Err(anyhow!("unexpected elicitation")) }.boxed()),
+        )
+        .await?;
+
+    Ok(ManagedClient {
+        client,
+        server_info: create_test_server_info(server_name),
+        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
+            observed_generation: 0,
+            tools: Vec::new(),
+        })),
+        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
+        server_name: server_name.to_string(),
+        is_codex_apps_mcp_server: server_name == CODEX_APPS_MCP_SERVER_NAME,
+        tool_timeout: Some(Duration::from_secs(5)),
+        server_instructions: None,
+        server_supports_sandbox_state_meta_capability: false,
+        codex_apps_tools_cache_context: None,
+        tool_catalog_cache_context: None,
+    })
 }
 
 async fn create_ready_async_managed_client(tools: Vec<ToolInfo>) -> AsyncManagedClient {
@@ -1971,6 +2104,123 @@ async fn list_all_tools_reconnects_failed_codex_apps_startup_and_reuses_client()
         vec!["drive_search"]
     );
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_binding()
+-> anyhow::Result<()> {
+    let ready_server_name = "ready";
+    let ready_client = create_resource_managed_client(ready_server_name).await?;
+    let recovered_client = create_resource_managed_client(CODEX_APPS_MCP_SERVER_NAME).await?;
+    let release_reconnect = Arc::new(Notify::new());
+    let release_reconnect_for_factory = Arc::clone(&release_reconnect);
+    let reconnect_finished = Arc::new(Notify::new());
+    let reconnect_finished_for_factory = Arc::clone(&reconnect_finished);
+    let reconnect_factory = Arc::new(move || {
+        let recovered_client = recovered_client.clone();
+        let release_reconnect = Arc::clone(&release_reconnect_for_factory);
+        let reconnect_finished = Arc::clone(&reconnect_finished_for_factory);
+        async move {
+            release_reconnect.notified().await;
+            reconnect_finished.notify_one();
+            Ok(recovered_client)
+        }
+        .boxed()
+        .shared()
+    });
+    let mut manager = create_test_manager_with_failed_apps_startup(Vec::new(), reconnect_factory);
+    manager.insert_test_client(
+        ready_server_name,
+        AsyncManagedClient {
+            client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
+                ready_client,
+            ))
+            .boxed()
+            .shared(),
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: None,
+            cancel_token: CancellationToken::new(),
+        },
+    );
+    let manager = Arc::new(manager);
+    let reconnect_finished_wait = reconnect_finished.notified();
+
+    let first_binding = capture_binding(&manager).await;
+    let first_resources = first_binding.list_all_resources(|_| true).await;
+    let first_templates = first_binding.list_all_resource_templates(|_| true).await;
+    assert_eq!(
+        serde_json::to_value(&first_resources.by_server)?,
+        serde_json::json!({
+            "ready": [{
+                "uri": "memo://ready",
+                "name": "ready",
+                "mimeType": "text/plain"
+            }]
+        })
+    );
+    assert_eq!(
+        first_resources.failures,
+        vec![crate::McpResourceListingFailure {
+            server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            reason: crate::McpResourceListingFailureReason::NotReady,
+        }]
+    );
+    assert_eq!(first_templates.failures, first_resources.failures);
+    assert_eq!(
+        format!(
+            "{:#}",
+            first_binding
+                .list_resources(CODEX_APPS_MCP_SERVER_NAME, /*params*/ None)
+                .await
+                .expect_err("explicit unavailable server should fail")
+        ),
+        "MCP server 'codex_apps' was not ready for this step"
+    );
+
+    release_reconnect.notify_one();
+    reconnect_finished_wait.await;
+    let recovered_binding = capture_binding(&manager).await;
+    let recovered_resources = recovered_binding.list_all_resources(|_| true).await;
+    let recovered_templates = recovered_binding
+        .list_all_resource_templates(|_| true)
+        .await;
+    assert_eq!(recovered_resources.failures, Vec::new());
+    assert_eq!(recovered_templates.failures, Vec::new());
+    assert_eq!(
+        serde_json::to_value(&recovered_resources.by_server)?,
+        serde_json::json!({
+            "codex_apps": [{
+                "uri": "memo://codex_apps",
+                "name": "codex_apps",
+                "mimeType": "text/plain"
+            }],
+            "ready": [{
+                "uri": "memo://ready",
+                "name": "ready",
+                "mimeType": "text/plain"
+            }]
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&recovered_templates.by_server)?,
+        serde_json::json!({
+            "codex_apps": [{
+                "uriTemplate": "memo://codex_apps/{id}",
+                "name": "codex_apps",
+                "mimeType": "text/plain"
+            }],
+            "ready": [{
+                "uriTemplate": "memo://ready/{id}",
+                "name": "ready",
+                "mimeType": "text/plain"
+            }]
+        })
+    );
+    Ok(())
 }
 
 #[tokio::test(start_paused = true)]
