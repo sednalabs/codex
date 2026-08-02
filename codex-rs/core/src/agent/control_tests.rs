@@ -1019,6 +1019,29 @@ async fn inspect_agent_tree_discards_persisted_cycle_edges_before_counting() {
     assert_eq!(stale.agents[0].session_state, AgentSessionState::Stale);
     assert_eq!(stale.agents[0].direct_child_count, 0);
     assert_eq!(stale.agents[0].descendant_count, 0);
+
+    let stale_from_explicit_child = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ Some("/root/cycle"),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 3,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("an explicit stale child must not reintroduce the live canonical root");
+    assert_eq!(stale_from_explicit_child.root_agent_name, "/root/cycle");
+    assert_eq!(stale_from_explicit_child.summary.live_agents, 0);
+    assert_eq!(stale_from_explicit_child.summary.stale_agents, 1);
+    assert_eq!(stale_from_explicit_child.agents.len(), 1);
+    assert_eq!(stale_from_explicit_child.agents[0].agent_name, "/root/cycle");
+    assert_eq!(stale_from_explicit_child.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(stale_from_explicit_child.agents[0].depth, 0);
+    assert_eq!(stale_from_explicit_child.agents[0].direct_child_count, 0);
+    assert_eq!(stale_from_explicit_child.agents[0].descendant_count, 0);
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {
