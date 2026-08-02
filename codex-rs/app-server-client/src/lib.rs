@@ -160,7 +160,9 @@ impl From<AppServerEvent> for TaggedAppServerEvent {
     fn from(value: AppServerEvent) -> Self {
         match value {
             AppServerEvent::Lagged { skipped } => Self::Lagged { skipped },
-            AppServerEvent::ServerNotification(notification) => Self::ServerNotification(notification),
+            AppServerEvent::ServerNotification(notification) => {
+                Self::ServerNotification(notification)
+            }
             AppServerEvent::ServerRequest(request) => Self::ServerRequest(request),
             AppServerEvent::Disconnected { message } => Self::Disconnected { message },
         }
@@ -176,7 +178,9 @@ impl From<TaggedAppServerEvent> for AppServerEvent {
                 Self::ServerNotification(notification)
             }
             TaggedAppServerEvent::ServerRequest(request)
-            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => Self::ServerRequest(request),
+            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => {
+                Self::ServerRequest(request)
+            }
             TaggedAppServerEvent::Disconnected { message } => Self::Disconnected { message },
         }
     }
@@ -191,7 +195,9 @@ impl From<TaggedAppServerEvent> for InProcessServerEvent {
                 Self::ServerNotification(notification)
             }
             TaggedAppServerEvent::ServerRequest(request)
-            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => Self::ServerRequest(request),
+            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => {
+                Self::ServerRequest(request)
+            }
             TaggedAppServerEvent::Disconnected { .. } => {
                 unreachable!("the in-process runtime never emits transport disconnect events")
             }
