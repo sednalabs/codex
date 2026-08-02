@@ -1345,7 +1345,7 @@ impl App {
                 // remain retryable.
                 if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
                     self.agent_navigation
-                        .set_next_picker_page_cursor(/*next_cursor*/ None);
+                        .set_next_picker_page_cursor_from_continuation(/*next_cursor*/ None);
                 }
                 self.sync_active_agent_label();
                 return LoadedSubagentBackfill {
@@ -1416,13 +1416,23 @@ impl App {
                 || response.next_cursor.is_none()
                 || self.agent_navigation.next_picker_page_cursor().is_none())
         {
-            self.agent_navigation
-                .set_next_picker_page_cursor(response.next_cursor.clone());
+            if is_continuation {
+                self.agent_navigation
+                    .set_next_picker_page_cursor_from_continuation(response.next_cursor.clone());
+            } else {
+                self.agent_navigation
+                    .set_next_picker_page_cursor(response.next_cursor.clone());
+            }
         } else if !ancestor_filter_applied {
             // An older server can silently ignore an unknown ancestorThreadId. Its cursor names
             // an unfiltered global list, so do not present it as a descendant continuation.
-            self.agent_navigation
-                .set_next_picker_page_cursor(/*next_cursor*/ None);
+            if is_continuation {
+                self.agent_navigation
+                    .set_next_picker_page_cursor_from_continuation(/*next_cursor*/ None);
+            } else {
+                self.agent_navigation
+                    .set_next_picker_page_cursor(/*next_cursor*/ None);
+            }
         }
 
         // The historical relation page is sorted by update time, so it can be filled with closed
