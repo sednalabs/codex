@@ -25,6 +25,18 @@ fn typescript_schema_fixtures_match_generated() -> Result<()> {
             || generated_tree.contains_key(Path::new("PathUri.ts")),
         "stable ConfigRequirements.ts imports PathUri but PathUri.ts was not generated"
     );
+    for response_path in [
+        "v2/ThreadListResponse.ts",
+        "v2/ThreadLoadedListResponse.ts",
+    ] {
+        let response = generated_tree
+            .get(Path::new(response_path))
+            .with_context(|| format!("generated {response_path} should exist"))?;
+        anyhow::ensure!(
+            String::from_utf8_lossy(response).contains("ancestorFilterApplied?: boolean"),
+            "{response_path} must keep the older-server ancestor acknowledgement optional"
+        );
+    }
 
     Ok(())
 }
@@ -51,6 +63,11 @@ fn json_schema_fixtures_keep_subagent_activity_kind_legacy_and_terminal_detail_a
         path.extension().is_some_and(|extension| extension == "json")
             && String::from_utf8_lossy(bytes).contains("\"SubAgentActivityKind\"")
     }) {
+        anyhow::ensure!(
+            bytes.last() == Some(&b'}'),
+            "{} must use serde_json::to_vec_pretty bytes without a trailing newline",
+            path.display()
+        );
         let schema: Value = serde_json::from_slice(bytes)
             .with_context(|| format!("parse JSON schema fixture {}", path.display()))?;
         let mut activity_kinds = Vec::new();

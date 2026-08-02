@@ -9,7 +9,7 @@ export type ThreadListResponse = { data: Array<Thread>,
  *
  * Older servers omit this field. Clients must treat an omitted acknowledgement as false.
  */
-ancestorFilterApplied: boolean,
+ancestorFilterApplied?: boolean,
 /**
  * Opaque cursor to pass to the next call to continue after the last item.
  * if None, there are no more items to return.
