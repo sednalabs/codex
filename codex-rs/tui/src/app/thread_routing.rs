@@ -34,7 +34,8 @@ impl App {
                 // Saved side transcripts have no live app-server attachment. Keep shutdown local
                 // so a replay-only selection cannot issue a startup or turn interrupt while the
                 // next session is being created.
-                self.discard_thread_local_state(app_server, side_thread_id).await;
+                self.discard_thread_local_state(app_server, side_thread_id)
+                    .await;
             } else {
                 self.discard_side_thread(app_server, side_thread_id).await;
             }
@@ -59,10 +60,7 @@ impl App {
     ///
     /// Notifications and server requests can both arrive before a resume, fork, or primary
     /// session response. A later real attachment promotes the same channel to `Live`.
-    fn ensure_thread_buffer_channel(
-        &mut self,
-        thread_id: ThreadId,
-    ) -> &mut ThreadEventChannel {
+    fn ensure_thread_buffer_channel(&mut self, thread_id: ThreadId) -> &mut ThreadEventChannel {
         self.thread_event_channels
             .entry(thread_id)
             .or_insert_with(|| {
@@ -253,8 +251,10 @@ impl App {
                 *binding = ThreadSubscriptionBinding::Tombstoned(*previous_target);
             }
         }
-        self.thread_subscription_targets
-            .insert(thread_subscription_id, ThreadSubscriptionBinding::Active(target));
+        self.thread_subscription_targets.insert(
+            thread_subscription_id,
+            ThreadSubscriptionBinding::Active(target),
+        );
     }
 
     /// Captures the lifecycle expected by an app-server ingress listener. Before the first
@@ -294,8 +294,7 @@ impl App {
     /// pre-primary buffer target, which is checked again when the primary attachment drains it.
     pub(super) fn thread_accepts_ingress_target(&self, target: ThreadLifecycleTarget) -> bool {
         !self.thread_is_discarded(target.thread_id)
-            && (self.thread_lifecycle_generation(target.thread_id)
-                == target.lifecycle_generation
+            && (self.thread_lifecycle_generation(target.thread_id) == target.lifecycle_generation
                 || (self.primary_thread_id.is_none()
                     && self.next_thread_lifecycle_generation(target.thread_id)
                         == target.lifecycle_generation))
@@ -318,7 +317,8 @@ impl App {
             .entry(thread_id)
             .or_default();
         *generation = generation.wrapping_add(1);
-        self.discarded_thread_generations.insert(thread_id, *generation);
+        self.discarded_thread_generations
+            .insert(thread_id, *generation);
         for binding in self.thread_subscription_targets.values_mut() {
             if let ThreadSubscriptionBinding::Active(target) = binding
                 && target.thread_id == thread_id
@@ -359,14 +359,15 @@ impl App {
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
             return false;
         };
-        if !channel.has_live_attachment() || self.agent_navigation.is_terminally_closed(thread_id)
-        {
+        if !channel.has_live_attachment() || self.agent_navigation.is_terminally_closed(thread_id) {
             return false;
         }
 
         self.side_threads.get(&thread_id).is_none_or(|side| {
             self.primary_thread_id == Some(side.parent_thread_id)
-                || self.thread_event_channels.contains_key(&side.parent_thread_id)
+                || self
+                    .thread_event_channels
+                    .contains_key(&side.parent_thread_id)
         })
     }
 
@@ -665,21 +666,16 @@ impl App {
             }
 
             let store = store.lock().await;
-            requests.extend(
-                store
-                    .pending_replay_requests()
-                    .into_iter()
-                    .map(|request| {
-                        let target = self
-                            .pending_app_server_requests
-                            .thread_target_for_request(&request)
-                            .unwrap_or(ThreadLifecycleTarget {
-                                thread_id,
-                                lifecycle_generation: self.thread_lifecycle_generation(thread_id),
-                            });
-                        (target, request)
-                    }),
-            );
+            requests.extend(store.pending_replay_requests().into_iter().map(|request| {
+                let target = self
+                    .pending_app_server_requests
+                    .thread_target_for_request(&request)
+                    .unwrap_or(ThreadLifecycleTarget {
+                        thread_id,
+                        lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+                    });
+                (target, request)
+            }));
         }
         requests
     }
@@ -1536,10 +1532,8 @@ impl App {
                 thread_id,
                 lifecycle_generation: self.thread_lifecycle_generation(thread_id),
             });
-        if !self.thread_accepts_lifecycle_generation(
-            target.thread_id,
-            target.lifecycle_generation,
-        ) {
+        if !self.thread_accepts_lifecycle_generation(target.thread_id, target.lifecycle_generation)
+        {
             tracing::debug!(
                 thread_id = %target.thread_id,
                 lifecycle_generation = target.lifecycle_generation,
@@ -1705,12 +1699,8 @@ impl App {
             store.set_session(session.clone(), turns.clone());
         }
         if let Some(app_server) = app_server {
-            self.bind_thread_subscription_and_flush(
-                app_server,
-                thread_id,
-                thread_subscription_id,
-            )
-            .await;
+            self.bind_thread_subscription_and_flush(app_server, thread_id, thread_subscription_id)
+                .await;
         }
         self.activate_thread_channel(thread_id).await;
         self.chat_widget
@@ -1766,7 +1756,8 @@ impl App {
                     .await;
             } else {
                 self.mark_thread_discarded(stale_thread_id);
-                self.pending_app_server_requests.clear_thread(stale_thread_id);
+                self.pending_app_server_requests
+                    .clear_thread(stale_thread_id);
             }
         }
         for pending_event in matching_events {
@@ -1800,17 +1791,20 @@ impl App {
     ) -> Result<()> {
         if let Some(primary_thread_id) = self.primary_thread_id {
             if primary_thread_id != thread_id {
-                return self.enqueue_thread_notification(thread_id, notification).await;
+                return self
+                    .enqueue_thread_notification(thread_id, notification)
+                    .await;
             }
             return self
                 .enqueue_thread_notification(primary_thread_id, notification)
                 .await;
         }
-        self.pending_primary_events.push_back(PendingPrimaryThreadEvent {
-            thread_id,
-            lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
-            event: ThreadBufferedEvent::Notification(notification),
-        });
+        self.pending_primary_events
+            .push_back(PendingPrimaryThreadEvent {
+                thread_id,
+                lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
+                event: ThreadBufferedEvent::Notification(notification),
+            });
         Ok(())
     }
 
@@ -1823,13 +1817,16 @@ impl App {
             if primary_thread_id != thread_id {
                 return self.enqueue_thread_request(thread_id, request).await;
             }
-            return self.enqueue_thread_request(primary_thread_id, request).await;
+            return self
+                .enqueue_thread_request(primary_thread_id, request)
+                .await;
         }
-        self.pending_primary_events.push_back(PendingPrimaryThreadEvent {
-            thread_id,
-            lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
-            event: ThreadBufferedEvent::Request(request),
-        });
+        self.pending_primary_events
+            .push_back(PendingPrimaryThreadEvent {
+                thread_id,
+                lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
+                event: ThreadBufferedEvent::Request(request),
+            });
         Ok(())
     }
 

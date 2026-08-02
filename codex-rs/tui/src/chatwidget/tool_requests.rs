@@ -400,8 +400,11 @@ impl ChatWidget {
         request: ApprovalRequest,
         app_event_tx: crate::app_event_sender::AppEventSender,
     ) {
-        self.bottom_pane
-            .push_approval_request_with_sender(request, app_event_tx, &self.config.features);
+        self.bottom_pane.push_approval_request_with_sender(
+            request,
+            app_event_tx,
+            &self.config.features,
+        );
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Waiting,
             /*body*/ None,

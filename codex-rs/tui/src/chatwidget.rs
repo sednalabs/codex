@@ -1820,12 +1820,11 @@ impl ChatWidget {
             tracing::warn!("failed to append to message history: no active thread id");
             return;
         };
-        self.app_event_tx
-            .send(AppEvent::AppendMessageHistoryEntry {
-                thread_id,
-                lifecycle_generation: self.thread_lifecycle_generation,
-                text,
-            });
+        self.app_event_tx.send(AppEvent::AppendMessageHistoryEntry {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation,
+            text,
+        });
     }
 
     pub(crate) fn prepare_local_op_submission(&mut self, op: &AppCommand) {
@@ -1886,7 +1885,8 @@ impl ChatWidget {
 
     pub(crate) fn set_thread_lifecycle_generation(&mut self, generation: u64) {
         self.thread_lifecycle_generation = generation;
-        self.app_event_tx.set_thread_lifecycle_generation(generation);
+        self.app_event_tx
+            .set_thread_lifecycle_generation(generation);
     }
 
     pub(crate) fn thread_name(&self) -> Option<String> {

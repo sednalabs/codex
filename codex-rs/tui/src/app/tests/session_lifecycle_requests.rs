@@ -411,7 +411,8 @@ async fn start_recording_app_server_with_picker_backfill_test_behavior(
 }
 
 #[tokio::test]
-async fn primary_reset_rejects_buffered_request_before_a_different_primary_attaches() -> Result<()> {
+async fn primary_reset_rejects_buffered_request_before_a_different_primary_attaches() -> Result<()>
+{
     let mut app = make_test_app().await;
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
@@ -432,7 +433,11 @@ async fn primary_reset_rejects_buffered_request_before_a_different_primary_attac
     app.reset_thread_event_state(Some(&app_server)).await;
     assert!(app.thread_is_discarded(startup_thread_a));
     assert!(app.pending_primary_events.is_empty());
-    assert!(app.pending_app_server_requests.pending_thread_ids().is_empty());
+    assert!(
+        app.pending_app_server_requests
+            .pending_thread_ids()
+            .is_empty()
+    );
 
     let thread_b = app_server.start_thread(&app.config).await?;
     let thread_b_id = thread_b.session.thread_id;
@@ -463,8 +468,8 @@ async fn primary_reset_rejects_buffered_request_before_a_different_primary_attac
 }
 
 #[tokio::test]
-async fn stale_thread_operation_after_reattach_cannot_issue_an_rpc_but_current_generation_can(
-) -> Result<()> {
+async fn stale_thread_operation_after_reattach_cannot_issue_an_rpc_but_current_generation_can()
+-> Result<()> {
     let mut app = make_test_app().await;
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();

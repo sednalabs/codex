@@ -651,8 +651,7 @@ async fn inspect_agent_tree_explicit_target_respects_scope_and_serializes_stale_
         .expect("child thread should exist");
     persist_thread_for_tree_resume(&root_thread, "root persisted").await;
     persist_thread_for_tree_resume(&child_thread, "child persisted").await;
-    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id])
-        .await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
     harness
         .control
         .close_agent(child_thread_id)
@@ -698,8 +697,7 @@ async fn inspect_agent_tree_explicit_target_respects_scope_and_serializes_stale_
     assert_eq!(stale.agents[0].session_state, AgentSessionState::Stale);
     assert_eq!(stale.agents[0].agent_status, None);
     assert_eq!(
-        serde_json::to_value(&stale).expect("stale receipt should serialize")["agents"][0]
-            ["agent_status"],
+        serde_json::to_value(&stale).expect("stale receipt should serialize")["agents"][0]["agent_status"],
         serde_json::Value::Null
     );
 
@@ -722,7 +720,10 @@ async fn inspect_agent_tree_explicit_target_respects_scope_and_serializes_stale_
     assert_eq!(stale_from_live_root.agents.len(), 1);
     assert_eq!(stale_from_live_root.agents[0].agent_name, "/root/closed");
     assert_eq!(stale_from_live_root.agents[0].depth, 1);
-    assert_eq!(stale_from_live_root.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(
+        stale_from_live_root.agents[0].session_state,
+        AgentSessionState::Stale
+    );
 
     let agent_roots = vec![child_path.to_string()];
     let stale_filtered = harness
@@ -821,8 +822,7 @@ async fn inspect_agent_tree_never_reclassifies_live_or_open_paths_as_stale() {
         .expect("child thread should exist");
     persist_thread_for_tree_resume(&root_thread, "root persisted").await;
     persist_thread_for_tree_resume(&child_thread, "child persisted").await;
-    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id])
-        .await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
 
     let stale_live_err = harness
         .control
@@ -945,14 +945,16 @@ async fn inspect_agent_tree_discards_persisted_cycle_edges_before_counting() {
         .expect("child thread should exist");
     persist_thread_for_tree_resume(&root_thread, "root persisted").await;
     persist_thread_for_tree_resume(&child_thread, "child persisted").await;
-    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id])
-        .await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
     harness
         .control
         .close_agent(child_thread_id)
         .await
         .expect("child close should succeed");
-    let state_db = harness.state_db.as_ref().expect("state db should be configured");
+    let state_db = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be configured");
     state_db
         .upsert_thread_spawn_edge(
             child_thread_id,
@@ -1037,8 +1039,14 @@ async fn inspect_agent_tree_discards_persisted_cycle_edges_before_counting() {
     assert_eq!(stale_from_explicit_child.summary.live_agents, 0);
     assert_eq!(stale_from_explicit_child.summary.stale_agents, 1);
     assert_eq!(stale_from_explicit_child.agents.len(), 1);
-    assert_eq!(stale_from_explicit_child.agents[0].agent_name, "/root/cycle");
-    assert_eq!(stale_from_explicit_child.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(
+        stale_from_explicit_child.agents[0].agent_name,
+        "/root/cycle"
+    );
+    assert_eq!(
+        stale_from_explicit_child.agents[0].session_state,
+        AgentSessionState::Stale
+    );
     assert_eq!(stale_from_explicit_child.agents[0].depth, 0);
     assert_eq!(stale_from_explicit_child.agents[0].direct_child_count, 0);
     assert_eq!(stale_from_explicit_child.agents[0].descendant_count, 0);

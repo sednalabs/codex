@@ -84,9 +84,7 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     loaded_ack = ThreadLoadedListResponse.model_validate(
         {"data": ["child-thread-1"], "ancestorFilterApplied": True}
     )
-    thread_list_ack = ThreadListResponse.model_validate(
-        {"data": [], "ancestorFilterApplied": True}
-    )
+    thread_list_ack = ThreadListResponse.model_validate({"data": [], "ancestorFilterApplied": True})
     status_changed = ThreadStatusChangedNotification.model_validate(
         {
             "status": {"type": "idle"},
@@ -123,15 +121,13 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
         if variant.get("title") == "CollabAgentToolCallThreadItem"
     )
     collab_model_aliases = {
-        field.alias or name
-        for name, field in CollabAgentToolCallThreadItem.model_fields.items()
+        field.alias or name for name, field in CollabAgentToolCallThreadItem.model_fields.items()
     }
-    status_changed_properties = schema_bundle["definitions"][
-        "ThreadStatusChangedNotification"
-    ]["properties"]
+    status_changed_properties = schema_bundle["definitions"]["ThreadStatusChangedNotification"][
+        "properties"
+    ]
     status_changed_model_aliases = {
-        field.alias or name
-        for name, field in ThreadStatusChangedNotification.model_fields.items()
+        field.alias or name for name, field in ThreadStatusChangedNotification.model_fields.items()
     }
 
     assert _params_dict(ancestor_params) == {"ancestorThreadId": "root-thread-1"}

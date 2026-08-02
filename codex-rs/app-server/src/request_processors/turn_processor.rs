@@ -1392,11 +1392,13 @@ impl TurnRequestProcessor {
             .outgoing
             .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
             .await;
-        let thread_subscription = created_subscription.then(|| ThreadSubscriptionTarget::captured(
-            request_id.connection_id,
-            thread_id,
-            thread_subscription_id,
-        ));
+        let thread_subscription = created_subscription.then(|| {
+            ThreadSubscriptionTarget::captured(
+                request_id.connection_id,
+                thread_id,
+                thread_subscription_id,
+            )
+        });
         thread.session_id = review_thread.session_configured().session_id.to_string();
         self.thread_watch_manager
             .upsert_thread_silently(&thread.id)

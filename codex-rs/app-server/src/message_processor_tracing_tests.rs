@@ -473,12 +473,12 @@ async fn read_thread_started_notification(
                     continue;
                 }
                 let notification = match message {
-                    crate::outgoing_message::OutgoingMessage::AppServerNotification(notification) => {
-                        notification
-                    }
-                    crate::outgoing_message::OutgoingMessage::ThreadScopedNotification(notification) => {
-                        notification.envelope
-                    }
+                    crate::outgoing_message::OutgoingMessage::AppServerNotification(
+                        notification,
+                    ) => notification,
+                    crate::outgoing_message::OutgoingMessage::ThreadScopedNotification(
+                        notification,
+                    ) => notification.envelope,
                     _ => continue,
                 };
                 if matches!(

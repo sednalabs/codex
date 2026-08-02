@@ -505,11 +505,11 @@ class ThreadListResponse(BaseModel):
         "ancestor_filter_applied",
     ):
         assert field in once
-    assert "alias=\"requestedModel\"" in once
-    assert "alias=\"requestedReasoningEffort\"" in once
-    assert "alias=\"statusRevision\"" in once
+    assert 'alias="requestedModel"' in once
+    assert 'alias="requestedReasoningEffort"' in once
+    assert 'alias="statusRevision"' in once
     assert "ge=0" in once
-    assert once.count("alias=\"ancestorFilterApplied\"") == 2
+    assert once.count('alias="ancestorFilterApplied"') == 2
     assert "Effective model selected for the spawned agent" in once
     assert "Effective reasoning effort selected for the spawned agent" in once
 

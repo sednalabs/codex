@@ -9,11 +9,11 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 
+use crate::protocol::spawn_provenance::normalize_legacy_canonical_spawn_start_provenance;
+use crate::protocol::spawn_provenance::normalize_legacy_failed_canonical_spawn_terminal_effective_identity;
 use crate::protocol::thread_history::ThreadHistoryChangeSet;
 use crate::protocol::thread_history::ThreadHistoryItemChange;
 use crate::protocol::thread_history::ThreadHistoryTurnChange;
-use crate::protocol::spawn_provenance::normalize_legacy_canonical_spawn_start_provenance;
-use crate::protocol::spawn_provenance::normalize_legacy_failed_canonical_spawn_terminal_effective_identity;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
 use crate::protocol::v2::TurnStatus;

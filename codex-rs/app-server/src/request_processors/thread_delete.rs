@@ -70,15 +70,11 @@ impl ThreadRequestProcessor {
                 })?;
         }
 
-        deleted_threads.extend(
-            delete_order
-                .into_iter()
-                .map(|thread_id| {
-                    let thread_id_string = thread_id.to_string();
-                    let recipients = terminal_recipients.remove(&thread_id).unwrap_or_default();
-                    (thread_id_string, recipients)
-                }),
-        );
+        deleted_threads.extend(delete_order.into_iter().map(|thread_id| {
+            let thread_id_string = thread_id.to_string();
+            let recipients = terminal_recipients.remove(&thread_id).unwrap_or_default();
+            (thread_id_string, recipients)
+        }));
         Ok(ThreadDeleteResponse {})
     }
 
@@ -149,7 +145,10 @@ impl ThreadRequestProcessor {
         }
     }
 
-    async fn prepare_thread_for_delete(&self, thread_id: ThreadId) -> Vec<ThreadSubscriptionTarget> {
+    async fn prepare_thread_for_delete(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<ThreadSubscriptionTarget> {
         let terminal_recipients = self.prepare_thread_for_removal(thread_id, "delete").await;
         if let Some(log_db) = self.log_db.as_ref() {
             log_db.flush().await;

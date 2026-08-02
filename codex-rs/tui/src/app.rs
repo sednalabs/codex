@@ -1156,7 +1156,7 @@ See the Codex keymap documentation for supported actions and examples."
                 started.turns,
                 crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
             )
-                .await?;
+            .await?;
             if should_prompt_for_paused_goal_after_startup_resume {
                 app.maybe_prompt_resume_paused_goal_after_resume(&mut app_server, thread_id)
                     .await;

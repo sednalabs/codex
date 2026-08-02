@@ -104,9 +104,7 @@ pub(crate) struct OutgoingMessageSender {
     /// The immutable subscriber identities through which a thread-scoped
     /// request was issued. Its resolution must close that same lifecycle,
     /// even when the connection has since reattached with a newer token.
-    thread_request_resolution_targets: Mutex<
-        HashMap<RequestId, Vec<ThreadSubscriptionTarget>>,
-    >,
+    thread_request_resolution_targets: Mutex<HashMap<RequestId, Vec<ThreadSubscriptionTarget>>>,
     /// Incoming requests that are still waiting on a final response or error.
     /// We keep them here because this is where responses, errors, and
     /// disconnect cleanup all get handled.
@@ -534,10 +532,7 @@ impl OutgoingMessageSender {
         }
         {
             let mut resolution_targets = self.thread_request_resolution_targets.lock().await;
-            resolution_targets.insert(
-                outgoing_message_id.clone(),
-                thread_subscriptions.to_vec(),
-            );
+            resolution_targets.insert(outgoing_message_id.clone(), thread_subscriptions.to_vec());
         }
 
         let mut send_error = None;
@@ -559,10 +554,8 @@ impl OutgoingMessageSender {
                 send_error = Some(err);
                 break;
             } else {
-                self.analytics_events_client.track_server_request(
-                    thread_subscription.connection_id.0,
-                    request.clone(),
-                );
+                self.analytics_events_client
+                    .track_server_request(thread_subscription.connection_id.0, request.clone());
             }
         }
 
@@ -701,7 +694,10 @@ impl OutgoingMessageSender {
         &self,
         id: &RequestId,
     ) -> Option<Vec<ThreadSubscriptionTarget>> {
-        self.thread_request_resolution_targets.lock().await.remove(id)
+        self.thread_request_resolution_targets
+            .lock()
+            .await
+            .remove(id)
     }
 
     pub(crate) async fn pending_requests_for_thread(
@@ -774,14 +770,13 @@ impl OutgoingMessageSender {
             .await
             .iter()
             .filter_map(|((connection_id, candidate_thread_id), subscription_id)| {
-                (*candidate_thread_id == thread_id)
-                    .then(|| {
-                        ThreadSubscriptionTarget::captured(
-                            *connection_id,
-                            thread_id,
-                            subscription_id.clone(),
-                        )
-                    })
+                (*candidate_thread_id == thread_id).then(|| {
+                    ThreadSubscriptionTarget::captured(
+                        *connection_id,
+                        thread_id,
+                        subscription_id.clone(),
+                    )
+                })
             })
             .collect()
     }
@@ -801,9 +796,11 @@ impl OutgoingMessageSender {
             "app-server event: {notification}"
         );
         if let Some(thread_id) = server_notification_thread_id(&notification) {
-            debug_assert!(thread_subscriptions
-                .iter()
-                .all(|thread_subscription| thread_subscription.thread_id == thread_id));
+            debug_assert!(
+                thread_subscriptions
+                    .iter()
+                    .all(|thread_subscription| thread_subscription.thread_id == thread_id)
+            );
         }
         let envelope = timestamped_server_notification_envelope(notification);
         for thread_subscription in thread_subscriptions {
@@ -1128,16 +1125,28 @@ fn server_notification_thread_id(notification: &ServerNotification) -> Option<Th
     let thread_id = match notification {
         ServerNotification::Error(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadStarted(notification) => Some(notification.thread.id.as_str()),
-        ServerNotification::ThreadStatusChanged(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadStatusChanged(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadArchived(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadDeleted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadUnarchived(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadClosed(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadNameUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadTokenUsageUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadGoalUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadGoalCleared(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadSettingsUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadNameUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadTokenUsageUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadGoalUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadGoalCleared(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadSettingsUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::TurnStarted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::HookStarted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::TurnCompleted(notification) => Some(notification.thread_id.as_str()),
@@ -1145,38 +1154,90 @@ fn server_notification_thread_id(notification: &ServerNotification) -> Option<Th
         ServerNotification::TurnDiffUpdated(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::TurnPlanUpdated(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ItemStarted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ItemGuardianApprovalReviewStarted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ItemCompleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::RawResponseItemCompleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::RawResponseCompleted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::AgentMessageDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::RawResponseItemCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::RawResponseCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::AgentMessageDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::PlanDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::CommandExecutionOutputDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::TerminalInteraction(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::FileChangeOutputDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::FileChangePatchUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ServerRequestResolved(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::McpToolCallProgress(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ReasoningSummaryTextDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ReasoningSummaryPartAdded(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ReasoningTextDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::CommandExecutionOutputDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::TerminalInteraction(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::FileChangeOutputDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::FileChangePatchUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ServerRequestResolved(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::McpToolCallProgress(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ReasoningSummaryTextDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ReasoningSummaryPartAdded(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ReasoningTextDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ContextCompacted(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ModelRerouted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ModelVerification(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ModelSafetyBufferingUpdated(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::TurnModerationMetadata(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeStarted(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeItemAdded(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeTranscriptDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeTranscriptDone(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeOutputAudioDelta(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeSdp(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeError(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::ThreadRealtimeClosed(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ModelVerification(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ModelSafetyBufferingUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::TurnModerationMetadata(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeStarted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeItemAdded(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeTranscriptDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeTranscriptDone(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeOutputAudioDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeSdp(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeError(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeClosed(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::Warning(notification) => notification.thread_id.as_deref(),
         ServerNotification::GuardianWarning(notification) => Some(notification.thread_id.as_str()),
-        ServerNotification::McpServerStatusUpdated(notification) => notification.thread_id.as_deref(),
+        ServerNotification::McpServerStatusUpdated(notification) => {
+            notification.thread_id.as_deref()
+        }
         ServerNotification::SkillsChanged(_)
         | ServerNotification::McpServerOauthLoginCompleted(_)
         | ServerNotification::AccountUpdated(_)
@@ -1244,9 +1305,9 @@ mod tests {
     use codex_app_server_protocol::RateLimitWindow;
     use codex_app_server_protocol::ServerRequestResolvedNotification;
     use codex_app_server_protocol::ServerResponse;
-    use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::ThreadArchivedNotification;
     use codex_app_server_protocol::ThreadClosedNotification;
+    use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
     use pretty_assertions::assert_eq;
@@ -1703,7 +1764,10 @@ mod tests {
                 }),
             )
             .await;
-        let first = rx.recv().await.expect("first thread notification should be queued");
+        let first = rx
+            .recv()
+            .await
+            .expect("first thread notification should be queued");
 
         let new_subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
@@ -1716,7 +1780,10 @@ mod tests {
                 }),
             )
             .await;
-        let second = rx.recv().await.expect("second thread notification should be queued");
+        let second = rx
+            .recv()
+            .await
+            .expect("second thread notification should be queued");
 
         let subscription_id = |envelope: OutgoingEnvelope| match envelope {
             OutgoingEnvelope::ToConnection {
@@ -1750,7 +1817,10 @@ mod tests {
                 Some(thread_id),
             )
             .await;
-        let stale = rx.recv().await.expect("current-time request should be queued");
+        let stale = rx
+            .recv()
+            .await
+            .expect("current-time request should be queued");
 
         let new_subscription_id = outgoing
             .register_thread_subscription(connection_id, thread_id)
@@ -1764,7 +1834,10 @@ mod tests {
                 Some(thread_id),
             )
             .await;
-        let current = rx.recv().await.expect("replacement request should be queued");
+        let current = rx
+            .recv()
+            .await
+            .expect("replacement request should be queued");
 
         let subscription_and_thread_id = |envelope: OutgoingEnvelope| match envelope {
             OutgoingEnvelope::ToConnection {
@@ -1828,9 +1901,11 @@ mod tests {
             }))
             .await;
         let (old_request_id, _old_request_rx) = old_listener
-            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
-                thread_id: thread_id.to_string(),
-            }))
+            .send_request(ServerRequestPayload::CurrentTimeRead(
+                CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                },
+            ))
             .await;
         let old_resolution_targets = outgoing
             .take_thread_request_resolution_targets(&old_request_id)
@@ -1852,9 +1927,11 @@ mod tests {
             }))
             .await;
         let (new_request_id, _new_request_rx) = new_listener
-            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
-                thread_id: thread_id.to_string(),
-            }))
+            .send_request(ServerRequestPayload::CurrentTimeRead(
+                CurrentTimeReadParams {
+                    thread_id: thread_id.to_string(),
+                },
+            ))
             .await;
         let new_resolution_targets = outgoing
             .take_thread_request_resolution_targets(&new_request_id)
@@ -1895,18 +1972,23 @@ mod tests {
             subscription_ids.push(subscription_id);
         }
 
-        assert!(subscription_ids[..3]
-            .iter()
-            .all(|subscription_id| subscription_id == &old_subscription_id));
-        assert!(subscription_ids[3..]
-            .iter()
-            .all(|subscription_id| subscription_id == &new_subscription_id));
+        assert!(
+            subscription_ids[..3]
+                .iter()
+                .all(|subscription_id| subscription_id == &old_subscription_id)
+        );
+        assert!(
+            subscription_ids[3..]
+                .iter()
+                .all(|subscription_id| subscription_id == &new_subscription_id)
+        );
     }
 
     #[tokio::test]
     async fn captured_terminal_recipients_survive_teardown_without_recreation() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
-        let outgoing = OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
         let thread_id = ThreadId::new();
         let first_connection = ConnectionId(1);
         let second_connection = ConnectionId(2);
@@ -1945,8 +2027,14 @@ mod tests {
             };
             delivered.insert(connection_id, notification.thread_subscription_id);
         }
-        assert_eq!(delivered.get(&first_connection), Some(&first_subscription_id));
-        assert_eq!(delivered.get(&second_connection), Some(&second_subscription_id));
+        assert_eq!(
+            delivered.get(&first_connection),
+            Some(&first_subscription_id)
+        );
+        assert_eq!(
+            delivered.get(&second_connection),
+            Some(&second_subscription_id)
+        );
     }
 
     #[tokio::test]

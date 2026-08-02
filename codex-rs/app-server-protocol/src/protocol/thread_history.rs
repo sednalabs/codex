@@ -6,8 +6,8 @@ use crate::protocol::item_builders::build_file_change_end_item;
 use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::item_builders::review_output_text;
 use crate::protocol::spawn_provenance::normalize_legacy_canonical_spawn_start_provenance;
-use crate::protocol::spawn_provenance::normalize_legacy_failed_spawn_effective_identity;
 use crate::protocol::spawn_provenance::normalize_legacy_failed_canonical_spawn_terminal_effective_identity;
+use crate::protocol::spawn_provenance::normalize_legacy_failed_spawn_effective_identity;
 use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
@@ -4578,7 +4578,9 @@ mod tests {
                 started_at_ms: 1,
             }));
 
-            let started_turn = builder.turn_snapshot(&turn_id).expect("started legacy turn");
+            let started_turn = builder
+                .turn_snapshot(&turn_id)
+                .expect("started legacy turn");
             let [ThreadItem::CollabAgentToolCall(started_spawn)] = started_turn.items.as_slice()
             else {
                 panic!("expected a started legacy canonical spawn");
@@ -4600,13 +4602,18 @@ mod tests {
                 completed_at_ms: 2,
             }));
 
-            let completed_turn = builder.turn_snapshot(&turn_id).expect("completed legacy turn");
+            let completed_turn = builder
+                .turn_snapshot(&turn_id)
+                .expect("completed legacy turn");
             let [ThreadItem::CollabAgentToolCall(completed_spawn)] =
                 completed_turn.items.as_slice()
             else {
                 panic!("expected a completed legacy canonical spawn");
             };
-            assert_eq!(completed_spawn.model.as_deref(), Some("gpt-effective-model"));
+            assert_eq!(
+                completed_spawn.model.as_deref(),
+                Some("gpt-effective-model")
+            );
             assert_eq!(
                 completed_spawn.reasoning_effort,
                 Some(codex_protocol::openai_models::ReasoningEffort::High)

@@ -468,7 +468,8 @@ impl App {
     ) {
         self.mark_thread_discarded(thread_id);
         for request in self.pending_app_server_requests.clear_thread(thread_id) {
-            self.chat_widget.dismiss_app_server_request(&request.request);
+            self.chat_widget
+                .dismiss_app_server_request(&request.request);
             if let Err(err) = self
                 .reject_app_server_request(
                     app_server,

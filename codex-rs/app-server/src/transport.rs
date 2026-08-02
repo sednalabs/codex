@@ -211,10 +211,7 @@ fn filter_outgoing_message_for_connection(
                 params.strip_experimental_fields();
             }
             OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
-                request: ServerRequest::CommandExecutionRequestApproval {
-                    request_id,
-                    params,
-                },
+                request: ServerRequest::CommandExecutionRequestApproval { request_id, params },
                 thread_subscription_id,
             })
         }

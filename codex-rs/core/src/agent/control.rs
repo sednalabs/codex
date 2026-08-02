@@ -846,9 +846,8 @@ impl AgentControl {
                     .await?
                 };
 
-                let (thread_id, session_state) = resolved_root.ok_or_else(|| {
-                    inspect_agent_tree_path_not_found(agent_root.as_str(), scope)
-                })?;
+                let (thread_id, session_state) = resolved_root
+                    .ok_or_else(|| inspect_agent_tree_path_not_found(agent_root.as_str(), scope))?;
                 if seen_thread_ids.insert(thread_id) {
                     let depth =
                         agent_name_relative_depth(agent_root.as_str(), tree_root_name.as_str());
@@ -859,9 +858,7 @@ impl AgentControl {
             traversal_roots.extend(
                 resolved_roots
                     .into_iter()
-                    .map(|(_, thread_id, session_state, depth)| {
-                        (thread_id, session_state, depth)
-                    }),
+                    .map(|(_, thread_id, session_state, depth)| (thread_id, session_state, depth)),
             );
         }
 
@@ -1587,10 +1584,7 @@ fn inspect_agent_tree_path_not_found(agent_path: &str, scope: AgentTreeScope) ->
     ))
 }
 
-fn agent_tree_scope_includes(
-    scope: AgentTreeScope,
-    session_state: AgentSessionState,
-) -> bool {
+fn agent_tree_scope_includes(scope: AgentTreeScope, session_state: AgentSessionState) -> bool {
     matches!(
         (scope, session_state),
         (AgentTreeScope::All, _)

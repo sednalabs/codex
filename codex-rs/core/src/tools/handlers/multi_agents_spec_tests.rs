@@ -727,15 +727,20 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
         ])
     );
     assert_eq!(
-        output_schema["properties"]["agents"]["items"]["properties"]["agent_status"]
-            ["anyOf"][1],
+        output_schema["properties"]["agents"]["items"]["properties"]["agent_status"]["anyOf"][1],
         json!({"type": "null"}),
         "stale rows serialize a null status because no live runtime status exists"
     );
     assert_eq!(
-        output_schema["properties"]["agents"]["items"]["properties"]["agent_status"]
-            ["anyOf"][0]["oneOf"][0]["enum"],
-        json!(["pending_init", "running", "interrupted", "shutdown", "not_found"]),
+        output_schema["properties"]["agents"]["items"]["properties"]["agent_status"]["anyOf"][0]["oneOf"]
+            [0]["enum"],
+        json!([
+            "pending_init",
+            "running",
+            "interrupted",
+            "shutdown",
+            "not_found"
+        ]),
         "live rows retain the complete shared agent-status schema"
     );
 }

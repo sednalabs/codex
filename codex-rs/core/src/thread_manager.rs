@@ -1288,10 +1288,10 @@ impl ThreadManager {
         limit: usize,
     ) -> CodexResult<(Vec<ThreadId>, Option<ThreadId>)> {
         let limit = bounded_loaded_thread_list_page_size(limit);
-        let candidate_limit = limit
-            .saturating_mul(4)
-            .saturating_add(1)
-            .clamp(limit.saturating_add(1), MAX_LOADED_THREAD_LIST_CANDIDATE_SCAN);
+        let candidate_limit = limit.saturating_mul(4).saturating_add(1).clamp(
+            limit.saturating_add(1),
+            MAX_LOADED_THREAD_LIST_CANDIDATE_SCAN,
+        );
         let (candidates, candidate_next_cursor) = self
             .state
             .list_thread_ids_page(cursor, candidate_limit)
