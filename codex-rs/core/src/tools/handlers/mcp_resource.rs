@@ -412,13 +412,11 @@ fn is_json_media_type(mime_type: &str) -> bool {
         .to_ascii_lowercase();
 
     essence == "application/json"
-        || essence
-            .strip_prefix("application/")
-            .is_some_and(|subtype| {
-                subtype
-                    .strip_suffix("+json")
-                    .is_some_and(|prefix| !prefix.is_empty())
-            })
+        || essence.strip_prefix("application/").is_some_and(|subtype| {
+            subtype
+                .strip_suffix("+json")
+                .is_some_and(|prefix| !prefix.is_empty())
+        })
 }
 
 fn parse_arguments(raw_args: &str) -> Result<Option<Value>, FunctionCallError> {
