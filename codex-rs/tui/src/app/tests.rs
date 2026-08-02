@@ -282,7 +282,8 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
             .note_server_request(&approval_request),
         None
     );
-    app.enqueue_primary_thread_request(approval_request).await?;
+    app.enqueue_primary_thread_request(thread_id, approval_request)
+        .await?;
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/project")),
         Vec::new(),
@@ -447,6 +448,7 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
             AppEvent::SubmitThreadOp {
                 thread_id: op_thread_id,
                 op: Op::UserTurn { items, .. },
+                ..
             } => {
                 assert_eq!(op_thread_id, thread_id);
                 submitted_items = Some(items);
@@ -502,7 +504,7 @@ async fn reset_thread_event_state_aborts_listener_tasks() {
         .await
         .expect("listener task should report it started");
 
-    app.reset_thread_event_state();
+    app.reset_thread_event_state(None).await;
 
     assert_eq!(app.thread_event_listener_tasks.is_empty(), true);
     time::timeout(Duration::from_millis(50), dropped_rx)
@@ -516,7 +518,12 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
 
-    app.lookup_message_history_entry(thread_id, /*offset*/ 0, /*log_id*/ 1)
+    app.lookup_message_history_entry(
+        thread_id,
+        app.thread_lifecycle_generation(thread_id),
+        /*offset*/ 0,
+        /*log_id*/ 1,
+    )
         .await?;
 
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
@@ -543,7 +550,12 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     );
 
     let cursor = codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 10);
-    app.lookup_message_history_batch(thread_id, cursor, /*log_id*/ 1)
+    app.lookup_message_history_batch(
+        thread_id,
+        app.thread_lifecycle_generation(thread_id),
+        cursor,
+        /*log_id*/ 1,
+    )
         .await?;
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
@@ -2828,6 +2840,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         assert!(resumed.blocks_direct_input);
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            &app_server,
             resumed,
             crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
             /*initial_user_message*/ None,
@@ -4570,6 +4583,7 @@ async fn inactive_thread_invalid_url_elicitation_is_declined() {
                 content: None,
                 meta: None,
             },
+            ..
         }) if op_thread_id == thread_id && server_name == "payments"
     );
 }
@@ -7329,6 +7343,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
             thread_id,
             nth_user_message,
             prompt,
+            ..
         } if thread_id == expected.thread_id
             && nth_user_message == expected.nth_user_message
             && prompt == expected.prompt
@@ -7889,6 +7904,7 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
         &mut app_server,
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
+            lifecycle_generation: app.thread_lifecycle_generation(source_thread_id),
             nth_user_message: 1,
             prompt: prompt.clone(),
         },
@@ -7987,6 +8003,7 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         &mut app_server,
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
+            lifecycle_generation: app.thread_lifecycle_generation(source_thread_id),
             nth_user_message: 0,
             prompt: crate::chatwidget::UserMessage::from("first prompt"),
         },

@@ -90,6 +90,16 @@ pub(super) struct PendingAppServerRequests {
 }
 
 impl PendingAppServerRequests {
+    /// Returns every thread that currently owns at least one unresolved server request.
+    pub(super) fn pending_thread_ids(&self) -> Vec<ThreadId> {
+        self.request_threads
+            .values()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     pub(super) fn clear(&mut self) {
         self.exec_approvals.clear();
         self.file_change_approvals.clear();

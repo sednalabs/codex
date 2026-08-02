@@ -917,7 +917,37 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn reset_thread_event_state(&mut self) {
+    pub(super) async fn reset_thread_event_state(
+        &mut self,
+        app_server: Option<&AppServerSession>,
+    ) {
+        let mut thread_ids = HashSet::new();
+        thread_ids.extend(self.thread_event_channels.keys().copied());
+        thread_ids.extend(self.thread_event_listener_tasks.keys().copied());
+        thread_ids.extend(self.side_threads.keys().copied());
+        thread_ids.extend(self.pending_primary_events.iter().map(|event| event.thread_id));
+        thread_ids.extend(self.pending_app_server_requests.pending_thread_ids());
+        thread_ids.extend(
+            [
+                self.active_thread_id,
+                self.primary_thread_id,
+                self.chat_widget.thread_id(),
+            ]
+            .into_iter()
+            .flatten(),
+        );
+        for thread_id in thread_ids {
+            if self.thread_is_discarded(thread_id) {
+                continue;
+            }
+            if let Some(app_server) = app_server {
+                self.discard_thread_local_state(app_server, thread_id).await;
+            } else {
+                self.mark_thread_discarded(thread_id);
+                self.pending_app_server_requests.clear_thread(thread_id);
+                self.abort_thread_event_listener(thread_id);
+            }
+        }
         self.abort_all_thread_event_listeners();
         self.thread_event_channels.clear();
         self.agent_navigation.clear();
@@ -961,7 +991,12 @@ impl App {
                 if started.blocks_direct_input {
                     self.mark_primary_thread_parent_owned(started.session.thread_id);
                 }
-                self.enqueue_primary_thread_session(started.session, started.turns)
+                self.enqueue_primary_thread_session_with_presentation_and_server(
+                    Some(app_server),
+                    started.session,
+                    started.turns,
+                    ThreadAttachPresentation::SessionLineage,
+                )
                     .await?;
                 self.chat_widget.maybe_send_next_queued_input();
             }
@@ -1035,6 +1070,7 @@ impl App {
                 if let Err(err) = self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
+                        app_server,
                         started,
                         ThreadAttachPresentation::SessionLineage,
                         initial_user_message,
@@ -1075,15 +1111,22 @@ impl App {
     pub(super) async fn replace_chat_widget_with_app_server_thread(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: &AppServerSession,
         started: AppServerStartedThread,
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> Result<()> {
-        self.prepare_chat_widget_for_app_server_thread(tui, initial_user_message);
+        self.prepare_chat_widget_for_app_server_thread(
+            tui,
+            app_server,
+            initial_user_message,
+        )
+        .await;
         if started.blocks_direct_input {
             self.mark_primary_thread_parent_owned(started.session.thread_id);
         }
-        self.enqueue_primary_thread_session_with_presentation(
+        self.enqueue_primary_thread_session_with_presentation_and_server(
+            Some(app_server),
             started.session,
             started.turns,
             presentation,
@@ -1095,15 +1138,16 @@ impl App {
     /// Clears thread-local state and installs a fresh widget before attaching an app-server
     /// thread. Resume uses this setup independently so it can hydrate descendant identity before
     /// replaying persisted primary turns.
-    fn prepare_chat_widget_for_app_server_thread(
+    async fn prepare_chat_widget_for_app_server_thread(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: &AppServerSession,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) {
         // Initial messages are for freshly attached primary threads only. Thread switches and
         // resume/fork flows pass `None` so they cannot replay old history and then auto-submit a new
         // user turn by accident.
-        self.reset_thread_event_state();
+        self.reset_thread_event_state(Some(app_server)).await;
         let init = self.chatwidget_init_for_forked_or_resumed_thread(
             tui,
             self.config.clone(),
@@ -1744,8 +1788,11 @@ impl App {
                 // hydrate descendant metadata before it renders historical Spawn/Wait cells so
                 // their friendly paths and effective identities are retained in the new widget.
                 self.prepare_chat_widget_for_app_server_thread(
-                    tui, /*initial_user_message*/ None,
-                );
+                    tui,
+                    app_server,
+                    /*initial_user_message*/ None,
+                )
+                .await;
                 self.primary_thread_id = Some(resumed_thread_id);
                 self.upsert_agent_picker_thread(
                     resumed_thread_id,
@@ -1758,7 +1805,8 @@ impl App {
                 }
                 self.backfill_loaded_subagent_threads(app_server).await;
                 match self
-                    .enqueue_primary_thread_session_with_presentation(
+                    .enqueue_primary_thread_session_with_presentation_and_server(
+                        Some(app_server),
                         resumed.session,
                         resumed.turns,
                         ThreadAttachPresentation::SessionLineage,

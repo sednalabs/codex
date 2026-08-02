@@ -72,20 +72,29 @@ async fn approving_recent_denial_emits_structured_core_op_once() {
     chat.on_guardian_assessment(auto_review_denial_event());
     drain_insert_history(&mut rx);
 
-    chat.approve_recent_auto_review_denial(thread_id, "auto-review-recent-1".to_string());
+    chat.approve_recent_auto_review_denial(
+        thread_id,
+        chat.thread_lifecycle_generation,
+        "auto-review-recent-1".to_string(),
+    );
 
     assert_matches!(
         rx.try_recv(),
         Ok(AppEvent::SubmitThreadOp {
             thread_id: submitted_thread_id,
-            op: Op::ApproveGuardianDeniedAction { event }
+            op: Op::ApproveGuardianDeniedAction { event },
+            ..
         }) if submitted_thread_id == thread_id
                 && event.id == "auto-review-recent-1"
                 && event.status == GuardianAssessmentStatus::Denied
     );
     assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
 
-    chat.approve_recent_auto_review_denial(thread_id, "auto-review-recent-1".to_string());
+    chat.approve_recent_auto_review_denial(
+        thread_id,
+        chat.thread_lifecycle_generation,
+        "auto-review-recent-1".to_string(),
+    );
     assert_matches!(rx.try_recv(), Ok(AppEvent::InsertHistoryCell(_)));
     assert!(rx.try_recv().is_err());
 }

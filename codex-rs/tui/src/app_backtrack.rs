@@ -187,6 +187,7 @@ impl App {
 
         self.app_event_tx.send(AppEvent::ForkSessionForPromptEdit {
             thread_id: selection.thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(selection.thread_id),
             nth_user_message: selection.nth_user_message,
             prompt: selection.prompt,
         });

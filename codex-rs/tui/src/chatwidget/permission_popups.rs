@@ -172,6 +172,7 @@ impl ChatWidget {
             return;
         };
 
+        let lifecycle_generation = self.thread_lifecycle_generation;
         let mut items = vec![SelectionItem {
             name: "Command".to_string(),
             description: Some("Rationale".to_string()),
@@ -198,6 +199,7 @@ impl ChatWidget {
                         actions: vec![Box::new(move |tx| {
                             tx.send(AppEvent::ApproveRecentAutoReviewDenial {
                                 thread_id,
+                                lifecycle_generation,
                                 id: id.clone(),
                             });
                         })],
@@ -219,7 +221,12 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(crate) fn approve_recent_auto_review_denial(&mut self, thread_id: ThreadId, id: String) {
+    pub(crate) fn approve_recent_auto_review_denial(
+        &mut self,
+        thread_id: ThreadId,
+        lifecycle_generation: u64,
+        id: String,
+    ) {
         let Some(event) = self.review.recent_auto_review_denials.take(&id) else {
             self.add_error_message("That auto-review denial is no longer available.".to_string());
             return;
@@ -227,6 +234,7 @@ impl ChatWidget {
 
         self.app_event_tx.send(AppEvent::SubmitThreadOp {
             thread_id,
+            lifecycle_generation,
             op: AppCommand::approve_guardian_denied_action(event),
         });
         self.add_info_message(

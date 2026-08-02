@@ -180,6 +180,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
@@ -584,7 +585,7 @@ pub(crate) struct App {
     primary_thread_id: Option<ThreadId>,
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
-    pending_primary_events: VecDeque<ThreadBufferedEvent>,
+    pending_primary_events: VecDeque<PendingPrimaryThreadEvent>,
     pending_app_server_requests: PendingAppServerRequests,
     pending_startup_thread_start: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
@@ -596,6 +597,17 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+}
+
+/// A server event received before a primary session is attached.
+///
+/// The target lifecycle is captured at ingress rather than inferred when a later primary arrives,
+/// so replacing startup thread A with B cannot deliver A's request into B's presentation.
+#[derive(Debug)]
+pub(crate) struct PendingPrimaryThreadEvent {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) lifecycle_generation: u64,
+    pub(crate) event: ThreadBufferedEvent,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1100,7 +1112,12 @@ See the Codex keymap documentation for supported actions and examples."
             if started.blocks_direct_input {
                 app.mark_primary_thread_parent_owned(thread_id);
             }
-            app.enqueue_primary_thread_session(started.session, started.turns)
+            app.enqueue_primary_thread_session_with_presentation_and_server(
+                Some(&app_server),
+                started.session,
+                started.turns,
+                crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
+            )
                 .await?;
             if should_prompt_for_paused_goal_after_startup_resume {
                 app.maybe_prompt_resume_paused_goal_after_resume(&mut app_server, thread_id)

@@ -737,6 +737,7 @@ impl ChatWidget {
         };
         self.app_event_tx.send(AppEvent::SubmitThreadOp {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation,
             op: AppCommand::override_turn_context(
                 /*cwd*/ None,
                 /*approval_policy*/ None,

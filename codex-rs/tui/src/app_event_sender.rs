@@ -4,6 +4,9 @@
 //! without duplicating event construction or session logging behavior.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use crate::app_command::AppCommand;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
@@ -23,11 +26,15 @@ use crate::session_log;
 #[derive(Clone, Debug)]
 pub(crate) struct AppEventSender {
     pub app_event_tx: UnboundedSender<AppEvent>,
+    thread_lifecycle_generation: Arc<AtomicU64>,
 }
 
 impl AppEventSender {
     pub(crate) fn new(app_event_tx: UnboundedSender<AppEvent>) -> Self {
-        Self { app_event_tx }
+        Self {
+            app_event_tx,
+            thread_lifecycle_generation: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Send an event to the app event channel. If it fails, we swallow the
@@ -41,6 +48,15 @@ impl AppEventSender {
         if let Err(e) = self.app_event_tx.send(event) {
             tracing::error!("failed to send event: {e}");
         }
+    }
+
+    pub(crate) fn set_thread_lifecycle_generation(&self, generation: u64) {
+        self.thread_lifecycle_generation
+            .store(generation, Ordering::Release);
+    }
+
+    pub(crate) fn thread_lifecycle_generation(&self) -> u64 {
+        self.thread_lifecycle_generation.load(Ordering::Acquire)
     }
 
     pub(crate) fn interrupt(&self) {
@@ -87,6 +103,7 @@ impl AppEventSender {
     ) {
         self.send(AppEvent::SubmitThreadOp {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(),
             op: AppCommand::exec_approval(id, /*turn_id*/ None, decision),
         });
     }
@@ -99,6 +116,7 @@ impl AppEventSender {
     ) {
         self.send(AppEvent::SubmitThreadOp {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(),
             op: AppCommand::request_permissions_response(id, response),
         });
     }
@@ -111,6 +129,7 @@ impl AppEventSender {
     ) {
         self.send(AppEvent::SubmitThreadOp {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(),
             op: AppCommand::patch_approval(id, decision),
         });
     }
@@ -126,7 +145,36 @@ impl AppEventSender {
     ) {
         self.send(AppEvent::SubmitThreadOp {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(),
             op: AppCommand::resolve_elicitation(server_name, request_id, decision, content, meta),
+        });
+    }
+
+    pub(crate) fn lookup_message_history_entry(
+        &self,
+        thread_id: ThreadId,
+        offset: usize,
+        log_id: u64,
+    ) {
+        self.send(AppEvent::LookupMessageHistoryEntry {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(),
+            offset,
+            log_id,
+        });
+    }
+
+    pub(crate) fn lookup_message_history_batch(
+        &self,
+        thread_id: ThreadId,
+        cursor: crate::app_event::HistoryBatchCursor,
+        log_id: u64,
+    ) {
+        self.send(AppEvent::LookupMessageHistoryBatch {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(),
+            cursor,
+            log_id,
         });
     }
 }

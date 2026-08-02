@@ -5,6 +5,9 @@ use crate::protocol::item_builders::build_file_change_begin_item;
 use crate::protocol::item_builders::build_file_change_end_item;
 use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::item_builders::review_output_text;
+use crate::protocol::spawn_provenance::normalize_legacy_canonical_spawn_start_provenance;
+use crate::protocol::spawn_provenance::normalize_legacy_failed_spawn_effective_identity;
+use crate::protocol::spawn_provenance::normalize_legacy_failed_canonical_spawn_terminal_effective_identity;
 use crate::protocol::spawn_provenance::normalize_legacy_spawn_requested_identity;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
@@ -66,39 +69,6 @@ use codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;
 use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
-
-/// Moves request provenance out of the pre-v2 canonical spawn-start fields.
-///
-/// Old `ItemStarted` snapshots stored the requested model/effort in `model` and
-/// `reasoning_effort`; a terminal item later inherits those values through
-/// `merge_spawn_request_provenance`. Translate that shape before the merge so the V1 omitted
-/// override sentinel cannot be promoted back into request provenance on completion.
-fn normalize_legacy_canonical_spawn_start_provenance(item: &mut ThreadItem) {
-    let ThreadItem::CollabAgentToolCall {
-        tool,
-        status,
-        model,
-        reasoning_effort,
-        requested_model,
-        requested_reasoning_effort,
-        ..
-    } = item
-    else {
-        return;
-    };
-    if tool != &CollabAgentTool::SpawnAgent
-        || status != &CollabAgentToolCallStatus::InProgress
-        || requested_model.is_some()
-        || requested_reasoning_effort.is_some()
-    {
-        return;
-    }
-
-    let (normalized_model, normalized_reasoning_effort) =
-        normalize_legacy_spawn_requested_identity(model.take(), reasoning_effort.take());
-    *requested_model = normalized_model;
-    *requested_reasoning_effort = normalized_reasoning_effort;
-}
 
 #[cfg(test)]
 use crate::protocol::v2::CommandAction;
@@ -684,6 +654,7 @@ impl ThreadHistoryBuilder {
             if let Some(started_item) = started_item {
                 merge_spawn_request_provenance(&mut item, started_item);
             }
+            normalize_legacy_failed_canonical_spawn_terminal_effective_identity(&mut item);
             if is_review_mode_item {
                 self.upsert_review_mode_item(Some(turn_id), item);
             } else {
@@ -995,6 +966,11 @@ impl ThreadHistoryBuilder {
                 })
             })
             .unwrap_or_default();
+        let (model, reasoning_effort) = normalize_legacy_failed_spawn_effective_identity(
+            has_receiver,
+            payload.model.clone(),
+            payload.reasoning_effort.clone(),
+        );
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
@@ -1002,8 +978,8 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
-            model: payload.model.clone(),
-            reasoning_effort: payload.reasoning_effort.clone(),
+            model,
+            reasoning_effort,
             requested_model,
             requested_reasoning_effort,
             agents_states,
@@ -4130,6 +4106,46 @@ mod tests {
                 .collect(),
             }
         );
+    }
+
+    #[test]
+    fn reconstructs_failed_legacy_spawn_without_an_effective_identity() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let events = vec![
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-failed-spawn".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
+                call_id: "failed-v1-sentinel".into(),
+                completed_at_ms: 0,
+                sender_thread_id,
+                new_thread_id: None,
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect the repo".into(),
+                model: Some(String::new()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                status: AgentStatus::NotFound,
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        let [ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+            panic!("expected a reconstructed failed spawn item");
+        };
+        assert_eq!(spawn.status, CollabAgentToolCallStatus::Failed);
+        assert!(spawn.receiver_thread_ids.is_empty());
+        assert_eq!(spawn.model, None);
+        assert_eq!(spawn.reasoning_effort, None);
     }
 
     #[test]

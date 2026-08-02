@@ -1229,7 +1229,7 @@ mod tests {
 
         view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
+            Ok(AppEvent::SubmitThreadOp { thread_id, op, .. }) => {
                 assert_eq!(thread_id, target.thread_id);
                 assert_eq!(
                     op,
@@ -1385,7 +1385,7 @@ mod tests {
             Err(err) => panic!("missing app event: {err}"),
         }
         match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
+            Ok(AppEvent::SubmitThreadOp { thread_id, op, .. }) => {
                 assert_eq!(thread_id, suggestion_target().thread_id);
                 assert_eq!(
                     op,
@@ -1427,7 +1427,7 @@ mod tests {
         view.handle_key_event(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
 
         match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
+            Ok(AppEvent::SubmitThreadOp { thread_id, op, .. }) => {
                 assert_eq!(thread_id, suggestion_target().thread_id);
                 assert_eq!(
                     op,
@@ -1477,7 +1477,7 @@ mod tests {
             Err(err) => panic!("missing app event: {err}"),
         }
         match rx.try_recv() {
-            Ok(AppEvent::SubmitThreadOp { thread_id, op }) => {
+            Ok(AppEvent::SubmitThreadOp { thread_id, op, .. }) => {
                 assert_eq!(thread_id, suggestion_target().thread_id);
                 assert_eq!(
                     op,

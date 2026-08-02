@@ -932,7 +932,11 @@ impl BottomPane {
         if let Some(text) = self.composer.clear_for_ctrl_c() {
             if let Some(thread_id) = self.thread_id {
                 self.app_event_tx
-                    .send(AppEvent::AppendMessageHistoryEntry { thread_id, text });
+                    .send(AppEvent::AppendMessageHistoryEntry {
+                        thread_id,
+                        lifecycle_generation: self.app_event_tx.thread_lifecycle_generation(),
+                        text,
+                    });
             } else {
                 tracing::warn!(
                     "failed to append Ctrl+C-cleared draft to history: no active thread id"

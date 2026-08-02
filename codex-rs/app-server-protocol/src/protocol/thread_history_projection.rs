@@ -12,6 +12,8 @@ use codex_protocol::protocol::RolloutLine;
 use crate::protocol::thread_history::ThreadHistoryChangeSet;
 use crate::protocol::thread_history::ThreadHistoryItemChange;
 use crate::protocol::thread_history::ThreadHistoryTurnChange;
+use crate::protocol::spawn_provenance::normalize_legacy_canonical_spawn_start_provenance;
+use crate::protocol::spawn_provenance::normalize_legacy_failed_canonical_spawn_terminal_effective_identity;
 use crate::protocol::v2::ThreadItem;
 use crate::protocol::v2::TurnError;
 use crate::protocol::v2::TurnStatus;
@@ -79,7 +81,8 @@ impl ThreadHistoryProjector {
                 }
             }
             RolloutItem::EventMsg(EventMsg::ItemStarted(event)) => {
-                let item = ThreadItem::from(event.item.clone());
+                let mut item = ThreadItem::from(event.item.clone());
+                normalize_legacy_canonical_spawn_start_provenance(&mut item);
                 if is_spawn_start(&item) {
                     self.spawn_starts
                         .insert((event.turn_id.clone(), item.id().to_string()), item.clone());
@@ -105,6 +108,7 @@ impl ThreadHistoryProjector {
                 {
                     merge_spawn_request_provenance(&mut item, &started_item);
                 }
+                normalize_legacy_failed_canonical_spawn_terminal_effective_identity(&mut item);
                 ThreadHistoryChangeSet {
                     changed_items: vec![ThreadHistoryItemChange {
                         turn_id: event.turn_id.clone(),

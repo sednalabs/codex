@@ -2390,7 +2390,8 @@ async fn slash_mcp_requests_inventory_via_app_server() {
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
             detail: McpServerStatusDetail::ToolsAndAuthOnly,
-            thread_id: Some(actual_thread_id)
+            thread_id: Some(actual_thread_id),
+            ..
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
@@ -2409,7 +2410,8 @@ async fn slash_mcp_verbose_requests_full_inventory_via_app_server() {
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
             detail: McpServerStatusDetail::Full,
-            thread_id: Some(actual_thread_id)
+            thread_id: Some(actual_thread_id),
+            ..
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
