@@ -509,8 +509,11 @@ async fn spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effor
     let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
     // A child can legitimately have no resolved effort. Make the test prove that a missing
     // post-spawn snapshot preserves that absence instead of inventing `medium`.
-    turn.reasoning_effort = None;
-    turn.model_info.default_reasoning_level = None;
+    {
+        let turn = Arc::get_mut(&mut turn).expect("test turn should not be shared yet");
+        turn.reasoning_effort = None;
+        turn.model_info.default_reasoning_level = None;
+    }
     let child_model = turn.model_info.slug.clone();
 
     let manager = thread_manager();
@@ -520,8 +523,11 @@ async fn spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effor
         .expect("root thread should start");
     let control = manager.agent_control();
     control.hide_next_agent_config_snapshot().await;
-    session.services.agent_control = control;
-    session.thread_id = root.thread_id;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
 
     SpawnAgentHandler::default()
         .handle(invocation(
@@ -1010,8 +1016,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     turn.config = Arc::new(config);
 
     let invocation = invocation(
-        session,
-        turn,
+        Arc::new(session),
+        Arc::new(turn),
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
@@ -3766,8 +3772,8 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
     });
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
         function_payload(json!({
             "message": "hello",

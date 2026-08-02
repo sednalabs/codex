@@ -735,7 +735,10 @@ impl OutgoingMessageSender {
     /// that completes without going through the listener resolution command
     /// (for example, the internal current-time provider).
     pub(crate) async fn discard_thread_request_resolution_targets(&self, id: &RequestId) {
-        self.thread_request_resolution_targets.lock().await.remove(id);
+        self.thread_request_resolution_targets
+            .lock()
+            .await
+            .remove(id);
     }
 
     pub(crate) async fn pending_requests_for_thread(
@@ -844,11 +847,7 @@ impl OutgoingMessageSender {
             .get(&(connection_id, thread_id))
             .cloned()
             .map(|thread_subscription_id| {
-                ThreadSubscriptionTarget::captured(
-                    connection_id,
-                    thread_id,
-                    thread_subscription_id,
-                )
+                ThreadSubscriptionTarget::captured(connection_id, thread_id, thread_subscription_id)
             })
     }
 
@@ -2146,12 +2145,16 @@ mod tests {
             .await
             .expect("response resolution should retain every delivered target");
         assert_eq!(resolution_targets.len(), 2);
-        assert!(resolution_targets
-            .iter()
-            .any(|target| target.thread_subscription_id == old_subscription_id));
-        assert!(resolution_targets
-            .iter()
-            .any(|target| target.thread_subscription_id == replay_subscription_id));
+        assert!(
+            resolution_targets
+                .iter()
+                .any(|target| target.thread_subscription_id == old_subscription_id)
+        );
+        assert!(
+            resolution_targets
+                .iter()
+                .any(|target| target.thread_subscription_id == replay_subscription_id)
+        );
         outgoing
             .send_server_notification_to_thread_subscriptions(
                 &resolution_targets,
@@ -2187,14 +2190,21 @@ mod tests {
             }
         }
 
-        assert_eq!(request_tokens, vec![old_subscription_id.clone(), replay_subscription_id.clone()]);
-        assert_eq!(resolution_tokens, vec![old_subscription_id, replay_subscription_id]);
+        assert_eq!(
+            request_tokens,
+            vec![old_subscription_id.clone(), replay_subscription_id.clone()]
+        );
+        assert_eq!(
+            resolution_tokens,
+            vec![old_subscription_id, replay_subscription_id]
+        );
     }
 
     #[tokio::test]
     async fn captured_current_time_request_does_not_recreate_after_reattach() {
         let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(1);
-        let outgoing = OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
         let connection_id = ConnectionId(9);
         let thread_id = ThreadId::new();
         let old_subscription_id = outgoing
@@ -2221,7 +2231,10 @@ mod tests {
         let OutgoingEnvelope::ToConnection {
             message: OutgoingMessage::ThreadScopedRequest(request),
             ..
-        } = rx.recv().await.expect("current-time request should be queued")
+        } = rx
+            .recv()
+            .await
+            .expect("current-time request should be queued")
         else {
             panic!("expected a captured current-time request");
         };
@@ -2230,7 +2243,10 @@ mod tests {
             .thread_subscription_target_for_connection(connection_id, thread_id)
             .await
             .expect("replacement subscription should remain current");
-        assert_eq!(current_target.thread_subscription_id, replacement_subscription_id);
+        assert_eq!(
+            current_target.thread_subscription_id,
+            replacement_subscription_id
+        );
         outgoing.cancel_request(&request_id).await;
     }
 
