@@ -1,6 +1,6 @@
 use super::*;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::ResponseItem;
 use codex_tools::ToolOutput;
 use pretty_assertions::assert_eq;
 use rmcp::model::AnnotateAble;
@@ -298,7 +298,7 @@ fn serialize_read_resource_output_keeps_untyped_json_on_generic_truncation() {
     let payload = text_resource_payload(
         "hosted",
         "ops://work_item/w10190/tree",
-        None,
+        /*mime_type*/ None,
         json!({"items": ["x".repeat(255 * 1024)]}).to_string(),
     );
     let expected = truncate_text(
