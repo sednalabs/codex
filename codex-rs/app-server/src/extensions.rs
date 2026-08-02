@@ -270,16 +270,15 @@ pub(crate) fn app_server_extension_event_sink(
 
 pub(crate) async fn send_thread_warning(
     outgoing: &Arc<OutgoingMessageSender>,
-    thread_state_manager: &ThreadStateManager,
     thread_id: ThreadId,
     message: String,
 ) {
-    let subscribed_connection_ids = thread_state_manager
-        .subscribed_connection_ids(thread_id)
+    let thread_subscriptions = outgoing
+        .thread_subscription_targets_for_thread(thread_id)
         .await;
-    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+    let thread_outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
         Arc::clone(outgoing),
-        subscribed_connection_ids,
+        thread_subscriptions,
         thread_id,
     );
     thread_outgoing
@@ -391,7 +390,7 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                 );
                 return;
             }
-            send_thread_warning(&outgoing, &thread_state_manager, thread_id, message).await;
+            send_thread_warning(&outgoing, thread_id, message).await;
         });
     }
 }

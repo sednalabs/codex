@@ -341,12 +341,12 @@ pub(super) async fn ensure_listener_task_running(
                     {
                         continue;
                     }
-                    let subscribed_connection_ids = thread_state_manager
-                        .subscribed_connection_ids(conversation_id)
+                    let thread_subscriptions = outgoing_for_task
+                        .thread_subscription_targets_for_thread(conversation_id)
                         .await;
-                    let thread_outgoing = ThreadScopedOutgoingMessageSender::new(
+                    let thread_outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
                         outgoing_for_task.clone(),
-                        subscribed_connection_ids,
+                        thread_subscriptions,
                         conversation_id,
                     );
 
@@ -507,7 +507,7 @@ pub(super) async fn handle_thread_listener_command(
                 .await;
         }
         ThreadListenerCommand::EmitWarning { message } => {
-            send_thread_warning(outgoing, thread_state_manager, conversation_id, message).await;
+            send_thread_warning(outgoing, conversation_id, message).await;
         }
         ThreadListenerCommand::EmitThreadGoalCleared => {
             outgoing
@@ -527,7 +527,6 @@ pub(super) async fn handle_thread_listener_command(
         } => {
             resolve_pending_server_request(
                 conversation_id,
-                thread_state_manager,
                 outgoing,
                 request_id,
             )
@@ -838,17 +837,16 @@ pub(crate) fn populate_thread_turns_from_history(
 
 pub(super) async fn resolve_pending_server_request(
     conversation_id: ThreadId,
-    thread_state_manager: &ThreadStateManager,
     outgoing: &Arc<OutgoingMessageSender>,
     request_id: RequestId,
 ) {
     let thread_id = conversation_id.to_string();
-    let subscribed_connection_ids = thread_state_manager
-        .subscribed_connection_ids(conversation_id)
+    let thread_subscriptions = outgoing
+        .thread_subscription_targets_for_thread(conversation_id)
         .await;
-    let outgoing = ThreadScopedOutgoingMessageSender::new(
+    let outgoing = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
         outgoing.clone(),
-        subscribed_connection_ids,
+        thread_subscriptions,
         conversation_id,
     );
     outgoing

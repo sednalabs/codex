@@ -115,8 +115,40 @@ pub(crate) struct OutgoingMessageSender {
 #[derive(Clone)]
 pub(crate) struct ThreadScopedOutgoingMessageSender {
     outgoing: Arc<OutgoingMessageSender>,
-    connection_ids: Arc<Vec<ConnectionId>>,
+    /// Immutable identities captured when the listener accepted an event.
+    ///
+    /// A replacement subscription may reuse the same connection and thread
+    /// ids, so retaining only those two ids would let a delayed event acquire
+    /// the replacement token while it is emitted. These targets deliberately
+    /// carry the original token all the way to the transport envelope.
+    thread_subscriptions: Arc<Vec<ThreadSubscriptionTarget>>,
     thread_id: ThreadId,
+}
+
+/// A connection-local thread identity captured at listener ingress.
+///
+/// This is intentionally a value, rather than a lookup key. Callers that
+/// hold a captured target must send with this exact token and must not call
+/// `ensure_thread_subscription` while handling that event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ThreadSubscriptionTarget {
+    connection_id: ConnectionId,
+    thread_id: ThreadId,
+    thread_subscription_id: String,
+}
+
+impl ThreadSubscriptionTarget {
+    pub(crate) fn captured(
+        connection_id: ConnectionId,
+        thread_id: ThreadId,
+        thread_subscription_id: String,
+    ) -> Self {
+        Self {
+            connection_id,
+            thread_id,
+            thread_subscription_id,
+        }
+    }
 }
 
 struct PendingCallbackEntry {
@@ -126,16 +158,35 @@ struct PendingCallbackEntry {
 }
 
 impl ThreadScopedOutgoingMessageSender {
+    pub(crate) fn from_captured_thread_subscriptions(
+        outgoing: Arc<OutgoingMessageSender>,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
+        thread_id: ThreadId,
+    ) -> Self {
+        Self {
+            outgoing,
+            thread_subscriptions: Arc::new(thread_subscriptions),
+            thread_id,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         outgoing: Arc<OutgoingMessageSender>,
         connection_ids: Vec<ConnectionId>,
         thread_id: ThreadId,
     ) -> Self {
-        Self {
-            outgoing,
-            connection_ids: Arc::new(connection_ids),
-            thread_id,
-        }
+        let thread_subscriptions = connection_ids
+            .into_iter()
+            .map(|connection_id| {
+                ThreadSubscriptionTarget::captured(
+                    connection_id,
+                    thread_id,
+                    Uuid::now_v7().to_string(),
+                )
+            })
+            .collect();
+        Self::from_captured_thread_subscriptions(outgoing, thread_subscriptions, thread_id)
     }
 
     pub(crate) async fn send_request(
@@ -143,10 +194,10 @@ impl ThreadScopedOutgoingMessageSender {
         payload: ServerRequestPayload,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
         self.outgoing
-            .send_request_to_connections(
-                Some(self.connection_ids.as_slice()),
+            .send_request_to_thread_subscriptions(
+                self.thread_subscriptions.as_slice(),
                 payload,
-                Some(self.thread_id),
+                self.thread_id,
             )
             .await
     }
@@ -169,11 +220,14 @@ impl ThreadScopedOutgoingMessageSender {
         self.outgoing
             .analytics_events_client
             .track_notification(notification.clone());
-        if self.connection_ids.is_empty() {
+        if self.thread_subscriptions.is_empty() {
             return;
         }
         self.outgoing
-            .send_server_notification_to_connections(self.connection_ids.as_slice(), notification)
+            .send_server_notification_to_thread_subscriptions(
+                self.thread_subscriptions.as_slice(),
+                notification,
+            )
             .await;
     }
 
@@ -444,6 +498,70 @@ impl OutgoingMessageSender {
         (outgoing_message_id, rx_approve)
     }
 
+    /// Sends a thread-scoped server request through identities captured by a
+    /// listener. Unlike `send_request_to_connections`, this must never mint
+    /// or look up another subscription token: a delayed request belongs to
+    /// the lifecycle that captured it, even if that lifecycle was replaced
+    /// before this send reaches the transport queue.
+    pub(crate) async fn send_request_to_thread_subscriptions(
+        &self,
+        thread_subscriptions: &[ThreadSubscriptionTarget],
+        request: ServerRequestPayload,
+        thread_id: ThreadId,
+    ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+        let id = self.next_request_id();
+        let outgoing_message_id = id.clone();
+        let request = request.request_with_id(outgoing_message_id.clone());
+
+        let (tx_approve, rx_approve) = oneshot::channel();
+        {
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            request_id_to_callback.insert(
+                id,
+                PendingCallbackEntry {
+                    callback: tx_approve,
+                    thread_id: Some(thread_id),
+                    request: request.clone(),
+                },
+            );
+        }
+
+        let mut send_error = None;
+        for thread_subscription in thread_subscriptions {
+            debug_assert_eq!(thread_subscription.thread_id, thread_id);
+            let message = OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+                request: request.clone(),
+                thread_subscription_id: thread_subscription.thread_subscription_id.clone(),
+            });
+            if let Err(err) = self
+                .sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id: thread_subscription.connection_id,
+                    message,
+                    write_complete_tx: None,
+                })
+                .await
+            {
+                send_error = Some(err);
+                break;
+            } else {
+                self.analytics_events_client.track_server_request(
+                    thread_subscription.connection_id.0,
+                    request.clone(),
+                );
+            }
+        }
+
+        if let Some(err) = send_error {
+            warn!(
+                "failed to send captured thread request {outgoing_message_id:?} to client: {err:?}"
+            );
+            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+            request_id_to_callback.remove(&outgoing_message_id);
+        }
+        (outgoing_message_id, rx_approve)
+    }
+
     pub(crate) async fn replay_requests_to_connection_for_thread(
         &self,
         connection_id: ConnectionId,
@@ -602,19 +720,72 @@ impl OutgoingMessageSender {
         }
     }
 
-    async fn thread_subscriptions_for_thread(
+    /// Captures every active presentation of a thread for a listener event.
+    ///
+    /// The returned values remain valid transport identities even if the
+    /// subscription map changes later. They must be sent with the explicit
+    /// target APIs below rather than converted back into connection ids.
+    pub(crate) async fn thread_subscription_targets_for_thread(
         &self,
         thread_id: ThreadId,
-    ) -> Vec<(ConnectionId, String)> {
+    ) -> Vec<ThreadSubscriptionTarget> {
         self.thread_subscription_ids
             .lock()
             .await
             .iter()
             .filter_map(|((connection_id, candidate_thread_id), subscription_id)| {
                 (*candidate_thread_id == thread_id)
-                    .then(|| (*connection_id, subscription_id.clone()))
+                    .then(|| {
+                        ThreadSubscriptionTarget::captured(
+                            *connection_id,
+                            thread_id,
+                            subscription_id.clone(),
+                        )
+                    })
             })
             .collect()
+    }
+
+    /// Sends a notification through identities captured by a listener or
+    /// teardown path. This deliberately does not consult or recreate the
+    /// subscription map: a stale token is fenced by the client, while a
+    /// terminal notification captured before teardown still reaches every
+    /// subscriber that observed that lifecycle.
+    pub(crate) async fn send_server_notification_to_thread_subscriptions(
+        &self,
+        thread_subscriptions: &[ThreadSubscriptionTarget],
+        notification: ServerNotification,
+    ) {
+        tracing::trace!(
+            targeted_connections = thread_subscriptions.len(),
+            "app-server event: {notification}"
+        );
+        if let Some(thread_id) = server_notification_thread_id(&notification) {
+            debug_assert!(thread_subscriptions
+                .iter()
+                .all(|thread_subscription| thread_subscription.thread_id == thread_id));
+        }
+        let envelope = timestamped_server_notification_envelope(notification);
+        for thread_subscription in thread_subscriptions {
+            if let Err(err) = self
+                .sender
+                .send(OutgoingEnvelope::ToConnection {
+                    connection_id: thread_subscription.connection_id,
+                    message: OutgoingMessage::ThreadScopedNotification(
+                        ThreadScopedServerNotification {
+                            envelope: envelope.clone(),
+                            thread_subscription_id: thread_subscription
+                                .thread_subscription_id
+                                .clone(),
+                        },
+                    ),
+                    write_complete_tx: None,
+                })
+                .await
+            {
+                warn!("failed to send captured thread notification to client: {err:?}");
+            }
+        }
     }
 
     async fn thread_scoped_notification_message(
@@ -738,17 +909,18 @@ impl OutgoingMessageSender {
         let envelope = timestamped_server_notification_envelope(notification.clone());
         if connection_ids.is_empty() {
             if let Some(thread_id) = server_notification_thread_id(&notification) {
-                let subscriptions = self.thread_subscriptions_for_thread(thread_id).await;
+                let subscriptions = self.thread_subscription_targets_for_thread(thread_id).await;
                 if !subscriptions.is_empty() {
-                    for (connection_id, thread_subscription_id) in subscriptions {
+                    for thread_subscription in subscriptions {
                         if let Err(err) = self
                             .sender
                             .send(OutgoingEnvelope::ToConnection {
-                                connection_id,
+                                connection_id: thread_subscription.connection_id,
                                 message: OutgoingMessage::ThreadScopedNotification(
                                     ThreadScopedServerNotification {
                                         envelope: envelope.clone(),
-                                        thread_subscription_id,
+                                        thread_subscription_id: thread_subscription
+                                            .thread_subscription_id,
                                     },
                                 ),
                                 write_complete_tx: None,
@@ -1030,8 +1202,10 @@ mod tests {
     use codex_app_server_protocol::ModelVerificationNotification;
     use codex_app_server_protocol::RateLimitSnapshot;
     use codex_app_server_protocol::RateLimitWindow;
+    use codex_app_server_protocol::ServerRequestResolvedNotification;
     use codex_app_server_protocol::ServerResponse;
     use codex_app_server_protocol::ToolRequestUserInputParams;
+    use codex_app_server_protocol::ThreadArchivedNotification;
     use codex_app_server_protocol::ThreadClosedNotification;
     use codex_app_server_protocol::TurnModerationMetadataNotification;
     use codex_protocol::ThreadId;
@@ -1575,6 +1749,154 @@ mod tests {
             (new_subscription_id, thread_id.to_string()),
             "a request after reattach must be delivered through the replacement token"
         );
+    }
+
+    #[tokio::test]
+    async fn captured_listener_targets_keep_old_tokens_after_reattach() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(6);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let connection_id = ConnectionId(9);
+        let thread_id = ThreadId::new();
+        let old_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let old_listener = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await,
+            thread_id,
+        );
+
+        let new_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        let new_listener = ThreadScopedOutgoingMessageSender::from_captured_thread_subscriptions(
+            outgoing.clone(),
+            outgoing
+                .thread_subscription_targets_for_thread(thread_id)
+                .await,
+            thread_id,
+        );
+
+        old_listener
+            .send_server_notification(ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        let (_old_request_id, _old_request_rx) = old_listener
+            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        old_listener
+            .send_server_notification(ServerNotification::ServerRequestResolved(
+                ServerRequestResolvedNotification {
+                    thread_id: thread_id.to_string(),
+                    request_id: RequestId::Integer(1),
+                },
+            ))
+            .await;
+
+        new_listener
+            .send_server_notification(ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        let (_new_request_id, _new_request_rx) = new_listener
+            .send_request(ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+        new_listener
+            .send_server_notification(ServerNotification::ServerRequestResolved(
+                ServerRequestResolvedNotification {
+                    thread_id: thread_id.to_string(),
+                    request_id: RequestId::Integer(2),
+                },
+            ))
+            .await;
+
+        let mut subscription_ids = Vec::new();
+        for _ in 0..6 {
+            let envelope = rx.recv().await.expect("captured message should be queued");
+            let subscription_id = match envelope {
+                OutgoingEnvelope::ToConnection {
+                    connection_id: received_connection_id,
+                    message: OutgoingMessage::ThreadScopedNotification(notification),
+                    ..
+                } => {
+                    assert_eq!(received_connection_id, connection_id);
+                    notification.thread_subscription_id
+                }
+                OutgoingEnvelope::ToConnection {
+                    connection_id: received_connection_id,
+                    message: OutgoingMessage::ThreadScopedRequest(request),
+                    ..
+                } => {
+                    assert_eq!(received_connection_id, connection_id);
+                    request.thread_subscription_id
+                }
+                envelope => panic!("expected captured thread message, got {envelope:?}"),
+            };
+            subscription_ids.push(subscription_id);
+        }
+
+        assert!(subscription_ids[..3]
+            .iter()
+            .all(|subscription_id| subscription_id == &old_subscription_id));
+        assert!(subscription_ids[3..]
+            .iter()
+            .all(|subscription_id| subscription_id == &new_subscription_id));
+    }
+
+    #[tokio::test]
+    async fn captured_terminal_recipients_survive_teardown_without_recreation() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(2);
+        let outgoing = OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let thread_id = ThreadId::new();
+        let first_connection = ConnectionId(1);
+        let second_connection = ConnectionId(2);
+        let first_subscription_id = outgoing
+            .register_thread_subscription(first_connection, thread_id)
+            .await;
+        let second_subscription_id = outgoing
+            .register_thread_subscription(second_connection, thread_id)
+            .await;
+        let terminal_recipients = outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
+
+        outgoing
+            .unregister_thread_subscriptions_for_thread(thread_id)
+            .await;
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &terminal_recipients,
+                ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+
+        let mut delivered = HashMap::new();
+        for _ in 0..2 {
+            let envelope = rx.recv().await.expect("terminal event should be queued");
+            let OutgoingEnvelope::ToConnection {
+                connection_id,
+                message: OutgoingMessage::ThreadScopedNotification(notification),
+                ..
+            } = envelope
+            else {
+                panic!("expected captured terminal thread notification");
+            };
+            delivered.insert(connection_id, notification.thread_subscription_id);
+        }
+        assert_eq!(delivered.get(&first_connection), Some(&first_subscription_id));
+        assert_eq!(delivered.get(&second_connection), Some(&second_subscription_id));
     }
 
     #[tokio::test]

@@ -156,19 +156,22 @@ fn event_requires_delivery(event: &AppServerEvent) -> bool {
 
 /// Returns `true` for notifications that must survive backpressure.
 ///
-/// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas) and
-/// the authoritative `ItemCompleted` / `TurnCompleted` form the lossless tier
-/// of the event stream. Dropping any of these corrupts the visible assistant
-/// output or leaves surfaces waiting for a completion signal that already
-/// fired. Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
-/// best-effort and may be dropped with only cosmetic impact.
+/// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas), the
+/// authoritative `ItemCompleted` / `TurnCompleted`, and automatic
+/// `ThreadStarted` lifecycle handshakes form the lossless tier of the event
+/// stream. Dropping any of these corrupts visible output, leaves a surface
+/// waiting for completion, or strands an already-retained child approval
+/// behind an unknown subscription identity. Everything else
+/// (`CommandExecutionOutputDelta`, progress, etc.) is best-effort and may be
+/// dropped with only cosmetic impact.
 ///
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
+        ServerNotification::ThreadStarted(_)
+            | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
@@ -1233,6 +1236,54 @@ mod tests {
         })
     }
 
+    fn automatic_child_started_notification() -> ServerNotification {
+        ServerNotification::ThreadStarted(codex_app_server_protocol::ThreadStartedNotification {
+            thread: codex_app_server_protocol::Thread {
+                id: "thread".to_string(),
+                extra: None,
+                session_id: "thread".to_string(),
+                forked_from_id: None,
+                parent_thread_id: Some("parent".to_string()),
+                preview: "child".to_string(),
+                ephemeral: false,
+                is_pinned: false,
+                history_mode: Default::default(),
+                model_provider: "openai".to_string(),
+                model: Some("gpt-test".to_string()),
+                reasoning_effort: None,
+                created_at: 0,
+                updated_at: 0,
+                recency_at: None,
+                status: codex_app_server_protocol::ThreadStatus::Idle,
+                path: None,
+                cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                    .expect("test cwd should be absolute"),
+                cli_version: "test".to_string(),
+                source: codex_app_server_protocol::SessionSource::Unknown,
+                can_accept_direct_input: None,
+                thread_source: None,
+                agent_nickname: Some("Child".to_string()),
+                agent_role: Some("explorer".to_string()),
+                git_info: None,
+                name: None,
+                turns: Vec::new(),
+            },
+        })
+    }
+
+    fn child_approval_request() -> ServerRequest {
+        ServerRequest::ToolRequestUserInput {
+            request_id: RequestId::Integer(42),
+            params: ToolRequestUserInputParams {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                item_id: "item".to_string(),
+                questions: Vec::new(),
+                auto_resolution_ms: None,
+            },
+        }
+    }
+
     fn test_remote_connect_args(websocket_url: String) -> RemoteAppServerConnectArgs {
         RemoteAppServerConnectArgs {
             endpoint: RemoteAppServerEndpoint::WebSocket {
@@ -1446,6 +1497,89 @@ mod tests {
             AppServerEvent::ServerNotification(ServerNotification::TurnCompleted(
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
+        ));
+    }
+
+    #[tokio::test]
+    async fn backpressure_preserves_automatic_handshake_before_retained_child_approval() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(AppServerEvent::ServerNotification(
+                command_execution_output_delta_notification("stdout-1"),
+            ))
+            .await
+            .expect("initial best-effort event should enqueue");
+
+        let mut skipped_events = 0usize;
+        let dropped = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            AppServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "stdout-2",
+            )),
+            |_| {},
+        )
+        .await;
+        assert_eq!(dropped, ForwardEventResult::Continue);
+        assert_eq!(skipped_events, 1);
+
+        {
+            let delivery = forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "automatic-child".to_string(),
+                    notification: automatic_child_started_notification(),
+                },
+                |_| {},
+            );
+            tokio::pin!(delivery);
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "a full queue must block rather than lose the automatic lifecycle handshake"
+            );
+
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::ServerNotification(
+                    ServerNotification::CommandExecutionOutputDelta(_)
+                ))
+            ));
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::Lagged { skipped: 1 })
+            ));
+            assert_eq!(delivery.await, ForwardEventResult::Continue);
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadStarted(_),
+                }) if thread_subscription_id == "automatic-child"
+            ));
+        }
+        assert_eq!(skipped_events, 0);
+
+        let approval = child_approval_request();
+        let request_delivery = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            AppServerEvent::ThreadServerRequest {
+                thread_subscription_id: "automatic-child".to_string(),
+                request: approval.clone(),
+            },
+            |_| {},
+        )
+        .await;
+        assert_eq!(request_delivery, ForwardEventResult::Continue);
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(AppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request,
+            }) if thread_subscription_id == "automatic-child" && request.id() == approval.id()
         ));
     }
 
@@ -2135,6 +2269,12 @@ mod tests {
 
     #[test]
     fn event_requires_delivery_marks_transcript_and_terminal_events() {
+        assert!(event_requires_delivery(
+            &AppServerEvent::ThreadServerNotification {
+                thread_subscription_id: "automatic-child".to_string(),
+                notification: automatic_child_started_notification(),
+            }
+        ));
         assert!(event_requires_delivery(
             &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::TurnCompleted(

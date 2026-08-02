@@ -15,6 +15,7 @@ use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
@@ -1032,6 +1033,24 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
+        // Realtime commands can be the first operation through which a
+        // connection reaches this loaded thread. They do not return a thread
+        // subscription id themselves, so a newly created identity requires
+        // the same server-authoritative ThreadStarted handshake as an
+        // automatic child attachment. Explicit start/resume/fork flows have
+        // already registered their identity and therefore do not duplicate
+        // this notification.
+        let (thread_subscription_id, created_subscription) = self
+            .outgoing
+            .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
+            .await;
+        let created_subscription = created_subscription.then(|| {
+            ThreadSubscriptionTarget::captured(
+                request_id.connection_id,
+                thread_id,
+                thread_subscription_id,
+            )
+        });
 
         match self
             .ensure_conversation_listener(
@@ -1046,6 +1065,30 @@ impl TurnRequestProcessor {
                 return Ok(None);
             }
             Err(error) => return Err(error),
+        }
+
+        if let Some(thread_subscription) = created_subscription {
+            let config_snapshot = thread.config_snapshot().await;
+            let mut thread_summary = build_thread_from_loaded_snapshot(
+                thread_id,
+                &config_snapshot,
+                thread.as_ref(),
+            );
+            self.thread_watch_manager
+                .upsert_thread_silently(&thread_summary.id)
+                .await;
+            thread_summary.status = resolve_thread_status(
+                self.thread_watch_manager
+                    .loaded_status_for_thread(&thread_summary.id)
+                    .await,
+                matches!(thread.agent_status().await, AgentStatus::Running),
+            );
+            self.outgoing
+                .send_server_notification_to_thread_subscriptions(
+                    &[thread_subscription],
+                    ServerNotification::ThreadStarted(thread_started_notification(thread_summary)),
+                )
+                .await;
         }
 
         if !thread.enabled(Feature::RealtimeConversation) {
@@ -1315,7 +1358,7 @@ impl TurnRequestProcessor {
             .map_err(|err| internal_error(format!("failed to start detached review: {err}")))?;
 
         let fallback_provider = self.config.model_provider_id.as_str();
-        let stored_thread = match review_thread
+        let mut thread = match review_thread
             .read_thread(
                 /*include_archived*/ true, /*include_history*/ false,
             )
@@ -1324,11 +1367,20 @@ impl TurnRequestProcessor {
             Ok(stored_thread) => {
                 let (thread, _) =
                     thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
-                Some(thread)
+                thread
             }
             Err(err) => {
                 tracing::warn!("failed to load summary for review thread {thread_id}: {err}");
-                None
+                // The review is already running, so a failed persisted read
+                // must not leave a tagged listener without a lifecycle
+                // handshake. Build the authoritative summary from the loaded
+                // runtime instead, just as automatic child attachment does.
+                let config_snapshot = review_thread.config_snapshot().await;
+                build_thread_from_loaded_snapshot(
+                    thread_id,
+                    &config_snapshot,
+                    review_thread.as_ref(),
+                )
             }
         };
 
@@ -1336,25 +1388,32 @@ impl TurnRequestProcessor {
         // thread/started notification before installing its listener. Mint
         // the connection-scoped identity first so that notification and every
         // later listener event carry the same authoritative identity.
-        self.outgoing
+        let thread_subscription_id = self
+            .outgoing
             .register_thread_subscription(request_id.connection_id, thread_id)
             .await;
-        if let Some(mut thread) = stored_thread {
-            thread.session_id = review_thread.session_configured().session_id.to_string();
+        let thread_subscription = ThreadSubscriptionTarget::captured(
+            request_id.connection_id,
+            thread_id,
+            thread_subscription_id,
+        );
+        thread.session_id = review_thread.session_configured().session_id.to_string();
+        self.thread_watch_manager
+            .upsert_thread_silently(&thread.id)
+            .await;
+        thread.status = resolve_thread_status(
             self.thread_watch_manager
-                .upsert_thread_silently(&thread.id)
-                .await;
-            thread.status = resolve_thread_status(
-                self.thread_watch_manager
-                    .loaded_status_for_thread(&thread.id)
-                    .await,
-                /*has_in_progress_turn*/ false,
-            );
-            let notif = thread_started_notification(thread);
-            self.outgoing
-                .send_server_notification(ServerNotification::ThreadStarted(notif))
-                .await;
-        }
+                .loaded_status_for_thread(&thread.id)
+                .await,
+            /*has_in_progress_turn*/ false,
+        );
+        let notif = thread_started_notification(thread);
+        self.outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &[thread_subscription],
+                ServerNotification::ThreadStarted(notif),
+            )
+            .await;
 
         log_listener_attach_result(
             self.ensure_conversation_listener(
