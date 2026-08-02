@@ -603,7 +603,7 @@ pub(crate) struct App {
     /// Thread traffic that arrived before the corresponding start/resume/fork
     /// response gave us its subscription identity. It is replayed only after
     /// that identity is bound to an authoritative local lifecycle.
-    deferred_thread_subscription_events: VecDeque<codex_app_server_client::AppServerEvent>,
+    deferred_thread_subscription_events: VecDeque<codex_app_server_client::TaggedAppServerEvent>,
     /// A stale request must be rejected once with its original JSON-RPC id,
     /// even if a delayed transport delivery duplicates it.
     rejected_stale_thread_subscription_requests: HashSet<(String, RequestId)>,
@@ -1287,7 +1287,7 @@ See the Codex keymap documentation for supported actions and examples."
                             app.handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst).await
                         }
                     }
-                    app_server_event = app_server.next_event(), if listen_for_app_server_events => {
+                    app_server_event = app_server.next_tagged_event(), if listen_for_app_server_events => {
                         match app_server_event {
                             Some(event) => app.handle_app_server_event(&app_server, event).await,
                             None => {

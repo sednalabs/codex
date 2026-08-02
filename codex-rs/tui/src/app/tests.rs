@@ -5807,7 +5807,7 @@ async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
 }
 
 #[tokio::test]
-async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> Result<()> {
+async fn transport_targeted_goal_state_is_fenced_after_same_id_reattach() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     let app_server =
@@ -5827,9 +5827,9 @@ async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> R
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id: old_subscription_id,
-            notification: thread_closed_notification(thread_id),
+            notification: thread_goal_updated_notification(thread_id),
         },
     )
     .await;
@@ -5839,14 +5839,14 @@ async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> R
             .expect("reattached primary has a receiver")
             .try_recv()
             .is_err(),
-        "a delayed close from the old subscription must not reach the reattached presentation"
+        "a delayed goal state from the old subscription must not reach the reattached presentation"
     );
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id: new_subscription_id,
-            notification: thread_closed_notification(thread_id),
+            notification: thread_goal_updated_notification(thread_id),
         },
     )
     .await;
@@ -5856,7 +5856,7 @@ async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> R
             .expect("reattached primary has a receiver")
             .try_recv(),
         Ok(ThreadBufferedEvent::Notification(
-            ServerNotification::ThreadClosed(_)
+            ServerNotification::ThreadGoalUpdated(_)
         ))
     ));
     Ok(())
@@ -5889,7 +5889,7 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: old_subscription_id.clone(),
             request: stale_request.clone(),
         },
@@ -5902,7 +5902,7 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
     );
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: old_subscription_id,
             request: stale_request.clone(),
         },
@@ -5922,7 +5922,7 @@ async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() ->
     );
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: new_subscription_id,
             request: new_request.clone(),
         },
@@ -5958,7 +5958,7 @@ async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattac
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: old_subscription_id,
             request: current_time_read_request(thread_id, /*request_id*/ 41),
         },
@@ -5971,7 +5971,7 @@ async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattac
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: new_subscription_id,
             request: current_time_read_request(thread_id, /*request_id*/ 42),
         },
@@ -6004,7 +6004,7 @@ async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actio
     // attaches the listener and before the resume response reaches the TUI.
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: subscription_id.clone(),
             request: replayed_request.clone(),
         },
@@ -6064,7 +6064,7 @@ async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Res
     );
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: automatic_subscription_id.clone(),
             request: child_approval.clone(),
         },
@@ -6074,7 +6074,7 @@ async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Res
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id: automatic_subscription_id.clone(),
             notification: automatic_child_started_notification(
                 child_thread_id,
@@ -6116,7 +6116,7 @@ async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Res
     app.bind_thread_subscription(child_thread_id, Some(replacement_subscription_id.clone()));
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id: automatic_subscription_id.clone(),
             notification: automatic_child_started_notification(
                 child_thread_id,
@@ -6172,7 +6172,7 @@ async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerRequest {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id: replacement_subscription_id.clone(),
             request: replacement_request.clone(),
         },
@@ -6192,7 +6192,7 @@ async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result
     );
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id: stale_subscription_id,
             notification: resolution.clone(),
         },
@@ -6206,7 +6206,7 @@ async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result
 
     app.handle_app_server_event(
         &app_server,
-        codex_app_server_client::AppServerEvent::ThreadServerNotification {
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id: replacement_subscription_id,
             notification: resolution,
         },
@@ -7290,6 +7290,25 @@ fn thread_closed_notification(thread_id: ThreadId) -> ServerNotification {
     ServerNotification::ThreadClosed(ThreadClosedNotification {
         thread_id: thread_id.to_string(),
     })
+}
+
+fn thread_goal_updated_notification(thread_id: ThreadId) -> ServerNotification {
+    ServerNotification::ThreadGoalUpdated(
+        codex_app_server_protocol::ThreadGoalUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-goal".to_string()),
+            goal: codex_app_server_protocol::ThreadGoal {
+                thread_id: thread_id.to_string(),
+                objective: "finish the task".to_string(),
+                status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                token_budget: Some(100),
+                tokens_used: 25,
+                time_used_seconds: 1,
+                created_at: 0,
+                updated_at: 0,
+            },
+        },
+    )
 }
 
 fn automatic_child_started_notification(

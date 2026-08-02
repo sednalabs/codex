@@ -13,7 +13,7 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use crate::computer_use_provider::ComputerUseProviderOutcome;
 use crate::computer_use_provider::handle_computer_use;
-use codex_app_server_client::AppServerEvent;
+use codex_app_server_client::TaggedAppServerEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
@@ -35,10 +35,11 @@ impl App {
     pub(super) async fn handle_app_server_event(
         &mut self,
         app_server_client: &AppServerSession,
-        event: AppServerEvent,
+        event: impl Into<TaggedAppServerEvent>,
     ) {
+        let event = event.into();
         match event {
-            AppServerEvent::Lagged { skipped } => {
+            TaggedAppServerEvent::Lagged { skipped } => {
                 tracing::warn!(
                     skipped,
                     "app-server event consumer lagged; dropping ignored events"
@@ -46,15 +47,15 @@ impl App {
                 self.refresh_mcp_startup_expected_servers_from_config();
                 self.chat_widget.finish_mcp_startup_after_lag();
             }
-            AppServerEvent::ServerNotification(notification) => {
+            TaggedAppServerEvent::ServerNotification(notification) => {
                 self.handle_server_notification_event(app_server_client, notification)
                     .await;
             }
-            AppServerEvent::ServerRequest(request) => {
+            TaggedAppServerEvent::ServerRequest(request) => {
                 self.handle_server_request_event(app_server_client, request)
                     .await;
             }
-            AppServerEvent::ThreadServerNotification {
+            TaggedAppServerEvent::ThreadServerNotification {
                 thread_subscription_id,
                 notification,
             } => {
@@ -65,7 +66,7 @@ impl App {
                 )
                 .await;
             }
-            AppServerEvent::ThreadServerRequest {
+            TaggedAppServerEvent::ThreadServerRequest {
                 thread_subscription_id,
                 request,
             } => {
@@ -76,7 +77,7 @@ impl App {
                 )
                 .await;
             }
-            AppServerEvent::Disconnected { message } => {
+            TaggedAppServerEvent::Disconnected { message } => {
                 tracing::warn!("app-server event stream disconnected: {message}");
                 self.chat_widget.add_error_message(message.clone());
                 self.app_event_tx.send(AppEvent::FatalExitRequest(message));
@@ -117,7 +118,7 @@ impl App {
                 .is_some_and(|candidate| candidate == thread_subscription_id)
             {
                 match event {
-                    AppServerEvent::ThreadServerNotification { notification, .. } => {
+                    TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
                         let Some(target) = self
                             .thread_subscription_targets
                             .get(thread_subscription_id)
@@ -128,7 +129,7 @@ impl App {
                             })
                         else {
                             self.deferred_thread_subscription_events.push_back(
-                                AppServerEvent::ThreadServerNotification {
+                                TaggedAppServerEvent::ThreadServerNotification {
                                     thread_subscription_id: thread_subscription_id.to_string(),
                                     notification,
                                 },
@@ -142,7 +143,7 @@ impl App {
                         )
                         .await;
                     }
-                    AppServerEvent::ThreadServerRequest { request, .. } => {
+                    TaggedAppServerEvent::ThreadServerRequest { request, .. } => {
                         let Some(target) = self
                             .thread_subscription_targets
                             .get(thread_subscription_id)
@@ -153,7 +154,7 @@ impl App {
                             })
                         else {
                             self.deferred_thread_subscription_events.push_back(
-                                AppServerEvent::ThreadServerRequest {
+                                TaggedAppServerEvent::ThreadServerRequest {
                                     thread_subscription_id: thread_subscription_id.to_string(),
                                     request,
                                 },
@@ -259,7 +260,7 @@ impl App {
                     .await
                 {
                     self.deferred_thread_subscription_events.push_back(
-                        AppServerEvent::ThreadServerNotification {
+                        TaggedAppServerEvent::ThreadServerNotification {
                             thread_subscription_id,
                             notification,
                         },
@@ -305,7 +306,7 @@ impl App {
             }
             None => {
                 self.deferred_thread_subscription_events.push_back(
-                    AppServerEvent::ThreadServerRequest {
+                    TaggedAppServerEvent::ThreadServerRequest {
                         thread_subscription_id,
                         request,
                     },
@@ -691,13 +692,13 @@ impl App {
     }
 }
 
-fn thread_subscription_id_for_event(event: &AppServerEvent) -> Option<&str> {
+fn thread_subscription_id_for_event(event: &TaggedAppServerEvent) -> Option<&str> {
     match event {
-        AppServerEvent::ThreadServerNotification {
+        TaggedAppServerEvent::ThreadServerNotification {
             thread_subscription_id,
             ..
         }
-        | AppServerEvent::ThreadServerRequest {
+        | TaggedAppServerEvent::ThreadServerRequest {
             thread_subscription_id,
             ..
         } => Some(thread_subscription_id),
