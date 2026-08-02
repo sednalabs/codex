@@ -929,6 +929,9 @@ impl ThreadRequestProcessor {
     async fn finalize_thread_teardown(&self, thread_id: ThreadId) {
         self.pending_thread_unloads.lock().await.remove(&thread_id);
         self.outgoing
+            .release_thread_outbound_barrier_for_teardown(thread_id)
+            .await;
+        self.outgoing
             .unregister_thread_subscriptions_for_thread(thread_id)
             .await;
         self.outgoing
@@ -1242,7 +1245,16 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn clear_all_thread_listeners(&self) {
-        self.thread_state_manager.clear_all_listeners().await;
+        let thread_ids = self.thread_state_manager.thread_ids().await;
+        for thread_id in thread_ids {
+            self.outgoing
+                .release_thread_outbound_barrier_for_teardown(thread_id)
+                .await;
+            self.thread_state_manager.clear_listener(thread_id).await;
+        }
+        // Preserve the prior all-listener clear contract for an already-orphaned detached wait
+        // whose thread state disappeared before this snapshot.
+        self.thread_state_manager.clear_targetless_warning_waits();
     }
 
     pub(crate) async fn shutdown_threads(&self) {
@@ -1551,7 +1563,7 @@ impl ThreadRequestProcessor {
         // has already replaced A, this request must not return a receipt for A while the event
         // stream belongs to B. Once A wins this check, both the response and ThreadStarted carry
         // the same captured token; a later replacement owns its separate lifecycle.
-        if !automatic_thread_started_subscription_is_current(
+        if !captured_thread_subscription_is_current(
             listener_task_context.outgoing.as_ref(),
             request_id.connection_id,
             thread_id,
@@ -3543,7 +3555,7 @@ impl ThreadRequestProcessor {
                 )
                 && let Some(notification) = automatic_thread_started.clone()
             {
-                if automatic_thread_started_subscription_is_current(
+                if captured_thread_subscription_is_current(
                     self.outgoing.as_ref(),
                     connection_id,
                     thread_id,
@@ -3990,6 +4002,32 @@ impl ThreadRequestProcessor {
                 }
 
                 let thread_originator = config_snapshot.originator.clone();
+                if !captured_thread_subscription_is_current(
+                    self.outgoing.as_ref(),
+                    request_id.connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+                {
+                    rollback_failed_thread_attach(
+                        &self.thread_state_manager,
+                        &self.outgoing,
+                        thread_id,
+                        request_id.connection_id,
+                        &thread_subscription_id,
+                    )
+                    .await;
+                    self.outgoing
+                        .send_error(
+                            request_id,
+                            invalid_request(
+                                "thread/resume subscription was superseded before publication completed",
+                            ),
+                        )
+                        .await;
+                    return Ok(());
+                }
                 let response = ThreadResumeResponse {
                     thread,
                     thread_subscription_id: Some(thread_subscription_id),
@@ -4397,6 +4435,9 @@ impl ThreadRequestProcessor {
         }
 
         self.thread_manager.remove_thread(&thread_id).await;
+        self.outgoing
+            .release_thread_outbound_barrier_for_teardown(thread_id)
+            .await;
         self.outgoing
             .cancel_requests_for_thread(thread_id, /*error*/ None)
             .await;
@@ -5149,6 +5190,27 @@ impl ThreadRequestProcessor {
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
+
+        if !captured_thread_subscription_is_current(
+            self.outgoing.as_ref(),
+            request_id.connection_id,
+            thread_id,
+            &thread_subscription_id,
+        )
+        .await
+        {
+            rollback_failed_thread_attach(
+                &self.thread_state_manager,
+                &self.outgoing,
+                thread_id,
+                request_id.connection_id,
+                &thread_subscription_id,
+            )
+            .await;
+            return Err(invalid_request(
+                "thread/fork subscription was superseded before publication completed",
+            ));
+        }
 
         let response = ThreadForkResponse {
             thread: thread.clone(),
@@ -6003,10 +6065,10 @@ fn summary_from_stored_thread(
     }
 }
 
-/// Revalidate a captured `ThreadStarted` token before publication. Automatic attachments and
-/// thread/start both use it so a concurrent reattach cannot receive a stale handshake, nor can
-/// thread/start return one token while publishing its lifecycle notification with another.
-async fn automatic_thread_started_subscription_is_current(
+/// Revalidate a captured lifecycle token at the final publication fence. Start, cold resume,
+/// running resume, fork, and automatic attachment use it so a concurrent reattach cannot publish
+/// a response or `ThreadStarted` handshake for B after C has become the current owner.
+async fn captured_thread_subscription_is_current(
     outgoing: &OutgoingMessageSender,
     connection_id: ConnectionId,
     thread_id: ThreadId,
