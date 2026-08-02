@@ -1667,10 +1667,12 @@ impl AnalyticsReducer {
         }
 
         while self.terminal_turn_item_lifecycles.len() > TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT {
-            let (expired_thread_id, expired_turn_id) = self
+            let Some((expired_thread_id, expired_turn_id)) = self
                 .terminal_turn_item_lifecycle_order
                 .pop_front()
-                .expect("terminal-turn item lifecycle order must contain every retained turn");
+            else {
+                break;
+            };
             self.terminal_turn_item_lifecycles
                 .remove(&(expired_thread_id.clone(), expired_turn_id.clone()));
             self.clear_terminal_turn_item_lifecycle(&expired_thread_id, &expired_turn_id);
@@ -1681,11 +1683,13 @@ impl AnalyticsReducer {
         self.pending_tool_item_lifecycle_order
             .retain(|candidate| candidate != &key);
         self.pending_tool_item_lifecycle_order.push_back(key);
-        let newest = self
+        let Some(newest) = self
             .pending_tool_item_lifecycle_order
             .back()
-            .expect("a retained tool item must remain queued")
-            .clone();
+            .cloned()
+        else {
+            return;
+        };
 
         while self
             .pending_tool_item_lifecycle_order
@@ -1696,25 +1700,31 @@ impl AnalyticsReducer {
             .count()
             > PENDING_TOOL_ITEMS_PER_TURN_LIMIT
         {
-            let expired_index = self
+            let Some(expired_index) = self
                 .pending_tool_item_lifecycle_order
                 .iter()
                 .position(|candidate| {
                     candidate.thread_id == newest.thread_id && candidate.turn_id == newest.turn_id
                 })
-                .expect("the newest tool item must have a queued per-turn predecessor");
-            let expired = self
+            else {
+                break;
+            };
+            let Some(expired) = self
                 .pending_tool_item_lifecycle_order
                 .remove(expired_index)
-                .expect("pending tool-item lifecycle order must contain the selected item");
+            else {
+                break;
+            };
             self.expire_pending_tool_item_lifecycle(expired);
         }
 
         while self.pending_tool_item_lifecycle_order.len() > PENDING_TOOL_ITEM_LIFECYCLE_LIMIT {
-            let expired = self
+            let Some(expired) = self
                 .pending_tool_item_lifecycle_order
                 .pop_front()
-                .expect("pending tool-item lifecycle order must contain every retained item");
+            else {
+                break;
+            };
             self.expire_pending_tool_item_lifecycle(expired);
         }
     }
@@ -1775,10 +1785,9 @@ impl AnalyticsReducer {
 
     fn turn_state_mut_or_insert(&mut self, turn_id: String) -> &mut TurnState {
         if self.terminal_turn_states.contains_key(&turn_id) {
-            return self
-                .terminal_turn_states
-                .get_mut(&turn_id)
-                .expect("terminal turn state must exist after contains_key");
+            if let Some(turn_state) = self.terminal_turn_states.get_mut(&turn_id) {
+                return turn_state;
+            }
         }
         self.turns.entry(turn_id).or_default()
     }
@@ -1795,10 +1804,12 @@ impl AnalyticsReducer {
             .push_back(turn_id.to_string());
 
         while self.terminal_turn_states.len() > TERMINAL_EMITTED_TURN_STATE_LIMIT {
-            let expired_turn_id = self
+            let Some(expired_turn_id) = self
                 .terminal_turn_state_order
                 .pop_front()
-                .expect("terminal turn state order must contain every retained turn");
+            else {
+                break;
+            };
             self.terminal_turn_states.remove(&expired_turn_id);
             self.clear_terminal_turn_item_lifecycle_for_turn(&expired_turn_id);
         }
