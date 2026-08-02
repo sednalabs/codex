@@ -2205,6 +2205,20 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::AgentPickerThreadsLoaded {
+                primary_thread_id,
+                lifecycle_generation,
+                request_generation,
+                result,
+            } => {
+                self.apply_agent_picker_thread_refresh(
+                    primary_thread_id,
+                    lifecycle_generation,
+                    request_generation,
+                    result,
+                )
+                .await;
+            }
             AppEvent::LoadMoreAgentPickerPage => {
                 self.load_more_agent_picker_page(app_server).await;
             }

@@ -14,6 +14,7 @@ mod startup;
 mod turn_submission;
 
 use super::*;
+use super::agent_picker::AgentPickerRefreshResult;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
@@ -1536,6 +1537,158 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
         })
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn open_agent_picker_returns_before_a_busy_live_event_store_unlocks() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("cached worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+    let child_channel = ThreadEventChannel::new(/*capacity*/ 1);
+    let child_store = Arc::clone(&child_channel.store);
+    app.thread_event_channels.insert(child_thread_id, child_channel);
+
+    let child_store_guard = child_store.lock().await;
+    assert!(
+        futures::FutureExt::now_or_never(app.open_agent_picker(&mut app_server)).is_some(),
+        "opening /agent must render cached rows instead of waiting for an event-store lock"
+    );
+    drop(child_store_guard);
+
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("cached worker"));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_background_refresh_merges_discovered_rows_into_the_open_picker() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let cached_thread_id = ThreadId::new();
+    let discovered_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.agent_navigation.upsert(
+        primary_thread_id,
+        Some("Main".to_string()),
+        None,
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation.upsert(
+        cached_thread_id,
+        Some("cached worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.render_agent_picker().await;
+    let lifecycle_generation = app.thread_lifecycle_generation(primary_thread_id);
+    let request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, lifecycle_generation)
+        .expect("first refresh starts");
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![Thread {
+                id: discovered_thread_id.to_string(),
+                extra: None,
+                session_id: primary_thread_id.to_string(),
+                forked_from_id: None,
+                parent_thread_id: Some(primary_thread_id.to_string()),
+                preview: "discovered worker".to_string(),
+                ephemeral: false,
+                is_pinned: false,
+                history_mode: Default::default(),
+                model_provider: "test-provider".to_string(),
+                model: None,
+                reasoning_effort: None,
+                created_at: 1,
+                updated_at: 2,
+                recency_at: Some(2),
+                status: ThreadStatus::Idle,
+                path: None,
+                cwd: test_path_buf("/tmp/agent-picker-background").abs(),
+                cli_version: "0.0.0".to_string(),
+                source: codex_app_server_protocol::SessionSource::Unknown,
+                can_accept_direct_input: None,
+                thread_source: None,
+                agent_nickname: Some("discovered worker".to_string()),
+                agent_role: Some("explorer".to_string()),
+                git_info: None,
+                name: Some("discovered worker".to_string()),
+                turns: Vec::new(),
+            }],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(
+        app.agent_navigation.get(&discovered_thread_id).is_some(),
+        "the completion must merge discovered descendants into navigation state"
+    );
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("discovered worker"),
+        "the open picker must be rebuilt from the loaded rows"
+    );
+}
+
+#[tokio::test]
+async fn agent_picker_background_refresh_rejects_an_old_root_lifecycle() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    let stale_lifecycle_generation = app.thread_lifecycle_generation(primary_thread_id);
+    let request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, stale_lifecycle_generation)
+        .expect("first refresh starts");
+
+    // Same-id reattachment invalidates all work captured before its new lifecycle generation.
+    app.mark_thread_attached(primary_thread_id);
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        stale_lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: Vec::new(),
+            persisted_next_picker_page_cursor: Some(Some("stale-cursor".to_string())),
+            mark_legacy_relation_fallback_checked: true,
+            errors: vec!["stale failure".to_string()],
+        },
+    )
+    .await;
+
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    assert!(
+        app.agent_navigation.needs_legacy_relation_fallback_check(),
+        "a stale reply must not mark a new root lifecycle complete"
+    );
 }
 
 #[tokio::test]
@@ -3202,7 +3355,10 @@ async fn agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_
     app.agent_navigation
         .set_next_picker_page_cursor(Some("stale-continuation".to_string()));
 
-    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    // Pagination is refreshed asynchronously when the picker opens. Exercise the direct
+    // hydration seam here so this remains a deterministic cursor-safety regression.
+    let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    app.render_agent_picker().await;
 
     assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
     assert!(

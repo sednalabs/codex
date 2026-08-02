@@ -4,6 +4,7 @@
 //! resuming/forking saved sessions, replacing ChatWidget instances, and maintaining the agent picker
 //! cache used for multi-agent navigation.
 
+use super::agent_picker::AGENT_PICKER_VIEW_ID;
 use super::*;
 use crate::app::loaded_threads::find_loaded_subagent_threads_for_primary;
 use crate::app_server_session::source_agent_path;
@@ -35,7 +36,6 @@ const AGENT_PICKER_LOADED_PRIORITY_PAGE_SIZE: u32 = 100;
 /// Consume at most two loaded-list continuation pages before the picker opens. This makes up to
 /// 200 current descendants visible without turning the priority path into an unbounded scan.
 const AGENT_PICKER_LOADED_PRIORITY_MAX_PAGES: usize = 2;
-const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
@@ -73,10 +73,18 @@ pub(super) fn agent_picker_thread_status(
 
 impl App {
     pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
-        let backfill = self.backfill_loaded_subagent_threads(app_server).await;
+        // Before there is a primary attachment there is no root lifecycle to correlate a
+        // background request with. Retain the existing bootstrap/replay hydration path; normal
+        // interactive opens below always have a root and therefore stay nonblocking.
+        let backfill = if self.primary_thread_id.is_none() {
+            self.backfill_loaded_subagent_threads(app_server).await
+        } else {
+            LoadedSubagentBackfill::default()
+        };
         // V2 subagents are identified by canonical paths observed from activity events or loaded
-        // thread metadata. A buffered active turn is positive liveness evidence; a completed
-        // snapshot is terminal evidence. An empty store does not clear a successful spawn hint.
+        // thread metadata. This pass is intentionally cache-only: a busy event store must not
+        // delay terminal input while `/agent` is opening. The root-scoped background request
+        // below refreshes persisted metadata and liveness after cached rows are visible.
         let path_backed_thread_ids: Vec<_> = self
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id)
@@ -87,22 +95,23 @@ impl App {
             if let Some(channel) = self.thread_event_channels.get(&thread_id)
                 && channel.has_live_attachment()
             {
-                let (has_active_turn, has_terminal_snapshot) = {
-                    let store = channel.store.lock().await;
-                    (
-                        store.active_turn_id().is_some(),
-                        store
-                            .turns
-                            .last()
-                            .is_some_and(|turn| !matches!(turn.status, TurnStatus::InProgress)),
-                    )
+                let Ok(store) = channel.store.try_lock() else {
+                    continue;
                 };
+                let has_active_turn = store.active_turn_id().is_some();
+                let has_terminal_snapshot = store
+                    .turns
+                    .last()
+                    .is_some_and(|turn| !matches!(turn.status, TurnStatus::InProgress));
+                drop(store);
                 if has_active_turn {
                     self.agent_navigation.mark_running(thread_id);
                 } else if has_terminal_snapshot {
                     self.agent_navigation.mark_stopped(thread_id);
                 }
-            } else if !backfill.refreshed_thread_ids.contains(&thread_id) {
+            } else if self.primary_thread_id.is_none()
+                && !backfill.refreshed_thread_ids.contains(&thread_id)
+            {
                 self.refresh_agent_picker_thread_liveness(app_server, thread_id)
                     .await;
             }
@@ -123,10 +132,16 @@ impl App {
             let mut entries = Vec::new();
             for (thread_id, agent_path) in running_threads {
                 let preview = if let Some(channel) = self.thread_event_channels.get(&thread_id) {
-                    let store = channel.store.lock().await;
-                    super::agent_status_feed::AgentStatusThreadPreview::from_store(
-                        agent_path, &store,
-                    )
+                    match channel.store.try_lock() {
+                        Ok(store) => {
+                            super::agent_status_feed::AgentStatusThreadPreview::from_store(
+                                agent_path, &store,
+                            )
+                        }
+                        Err(_) => {
+                            super::agent_status_feed::AgentStatusThreadPreview::empty(agent_path)
+                        }
+                    }
                 } else {
                     super::agent_status_feed::AgentStatusThreadPreview::empty(agent_path)
                 };
@@ -156,15 +171,26 @@ impl App {
             {
                 continue;
             }
-            if !self
-                .refresh_agent_picker_thread_liveness(app_server, thread_id)
-                .await
-            {
-                continue;
+            if self.primary_thread_id.is_none() {
+                self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await;
+            } else if self.agent_navigation.get(&thread_id).is_none() {
+                // Keep a locally attached side conversation reachable immediately. Its
+                // authoritative status will be refreshed asynchronously with the rest of the
+                // root descendants instead of one blocking thread/read per cache miss.
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    /*agent_nickname*/ None,
+                    /*agent_role*/ None,
+                    /*is_closed*/ false,
+                );
             }
         }
 
         self.render_agent_picker().await;
+        if let Some(primary_thread_id) = self.primary_thread_id {
+            self.refresh_agent_picker_threads(app_server, primary_thread_id);
+        }
     }
 
     /// Loads one continuation page of persisted descendants without widening
@@ -199,7 +225,11 @@ impl App {
         let prior_search_query = self
             .chat_widget
             .selection_view_search_query(AGENT_PICKER_VIEW_ID);
-        let mut initial_selected_idx = None;
+        // Background refreshes rebuild this view in place. Preserve the user's current selection
+        // when one exists; otherwise default to the actively displayed thread as before.
+        let mut initial_selected_idx = self
+            .chat_widget
+            .selected_index_for_active_selection_view(AGENT_PICKER_VIEW_ID);
         let mut items = Vec::new();
         let mut closed_agent_count = 0;
         for (idx, (thread_id, entry)) in self
@@ -208,7 +238,7 @@ impl App {
             .into_iter()
             .enumerate()
         {
-            if self.active_thread_id == Some(thread_id) {
+            if initial_selected_idx.is_none() && self.active_thread_id == Some(thread_id) {
                 initial_selected_idx = Some(idx);
             }
             let id = thread_id;
@@ -219,7 +249,7 @@ impl App {
                 entry.agent_path.as_deref(),
                 is_primary,
             );
-            let usage = self.agent_picker_thread_usage(thread_id, entry).await;
+            let usage = self.agent_picker_thread_usage(thread_id, entry);
             let description = format_agent_picker_item_description(thread_id, entry, &usage);
             let selected_description =
                 format_agent_picker_item_selected_description(thread_id, entry, &usage);
@@ -312,7 +342,7 @@ impl App {
         );
     }
 
-    async fn agent_picker_thread_usage(
+    fn agent_picker_thread_usage(
         &self,
         thread_id: ThreadId,
         entry: &crate::multi_agents::AgentPickerThreadEntry,
@@ -324,8 +354,9 @@ impl App {
             ..Default::default()
         };
 
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
-            let store = channel.store.lock().await;
+        if let Some(channel) = self.thread_event_channels.get(&thread_id)
+            && let Ok(store) = channel.store.try_lock()
+        {
             if let Some(session) = &store.session {
                 if usage.model.is_none() && !session.model.trim().is_empty() {
                     usage.model = Some(session.model.clone());

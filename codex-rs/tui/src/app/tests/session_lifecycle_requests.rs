@@ -1057,10 +1057,13 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     "resuming from an empty navigation cache must render the backfilled effective identity"
                 );
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                // Discovery/hydration remains separately testable from the nonblocking picker
+                // open path, which now schedules this bounded work in the background.
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
 
-                // The picker refreshes the primary thread once. Discovered children were already
-                // refreshed by the picker's initial backfill and must not be read a second time.
+                // This direct hydration pass refreshes the primary thread once. Discovered
+                // children were already refreshed by the initial backfill and must not be read
+                // a second time.
                 assert_eq!(take_backfill_counts(&requests), (1, 1));
                 app_server.shutdown().await?;
                 proxy.await??;
@@ -1942,7 +1945,7 @@ fn agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure(
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
                 assert!(
                     app.agent_navigation.needs_legacy_relation_fallback_check(),
                     "a failed loaded-thread metadata read must leave the fallback retryable"
@@ -1952,7 +1955,7 @@ fn agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure(
                     "the hidden scan result must not mask the failed metadata lookup"
                 );
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
                 assert!(!app.agent_navigation.needs_legacy_relation_fallback_check());
                 assert!(
                     app.agent_navigation.get(&legacy_child_thread_id).is_some(),
@@ -2222,7 +2225,8 @@ fn agent_picker_keeps_the_forward_page_after_reopen() -> Result<()> {
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                Box::pin(app.render_agent_picker()).await;
                 for character in "closed".chars() {
                     app.chat_widget.handle_key_event(KeyEvent::new(
                         KeyCode::Char(character),
@@ -2252,7 +2256,8 @@ fn agent_picker_keeps_the_forward_page_after_reopen() -> Result<()> {
                     None
                 );
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                Box::pin(app.render_agent_picker()).await;
                 assert_eq!(
                     app.agent_navigation.next_picker_page_cursor(),
                     Some(third_page_cursor),
@@ -2432,7 +2437,8 @@ fn agent_picker_prioritizes_loaded_descendant_over_closed_history() -> Result<()
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                Box::pin(app.render_agent_picker()).await;
 
                 let expected_loaded_thread_ids = loaded_child_thread_ids
                     .iter()
@@ -2802,7 +2808,8 @@ fn agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent() -
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
 
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                Box::pin(app.render_agent_picker()).await;
 
                 assert!(
                     app.agent_navigation.next_picker_page_cursor().is_some(),
@@ -3057,7 +3064,8 @@ fn agent_picker_locally_filters_unacknowledged_ancestor_responses() -> Result<()
                     .await
                     .expect("the next keyboard attempt must retry the bounded compatibility page");
                 assert_eq!(retried_thread_id, expected_child_thread_id);
-                Box::pin(app.open_agent_picker(&mut app_server)).await;
+                let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                Box::pin(app.render_agent_picker()).await;
 
                 assert!(
                     app.agent_navigation

@@ -40,6 +40,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
 
 use crate::app_command::AppCommand;
+use crate::app::agent_picker::AgentPickerRefreshResult;
 use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
@@ -208,6 +209,13 @@ pub(crate) enum KeymapEditIntent {
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Apply one nonblocking, root-scoped picker refresh after its app-server work completes.
+    AgentPickerThreadsLoaded {
+        primary_thread_id: ThreadId,
+        lifecycle_generation: u64,
+        request_generation: u64,
+        result: AgentPickerRefreshResult,
+    },
     /// Load the next bounded page of persisted subagent sessions into the active picker.
     LoadMoreAgentPickerPage,
     /// Switch the active thread to the selected agent.
