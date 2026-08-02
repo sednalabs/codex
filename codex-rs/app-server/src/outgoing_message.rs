@@ -501,8 +501,10 @@ impl OutgoingMessageSender {
 
         if let Err(err) = send_result {
             warn!("failed to send request {outgoing_message_id:?} to client: {err:?}");
-            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-            request_id_to_callback.remove(&outgoing_message_id);
+            {
+                let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+                request_id_to_callback.remove(&outgoing_message_id);
+            }
         }
         (outgoing_message_id, rx_approve)
     }
@@ -567,8 +569,10 @@ impl OutgoingMessageSender {
             warn!(
                 "failed to send captured thread request {outgoing_message_id:?} to client: {err:?}"
             );
-            let mut request_id_to_callback = self.request_id_to_callback.lock().await;
-            request_id_to_callback.remove(&outgoing_message_id);
+            {
+                let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+                request_id_to_callback.remove(&outgoing_message_id);
+            }
             self.thread_request_resolution_targets
                 .lock()
                 .await

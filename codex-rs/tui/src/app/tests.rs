@@ -81,6 +81,7 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
+use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::TokenUsageBreakdown;
@@ -8688,8 +8689,8 @@ async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
         ThreadEventSnapshot {
             session: None,
             turns: Vec::new(),
-            events: vec![ThreadBufferedEvent::Notification(
-                ServerNotification::ItemCompleted(
+            events: vec![
+                ThreadBufferedEvent::Notification(ServerNotification::ItemCompleted(
                     codex_app_server_protocol::ItemCompletedNotification {
                         thread_id: "thread-1".to_string(),
                         turn_id: "turn-1".to_string(),
@@ -8708,7 +8709,7 @@ async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
                             agents_states: HashMap::new(),
                         },
                     },
-                ),
+                )),
                 ThreadBufferedEvent::Notification(ServerNotification::ItemStarted(
                     codex_app_server_protocol::ItemStartedNotification {
                         thread_id: "thread-1".to_string(),
@@ -8730,7 +8731,7 @@ async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
                         },
                     },
                 )),
-            )],
+            ],
             input_state: None,
         },
         /*resume_restored_queue*/ false,

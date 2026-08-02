@@ -1347,11 +1347,7 @@ impl ThreadManager {
         let has_more = page_with_probe.len() > limit;
         page_with_probe.truncate(limit);
         let next_cursor = if has_more {
-            Some(
-                *page_with_probe
-                    .last()
-                    .expect("a page with a probe always contains a returned row"),
-            )
+            page_with_probe.last().copied().or(candidate_next_cursor)
         } else {
             candidate_next_cursor
         };

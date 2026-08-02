@@ -181,7 +181,7 @@ impl App {
         }
     }
 
-    async fn render_agent_picker(&mut self) {
+    pub(crate) async fn render_agent_picker(&mut self) {
         let has_non_primary_agent_thread = self
             .agent_navigation
             .has_non_primary_thread(self.primary_thread_id);

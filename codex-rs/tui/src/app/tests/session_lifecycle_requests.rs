@@ -19,6 +19,7 @@ use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
+use codex_app_server_protocol::ThreadStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CollabAgentSpawnEndEvent;
