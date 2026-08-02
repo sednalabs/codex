@@ -96,6 +96,22 @@ pub(crate) struct AgentNavigationState {
     next_picker_page_cursor: Option<String>,
     /// Whether this session has completed the bounded legacy relation repair fallback.
     legacy_relation_fallback_checked: bool,
+    /// Coalesces picker refreshes and binds their eventual reply to one root lifecycle.
+    ///
+    /// A refresh request deliberately outlives the picker view itself, so the request number is
+    /// monotonic across [`Self::clear`]. That makes an old reply fail closed after a same-root
+    /// resume has installed a new lifecycle.
+    picker_refresh: Option<PickerRefreshTicket>,
+    /// Source for the monotonic request identity in [`Self::picker_refresh`].
+    next_picker_refresh_generation: u64,
+}
+
+/// Correlates one background picker refresh with the root session that requested it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PickerRefreshTicket {
+    root_thread_id: ThreadId,
+    lifecycle_generation: u64,
+    request_generation: u64,
 }
 
 /// The causal state for one activity-derived system error.
@@ -206,6 +222,47 @@ pub(crate) enum AgentNavigationDirection {
 }
 
 impl AgentNavigationState {
+    /// Starts one root-scoped picker refresh, returning `None` when an equivalent refresh is
+    /// already in flight. The caller must send all three returned identifiers back with the
+    /// completion event so stale work cannot update a later session.
+    pub(crate) fn begin_picker_refresh(
+        &mut self,
+        root_thread_id: ThreadId,
+        lifecycle_generation: u64,
+    ) -> Option<u64> {
+        if self.picker_refresh.is_some() {
+            return None;
+        }
+        self.next_picker_refresh_generation = self.next_picker_refresh_generation.wrapping_add(1);
+        let request_generation = self.next_picker_refresh_generation;
+        self.picker_refresh = Some(PickerRefreshTicket {
+            root_thread_id,
+            lifecycle_generation,
+            request_generation,
+        });
+        Some(request_generation)
+    }
+
+    /// Consumes the matching in-flight picker refresh. A mismatch is an old response or a reply
+    /// for a previous root lifecycle and must not change navigation or picker UI state.
+    pub(crate) fn finish_picker_refresh(
+        &mut self,
+        root_thread_id: ThreadId,
+        lifecycle_generation: u64,
+        request_generation: u64,
+    ) -> bool {
+        let ticket = PickerRefreshTicket {
+            root_thread_id,
+            lifecycle_generation,
+            request_generation,
+        };
+        if self.picker_refresh != Some(ticket) {
+            return false;
+        }
+        self.picker_refresh = None;
+        true
+    }
+
     /// Returns the cached picker entry for a specific thread id.
     ///
     /// Callers use this when they already know which thread they care about and need the last
@@ -1116,6 +1173,7 @@ impl AgentNavigationState {
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
         self.legacy_relation_fallback_checked = false;
+        self.picker_refresh = None;
     }
 
     /// Stores the server continuation after a bounded `/agent` backfill.
@@ -2752,6 +2810,53 @@ mod tests {
 
         assert_eq!(state.next_picker_page_cursor(), None);
         assert!(state.needs_legacy_relation_fallback_check());
+    }
+
+    #[test]
+    fn picker_refresh_coalesces_reopens_while_one_request_is_in_flight() {
+        let mut state = AgentNavigationState::default();
+        let root_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid root");
+
+        let request_generation = state
+            .begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 7)
+            .expect("first refresh starts");
+        assert_eq!(
+            state.begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 7),
+            None,
+            "a second picker open must reuse the in-flight refresh"
+        );
+        assert!(state.finish_picker_refresh(
+            root_thread_id,
+            /*lifecycle_generation*/ 7,
+            request_generation,
+        ));
+    }
+
+    #[test]
+    fn picker_refresh_rejects_stale_reply_after_session_clear() {
+        let mut state = AgentNavigationState::default();
+        let root_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid root");
+        let stale_request_generation = state
+            .begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 1)
+            .expect("first refresh starts");
+
+        state.clear();
+        let current_request_generation = state
+            .begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 2)
+            .expect("refresh after reset starts");
+
+        assert!(!state.finish_picker_refresh(
+            root_thread_id,
+            /*lifecycle_generation*/ 1,
+            stale_request_generation,
+        ));
+        assert!(state.finish_picker_refresh(
+            root_thread_id,
+            /*lifecycle_generation*/ 2,
+            current_request_generation,
+        ));
     }
 
     #[test]
