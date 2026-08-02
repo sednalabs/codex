@@ -486,7 +486,6 @@ impl App {
                 );
             }
         }
-        self.abort_thread_event_listener(thread_id);
         self.thread_event_channels.remove(&thread_id);
         self.side_threads.remove(&thread_id);
         self.agent_navigation.remove(thread_id);

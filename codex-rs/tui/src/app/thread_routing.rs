@@ -49,22 +49,6 @@ impl App {
         }
     }
 
-    pub(super) fn abort_thread_event_listener(&mut self, thread_id: ThreadId) {
-        if let Some(handle) = self.thread_event_listener_tasks.remove(&thread_id) {
-            handle.abort();
-        }
-    }
-
-    pub(super) fn abort_all_thread_event_listeners(&mut self) {
-        for handle in self
-            .thread_event_listener_tasks
-            .drain()
-            .map(|(_, handle)| handle)
-        {
-            handle.abort();
-        }
-    }
-
     pub(super) fn ensure_thread_channel(&mut self, thread_id: ThreadId) -> &mut ThreadEventChannel {
         self.thread_event_channels
             .entry(thread_id)
@@ -229,6 +213,29 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Installs the transport-facing event registry before this app starts attaching threads.
+    ///
+    /// The registry is intentionally updated by the lifecycle markers below rather than by the
+    /// raw app-server event handler. That lets the client worker capture a target before a server
+    /// event is queued for the central dispatcher.
+    pub(super) fn set_thread_event_ingress_registry(
+        &mut self,
+        registry: codex_app_server_client::ThreadEventIngressRegistry,
+    ) {
+        self.thread_event_ingress_registry = Some(registry);
+        for (&thread_id, &generation) in &self.thread_lifecycle_generations {
+            if let Some(registry) = self.thread_event_ingress_registry.as_ref() {
+                registry.bind(thread_id, generation);
+            }
+        }
+    }
+
+    fn bind_thread_event_ingress_target(&self, thread_id: ThreadId, lifecycle_generation: u64) {
+        if let Some(registry) = self.thread_event_ingress_registry.as_ref() {
+            registry.bind(thread_id, lifecycle_generation);
+        }
+    }
+
     /// Captures the lifecycle expected by an app-server ingress listener. Before the first
     /// primary attachment, events are buffered for the generation which that authoritative
     /// attachment will create; after that, they belong to the current presentation.
@@ -282,6 +289,7 @@ impl App {
             .or_default();
         *generation = generation.wrapping_add(1);
         self.discarded_thread_generations.remove(&thread_id);
+        self.bind_thread_event_ingress_target(thread_id, *generation);
     }
 
     pub(super) fn mark_thread_discarded(&mut self, thread_id: ThreadId) {
@@ -291,6 +299,10 @@ impl App {
             .or_default();
         *generation = generation.wrapping_add(1);
         self.discarded_thread_generations.insert(thread_id, *generation);
+        // Keep the discard epoch installed rather than unbinding. Any old traffic the client
+        // receives between teardown and a same-id reattach must be stamped as discarded and
+        // rejected later, not recomputed as the new attachment.
+        self.bind_thread_event_ingress_target(thread_id, *generation);
     }
 
     /// Rejects a thread-scoped write after its live session was replaced with a replay-only

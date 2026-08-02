@@ -20,6 +20,7 @@ use std::time::Duration;
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
+use crate::ThreadEventIngressRegistry;
 use crate::TypedRequestError;
 use crate::server_notification_requires_delivery;
 use codex_app_server_protocol::ClientInfo;
@@ -152,6 +153,7 @@ pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
     event_rx: mpsc::Receiver<AppServerEvent>,
     pending_events: VecDeque<AppServerEvent>,
+    thread_event_ingress_registry: ThreadEventIngressRegistry,
     server_version: Option<String>,
     codex_home: Option<String>,
     worker_handle: tokio::task::JoinHandle<()>,
@@ -212,6 +214,8 @@ impl RemoteAppServerClient {
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
+        let thread_event_ingress_registry = ThreadEventIngressRegistry::default();
+        let worker_ingress_registry = thread_event_ingress_registry.clone();
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
@@ -337,9 +341,10 @@ impl RemoteAppServerClient {
                                         }
                                     }
                                     Ok(JSONRPCMessage::Notification(notification)) => {
-                                        if let Some(event) =
-                                            app_server_event_from_notification(notification)
-                                            && let Err(err) = deliver_event(
+                                        if let Some(event) = app_server_event_from_notification(notification)
+                                            .map(|event| worker_ingress_registry.annotate_event(event))
+                                        {
+                                            if let Err(err) = deliver_event(
                                                 &event_tx,
                                                 &mut skipped_events,
                                                 event,
@@ -349,16 +354,20 @@ impl RemoteAppServerClient {
                                                 warn!(%err, "failed to deliver remote app-server event");
                                                 break;
                                             }
+                                        }
                                     }
                                     Ok(JSONRPCMessage::Request(request)) => {
                                         let request_id = request.id.clone();
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
+                                                let event = worker_ingress_registry.annotate_event(
+                                                    AppServerEvent::ServerRequest(request),
+                                                );
                                                 if let Err(err) = deliver_event(
                                                     &event_tx,
                                                     &mut skipped_events,
-                                                    AppServerEvent::ServerRequest(request),
+                                                    event,
                                                 )
                                                 .await
                                                 {
@@ -513,6 +522,7 @@ impl RemoteAppServerClient {
             command_tx,
             event_rx,
             pending_events: pending_events.into(),
+            thread_event_ingress_registry,
             server_version,
             codex_home,
             worker_handle,
@@ -634,11 +644,16 @@ impl RemoteAppServerClient {
         self.event_rx.recv().await
     }
 
+    pub fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
+        self.thread_event_ingress_registry.clone()
+    }
+
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
             command_tx,
             event_rx,
             pending_events: _pending_events,
+            thread_event_ingress_registry: _thread_event_ingress_registry,
             server_version: _server_version,
             codex_home: _codex_home,
             worker_handle,
@@ -1033,10 +1048,13 @@ async fn deliver_event(
 fn remote_event_requires_delivery(event: &AppServerEvent) -> bool {
     match event {
         AppServerEvent::Lagged { .. } => false,
-        AppServerEvent::ServerNotification(notification) => {
+        AppServerEvent::ServerNotification(notification)
+        | AppServerEvent::ThreadServerNotification { notification, .. } => {
             server_notification_requires_delivery(notification)
         }
-        AppServerEvent::ServerRequest(_) | AppServerEvent::Disconnected { .. } => true,
+        AppServerEvent::ServerRequest(_)
+        | AppServerEvent::ThreadServerRequest { .. }
+        | AppServerEvent::Disconnected { .. } => true,
     }
 }
 
@@ -1103,6 +1121,249 @@ fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::ThreadClosedNotification;
+    use codex_app_server_protocol::ToolRequestUserInputParams;
+    use codex_protocol::ThreadId;
+    use futures::SinkExt;
+    use futures::StreamExt;
+    use std::time::Duration;
+    use tokio::io::duplex;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+
+    fn jsonrpc_notification_from_server_notification(
+        notification: ServerNotification,
+    ) -> JSONRPCMessage {
+        let notification = serde_json::from_value(serde_json::to_value(notification).unwrap())
+            .expect("server notification should use JSON-RPC notification encoding");
+        JSONRPCMessage::Notification(notification)
+    }
+
+    fn jsonrpc_request_from_server_request(request: ServerRequest) -> JSONRPCMessage {
+        let request = serde_json::from_value(serde_json::to_value(request).unwrap())
+            .expect("server request should use JSON-RPC request encoding");
+        JSONRPCMessage::Request(request)
+    }
+
+    #[tokio::test]
+    async fn transport_worker_stamps_thread_events_before_consumer_queue() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream =
+            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (server_event_tx, mut server_event_rx) = mpsc::unbounded_channel::<JSONRPCMessage>();
+        let (server_message_tx, mut server_message_rx) =
+            mpsc::unbounded_channel::<JSONRPCMessage>();
+        let (initialized_tx, initialized_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&text)
+                .expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            assert_eq!(initialize.method, "initialize");
+            let initialize_response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({
+                    "userAgent": "test-server/1.0",
+                    "codexHome": "/tmp/codex-app-server-client-test",
+                }),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&initialize_response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            let Message::Text(text) = initialized else {
+                panic!("expected initialized text frame");
+            };
+            let JSONRPCMessage::Notification(initialized) = serde_json::from_str(&text)
+                .expect("initialized frame should contain JSON-RPC")
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+            let _ = initialized_tx.send(());
+
+            loop {
+                tokio::select! {
+                    event = server_event_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
+                        };
+                        server_stream
+                            .send(Message::Text(
+                                serde_json::to_string(&event)
+                                    .expect("server event should serialize")
+                                    .into(),
+                            ))
+                            .await
+                            .expect("server should send event");
+                    }
+                    frame = server_stream.next() => {
+                        match frame {
+                            Some(Ok(Message::Text(text))) => {
+                                let message = serde_json::from_str(&text)
+                                    .expect("client frame should contain JSON-RPC");
+                                let _ = server_message_tx.send(message);
+                            }
+                            Some(Ok(Message::Close(_))) | None => break,
+                            Some(Ok(_)) => {}
+                            Some(Err(err)) => panic!("test transport should not fail: {err}"),
+                        }
+                    }
+                }
+            }
+        });
+
+        let mut client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 4,
+            "in-memory test transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize over the in-memory transport");
+        initialized_rx
+            .await
+            .expect("server should observe the initialized notification");
+
+        let thread_id = ThreadId::new();
+        let registry = client.thread_event_ingress_registry();
+        registry.bind(thread_id, 41);
+        server_event_tx
+            .send(jsonrpc_notification_from_server_notification(
+                ServerNotification::ThreadClosed(ThreadClosedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            ))
+            .expect("test server channel should be open");
+        let delayed_notification =
+            tokio::time::timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("thread notification should reach the client queue")
+                .expect("client event stream should stay open");
+
+        server_event_tx
+            .send(jsonrpc_request_from_server_request(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: RequestId::Integer(7),
+                    params: ToolRequestUserInputParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-current".to_string(),
+                        item_id: "item-current".to_string(),
+                        questions: Vec::new(),
+                        auto_resolution_ms: None,
+                    },
+                },
+            ))
+            .expect("test server channel should be open");
+        let delayed_request = tokio::time::timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("thread request should reach the client queue")
+            .expect("client event stream should stay open");
+
+        // Simulate teardown and same-id reattach after the worker already placed both old
+        // events on the consumer side. Rebinding must not alter their captured targets.
+        registry.bind(thread_id, 42);
+        match delayed_notification {
+            AppServerEvent::ThreadServerNotification {
+                target,
+                notification: ServerNotification::ThreadClosed(notification),
+            } => {
+                assert_eq!(target.thread_id, thread_id);
+                assert_eq!(target.subscription_epoch, 41);
+                assert_eq!(notification.thread_id, thread_id.to_string());
+            }
+            event => panic!("expected transport-stamped thread close, got {event:?}"),
+        }
+        match delayed_request {
+            AppServerEvent::ThreadServerRequest {
+                target,
+                request: ServerRequest::ToolRequestUserInput { request_id, .. },
+            } => {
+                assert_eq!(target.thread_id, thread_id);
+                assert_eq!(target.subscription_epoch, 41);
+                assert_eq!(request_id, RequestId::Integer(7));
+            }
+            event => panic!("expected transport-stamped thread request, got {event:?}"),
+        }
+
+        client
+            .reject_server_request(
+                RequestId::Integer(7),
+                JSONRPCErrorError {
+                    code: -32000,
+                    message: "stale lifecycle rejected the captured request".to_string(),
+                    data: None,
+                },
+            )
+            .await
+            .expect("captured server request should retain a rejectable JSON-RPC id");
+        match tokio::time::timeout(Duration::from_secs(1), server_message_rx.recv())
+            .await
+            .expect("server should observe the rejection")
+            .expect("test server should stay open")
+        {
+            JSONRPCMessage::Error(error) => {
+                assert_eq!(error.id, RequestId::Integer(7));
+                assert_eq!(error.error.code, -32000);
+            }
+            message => panic!("expected server-request rejection, got {message:?}"),
+        }
+
+        server_event_tx
+            .send(jsonrpc_notification_from_server_notification(
+                ServerNotification::ThreadClosed(ThreadClosedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            ))
+            .expect("test server channel should be open");
+        match tokio::time::timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("replacement thread notification should reach the client queue")
+            .expect("client event stream should stay open")
+        {
+            AppServerEvent::ThreadServerNotification { target, .. } => {
+                assert_eq!(target.thread_id, thread_id);
+                assert_eq!(target.subscription_epoch, 42);
+            }
+            event => panic!("expected current transport-stamped thread close, got {event:?}"),
+        }
+
+        client
+            .shutdown()
+            .await
+            .expect("client shutdown should complete");
+        drop(server_event_tx);
+        server_task
+            .await
+            .expect("test server task should not panic");
+    }
 
     #[tokio::test]
     async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
@@ -1115,6 +1376,7 @@ mod tests {
             command_tx,
             event_rx,
             pending_events: VecDeque::new(),
+            thread_event_ingress_registry: ThreadEventIngressRegistry::default(),
             server_version: None,
             codex_home: None,
             worker_handle,

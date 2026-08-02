@@ -18,12 +18,14 @@
 mod path;
 mod remote;
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub use codex_app_server::app_server_control_socket_path;
@@ -54,6 +56,7 @@ pub use codex_core::otel_init::build_provider as build_otel_provider;
 pub use codex_exec_server::EnvironmentManager;
 pub use codex_exec_server::ExecServerRuntimePaths;
 use codex_feedback::CodexFeedback;
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::de::DeserializeOwned;
@@ -99,7 +102,91 @@ pub enum AppServerEvent {
     Lagged { skipped: usize },
     ServerNotification(ServerNotification),
     ServerRequest(ServerRequest),
+    /// A thread event was tagged by the transport-facing client worker before it entered the
+    /// consumer queue. Callers must retain this target across any further queueing so a delayed
+    /// event cannot be attributed to a later subscription for the same thread id.
+    ThreadServerNotification {
+        target: ThreadEventIngressTarget,
+        notification: ServerNotification,
+    },
+    /// See [`Self::ThreadServerNotification`]. Stale requests retain their original request id
+    /// and can therefore be rejected by the caller without entering a replacement lifecycle.
+    ThreadServerRequest {
+        target: ThreadEventIngressTarget,
+        request: ServerRequest,
+    },
     Disconnected { message: String },
+}
+
+/// A caller-owned epoch identifying one subscription presentation of a thread.
+///
+/// The app-server protocol does not currently carry a subscription epoch in each message. The
+/// client therefore stamps thread traffic at the transport-facing worker, before it is placed on
+/// its consumer queue. A surface must replace this target whenever it deliberately reattaches the
+/// same thread id.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThreadEventIngressTarget {
+    pub thread_id: ThreadId,
+    pub subscription_epoch: u64,
+}
+
+/// Shared registry used by a client surface to bind server thread traffic to its local lifecycle.
+///
+/// This registry is intentionally client-local rather than a protocol claim: it fences events
+/// which the transport worker already received before an unsubscribe/reattach reaches the UI
+/// queue. It does not imply that `thread/unsubscribe` drains a remote server stream.
+#[derive(Clone, Debug, Default)]
+pub struct ThreadEventIngressRegistry {
+    targets: Arc<Mutex<HashMap<ThreadId, u64>>>,
+}
+
+impl ThreadEventIngressRegistry {
+    /// Replaces the epoch used to stamp subsequently received traffic for `thread_id`.
+    pub fn bind(&self, thread_id: ThreadId, subscription_epoch: u64) {
+        self.targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(thread_id, subscription_epoch);
+    }
+
+    fn target_for_thread(&self, thread_id: ThreadId) -> Option<ThreadEventIngressTarget> {
+        self.targets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&thread_id)
+            .copied()
+            .map(|subscription_epoch| ThreadEventIngressTarget {
+                thread_id,
+                subscription_epoch,
+            })
+    }
+
+    fn annotate_event(&self, event: AppServerEvent) -> AppServerEvent {
+        match event {
+            AppServerEvent::ServerNotification(notification) => {
+                let Some(thread_id) = server_notification_thread_id(&notification) else {
+                    return AppServerEvent::ServerNotification(notification);
+                };
+                let Some(target) = self.target_for_thread(thread_id) else {
+                    return AppServerEvent::ServerNotification(notification);
+                };
+                AppServerEvent::ThreadServerNotification {
+                    target,
+                    notification,
+                }
+            }
+            AppServerEvent::ServerRequest(request) => {
+                let Some(thread_id) = server_request_thread_id(&request) else {
+                    return AppServerEvent::ServerRequest(request);
+                };
+                let Some(target) = self.target_for_thread(thread_id) else {
+                    return AppServerEvent::ServerRequest(request);
+                };
+                AppServerEvent::ThreadServerRequest { target, request }
+            }
+            event => event,
+        }
+    }
 }
 
 impl From<InProcessServerEvent> for AppServerEvent {
@@ -114,13 +201,158 @@ impl From<InProcessServerEvent> for AppServerEvent {
     }
 }
 
-fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
+fn server_request_thread_id(request: &ServerRequest) -> Option<ThreadId> {
+    let thread_id = match request {
+        ServerRequest::CommandExecutionRequestApproval { params, .. } => &params.thread_id,
+        ServerRequest::FileChangeRequestApproval { params, .. } => &params.thread_id,
+        ServerRequest::ToolRequestUserInput { params, .. } => &params.thread_id,
+        ServerRequest::McpServerElicitationRequest { params, .. } => &params.thread_id,
+        ServerRequest::PermissionsRequestApproval { params, .. } => &params.thread_id,
+        ServerRequest::DynamicToolCall { params, .. } => &params.thread_id,
+        ServerRequest::CurrentTimeRead { params, .. } => &params.thread_id,
+        ServerRequest::ComputerUseCall { params, .. } => &params.thread_id,
+        ServerRequest::ChatgptAuthTokensRefresh { .. }
+        | ServerRequest::AttestationGenerate { .. }
+        | ServerRequest::ApplyPatchApproval { .. }
+        | ServerRequest::ExecCommandApproval { .. } => return None,
+    };
+    ThreadId::from_string(thread_id).ok()
+}
+
+fn server_notification_thread_id(notification: &ServerNotification) -> Option<ThreadId> {
+    let thread_id = match notification {
+        ServerNotification::Error(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadStarted(notification) => Some(notification.thread.id.as_str()),
+        ServerNotification::ThreadStatusChanged(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadArchived(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadDeleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadUnarchived(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadClosed(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadNameUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadTokenUsageUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadGoalUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadGoalCleared(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadSettingsUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::TurnStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::HookStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::HookCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnDiffUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::TurnPlanUpdated(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ItemCompleted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::RawResponseItemCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::RawResponseCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::AgentMessageDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::PlanDelta(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::CommandExecutionOutputDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::TerminalInteraction(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::FileChangeOutputDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::FileChangePatchUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ServerRequestResolved(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::McpToolCallProgress(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ReasoningSummaryTextDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ReasoningSummaryPartAdded(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ReasoningTextDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ContextCompacted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ModelRerouted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ModelVerification(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ModelSafetyBufferingUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::TurnModerationMetadata(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeStarted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeItemAdded(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeTranscriptDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeTranscriptDone(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeOutputAudioDelta(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeSdp(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::ThreadRealtimeError(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::ThreadRealtimeClosed(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::Warning(notification) => notification.thread_id.as_deref(),
+        ServerNotification::GuardianWarning(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::McpServerStatusUpdated(notification) => notification.thread_id.as_deref(),
+        ServerNotification::SkillsChanged(_)
+        | ServerNotification::McpServerOauthLoginCompleted(_)
+        | ServerNotification::AccountUpdated(_)
+        | ServerNotification::AccountRateLimitsUpdated(_)
+        | ServerNotification::AppListUpdated(_)
+        | ServerNotification::EnvironmentConnected(_)
+        | ServerNotification::EnvironmentDisconnected(_)
+        | ServerNotification::RemoteControlStatusChanged(_)
+        | ServerNotification::ExternalAgentConfigImportProgress(_)
+        | ServerNotification::ExternalAgentConfigImportCompleted(_)
+        | ServerNotification::DeprecationNotice(_)
+        | ServerNotification::ConfigWarning(_)
+        | ServerNotification::FuzzyFileSearchSessionUpdated(_)
+        | ServerNotification::FuzzyFileSearchSessionCompleted(_)
+        | ServerNotification::CommandExecOutputDelta(_)
+        | ServerNotification::ProcessOutputDelta(_)
+        | ServerNotification::ProcessExited(_)
+        | ServerNotification::FsChanged(_)
+        | ServerNotification::WindowsWorldWritableWarning(_)
+        | ServerNotification::WindowsSandboxSetupCompleted(_)
+        | ServerNotification::AccountLoginCompleted(_) => None,
+    };
+    thread_id.and_then(|thread_id| ThreadId::from_string(thread_id).ok())
+}
+
+fn event_requires_delivery(event: &AppServerEvent) -> bool {
     // These transcript and terminal events must remain lossless. Dropping
     // streamed assistant text or the authoritative completed item can leave
     // the TUI with permanently corrupted markdown, while dropping completion
     // notifications can leave surfaces waiting forever.
     match event {
-        InProcessServerEvent::ServerNotification(notification) => {
+        AppServerEvent::ServerNotification(notification)
+        | AppServerEvent::ThreadServerNotification { notification, .. } => {
             server_notification_requires_delivery(notification)
         }
         _ => false,
@@ -172,9 +404,9 @@ enum ForwardEventResult {
 /// If a dropped event is a `ServerRequest`, `reject_server_request` is called
 /// so the server does not wait for a response that will never come.
 async fn forward_in_process_event<F>(
-    event_tx: &mpsc::Sender<InProcessServerEvent>,
+    event_tx: &mpsc::Sender<AppServerEvent>,
     skipped_events: &mut usize,
-    event: InProcessServerEvent,
+    event: AppServerEvent,
     mut reject_server_request: F,
 ) -> ForwardEventResult
 where
@@ -185,7 +417,7 @@ where
             // Surface lag before the lossless event, but do not let the lag marker itself cause
             // us to drop the transcript/completion notification the caller is blocked on.
             if event_tx
-                .send(InProcessServerEvent::Lagged {
+                .send(AppServerEvent::Lagged {
                     skipped: *skipped_events,
                 })
                 .await
@@ -195,7 +427,7 @@ where
             }
             *skipped_events = 0;
         } else {
-            match event_tx.try_send(InProcessServerEvent::Lagged {
+            match event_tx.try_send(AppServerEvent::Lagged {
                 skipped: *skipped_events,
             }) {
                 Ok(()) => {
@@ -204,7 +436,9 @@ where
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     *skipped_events = skipped_events.saturating_add(1);
                     warn!("dropping in-process app-server event because consumer queue is full");
-                    if let InProcessServerEvent::ServerRequest(request) = event {
+                    if let AppServerEvent::ServerRequest(request)
+                    | AppServerEvent::ThreadServerRequest { request, .. } = event
+                    {
                         reject_server_request(request);
                     }
                     return ForwardEventResult::Continue;
@@ -230,7 +464,9 @@ where
         Err(mpsc::error::TrySendError::Full(event)) => {
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping in-process app-server event because consumer queue is full");
-            if let InProcessServerEvent::ServerRequest(request) = event {
+            if let AppServerEvent::ServerRequest(request)
+            | AppServerEvent::ThreadServerRequest { request, .. } = event
+            {
                 reject_server_request(request);
             }
             ForwardEventResult::Continue
@@ -432,7 +668,8 @@ enum ClientCommand {
 /// boundary.
 pub struct InProcessAppServerClient {
     command_tx: mpsc::Sender<ClientCommand>,
-    event_rx: mpsc::Receiver<InProcessServerEvent>,
+    event_rx: mpsc::Receiver<AppServerEvent>,
+    thread_event_ingress_registry: ThreadEventIngressRegistry,
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
@@ -464,7 +701,9 @@ impl InProcessAppServerClient {
             codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
-        let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+        let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
+        let thread_event_ingress_registry = ThreadEventIngressRegistry::default();
+        let worker_ingress_registry = thread_event_ingress_registry.clone();
 
         let worker_handle = tokio::spawn(async move {
             let mut event_stream_enabled = true;
@@ -542,6 +781,7 @@ impl InProcessAppServerClient {
                             continue;
                         }
 
+                        let event = worker_ingress_registry.annotate_event(event.into());
                         match forward_in_process_event(
                             &event_tx,
                             &mut skipped_events,
@@ -573,8 +813,13 @@ impl InProcessAppServerClient {
         Ok(Self {
             command_tx,
             event_rx,
+            thread_event_ingress_registry,
             worker_handle,
         })
+    }
+
+    pub fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
+        self.thread_event_ingress_registry.clone()
     }
 
     pub fn request_handle(&self) -> InProcessAppServerRequestHandle {
@@ -722,9 +967,9 @@ impl InProcessAppServerClient {
     /// Returns the next in-process event, or `None` when worker exits.
     ///
     /// Callers are expected to drain this stream promptly. If they fall behind,
-    /// the worker emits [`InProcessServerEvent::Lagged`] markers and may reject
+    /// the worker emits [`AppServerEvent::Lagged`] markers and may reject
     /// pending server requests rather than letting approval flows hang.
-    pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
+    pub async fn next_event(&mut self) -> Option<AppServerEvent> {
         self.event_rx.recv().await
     }
 
@@ -736,6 +981,7 @@ impl InProcessAppServerClient {
         let Self {
             command_tx,
             event_rx,
+            thread_event_ingress_registry: _thread_event_ingress_registry,
             worker_handle,
         } = self;
         let mut worker_handle = worker_handle;
@@ -890,8 +1136,15 @@ impl AppServerClient {
 
     pub async fn next_event(&mut self) -> Option<AppServerEvent> {
         match self {
-            Self::InProcess(client) => client.next_event().await.map(Into::into),
+            Self::InProcess(client) => client.next_event().await,
             Self::Remote(client) => client.next_event().await,
+        }
+    }
+
+    pub fn thread_event_ingress_registry(&self) -> ThreadEventIngressRegistry {
+        match self {
+            Self::InProcess(client) => client.thread_event_ingress_registry(),
+            Self::Remote(client) => client.thread_event_ingress_registry(),
         }
     }
 
@@ -1334,7 +1587,7 @@ mod tests {
     async fn forward_in_process_event_preserves_transcript_notifications_under_backpressure() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         event_tx
-            .send(InProcessServerEvent::ServerNotification(
+            .send(AppServerEvent::ServerNotification(
                 command_execution_output_delta_notification("stdout-1"),
             ))
             .await
@@ -1344,7 +1597,7 @@ mod tests {
         let result = forward_in_process_event(
             &event_tx,
             &mut skipped_events,
-            InProcessServerEvent::ServerNotification(command_execution_output_delta_notification(
+            AppServerEvent::ServerNotification(command_execution_output_delta_notification(
                 "stdout-2",
             )),
             |_| {},
@@ -1374,7 +1627,7 @@ mod tests {
             let result = forward_in_process_event(
                 &event_tx,
                 &mut skipped_events,
-                InProcessServerEvent::ServerNotification(notification),
+                AppServerEvent::ServerNotification(notification),
                 |_| {},
             )
             .await;
@@ -1387,23 +1640,23 @@ mod tests {
             .expect("receiver task should join successfully");
         assert!(matches!(
             &events[0],
-            InProcessServerEvent::ServerNotification(
+            AppServerEvent::ServerNotification(
                 ServerNotification::CommandExecutionOutputDelta(notification)
             ) if notification.delta == "stdout-1"
         ));
         assert!(matches!(
             &events[1],
-            InProcessServerEvent::Lagged { skipped: 1 }
+            AppServerEvent::Lagged { skipped: 1 }
         ));
         assert!(matches!(
             &events[2],
-            InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+            AppServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
                 notification
             )) if notification.delta == "hello"
         ));
         assert!(matches!(
             &events[3],
-            InProcessServerEvent::ServerNotification(ServerNotification::ItemCompleted(
+            AppServerEvent::ServerNotification(ServerNotification::ItemCompleted(
                 notification
             )) if matches!(
                 &notification.item,
@@ -1412,7 +1665,7 @@ mod tests {
         ));
         assert!(matches!(
             &events[4],
-            InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
+            AppServerEvent::ServerNotification(ServerNotification::TurnCompleted(
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
@@ -2080,7 +2333,7 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel(1);
         let worker_handle = tokio::spawn(async {});
         event_tx
-            .send(InProcessServerEvent::Lagged { skipped: 3 })
+            .send(AppServerEvent::Lagged { skipped: 3 })
             .await
             .expect("lagged marker should enqueue");
         drop(event_tx);
@@ -2088,6 +2341,7 @@ mod tests {
         let mut client = InProcessAppServerClient {
             command_tx,
             event_rx,
+            thread_event_ingress_registry: ThreadEventIngressRegistry::default(),
             worker_handle,
         };
 
@@ -2096,7 +2350,7 @@ mod tests {
             .expect("lagged marker should arrive before timeout");
         assert!(matches!(
             event,
-            Some(InProcessServerEvent::Lagged { skipped: 3 })
+            Some(AppServerEvent::Lagged { skipped: 3 })
         ));
 
         client.shutdown().await.expect("shutdown should complete");
@@ -2105,7 +2359,7 @@ mod tests {
     #[test]
     fn event_requires_delivery_marks_transcript_and_terminal_events() {
         assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(
+            &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::TurnCompleted(
                     codex_app_server_protocol::TurnCompletedNotification {
                         final_model: None,
@@ -2126,7 +2380,7 @@ mod tests {
             )
         ));
         assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(
+            &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::AgentMessageDelta(
                     codex_app_server_protocol::AgentMessageDeltaNotification {
                         thread_id: "thread".to_string(),
@@ -2138,7 +2392,7 @@ mod tests {
             )
         ));
         assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(
+            &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::ItemCompleted(
                     codex_app_server_protocol::ItemCompletedNotification {
                         thread_id: "thread".to_string(),
@@ -2155,7 +2409,7 @@ mod tests {
             )
         ));
         assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(
+            &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::ExternalAgentConfigImportCompleted(
                     codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
                         import_id: "import".to_string(),
@@ -2164,11 +2418,11 @@ mod tests {
                 )
             )
         ));
-        assert!(!event_requires_delivery(&InProcessServerEvent::Lagged {
+        assert!(!event_requires_delivery(&AppServerEvent::Lagged {
             skipped: 1
         }));
         assert!(!event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(
+            &AppServerEvent::ServerNotification(
                 codex_app_server_protocol::ServerNotification::CommandExecutionOutputDelta(
                     codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
                         thread_id: "thread".to_string(),
@@ -2312,6 +2566,7 @@ mod tests {
         let client = InProcessAppServerClient {
             command_tx,
             event_rx,
+            thread_event_ingress_registry: ThreadEventIngressRegistry::default(),
             worker_handle,
         };
 
