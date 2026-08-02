@@ -513,9 +513,7 @@ fn pending_server_request_id(request: &ServerRequest) -> Option<AppServerRequest
         | ServerRequest::FileChangeRequestApproval { request_id, .. }
         | ServerRequest::PermissionsRequestApproval { request_id, .. }
         | ServerRequest::ToolRequestUserInput { request_id, .. }
-        | ServerRequest::McpServerElicitationRequest { request_id, .. } => {
-            Some(request_id.clone())
-        }
+        | ServerRequest::McpServerElicitationRequest { request_id, .. } => Some(request_id.clone()),
         ServerRequest::DynamicToolCall { .. }
         | ServerRequest::ComputerUseCall { .. }
         | ServerRequest::ChatgptAuthTokensRefresh { .. }
@@ -540,8 +538,8 @@ struct McpRequestKey {
 
 #[cfg(test)]
 mod tests {
-    use super::PendingAppServerRequests;
     use super::ClearedAppServerRequest;
+    use super::PendingAppServerRequests;
     use super::ResolvedAppServerRequest;
     use super::UnsupportedAppServerRequest;
     use crate::app_command::AppCommand as Op;
@@ -564,10 +562,10 @@ mod tests {
     use codex_app_server_protocol::ToolRequestUserInputAnswer;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::ToolRequestUserInputResponse;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
     use codex_protocol::request_permissions::RequestPermissionProfile;
-    use codex_protocol::ThreadId;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use serde_json::json;

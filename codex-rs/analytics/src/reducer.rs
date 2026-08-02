@@ -1787,10 +1787,12 @@ impl AnalyticsReducer {
         let Some(turn_state) = self.turns.remove(turn_id) else {
             return;
         };
-        self.terminal_turn_states.insert(turn_id.to_string(), turn_state);
+        self.terminal_turn_states
+            .insert(turn_id.to_string(), turn_state);
         self.terminal_turn_state_order
             .retain(|candidate| candidate != turn_id);
-        self.terminal_turn_state_order.push_back(turn_id.to_string());
+        self.terminal_turn_state_order
+            .push_back(turn_id.to_string());
 
         while self.terminal_turn_states.len() > TERMINAL_EMITTED_TURN_STATE_LIMIT {
             let expired_turn_id = self
@@ -1805,10 +1807,12 @@ impl AnalyticsReducer {
     fn clear_terminal_turn_item_lifecycle_for_turn(&mut self, turn_id: &str) {
         self.tool_items_started_at_ms
             .retain(|key, _| key.turn_id != turn_id);
-        self.spawn_item_starts.retain(|key, _| key.turn_id != turn_id);
+        self.spawn_item_starts
+            .retain(|key, _| key.turn_id != turn_id);
         self.pending_tool_item_lifecycle_order
             .retain(|key| key.turn_id != turn_id);
-        self.item_review_summaries.retain(|key, _| key.turn_id != turn_id);
+        self.item_review_summaries
+            .retain(|key, _| key.turn_id != turn_id);
         self.terminal_turn_item_lifecycles
             .retain(|(_, candidate_turn_id)| candidate_turn_id != turn_id);
         self.terminal_turn_item_lifecycle_order
@@ -3159,10 +3163,12 @@ mod tests {
             reducer.tool_items_started_at_ms.len(),
             PENDING_TOOL_ITEMS_PER_TURN_LIMIT
         );
-        assert!(!reducer.tool_items_started_at_ms.contains_key(&ToolItemKey {
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            item_id: "item-0".to_string(),
-        }));
+        assert!(
+            !reducer.tool_items_started_at_ms.contains_key(&ToolItemKey {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-0".to_string(),
+            })
+        );
     }
 }

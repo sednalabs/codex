@@ -775,9 +775,7 @@ def _preserve_subagent_activity_kind_enum(out_path: Path) -> None:
         return
     interrupted_member = '    interrupted = "interrupted"'
     if interrupted_member not in class_source:
-        raise RuntimeError(
-            "Generated SubAgentActivityKind is missing the interrupted member"
-        )
+        raise RuntimeError("Generated SubAgentActivityKind is missing the interrupted member")
     class_source = class_source.replace(
         interrupted_member,
         f"{interrupted_member}\n{errored_member}",
@@ -792,14 +790,14 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
     source = _replace_generated_class_text(
         source,
         "CollabAgentToolCallThreadItem",
-        "description=\"Model requested for the spawned agent, when applicable.\"",
-        "description=\"Effective model selected for the spawned agent, when available.\"",
+        'description="Model requested for the spawned agent, when applicable."',
+        'description="Effective model selected for the spawned agent, when available."',
     )
     source = _replace_generated_class_text(
         source,
         "CollabAgentToolCallThreadItem",
-        "description=\"Reasoning effort requested for the spawned agent, when applicable.\"",
-        "description=\"Effective reasoning effort selected for the spawned agent, when available.\"",
+        'description="Reasoning effort requested for the spawned agent, when applicable."',
+        'description="Effective reasoning effort selected for the spawned agent, when available."',
     )
     source = _insert_generated_class_fields_before(
         source,
@@ -908,9 +906,7 @@ def _insert_generated_class_fields_before(
     if f"    {field_name}:" in class_source:
         return source
     if marker not in class_source:
-        raise RuntimeError(
-            f"Generated {class_name} is missing expected insertion marker"
-        )
+        raise RuntimeError(f"Generated {class_name} is missing expected insertion marker")
     class_source = class_source.replace(marker, f"{fields}{marker}", 1)
     return source[:class_start] + class_source + source[class_end:]
 

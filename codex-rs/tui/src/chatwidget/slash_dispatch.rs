@@ -304,11 +304,10 @@ impl ChatWidget {
                     return;
                 }
                 if let Some(thread_id) = self.thread_id {
-                    self.app_event_tx
-                        .send(AppEvent::OpenThreadGoalMenu {
-                            thread_id,
-                            lifecycle_generation: self.thread_lifecycle_generation,
-                        });
+                    self.app_event_tx.send(AppEvent::OpenThreadGoalMenu {
+                        thread_id,
+                        lifecycle_generation: self.thread_lifecycle_generation,
+                    });
                     self.append_message_history_entry("/goal".to_string());
                 } else {
                     self.add_info_message(
@@ -852,19 +851,17 @@ impl ChatWidget {
                     };
                     match command {
                         GoalControlCommand::Clear => {
-                            self.app_event_tx
-                                .send(AppEvent::ClearThreadGoal {
-                                    thread_id,
-                                    lifecycle_generation: self.thread_lifecycle_generation,
-                                });
+                            self.app_event_tx.send(AppEvent::ClearThreadGoal {
+                                thread_id,
+                                lifecycle_generation: self.thread_lifecycle_generation,
+                            });
                         }
                         GoalControlCommand::SetStatus(status) => {
-                            self.app_event_tx
-                                .send(AppEvent::SetThreadGoalStatus {
-                                    thread_id,
-                                    lifecycle_generation: self.thread_lifecycle_generation,
-                                    status,
-                                });
+                            self.app_event_tx.send(AppEvent::SetThreadGoalStatus {
+                                thread_id,
+                                lifecycle_generation: self.thread_lifecycle_generation,
+                                status,
+                            });
                         }
                     }
                     self.append_message_history_entry(format!("/goal {trimmed}"));

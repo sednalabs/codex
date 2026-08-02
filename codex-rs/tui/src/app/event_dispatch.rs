@@ -532,8 +532,13 @@ impl App {
                 log_id,
             } => {
                 if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
-                    self.lookup_message_history_entry(thread_id, lifecycle_generation, offset, log_id)
-                        .await?;
+                    self.lookup_message_history_entry(
+                        thread_id,
+                        lifecycle_generation,
+                        offset,
+                        log_id,
+                    )
+                    .await?;
                 }
             }
             AppEvent::LookupMessageHistoryBatch {
@@ -543,8 +548,13 @@ impl App {
                 log_id,
             } => {
                 if self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
-                    self.lookup_message_history_batch(thread_id, lifecycle_generation, cursor, log_id)
-                        .await?;
+                    self.lookup_message_history_batch(
+                        thread_id,
+                        lifecycle_generation,
+                        cursor,
+                        log_id,
+                    )
+                    .await?;
                 }
             }
             AppEvent::ApproveRecentAutoReviewDenial {
@@ -1382,8 +1392,13 @@ impl App {
                     _ => false,
                 };
                 if lifecycle_is_current {
-                    self.handle_feedback_submitted(origin_thread_id, category, include_logs, result)
-                        .await;
+                    self.handle_feedback_submitted(
+                        origin_thread_id,
+                        category,
+                        include_logs,
+                        result,
+                    )
+                    .await;
                 } else {
                     tracing::debug!(
                         ?origin_thread_id,
@@ -2202,10 +2217,8 @@ impl App {
                 lifecycle_generation,
                 user_message,
             } => {
-                if !self.thread_accepts_lifecycle_generation(
-                    parent_thread_id,
-                    lifecycle_generation,
-                ) {
+                if !self.thread_accepts_lifecycle_generation(parent_thread_id, lifecycle_generation)
+                {
                     tracing::debug!(%parent_thread_id, lifecycle_generation, "dropping stale side-conversation action");
                     return Ok(AppRunControl::Continue);
                 }

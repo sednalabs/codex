@@ -96,7 +96,9 @@ pub type RequestResult = std::result::Result<JsonRpcResult, JSONRPCErrorError>;
 
 #[derive(Debug, Clone)]
 pub enum AppServerEvent {
-    Lagged { skipped: usize },
+    Lagged {
+        skipped: usize,
+    },
     ServerNotification(ServerNotification),
     ServerRequest(ServerRequest),
     /// A thread event carries the immutable subscription identity minted by
@@ -111,7 +113,9 @@ pub enum AppServerEvent {
         thread_subscription_id: String,
         request: ServerRequest,
     },
-    Disconnected { message: String },
+    Disconnected {
+        message: String,
+    },
 }
 
 impl From<InProcessServerEvent> for AppServerEvent {
@@ -1474,10 +1478,7 @@ mod tests {
                 ServerNotification::CommandExecutionOutputDelta(notification)
             ) if notification.delta == "stdout-1"
         ));
-        assert!(matches!(
-            &events[1],
-            AppServerEvent::Lagged { skipped: 1 }
-        ));
+        assert!(matches!(&events[1], AppServerEvent::Lagged { skipped: 1 }));
         assert!(matches!(
             &events[2],
             AppServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
@@ -2260,10 +2261,7 @@ mod tests {
         let event = timeout(Duration::from_secs(2), client.next_event())
             .await
             .expect("lagged marker should arrive before timeout");
-        assert!(matches!(
-            event,
-            Some(AppServerEvent::Lagged { skipped: 3 })
-        ));
+        assert!(matches!(event, Some(AppServerEvent::Lagged { skipped: 3 })));
 
         client.shutdown().await.expect("shutdown should complete");
     }

@@ -531,12 +531,7 @@ pub(super) async fn handle_thread_listener_command(
             request_id,
             completion_tx,
         } => {
-            resolve_pending_server_request(
-                conversation_id,
-                outgoing,
-                request_id,
-            )
-            .await;
+            resolve_pending_server_request(conversation_id, outgoing, request_id).await;
             let _ = completion_tx.send(());
         }
     }

@@ -3371,7 +3371,9 @@ impl ThreadRequestProcessor {
                     .experimental_raw_events;
             }
 
-            let thread_started = match self.read_thread_view(thread_id, /*include_turns*/ false).await
+            let thread_started = match self
+                .read_thread_view(thread_id, /*include_turns*/ false)
+                .await
             {
                 Ok(thread) => thread,
                 Err(error) => {
@@ -3434,12 +3436,7 @@ impl ThreadRequestProcessor {
                     )
                     .await;
             }
-            log_listener_attach_result(
-                attach_result,
-                thread_id,
-                connection_id,
-                "thread",
-            );
+            log_listener_attach_result(attach_result, thread_id, connection_id, "thread");
         }
     }
 

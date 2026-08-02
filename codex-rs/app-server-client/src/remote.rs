@@ -42,8 +42,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
 use futures::StreamExt;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
@@ -1170,8 +1170,8 @@ mod tests {
         message: T,
         thread_subscription_id: &str,
     ) -> serde_json::Value {
-        let mut message = serde_json::to_value(message)
-            .expect("server message should serialize as JSON-RPC");
+        let mut message =
+            serde_json::to_value(message).expect("server message should serialize as JSON-RPC");
         message
             .as_object_mut()
             .expect("server message should be a JSON-RPC object")
@@ -1185,8 +1185,7 @@ mod tests {
     #[tokio::test]
     async fn transport_worker_preserves_server_subscription_identity() {
         let (client_io, server_io) = duplex(64 * 1024);
-        let client_stream =
-            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
         let mut server_stream =
             WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
         let (server_event_tx, mut server_event_rx) = mpsc::unbounded_channel::<serde_json::Value>();
@@ -1202,8 +1201,8 @@ mod tests {
             let Message::Text(text) = initialize else {
                 panic!("expected initialize text frame");
             };
-            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&text)
-                .expect("initialize frame should contain JSON-RPC")
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
             else {
                 panic!("expected initialize request");
             };
@@ -1232,8 +1231,8 @@ mod tests {
             let Message::Text(text) = initialized else {
                 panic!("expected initialized text frame");
             };
-            let JSONRPCMessage::Notification(initialized) = serde_json::from_str(&text)
-                .expect("initialized frame should contain JSON-RPC")
+            let JSONRPCMessage::Notification(initialized) =
+                serde_json::from_str(&text).expect("initialized frame should contain JSON-RPC")
             else {
                 panic!("expected initialized notification");
             };

@@ -718,12 +718,8 @@ impl App {
         store.rebase_buffer_after_session_refresh();
         drop(store);
         if live_attached {
-            self.bind_thread_subscription_and_flush(
-                app_server,
-                thread_id,
-                thread_subscription_id,
-            )
-            .await;
+            self.bind_thread_subscription_and_flush(app_server, thread_id, thread_subscription_id)
+                .await;
         }
         Ok(live_attached)
     }
@@ -931,14 +927,15 @@ impl App {
         Ok(())
     }
 
-    pub(super) async fn reset_thread_event_state(
-        &mut self,
-        app_server: Option<&AppServerSession>,
-    ) {
+    pub(super) async fn reset_thread_event_state(&mut self, app_server: Option<&AppServerSession>) {
         let mut thread_ids = HashSet::new();
         thread_ids.extend(self.thread_event_channels.keys().copied());
         thread_ids.extend(self.side_threads.keys().copied());
-        thread_ids.extend(self.pending_primary_events.iter().map(|event| event.thread_id));
+        thread_ids.extend(
+            self.pending_primary_events
+                .iter()
+                .map(|event| event.thread_id),
+        );
         thread_ids.extend(self.pending_app_server_requests.pending_thread_ids());
         thread_ids.extend(
             [
@@ -1015,7 +1012,7 @@ impl App {
                     started.turns,
                     ThreadAttachPresentation::SessionLineage,
                 )
-                    .await?;
+                .await?;
                 self.chat_widget.maybe_send_next_queued_input();
             }
             Err(err) => {
@@ -1134,12 +1131,8 @@ impl App {
         presentation: ThreadAttachPresentation,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> Result<()> {
-        self.prepare_chat_widget_for_app_server_thread(
-            tui,
-            app_server,
-            initial_user_message,
-        )
-        .await;
+        self.prepare_chat_widget_for_app_server_thread(tui, app_server, initial_user_message)
+            .await;
         if started.blocks_direct_input {
             self.mark_primary_thread_parent_owned(started.session.thread_id);
         }
@@ -1807,9 +1800,7 @@ impl App {
                 // hydrate descendant metadata before it renders historical Spawn/Wait cells so
                 // their friendly paths and effective identities are retained in the new widget.
                 self.prepare_chat_widget_for_app_server_thread(
-                    tui,
-                    app_server,
-                    /*initial_user_message*/ None,
+                    tui, app_server, /*initial_user_message*/ None,
                 )
                 .await;
                 self.primary_thread_id = Some(resumed_thread_id);

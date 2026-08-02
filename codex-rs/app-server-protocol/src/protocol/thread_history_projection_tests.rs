@@ -359,7 +359,10 @@ fn projects_failed_no_receiver_canonical_spawn_without_a_legacy_effective_identi
     else {
         panic!("expected failed canonical spawn projection");
     };
-    assert_eq!(status, &crate::protocol::v2::CollabAgentToolCallStatus::Failed);
+    assert_eq!(
+        status,
+        &crate::protocol::v2::CollabAgentToolCallStatus::Failed
+    );
     assert!(receiver_thread_ids.is_empty());
     assert_eq!(model, &None);
     assert_eq!(reasoning_effort, &None);

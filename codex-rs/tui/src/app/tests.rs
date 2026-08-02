@@ -356,7 +356,8 @@ async fn inactive_approval_uses_its_target_lifecycle_generation() -> Result<()> 
             ),
         None
     );
-    app.enqueue_thread_request(inactive_thread_id, request).await?;
+    app.enqueue_thread_request(inactive_thread_id, request)
+        .await?;
 
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
@@ -552,7 +553,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
         /*offset*/ 0,
         /*log_id*/ 1,
     )
-        .await?;
+    .await?;
 
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
@@ -584,7 +585,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
         cursor,
         /*log_id*/ 1,
     )
-        .await?;
+    .await?;
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
         .expect("history batch lookup should emit an app event")
@@ -2276,8 +2277,7 @@ async fn delayed_unrevisioned_thread_closed_does_not_close_recovered_child() -> 
 }
 
 #[tokio::test]
-async fn request_first_not_loaded_keeps_synthetic_buffer_non_live_across_backfill() -> Result<()>
-{
+async fn request_first_not_loaded_keeps_synthetic_buffer_non_live_across_backfill() -> Result<()> {
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();
     let thread_id = ThreadId::new();
@@ -4466,7 +4466,8 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
     let ThreadInteractiveRequest::Approval {
         request: ApprovalRequest::ApplyPatch(approval),
         ..
-    } = &request else {
+    } = &request
+    else {
         panic!("expected apply-patch approval request");
     };
     assert_eq!(
@@ -5695,9 +5696,9 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
 #[tokio::test]
 async fn discard_closed_side_thread_removes_local_state_and_rejects_pending_requests() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
-    let app_server =
-        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await
-            .expect("embedded app server");
+    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
     let side_thread_id = ThreadId::new();
     app.active_thread_id = Some(side_thread_id);
@@ -5725,7 +5726,8 @@ async fn discard_closed_side_thread_removes_local_state_and_rejects_pending_requ
         None
     );
 
-    app.discard_closed_side_thread(&app_server, side_thread_id).await;
+    app.discard_closed_side_thread(&app_server, side_thread_id)
+        .await;
 
     assert_eq!(app.active_thread_id, None);
     assert!(!app.side_threads.contains_key(&side_thread_id));
@@ -5848,7 +5850,9 @@ async fn transport_targeted_notification_is_fenced_after_same_id_reattach() -> R
             .as_mut()
             .expect("reattached primary has a receiver")
             .try_recv(),
-        Ok(ThreadBufferedEvent::Notification(ServerNotification::ThreadClosed(_)))
+        Ok(ThreadBufferedEvent::Notification(
+            ServerNotification::ThreadClosed(_)
+        ))
     ));
     Ok(())
 }
@@ -5977,7 +5981,8 @@ async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattac
 }
 
 #[tokio::test]
-async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actionable() -> Result<()> {
+async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actionable() -> Result<()>
+{
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     let app_server =
@@ -6002,8 +6007,7 @@ async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actio
     .await;
     assert_eq!(app.deferred_thread_subscription_events.len(), 1);
     assert!(
-        !app
-            .pending_app_server_requests
+        !app.pending_app_server_requests
             .contains_server_request(&replayed_request),
         "an unknown subscription must not be guessed from a thread id"
     );
@@ -6031,7 +6035,8 @@ async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Res
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();
     let child_thread_id = ThreadId::new();
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let primary_session = test_thread_session(primary_thread_id, test_path_buf("/tmp/main"));
     app.primary_thread_id = Some(primary_thread_id);
     app.active_thread_id = Some(primary_thread_id);
@@ -6103,10 +6108,7 @@ async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Res
     app.mark_thread_discarded(child_thread_id);
     app.mark_thread_attached(child_thread_id);
     let replacement_subscription_id = "replacement-child-subscription".to_string();
-    app.bind_thread_subscription(
-        child_thread_id,
-        Some(replacement_subscription_id.clone()),
-    );
+    app.bind_thread_subscription(child_thread_id, Some(replacement_subscription_id.clone()));
     app.handle_app_server_event(
         &app_server,
         codex_app_server_client::AppServerEvent::ThreadServerNotification {
@@ -6142,7 +6144,8 @@ async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Res
 async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
-    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
 
     app.mark_thread_attached(thread_id);
     let stale_subscription_id = "old-resolution-subscription".to_string();

@@ -311,12 +311,8 @@ LIMIT 2
         agent_path: &str,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<Option<ThreadId>> {
-        self.find_thread_spawn_descendant_by_path_matching(
-            root_thread_id,
-            agent_path,
-            Some(status),
-        )
-        .await
+        self.find_thread_spawn_descendant_by_path_matching(root_thread_id, agent_path, Some(status))
+            .await
     }
 
     async fn find_thread_spawn_descendant_by_path_matching(
@@ -363,14 +359,12 @@ JOIN threads ON threads.id = subtree.child_thread_id
 WHERE threads.agent_path =
             "#,
         );
-        builder
-            .push_bind(agent_path)
-            .push(
-                r#"
+        builder.push_bind(agent_path).push(
+            r#"
 ORDER BY threads.id
 LIMIT 2
             "#,
-            );
+        );
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
         one_thread_id_from_rows(rows, agent_path)
     }

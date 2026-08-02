@@ -932,12 +932,11 @@ impl BottomPane {
     pub(crate) fn clear_composer_for_ctrl_c(&mut self) {
         if let Some(text) = self.composer.clear_for_ctrl_c() {
             if let Some(thread_id) = self.thread_id {
-                self.app_event_tx
-                    .send(AppEvent::AppendMessageHistoryEntry {
-                        thread_id,
-                        lifecycle_generation: self.app_event_tx.thread_lifecycle_generation(),
-                        text,
-                    });
+                self.app_event_tx.send(AppEvent::AppendMessageHistoryEntry {
+                    thread_id,
+                    lifecycle_generation: self.app_event_tx.thread_lifecycle_generation(),
+                    text,
+                });
             } else {
                 tracing::warn!(
                     "failed to append Ctrl+C-cleared draft to history: no active thread id"
@@ -1621,10 +1620,7 @@ impl BottomPane {
         &mut self,
         request: McpServerElicitationFormRequest,
     ) {
-        self.push_mcp_server_elicitation_request_with_sender(
-            request,
-            self.app_event_tx.clone(),
-        );
+        self.push_mcp_server_elicitation_request_with_sender(request, self.app_event_tx.clone());
     }
 
     pub(crate) fn push_mcp_server_elicitation_request_with_sender(
@@ -1633,10 +1629,8 @@ impl BottomPane {
         app_event_tx: AppEventSender,
     ) {
         let (request, app_event_tx) = if let Some(view) = self.view_stack.last_mut() {
-            match view.try_consume_mcp_server_elicitation_request_with_sender(
-                request,
-                app_event_tx,
-            ) {
+            match view.try_consume_mcp_server_elicitation_request_with_sender(request, app_event_tx)
+            {
                 Some(request) => request,
                 None => {
                     self.request_redraw();

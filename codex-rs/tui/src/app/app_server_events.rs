@@ -170,12 +170,8 @@ impl App {
 
         let target = self.thread_lifecycle_target_at_ingress(thread_id);
         self.bind_thread_subscription_to_target(target, Some(thread_subscription_id.clone()));
-        self.handle_thread_server_notification_at_ingress(
-            app_server_client,
-            target,
-            notification,
-        )
-        .await;
+        self.handle_thread_server_notification_at_ingress(app_server_client, target, notification)
+            .await;
         self.flush_deferred_thread_subscription_events(app_server_client, &thread_subscription_id)
             .await;
         true
@@ -317,8 +313,7 @@ impl App {
                 &thread_target,
                 ServerNotificationThreadTarget::Thread(thread_id)
                     if *thread_id == ingress_target.thread_id
-            )
-                || !self.thread_accepts_ingress_target(ingress_target)
+            ) || !self.thread_accepts_ingress_target(ingress_target)
             {
                 tracing::debug!(
                     thread_id = %ingress_target.thread_id,
@@ -602,7 +597,8 @@ impl App {
             self.pending_app_server_requests
                 .note_thread_server_request_for_lifecycle(target, &request)
         } else {
-            self.pending_app_server_requests.note_server_request(&request)
+            self.pending_app_server_requests
+                .note_server_request(&request)
         };
         if let Some(unsupported) = unsupported {
             tracing::warn!(
@@ -632,7 +628,8 @@ impl App {
 
         let result =
             if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {
-                self.enqueue_primary_thread_request(thread_id, request).await
+                self.enqueue_primary_thread_request(thread_id, request)
+                    .await
             } else {
                 self.enqueue_thread_request(thread_id, request).await
             };

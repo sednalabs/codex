@@ -253,9 +253,8 @@ async fn thread_loaded_list_filters_loaded_spawn_descendants() -> Result<()> {
     // These persisted descendants are intentionally never resumed. A loaded-list request must
     // not materialize this historical subtree merely to find the one loaded nested descendant.
     for historical_suffix in 100..356 {
-        let historical_thread_id = ThreadId::from_string(&format!(
-            "00000000-0000-0000-0000-{historical_suffix:012}"
-        ))?;
+        let historical_thread_id =
+            ThreadId::from_string(&format!("00000000-0000-0000-0000-{historical_suffix:012}"))?;
         state_db
             .upsert_thread_spawn_edge(
                 root_thread_uuid,
