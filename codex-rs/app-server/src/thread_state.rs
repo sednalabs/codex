@@ -899,9 +899,9 @@ impl ThreadStateManager {
 
     /// Atomically commits a deferred running-thread resume before its success response is sent.
     ///
-    /// `Current` means this caller removed its own provisional reservation and now owns a stable
-    /// published lifecycle. A later unsubscribe or replacement is a new lifecycle operation; it
-    /// cannot make this handler treat an already committed success as a failed attach.
+    /// `Current` means this caller removed its own provisional reservation and may enter its
+    /// final transport-publication fence. A later unsubscribe or replacement still owns that
+    /// transport race and can make the caller return a terminal failure before response.
     pub(crate) async fn commit_pending_thread_resume(
         &self,
         thread_id: ThreadId,

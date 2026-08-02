@@ -258,11 +258,10 @@ pub(super) async fn ensure_conversation_listener(
 /// Removes the connection-local state created by a failed start, resume, or fork
 /// attachment before the caller can publish a response containing its token.
 ///
-/// Drop the failed outgoing identity first: listener fanout uses that map, so this fences any
-/// event accepted while hydration, cursor construction, or response assembly failed. The
-/// state-manager removal then makes that failed attachment ineligible for future fanout. If the
-/// state manager still owns an earlier live identity, restore it only while the outgoing map is
-/// unclaimed so a concurrent replacement cannot be overwritten.
+/// Remove the failed outgoing identity if it was published, then make the failed state-manager
+/// attachment ineligible for future fanout. A running resume may keep predecessor A in the
+/// outgoing map while provisional B hydrates, so cleanup must also remove an unpublished B from
+/// state without disturbing A, C, or an explicit unsubscribe.
 pub(super) async fn rollback_failed_thread_attach(
     thread_state_manager: &ThreadStateManager,
     outgoing: &Arc<OutgoingMessageSender>,
@@ -292,7 +291,7 @@ pub(super) async fn rollback_failed_thread_attach_with_predecessor(
     expected_subscription_id: &str,
     predecessor_subscription_id: Option<&str>,
 ) {
-    let removed_failed_subscription = outgoing
+    let _ = outgoing
         .unregister_thread_subscription_if_matches(
             connection_id,
             thread_id,
@@ -320,15 +319,16 @@ pub(super) async fn rollback_failed_thread_attach_with_predecessor(
             .await;
         return;
     }
-    if removed_failed_subscription {
-        let _ = thread_state_manager
-            .unsubscribe_connection_from_thread_if_subscription_matches(
-                thread_id,
-                connection_id,
-                expected_subscription_id,
-            )
-            .await;
-    }
+    // B may still be unpublished in the outgoing map while it is present in ThreadStateManager.
+    // Always remove that exact state owner rather than using outgoing-map mutation as a proxy for
+    // whether the state attachment happened. A later C or unsubscribe no longer matches B.
+    let _ = thread_state_manager
+        .unsubscribe_connection_from_thread_if_subscription_matches(
+            thread_id,
+            connection_id,
+            expected_subscription_id,
+        )
+        .await;
 
     if let Some(active_subscription_id) = thread_state_manager
         .connection_thread_subscription_id(thread_id, connection_id)
@@ -1003,9 +1003,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         }
     }
 
-    // Install the identity before the live connection becomes eligible for
-    // replayed traffic. `try_add_connection_to_thread` can make a running
-    // listener fan out immediately.
+    // Mint B before it becomes eligible for listener traffic, but retain transport A while B is
+    // provisionally attached and hydrated. A cancellation before state attach must leave A
+    // routable; B becomes the outgoing owner only at the final success fence below.
     if !pending_thread_resume_is_current_or_reply(
         thread_state_manager,
         outgoing,
@@ -1017,9 +1017,10 @@ pub(super) async fn handle_pending_thread_resume_request(
     {
         return;
     }
-    let thread_subscription_id = outgoing
-        .register_thread_subscription(connection_id, conversation_id)
+    let outgoing_predecessor_subscription_id = outgoing
+        .current_thread_subscription_id(connection_id, conversation_id)
         .await;
+    let thread_subscription_id = outgoing.mint_thread_subscription();
     let thread_subscription = ThreadSubscriptionTarget::captured(
         connection_id,
         conversation_id,
@@ -1258,9 +1259,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         turns_backwards_cursor,
         items_backwards_cursor,
     };
-    // This is the logical commit point for a deferred running-thread resume. Once it wins, the
-    // success response and every captured follow-up belong to this lifecycle; a later
-    // unsubscribe or replacement owns its own work and must not make us roll back this response.
+    // This seals the deferred reservation immediately before the transport half of B's final
+    // publication fence. A later unsubscribe or replacement can still win that transport fence,
+    // in which case this request returns its terminal error before exposing a B response.
     if !commit_pending_thread_resume_or_reply(
         thread_state_manager,
         outgoing,
@@ -1282,7 +1283,12 @@ pub(super) async fn handle_pending_thread_resume_request(
         return;
     }
     if !outgoing
-        .thread_subscription_matches(connection_id, conversation_id, &thread_subscription_id)
+        .activate_minted_thread_subscription_if_matches(
+            connection_id,
+            conversation_id,
+            outgoing_predecessor_subscription_id.as_deref(),
+            thread_subscription_id.clone(),
+        )
         .await
     {
         rollback_failed_thread_attach_with_predecessor(
@@ -1400,9 +1406,9 @@ async fn pending_thread_resume_is_current_or_reply(
     }
 }
 
-/// Atomically removes the provisional reservation immediately before the normal success
-/// response. This seals the successful lifecycle so post-response cleanup cannot retract it;
-/// cancellation or replacement that wins first still receives the original terminal error.
+/// Atomically removes the provisional reservation immediately before the final transport
+/// publication fence. Cancellation or replacement that wins before that fence still receives the
+/// original terminal error.
 async fn commit_pending_thread_resume_or_reply(
     thread_state_manager: &ThreadStateManager,
     outgoing: &Arc<OutgoingMessageSender>,
@@ -1790,7 +1796,7 @@ mod tests {
                 .commit_pending_thread_resume(thread_id, connection_id, &committed_request_id)
                 .await,
             crate::thread_state::PendingThreadResumeReservationState::Current,
-            "the final pre-response check must atomically become the success commit"
+            "the final publication fence must atomically claim the deferred reservation"
         );
 
         // A newer resume and an unsubscribe-like cancellation happen while the old success is
@@ -2185,6 +2191,172 @@ mod tests {
                 )
                 .await,
             "B rollback must not overwrite C in the outgoing map"
+        );
+    }
+
+    #[tokio::test]
+    async fn minted_running_resume_b_cancellation_before_state_attach_keeps_a_routable() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let active_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(active_subscription_id.clone()),
+            )
+            .await
+            .expect("A should establish the active listener attachment");
+
+        let pending_resume_id = RequestId::Integer(91);
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, pending_resume_id)
+            .await;
+        let provisional_subscription_id = outgoing.mint_thread_subscription();
+        assert!(
+            outgoing
+                .thread_subscription_matches(connection_id, thread_id, &active_subscription_id)
+                .await,
+            "minting B must not displace A from the live transport before B attaches"
+        );
+        assert!(
+            thread_state_manager
+                .cancel_pending_thread_resume(thread_id, connection_id)
+                .await,
+            "the minted B resume should be cancelable before it reaches state attachment"
+        );
+        rollback_failed_thread_attach_with_predecessor(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &provisional_subscription_id,
+            None,
+        )
+        .await;
+
+        let active_target = outgoing
+            .thread_subscription_target_for_connection(connection_id, thread_id)
+            .await
+            .expect("canceling B before state attach must preserve A's target");
+        send_captured_thread_goal_notification(
+            &outgoing,
+            &[active_target],
+            ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        )
+        .await;
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx.recv().await.expect("A should receive the later event")
+        else {
+            panic!("expected tagged event through retained A");
+        };
+        assert_eq!(notification.thread_subscription_id, active_subscription_id);
+    }
+
+    #[tokio::test]
+    async fn minted_running_resume_b_cannot_disturb_concurrent_c_or_unsubscribed_a() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let active_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(active_subscription_id),
+            )
+            .await
+            .expect("A should attach");
+        let provisional_subscription_id = outgoing.mint_thread_subscription();
+        let replacement_subscription_id = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(replacement_subscription_id.clone()),
+            )
+            .await
+            .expect("C should supersede A while B remains uncommitted");
+
+        rollback_failed_thread_attach_with_predecessor(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &provisional_subscription_id,
+            None,
+        )
+        .await;
+        assert!(
+            outgoing
+                .thread_subscription_matches(
+                    connection_id,
+                    thread_id,
+                    &replacement_subscription_id,
+                )
+                .await,
+            "an unpublished B must not overwrite C during cancellation"
+        );
+
+        // An explicit unsubscribe removes both the transport and state owner. A stale B cleanup
+        // after that point must not recreate predecessor A.
+        outgoing
+            .unregister_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .unsubscribe_connection_from_thread(thread_id, connection_id)
+            .await;
+        rollback_failed_thread_attach_with_predecessor(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &provisional_subscription_id,
+            None,
+        )
+        .await;
+        assert!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .is_none(),
+            "stale B cleanup must not resurrect A after unsubscribe"
+        );
+        assert!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await
+                .is_none(),
+            "stale B cleanup must not recreate a state-manager subscription after unsubscribe"
         );
     }
 
