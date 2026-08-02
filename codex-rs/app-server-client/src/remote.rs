@@ -1182,6 +1182,47 @@ mod tests {
         message
     }
 
+    fn thread_goal_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: Some("turn".to_string()),
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread".to_string(),
+                    objective: "finish the task".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 25,
+                    time_used_seconds: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            },
+        )
+    }
+
+    fn thread_token_usage_updated_notification() -> ServerNotification {
+        let usage = codex_app_server_protocol::TokenUsageBreakdown {
+            total_tokens: 25,
+            input_tokens: 20,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 5,
+            reasoning_output_tokens: 0,
+        };
+        ServerNotification::ThreadTokenUsageUpdated(
+            codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                token_usage: codex_app_server_protocol::ThreadTokenUsage {
+                    total: usage.clone(),
+                    last: usage,
+                    model_context_window: Some(100),
+                },
+            },
+        )
+    }
+
     #[tokio::test]
     async fn transport_worker_preserves_server_subscription_identity() {
         let (client_io, server_io) = duplex(64 * 1024);
@@ -1447,6 +1488,61 @@ mod tests {
             }) if thread_subscription_id == "thread-subscription"
         ));
         assert_eq!(skipped_events, 0);
+    }
+
+    #[tokio::test]
+    async fn remote_queue_blocks_for_goal_and_usage_state_backpressure() {
+        for (notification, expected_kind) in [
+            (thread_goal_updated_notification(), "goal"),
+            (thread_token_usage_updated_notification(), "usage"),
+        ] {
+            let (event_tx, mut event_rx) = mpsc::channel(1);
+            event_tx
+                .send(AppServerEvent::Lagged { skipped: 1 })
+                .await
+                .expect("initial event should enqueue");
+
+            let mut skipped_events = 0usize;
+            let delivery = deliver_event(
+                &event_tx,
+                &mut skipped_events,
+                AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification,
+                },
+            );
+            tokio::pin!(delivery);
+
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "{expected_kind} state must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(AppServerEvent::Lagged { skipped: 1 })
+            ));
+            delivery
+                .await
+                .expect("goal and usage state should deliver after capacity returns");
+            match event_rx.recv().await {
+                Some(AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadGoalUpdated(_),
+                }) if expected_kind == "goal" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(AppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadTokenUsageUpdated(_),
+                }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                event => panic!("expected retained {expected_kind} state, got {event:?}"),
+            }
+            assert_eq!(skipped_events, 0);
+        }
     }
 
     #[tokio::test]

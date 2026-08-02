@@ -918,18 +918,31 @@ impl AgentNavigationState {
         }
         self.active_lifecycle_activity_ids.remove(&thread_id);
         self.system_error_observation_generations.remove(&thread_id);
-        let status_revision = match (
+        // `mark_closed` and `remove` do not carry a watcher revision, but they
+        // may run after we accepted one. Preserve that accepted causal floor
+        // before the ordinary cache is cleared below; otherwise an older
+        // watcher status could reopen the terminal lifecycle.
+        let latest_accepted_revision = self
+            .last_status_revisions
+            .get(&thread_id)
+            .copied()
+            .into_iter()
+            .chain(
+                self.last_accepted_statuses
+                    .get(&thread_id)
+                    .and_then(|status| status.status_revision),
+            )
+            .max();
+        let status_revision = [
             existing
                 .as_ref()
                 .and_then(TerminalLifecycleWatermark::status_revision),
             status_revision,
-        ) {
-            (Some(existing_revision), Some(status_revision)) => {
-                Some(existing_revision.max(status_revision))
-            }
-            (Some(existing_revision), None) => Some(existing_revision),
-            (None, status_revision) => status_revision,
-        };
+            latest_accepted_revision,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
         self.record_terminal_lifecycle_watermark(
             thread_id,
             TerminalLifecycleWatermark::Closed {
@@ -2216,6 +2229,83 @@ mod tests {
             is_running_hint: false,
         });
         assert!(state.is_empty());
+    }
+
+    #[test]
+    fn revisionless_mark_closed_preserves_last_watcher_revision_floor() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000120").expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Recoverable child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+
+        // This cleanup path has no watcher revision of its own, so it must
+        // retain the accepted rev-3 floor before clearing the ordinary cache.
+        state.mark_closed(thread_id);
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+
+        state.reopen_after_newer_status(thread_id);
+        assert!(state.get(&thread_id).is_some_and(|entry| !entry.is_closed));
+    }
+
+    #[test]
+    fn revisionless_remove_preserves_last_watcher_revision_floor() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000121").expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Pruned child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+
+        state.remove(thread_id);
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
     }
 
     #[test]
