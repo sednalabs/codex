@@ -918,7 +918,7 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
         source = _insert_generated_class_fields_before(
             source,
             response_class,
-            "    thread: Thread",
+            "    thread: Thread\n",
             "thread_subscription_id",
             subscription_field,
             insert_after=True,
