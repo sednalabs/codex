@@ -290,12 +290,18 @@ pub(crate) async fn send_thread_warning(
 ///
 /// This is deliberately separate from `send_thread_warning`: an empty ingress target set means
 /// there is no stale identity to preserve. Nonempty sets always use the captured path instead.
-pub(crate) async fn send_thread_warning_after_subscriber(
+async fn send_thread_warning_after_subscriber(
     outgoing: &Arc<OutgoingMessageSender>,
     thread_state_manager: &ThreadStateManager,
     thread_id: ThreadId,
     message: String,
+    wait_id: u64,
 ) {
+    let _wait_guard = TargetlessWarningWaitGuard {
+        thread_state_manager: thread_state_manager.clone(),
+        thread_id,
+        wait_id,
+    };
     if tokio::time::timeout(
         EXTENSION_WARNING_SUBSCRIBER_TIMEOUT,
         thread_state_manager.wait_for_thread_subscriber(thread_id),
@@ -310,6 +316,13 @@ pub(crate) async fn send_thread_warning_after_subscriber(
         );
         return;
     }
+    if !thread_state_manager.targetless_warning_wait_is_current(thread_id, wait_id) {
+        tracing::debug!(
+            %thread_id,
+            "dropping targetless warning after its thread lifecycle ended"
+        );
+        return;
+    }
     let thread_subscriptions = outgoing
         .thread_subscription_targets_for_thread(thread_id)
         .await;
@@ -320,7 +333,54 @@ pub(crate) async fn send_thread_warning_after_subscriber(
         );
         return;
     }
+    if !thread_state_manager.targetless_warning_wait_is_current(thread_id, wait_id) {
+        tracing::debug!(
+            %thread_id,
+            "dropping targetless warning before delivery after its thread lifecycle ended"
+        );
+        return;
+    }
     send_thread_warning(outgoing, &thread_subscriptions, thread_id, message).await;
+}
+
+struct TargetlessWarningWaitGuard {
+    thread_state_manager: ThreadStateManager,
+    thread_id: ThreadId,
+    wait_id: u64,
+}
+
+impl Drop for TargetlessWarningWaitGuard {
+    fn drop(&mut self) {
+        self.thread_state_manager
+            .finish_targetless_warning_wait(self.thread_id, self.wait_id);
+    }
+}
+
+/// Starts a bounded targetless-warning wait without occupying the serial thread listener. The
+/// task ends after one current-subscriber delivery or `EXTENSION_WARNING_SUBSCRIBER_TIMEOUT`.
+pub(crate) fn spawn_thread_warning_after_subscriber(
+    outgoing: Arc<OutgoingMessageSender>,
+    thread_state_manager: ThreadStateManager,
+    thread_id: ThreadId,
+    message: String,
+) {
+    let Some(wait_id) = thread_state_manager.try_begin_targetless_warning_wait(thread_id) else {
+        tracing::debug!(
+            %thread_id,
+            "coalescing targetless extension warning while a bounded wait is already active"
+        );
+        return;
+    };
+    tokio::spawn(async move {
+        send_thread_warning_after_subscriber(
+            &outgoing,
+            &thread_state_manager,
+            thread_id,
+            message,
+            wait_id,
+        )
+        .await;
+    });
 }
 
 struct AppServerExtensionEventSink {
@@ -434,17 +494,12 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
             });
             return;
         }
-        let outgoing = Arc::clone(&self.outgoing);
-        let thread_state_manager = self.thread_state_manager.clone();
-        tokio::spawn(async move {
-            send_thread_warning_after_subscriber(
-                &outgoing,
-                &thread_state_manager,
-                thread_id,
-                message,
-            )
-            .await;
-        });
+        spawn_thread_warning_after_subscriber(
+            Arc::clone(&self.outgoing),
+            self.thread_state_manager.clone(),
+            thread_id,
+            message,
+        );
     }
 }
 
@@ -800,7 +855,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_zero_target_warning_waits_for_current_subscriber_at_delivery() {
+    async fn queued_zero_target_warning_does_not_block_listener_and_waits_for_current_subscriber() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
         let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
@@ -810,7 +865,7 @@ mod tests {
         let connection_id = ConnectionId(1);
         let thread_state_manager = ThreadStateManager::new();
         let (listener_command_tx, mut listener_command_rx) = mpsc::unbounded_channel();
-        thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx);
+        thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx.clone());
         let sink = app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
 
         sink.emit_warning(ExtensionWarning {
@@ -830,18 +885,28 @@ mod tests {
             ThreadWarningDelivery::AwaitCurrentSubscriber
         ));
 
-        let delivery_outgoing = outgoing.clone();
-        let delivery_thread_state_manager = thread_state_manager.clone();
-        let delivery_task = tokio::spawn(async move {
-            send_thread_warning_after_subscriber(
-                &delivery_outgoing,
-                &delivery_thread_state_manager,
-                thread_id,
-                message,
-            )
-            .await;
-        });
+        // This is the exact nonblocking listener path: unlike the old inline await, it leaves
+        // the serial queue free to process a following command while the warning waits.
+        spawn_thread_warning_after_subscriber(
+            outgoing.clone(),
+            thread_state_manager.clone(),
+            thread_id,
+            message,
+        );
         tokio::task::yield_now().await;
+        listener_command_tx
+            .send(ThreadListenerCommand::EmitThreadGoalCleared {
+                thread_subscriptions: Vec::new(),
+            })
+            .expect("listener should remain available while the warning waits");
+        let subsequent_command = timeout(Duration::from_millis(100), listener_command_rx.recv())
+            .await
+            .expect("the serial listener must process a following command without waiting")
+            .expect("listener command channel should remain open");
+        assert!(matches!(
+            subsequent_command,
+            ThreadListenerCommand::EmitThreadGoalCleared { .. }
+        ));
 
         // Register the outgoing target before waking the subscriber waiter. There was no prior
         // target to preserve, so this is a current warning rather than an old event rebinding.
@@ -873,9 +938,6 @@ mod tests {
         };
         assert_eq!(received_connection_id, connection_id);
         assert_eq!(notification.thread_subscription_id, subscription_id);
-        delivery_task
-            .await
-            .expect("warning delivery task should not panic");
     }
 
     #[tokio::test]
