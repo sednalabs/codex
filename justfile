@@ -567,6 +567,9 @@ code-mode-declaration-targeted:
 
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:
+    cargo test -p codex-core tools::handlers::mcp_resource::tests::serialize_read_resource_output_ --lib -- --test-threads=1
+    cargo test -p codex-core tools::handlers::mcp_resource::tests::large_json_resource_fails_closed_for_model_and_preserves_code_mode_payload --lib -- --exact --test-threads=1
+    cargo test -p codex-core tools::handlers::mcp_resource::tests::history_does_not_retruncate_bounded_json_resource_error --lib -- --exact --test-threads=1
     cargo test -p codex-core tools::context::tests::custom_tool_calls_should_roundtrip_as_custom_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::function_payloads_remain_function_outputs --lib -- --exact
     cargo test -p codex-core tools::context::tests::aborted_tool_output_serializes_ --lib -- --test-threads=1
