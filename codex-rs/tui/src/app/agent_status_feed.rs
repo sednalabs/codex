@@ -8,6 +8,7 @@ use crate::text_formatting::truncate_text;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
+use codex_app_server_protocol::SubAgentActivityTerminalState;
 use codex_app_server_protocol::ThreadItem;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -169,13 +170,16 @@ fn activity_summary(item: &ThreadItem) -> Option<String> {
             return Some(action.to_string());
         }
         ThreadItem::SubAgentActivity {
-            kind, agent_path, ..
+            kind,
+            terminal_state,
+            agent_path,
+            ..
         } => {
-            let action = match kind {
-                SubAgentActivityKind::Started => "Started",
-                SubAgentActivityKind::Interacted => "Contacted",
-                SubAgentActivityKind::Interrupted => "Interrupted",
-                SubAgentActivityKind::Errored => "Failed",
+            let action = match (kind, terminal_state) {
+                (_, Some(SubAgentActivityTerminalState::Errored)) => "Failed",
+                (SubAgentActivityKind::Started, None) => "Started",
+                (SubAgentActivityKind::Interacted, None) => "Contacted",
+                (SubAgentActivityKind::Interrupted, None) => "Interrupted",
             };
             return bounded_summary(&format!("{action} {agent_path}"));
         }

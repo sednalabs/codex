@@ -22,6 +22,22 @@ pub(crate) fn normalize_legacy_spawn_requested_identity(
     }
 }
 
+/// Lifts the required legacy spawn-begin fields into optional v2 provenance.
+///
+/// The original event contract represented an omitted override as an empty
+/// model and default effort. A required legacy field cannot separately encode
+/// an explicit default effort, so retain that historical sentinel at this
+/// boundary instead of inventing an override in the richer v2 representation.
+pub(crate) fn normalize_required_legacy_spawn_requested_identity(
+    model: String,
+    reasoning_effort: ReasoningEffort,
+) -> (Option<String>, Option<ReasoningEffort>) {
+    (
+        (!model.is_empty()).then_some(model),
+        (reasoning_effort != ReasoningEffort::default()).then_some(reasoning_effort),
+    )
+}
+
 /// Moves request provenance out of pre-v2 canonical spawn-start fields.
 ///
 /// Old `ItemStarted` snapshots stored the requested model/effort in `model` and

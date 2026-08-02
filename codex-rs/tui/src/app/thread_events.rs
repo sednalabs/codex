@@ -65,6 +65,7 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::ThreadGoalUpdated(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::ThreadGoalCleared(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadNameUpdated(_))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
     }
@@ -76,6 +77,7 @@ impl ThreadEventStore {
                 ServerNotification::ThreadGoalUpdated(_)
                     | ServerNotification::ThreadGoalCleared(_)
                     | ServerNotification::ThreadTokenUsageUpdated(_)
+                    | ServerNotification::ThreadNameUpdated(_)
             )
         )
     }
@@ -95,6 +97,9 @@ impl ThreadEventStore {
             ) | (
                 ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_)),
                 ServerNotification::ThreadTokenUsageUpdated(_)
+            ) | (
+                ThreadBufferedEvent::Notification(ServerNotification::ThreadNameUpdated(_)),
+                ServerNotification::ThreadNameUpdated(_)
             )
         )
     }
@@ -626,6 +631,18 @@ mod tests {
         )
     }
 
+    fn thread_name_updated_notification(
+        thread_id: ThreadId,
+        thread_name: &str,
+    ) -> ServerNotification {
+        ServerNotification::ThreadNameUpdated(
+            codex_app_server_protocol::ThreadNameUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                thread_name: Some(thread_name.to_string()),
+            },
+        )
+    }
+
     fn exec_approval_request(
         thread_id: ThreadId,
         turn_id: &str,
@@ -773,17 +790,19 @@ mod tests {
     }
 
     #[test]
-    fn thread_event_store_rebase_preserves_latest_goal_clear_and_usage_state() {
+    fn thread_event_store_rebase_preserves_latest_goal_clear_usage_and_name_state() {
         let thread_id = ThreadId::new();
-        let mut store = ThreadEventStore::new(/*capacity*/ 4);
+        let mut store = ThreadEventStore::new(/*capacity*/ 5);
         store.push_notification(thread_goal_updated_notification(thread_id));
         store.push_notification(thread_goal_cleared_notification(thread_id));
         store.push_notification(thread_token_usage_updated_notification(thread_id));
+        store.push_notification(thread_name_updated_notification(thread_id, "before refresh"));
+        store.push_notification(thread_name_updated_notification(thread_id, "after refresh"));
 
         store.rebase_buffer_after_session_refresh();
 
         let snapshot = store.snapshot();
-        assert_eq!(snapshot.events.len(), 2);
+        assert_eq!(snapshot.events.len(), 3);
         assert!(matches!(
             &snapshot.events[0],
             ThreadBufferedEvent::Notification(ServerNotification::ThreadGoalCleared(_))
@@ -791,6 +810,15 @@ mod tests {
         assert!(matches!(
             &snapshot.events[1],
             ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_))
+        ));
+        assert!(matches!(
+            &snapshot.events[2],
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadNameUpdated(
+                codex_app_server_protocol::ThreadNameUpdatedNotification {
+                    thread_name: Some(thread_name),
+                    ..
+                }
+            )) if thread_name == "after refresh"
         ));
     }
 
@@ -801,6 +829,7 @@ mod tests {
             thread_goal_updated_notification(thread_id),
             thread_goal_cleared_notification(thread_id),
             thread_token_usage_updated_notification(thread_id),
+            thread_name_updated_notification(thread_id, "latest name"),
         ] {
             let mut store = ThreadEventStore::new(/*capacity*/ 1);
             store.push_notification(notification);
@@ -814,6 +843,7 @@ mod tests {
                     ServerNotification::ThreadGoalUpdated(_)
                         | ServerNotification::ThreadGoalCleared(_)
                         | ServerNotification::ThreadTokenUsageUpdated(_)
+                        | ServerNotification::ThreadNameUpdated(_)
                 )
             ));
         }

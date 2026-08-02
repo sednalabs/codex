@@ -75,6 +75,7 @@ use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SubAgentActivityKind;
+use codex_app_server_protocol::SubAgentActivityTerminalState;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
@@ -1661,7 +1662,8 @@ async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript(
         .set_system_error(thread_id, /*has_system_error*/ true);
     let errored_item = ThreadItem::SubAgentActivity {
         id: "activity-errored".to_string(),
-        kind: SubAgentActivityKind::Errored,
+        kind: SubAgentActivityKind::Interrupted,
+        terminal_state: Some(SubAgentActivityTerminalState::Errored),
         agent_thread_id: thread_id.to_string(),
         agent_path: "/root/failed-child".to_string(),
         model: None,
@@ -1737,7 +1739,8 @@ async fn thread_closed_picker_row_ignores_late_errored_activity() {
             completed_at_ms: 0,
             item: ThreadItem::SubAgentActivity {
                 id: "activity-after-close".to_string(),
-                kind: SubAgentActivityKind::Errored,
+                kind: SubAgentActivityKind::Interrupted,
+                terminal_state: Some(SubAgentActivityTerminalState::Errored),
                 agent_thread_id: thread_id.to_string(),
                 agent_path: "/root/closed-child".to_string(),
                 model: None,
@@ -5863,6 +5866,120 @@ async fn transport_targeted_goal_state_is_fenced_after_same_id_reattach() -> Res
 }
 
 #[tokio::test]
+async fn subscription_fence_prunes_retired_tokens_and_resets_per_session_state() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let subscription_ids = (0..(THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT + 2))
+        .map(|index| format!("retired-subscription-{index}"))
+        .collect::<Vec<_>>();
+
+    for subscription_id in &subscription_ids {
+        app.mark_thread_attached(thread_id);
+        app.bind_thread_subscription(thread_id, Some(subscription_id.clone()));
+        app.mark_thread_discarded(thread_id);
+    }
+    app.prune_thread_subscription_tombstones();
+    assert!(
+        app.thread_subscription_targets.len() <= THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT,
+        "repeated attach/discard must not retain unbounded subscription tombstones"
+    );
+    let pruned_subscription_id = subscription_ids
+        .iter()
+        .find(|subscription_id| !app.thread_subscription_targets.contains_key(*subscription_id))
+        .expect("the bounded tombstone sweep should prune an unreferenced old token")
+        .clone();
+
+    app.deferred_thread_subscription_events.push_back(
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: "deferred-reset-token".to_string(),
+            notification: thread_goal_updated_notification(thread_id),
+        },
+    );
+    app.rejected_stale_thread_subscription_requests.push_back((
+        "rejected-reset-token".to_string(),
+        AppServerRequestId::Integer(9),
+    ));
+    app.reset_thread_event_state(None).await;
+    assert!(app.thread_subscription_targets.is_empty());
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    assert!(app.rejected_stale_thread_subscription_requests.is_empty());
+    assert!(app.thread_is_discarded(thread_id));
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: pruned_subscription_id,
+            notification: automatic_child_started_notification(thread_id, "Stale", "worker"),
+        },
+    )
+    .await;
+    assert!(
+        app.thread_subscription_targets.is_empty(),
+        "a pruned old token must remain fenced by the discarded lifecycle"
+    );
+    assert!(
+        !app.thread_event_channels.contains_key(&thread_id),
+        "stale traffic after reset must not recreate a thread presentation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn subscription_fence_bounds_deferred_events_and_rejects_overflow_once() -> Result<()> {
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let subscription_id = "unbound-overflow-subscription".to_string();
+    let thread_id = ThreadId::new();
+
+    for _ in 0..DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT {
+        app.handle_app_server_event(
+            &app_server,
+            codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id: subscription_id.clone(),
+                notification: thread_goal_updated_notification(thread_id),
+            },
+        )
+        .await;
+    }
+    assert_eq!(
+        app.deferred_thread_subscription_events.len(),
+        DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT
+    );
+
+    let overflow_request = exec_approval_request(
+        thread_id,
+        "turn-overflow",
+        "request-overflow",
+        /*approval_id*/ None,
+    );
+    for _ in 0..2 {
+        app.handle_app_server_event(
+            &app_server,
+            codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id: subscription_id.clone(),
+                request: overflow_request.clone(),
+            },
+        )
+        .await;
+    }
+
+    assert_eq!(
+        app.deferred_thread_subscription_events.len(),
+        DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT,
+        "a full queue must never grow for an unbound subscription"
+    );
+    assert_eq!(
+        app.rejected_stale_thread_subscription_requests.len(),
+        1,
+        "the overflowed request id must be rejected exactly once"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() -> Result<()> {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
@@ -6564,7 +6681,7 @@ async fn make_test_app() -> App {
         discarded_thread_generations: HashMap::new(),
         thread_subscription_targets: HashMap::new(),
         deferred_thread_subscription_events: VecDeque::new(),
-        rejected_stale_thread_subscription_requests: HashSet::new(),
+        rejected_stale_thread_subscription_requests: VecDeque::new(),
         agent_navigation: AgentNavigationState::default(),
         side_threads: HashMap::new(),
         active_thread_id: None,
@@ -6639,7 +6756,7 @@ async fn make_test_app_with_channels() -> (
             discarded_thread_generations: HashMap::new(),
             thread_subscription_targets: HashMap::new(),
             deferred_thread_subscription_events: VecDeque::new(),
-            rejected_stale_thread_subscription_requests: HashSet::new(),
+            rejected_stale_thread_subscription_requests: VecDeque::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,

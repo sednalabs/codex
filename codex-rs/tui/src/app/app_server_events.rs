@@ -128,12 +128,14 @@ impl App {
                                 | super::ThreadSubscriptionBinding::Tombstoned(target) => target,
                             })
                         else {
-                            self.deferred_thread_subscription_events.push_back(
+                            self.defer_thread_subscription_event(
+                                app_server_client,
                                 TaggedAppServerEvent::ThreadServerNotification {
                                     thread_subscription_id: thread_subscription_id.to_string(),
                                     notification,
                                 },
-                            );
+                            )
+                            .await;
                             continue;
                         };
                         self.handle_thread_server_notification_at_ingress(
@@ -144,36 +146,184 @@ impl App {
                         .await;
                     }
                     TaggedAppServerEvent::ThreadServerRequest { request, .. } => {
-                        let Some(target) = self
+                        let Some(binding) = self
                             .thread_subscription_targets
                             .get(thread_subscription_id)
                             .copied()
-                            .map(|binding| match binding {
-                                super::ThreadSubscriptionBinding::Active(target)
-                                | super::ThreadSubscriptionBinding::Tombstoned(target) => target,
-                            })
                         else {
-                            self.deferred_thread_subscription_events.push_back(
+                            self.defer_thread_subscription_event(
+                                app_server_client,
                                 TaggedAppServerEvent::ThreadServerRequest {
                                     thread_subscription_id: thread_subscription_id.to_string(),
                                     request,
                                 },
-                            );
+                            )
+                            .await;
                             continue;
                         };
-                        self.handle_thread_server_request_at_ingress(
-                            app_server_client,
-                            target,
-                            request,
-                        )
-                        .await;
+                        match binding {
+                            super::ThreadSubscriptionBinding::Active(target) => {
+                                self.handle_thread_server_request_at_ingress(
+                                    app_server_client,
+                                    target,
+                                    request,
+                                )
+                                .await;
+                            }
+                            super::ThreadSubscriptionBinding::Tombstoned(target) => {
+                                self.reject_stale_thread_subscription_request_once(
+                                    app_server_client,
+                                    thread_subscription_id.to_string(),
+                                    request,
+                                    format!(
+                                        "The TUI no longer accepts requests for thread {} lifecycle {}.",
+                                        target.thread_id, target.lifecycle_generation
+                                    ),
+                                )
+                                .await;
+                            }
+                        }
                     }
                     _ => {}
                 }
             } else {
-                self.deferred_thread_subscription_events.push_back(event);
+                self.defer_thread_subscription_event(app_server_client, event)
+                    .await;
             }
         }
+        self.prune_thread_subscription_tombstones();
+    }
+
+    /// Queues traffic whose immutable subscription identity has not yet been
+    /// authoritatively bound. A full deferred queue must never retain an
+    /// unanswered server request, so overflowed requests are rejected once
+    /// using their original JSON-RPC id; notifications are safe to drop
+    /// because no local lifecycle has accepted their token.
+    async fn defer_thread_subscription_event(
+        &mut self,
+        app_server_client: &AppServerSession,
+        event: TaggedAppServerEvent,
+    ) {
+        if self.deferred_thread_subscription_events.len()
+            < super::DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT
+        {
+            self.deferred_thread_subscription_events.push_back(event);
+            return;
+        }
+
+        match event {
+            TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request,
+            } => {
+                self.reject_stale_thread_subscription_request_once(
+                    app_server_client,
+                    thread_subscription_id,
+                    request,
+                    "The TUI could not attach this thread request before its bounded subscription queue filled.".to_string(),
+                )
+                .await;
+            }
+            TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                ..
+            } => {
+                tracing::debug!(
+                    thread_subscription_id,
+                    "dropping deferred app-server notification after bounded subscription queue overflow"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Retains each stale request id long enough to suppress duplicate delayed
+    /// transport delivery while bounding the per-session receipt history.
+    async fn reject_stale_thread_subscription_request_once(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        request: ServerRequest,
+        reason: String,
+    ) {
+        let request_id = request.id().clone();
+        if self
+            .rejected_stale_thread_subscription_requests
+            .iter()
+            .any(|entry| entry == &(thread_subscription_id.clone(), request_id.clone()))
+        {
+            tracing::debug!(
+                request_id = ?request.id(),
+                thread_subscription_id,
+                "dropping duplicate stale app-server request"
+            );
+            return;
+        }
+        if self.rejected_stale_thread_subscription_requests.len()
+            >= super::REJECTED_STALE_THREAD_SUBSCRIPTION_REQUEST_LIMIT
+        {
+            self.rejected_stale_thread_subscription_requests.pop_front();
+        }
+        self.rejected_stale_thread_subscription_requests
+            .push_back((thread_subscription_id.clone(), request_id.clone()));
+        if let Err(err) = self
+            .reject_app_server_request(app_server_client, request_id, reason)
+            .await
+        {
+            tracing::warn!(
+                request_id = ?request.id(),
+                thread_subscription_id,
+                error = %err,
+                "failed to reject stale app-server request"
+            );
+        }
+    }
+
+    /// Removes only unreferenced stale subscription identities. If an old
+    /// token later arrives after pruning, the current/discarded thread
+    /// lifecycle below still fences it instead of treating it as a new attach.
+    pub(super) fn prune_thread_subscription_tombstones(&mut self) {
+        let mut tombstone_count = self
+            .thread_subscription_targets
+            .values()
+            .filter(|binding| matches!(binding, super::ThreadSubscriptionBinding::Tombstoned(_)))
+            .count();
+        while tombstone_count > super::THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT {
+            let removable_subscription_id = self
+                .thread_subscription_targets
+                .iter()
+                .find_map(|(subscription_id, binding)| {
+                    matches!(binding, super::ThreadSubscriptionBinding::Tombstoned(_))
+                        .then_some(subscription_id)
+                })
+                .filter(|subscription_id| {
+                    !self.deferred_thread_subscription_events.iter().any(|event| {
+                        thread_subscription_id_for_event(event)
+                            .is_some_and(|candidate| candidate == subscription_id)
+                    })
+                })
+                .cloned();
+            let Some(subscription_id) = removable_subscription_id else {
+                break;
+            };
+            self.thread_subscription_targets.remove(&subscription_id);
+            tombstone_count -= 1;
+        }
+    }
+
+    fn thread_subscription_lifecycle_is_fenced(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> bool {
+        self.thread_is_discarded(thread_id)
+            || self.thread_subscription_targets.values().any(|binding| {
+                matches!(
+                    binding,
+                    super::ThreadSubscriptionBinding::Active(target)
+                        | super::ThreadSubscriptionBinding::Tombstoned(target)
+                        if target.thread_id == thread_id
+                )
+            })
     }
 
     /// A spawned child can be attached by the server without a corresponding
@@ -204,15 +354,7 @@ impl App {
             return true;
         };
 
-        let has_existing_lifecycle = self.thread_subscription_targets.values().any(|binding| {
-            matches!(
-                binding,
-                super::ThreadSubscriptionBinding::Active(target)
-                    | super::ThreadSubscriptionBinding::Tombstoned(target)
-                    if target.thread_id == thread_id
-            )
-        });
-        if self.thread_is_discarded(thread_id) || has_existing_lifecycle {
+        if self.thread_subscription_lifecycle_is_fenced(thread_id) {
             tracing::debug!(
                 %thread_id,
                 thread_subscription_id,
@@ -259,12 +401,25 @@ impl App {
                     )
                     .await
                 {
-                    self.deferred_thread_subscription_events.push_back(
-                        TaggedAppServerEvent::ThreadServerNotification {
+                    if let ServerNotificationThreadTarget::Thread(thread_id) =
+                        server_notification_thread_target(&notification)
+                        && self.thread_subscription_lifecycle_is_fenced(thread_id)
+                    {
+                        tracing::debug!(
+                            %thread_id,
                             thread_subscription_id,
-                            notification,
-                        },
-                    );
+                            "dropping unknown tagged notification for a fenced thread lifecycle"
+                        );
+                    } else {
+                        self.defer_thread_subscription_event(
+                            app_server_client,
+                            TaggedAppServerEvent::ThreadServerNotification {
+                                thread_subscription_id,
+                                notification,
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -286,31 +441,40 @@ impl App {
                     .await;
             }
             Some(super::ThreadSubscriptionBinding::Tombstoned(target)) => {
-                if self
-                    .rejected_stale_thread_subscription_requests
-                    .insert((thread_subscription_id.clone(), request.id().clone()))
+                self.reject_stale_thread_subscription_request_once(
+                    app_server_client,
+                    thread_subscription_id,
+                    request,
+                    format!(
+                        "The TUI no longer accepts requests for thread {} lifecycle {}.",
+                        target.thread_id, target.lifecycle_generation
+                    ),
+                )
+                .await;
+            }
+            None => {
+                if let Some(thread_id) = server_request_thread_id(&request)
+                    && self.thread_subscription_lifecycle_is_fenced(thread_id)
                 {
-                    self.handle_thread_server_request_at_ingress(
+                    self.reject_stale_thread_subscription_request_once(
                         app_server_client,
-                        target,
+                        thread_subscription_id,
                         request,
+                        format!(
+                            "The TUI no longer accepts requests for thread {thread_id}."
+                        ),
                     )
                     .await;
                 } else {
-                    tracing::debug!(
-                        request_id = ?request.id(),
-                        thread_subscription_id,
-                        "dropping duplicate stale app-server request"
-                    );
+                    self.defer_thread_subscription_event(
+                        app_server_client,
+                        TaggedAppServerEvent::ThreadServerRequest {
+                            thread_subscription_id,
+                            request,
+                        },
+                    )
+                    .await;
                 }
-            }
-            None => {
-                self.deferred_thread_subscription_events.push_back(
-                    TaggedAppServerEvent::ThreadServerRequest {
-                        thread_subscription_id,
-                        request,
-                    },
-                );
             }
         }
     }

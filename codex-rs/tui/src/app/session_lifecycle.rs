@@ -932,6 +932,10 @@ impl App {
         let mut thread_ids = HashSet::new();
         thread_ids.extend(self.thread_event_channels.keys().copied());
         thread_ids.extend(self.side_threads.keys().copied());
+        thread_ids.extend(self.thread_subscription_targets.values().map(|binding| match binding {
+            super::ThreadSubscriptionBinding::Active(target)
+            | super::ThreadSubscriptionBinding::Tombstoned(target) => target.thread_id,
+        }));
         thread_ids.extend(
             self.pending_primary_events
                 .iter()
@@ -968,6 +972,13 @@ impl App {
         self.primary_session_configured = None;
         self.pending_primary_events.clear();
         self.pending_app_server_requests.clear();
+        // A reset starts a new TUI presentation session. Retire every known
+        // target above before clearing per-session token, deferred-frame, and
+        // duplicate-rejection state so old traffic remains fenced by the
+        // discarded lifecycle rather than accumulating indefinitely.
+        self.thread_subscription_targets.clear();
+        self.deferred_thread_subscription_events.clear();
+        self.rejected_stale_thread_subscription_requests.clear();
         self.pending_startup_thread_start = false;
         self.chat_widget.set_pending_thread_approvals(Vec::new());
         self.sync_active_agent_label();

@@ -21,6 +21,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState;
 use codex_tools::ToolName;
 use serde::Deserialize;
 use serde::Serialize;
