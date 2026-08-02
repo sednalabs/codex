@@ -8,6 +8,7 @@ use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::CallToolResult;
+use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
 use rmcp::model::ListResourceTemplatesResult;
@@ -24,7 +25,10 @@ use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolPayload;
 use codex_protocol::protocol::McpInvocation;
+use codex_tools::ToolExecutionStatus;
+use codex_tools::ToolOutput;
 
 mod list_mcp_resource_templates;
 mod list_mcp_resources;
@@ -196,11 +200,92 @@ struct ReadResourcePayload {
     result: ReadResourceResult,
 }
 
+/// Separates the model-safe result from the complete resource payload that code mode exposes.
+///
+/// `read_mcp_resource` is an unusual built-in: an MCP resource can itself be structured data.
+/// Applying a generic middle truncation to its enclosing JSON string can make a declared JSON
+/// resource invalid. The model receives either the complete serialized payload or a small,
+/// explicit error. Code mode retains the unbounded resource payload, matching its pre-bounding
+/// result shape.
+struct ReadResourceToolOutput {
+    model_output: FunctionToolOutput,
+    raw_content: String,
+}
+
+impl ReadResourceToolOutput {
+    fn model_content(&self) -> String {
+        function_call_output_content_items_to_text(&self.model_output.body).unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn model_success(&self) -> Option<bool> {
+        self.model_output.success
+    }
+
+    fn execution_status_for_source(
+        &self,
+        source: &crate::tools::context::ToolCallSource,
+    ) -> ToolExecutionStatus {
+        match source {
+            crate::tools::context::ToolCallSource::Direct => {
+                ToolExecutionStatus::from_success(self.success_for_logging())
+            }
+            crate::tools::context::ToolCallSource::CodeMode { .. } => {
+                ToolExecutionStatus::Completed
+            }
+        }
+    }
+}
+
+impl ToolOutput for ReadResourceToolOutput {
+    fn log_preview(&self) -> String {
+        self.model_output.log_preview()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        self.model_output.success_for_logging()
+    }
+
+    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
+        ToolExecutionStatus::Completed
+    }
+
+    fn to_response_item(
+        &self,
+        call_id: &str,
+        payload: &ToolPayload,
+    ) -> codex_protocol::models::ResponseInputItem {
+        self.model_output.to_response_item(call_id, payload)
+    }
+
+    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
+        Value::String(self.raw_content.clone())
+    }
+}
+
+// This is deliberately a fixed string rather than a serialized subset of the
+// resource metadata. A server name and resource URI are supplied by an MCP
+// server and may be arbitrarily large. Including either in the model-facing
+// error would let an otherwise bounded failure exceed the history cap.
+const BOUNDED_JSON_RESOURCE_MODEL_ERROR: &str = r#"{"error":{"code":"mcp_resource_model_output_too_large","message":"The resource contains JSON that exceeds the model output limit.","truncated":true}}"#;
+
 fn call_tool_result_from_content(content: &str, success: Option<bool>) -> CallToolResult {
     CallToolResult {
         content: vec![serde_json::json!({"type": "text", "text": content})],
         structured_content: None,
         is_error: success.map(|value| !value),
+        meta: None,
+    }
+}
+
+fn call_tool_result_from_execution_status(
+    content: &str,
+    execution_status: ToolExecutionStatus,
+) -> CallToolResult {
+    CallToolResult {
+        content: vec![serde_json::json!({"type": "text", "text": content})],
+        structured_content: None,
+        is_error: Some(!execution_status.is_completed()),
         meta: None,
     }
 }
@@ -315,6 +400,55 @@ where
     let content = truncate_text(&content, truncation_policy * 1.2);
 
     Ok(FunctionToolOutput::from_text(content, Some(true)))
+}
+
+fn serialize_read_resource_output(
+    payload: ReadResourcePayload,
+    truncation_policy: TruncationPolicy,
+) -> Result<ReadResourceToolOutput, FunctionCallError> {
+    let raw_content = serde_json::to_string(&payload).map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "failed to serialize MCP resource response: {err}"
+        ))
+    })?;
+    let bounded_content = truncate_text(&raw_content, truncation_policy * 1.2);
+    let requires_structured_failure = bounded_content != raw_content
+        && payload.result.contents.iter().any(|content| {
+            matches!(
+                content,
+                rmcp::model::ResourceContents::TextResourceContents {
+                    mime_type: Some(mime_type),
+                    ..
+                } if is_json_media_type(mime_type)
+            )
+        });
+
+    let model_output = if requires_structured_failure {
+        FunctionToolOutput::from_text(BOUNDED_JSON_RESOURCE_MODEL_ERROR.to_string(), Some(false))
+    } else {
+        FunctionToolOutput::from_text(bounded_content, Some(true))
+    };
+
+    Ok(ReadResourceToolOutput {
+        model_output,
+        raw_content,
+    })
+}
+
+fn is_json_media_type(mime_type: &str) -> bool {
+    let essence = mime_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    essence == "application/json"
+        || essence.strip_prefix("application/").is_some_and(|subtype| {
+            subtype
+                .strip_suffix("+json")
+                .is_some_and(|prefix| !prefix.is_empty())
+        })
 }
 
 fn parse_arguments(raw_args: &str) -> Result<Option<Value>, FunctionCallError> {
