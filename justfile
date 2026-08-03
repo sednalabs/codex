@@ -331,6 +331,29 @@ core-multi-agent-orchestration-targeted:
     cargo nextest run -p codex-protocol --lib --no-tests=fail -- protocol::tests::turn_complete_without_provider_usage_remains_compatible --exact
     RUST_MIN_STACK=8388608 CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test all --no-tests=fail -- suite::safety_check_downgrade::openai_model_header_mismatch_only_emits_one_warning_per_turn suite::safety_check_downgrade::nonterminal_response_identity_is_not_reported_when_follow_up_fails suite::compact_remote::remote_compact_replaces_history_for_followups suite::compact_remote::remote_compact_v2_reuses_compaction_trigger_for_followups suite::pending_input::steered_user_input_follows_compact_when_only_the_steer_needs_follow_up --exact
 
+# Focused regression proof for in-process TUI delivery, fuzzy-search producer
+# custody, metric version tags, and terminal-idle V2 residency.
+session-tui-resource-stability-targeted: core-multi-agent-orchestration-targeted
+    cargo test -p codex-app-server --lib in_process::tests::tiny_event_queue_preserves_required_fifo_and_reports_dropped_progress -- --exact --test-threads=1
+    cargo test -p codex-app-server --lib in_process::tests::full_required_event_queue_still_allows_orderly_runtime_shutdown -- --exact --test-threads=1
+    cargo test -p codex-app-server --lib in_process::tests::shutdown_releases_pending_required_write_completion_before_task_joins -- --exact --test-threads=1
+    cargo test -p codex-app-server --lib in_process::tests::delivery_classifier_preserves_reviewed_consumer_state_notifications -- --exact --test-threads=1
+    cargo test -p codex-app-server --lib fuzzy_file_search::tests:: -- --test-threads=1
+    cargo test -p codex-app-server-client --lib in_process_facade_ -- --test-threads=1
+    cargo test -p codex-app-server-client --lib shutdown_unblocks_a_required_event_waiting_on_the_facade_queue -- --test-threads=1
+    cargo test -p codex-app-server-client --lib in_process_pending_required_event_still_allows_ -- --test-threads=1
+    cargo test -p codex-app-server-client --lib shutdown_releases_a_pending_required_facade_event -- --test-threads=1
+    cargo test -p codex-app-server-client --lib remote_pending_required_event_keeps_control_commands_responsive -- --test-threads=1
+    cargo test -p codex-app-server-client --lib remote_write_failure_preserves_pending_required_before_disconnect -- --test-threads=1
+    cargo test -p codex-app-server-client --lib remote_write_failure_delivers_lag_before_disconnect -- --test-threads=1
+    cargo test -p codex-app-server-client --lib remote_shutdown_closes_promptly_with_pending_required_event -- --test-threads=1
+    cargo test -p codex-otel --lib session_constructor_sanitizes_only_the_metric_app_version -- --test-threads=1
+    cargo test -p codex-features --lib multi_agent_v2_feature_config_deserializes_table -- --test-threads=1
+    cargo test -p codex-core --lib multi_agent_v2_config_from_feature_table -- --test-threads=1
+    cargo test -p codex-core --lib profile_multi_agent_v2_config_overrides_base -- --test-threads=1
+    cargo test -p codex-core --lib lock_contains_prompts_and_materializes_features -- --test-threads=1
+    cargo test -p codex-core --lib config_schema_matches_fixture -- --test-threads=1
+
 # Focused provider-usage persistence proof for interrupted and replaced turns.
 core-provider-usage-aborted-targeted:
     cargo nextest run -p codex-protocol --lib --no-tests=fail -- protocol::tests::turn_aborted_without_provider_usage_remains_compatible --exact

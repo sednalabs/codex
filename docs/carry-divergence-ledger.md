@@ -1028,9 +1028,9 @@ decisions.
 
 ### Bounded App-Server Delivery And Metric Version Tags
 
-- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`,
-  `6f3fe98f88`, `c259bc1fef`, `9c7bfc8663`, `ef453a9666`, `fd47e85335`,
-  `433d86c900`, and `b2a1dd98b5`
+- Commits `4c13d4d948`, `93a224621b`, `3087953141`, `53529c220c`,
+  `a3520d0dcb`, `1b77a6a9cd`, `cae2710084`, `cefa12a82d`, `7fd969cb5c`,
+  `1a04d09d2b`, and `d26566801a`
   manually carry bounded
   lower-runtime, facade, remote-client, and fuzzy-forwarder delivery
   semantics from app-server ancestry `7bd0a55155` without importing its wider
@@ -1088,7 +1088,7 @@ decisions.
   and lag-before-disconnect ordering after a failed request write, terminal
   failure of the pending request waiter, and prompt close-observed shutdown when
   an authoritative payload remains undrained.
-- Commit `b52b676538` follows upstream metric-tag sanitizer commits
+- Commit `8f6777cd91` follows upstream metric-tag sanitizer commits
   `bd861ff550` and `d9559390ec` while keeping the ordinary release version
   exact. Only the `app.version` value supplied to metrics replaces unsupported
   tag characters; session metadata and other release-version consumers retain
@@ -2090,10 +2090,11 @@ decisions.
 - Each registered agent generation now owns one serialized lifecycle authority
   for V2 unload, reload, message delivery, and explicit close. Queue-only mail
   sent to an unloaded agent remains in a registry-owned FIFO without starting a
-  runtime. Reloads serialize on a gate that eviction never acquires; residency
-  reservation releases the mailbox lock and rechecks the registry generation
-  before reload. A triggering follow-up transfers the FIFO first and retains it
-  if reload fails.
+  runtime. Capacity eviction does not acquire the reload gate, while timed idle
+  eviction follows reload, lifecycle, and runtime-transition ordering;
+  residency reservation releases the mailbox lock and rechecks the registry
+  generation before reload. A triggering follow-up transfers the FIFO first
+  and retains it if reload fails.
 - Residency eviction may move pending queue-only mail out of a completed,
   errored, or interrupted runtime instead of pinning that runtime indefinitely.
   Triggering mail remains live and blocks eviction; failed shutdown restores
@@ -2104,6 +2105,25 @@ decisions.
 - Eviction fails closed for ephemeral V2 sessions without a durable rollout;
   capacity pressure leaves that runtime resident rather than manufacturing a
   cold identity that persisted-history reload cannot restore.
+- Durable resident V2 children also support configurable terminal-idle unload.
+  `features.multi_agent_v2.terminal_idle_unload_timeout_ms` defaults to
+  `300000`; `0` disables this timed path. Freshly spawned and rehydrated
+  runtimes install watchers, so a child can unload again after a later
+  terminal-idle interval.
+- The idle timer begins only after a terminal status is genuinely quiescent.
+  Expiry rechecks the exact registry generation and `Arc<CodexThread>`, timer
+  and runtime-activity generations, terminal status, active-turn state, live
+  background terminals, pending terminal finalizers and completions, accepted
+  but unacknowledged submissions, trigger-turn mail, and durable rollout
+  availability. User/client submission acceptance and acknowledgement, V2
+  trigger-turn and interrupt delivery, active-turn cleanup, unified-exec
+  finalization, timed unload, and capacity eviction all participate in the
+  generation-scoped transition authority.
+- A successful timed unload materializes and flushes the thread, performs an
+  orderly `shutdown_and_wait()`, removes only the exact runtime instance, and
+  records the generation-guarded cold status. Failure or a concurrent state
+  change retains the runtime and mailbox; queue-only mail remains FIFO across a
+  later rehydration.
 - The built-in downstream awaiter profile also raises its default background timeout and prefers longer blocking waits plus `list_agents` snapshots over repeated short polling from the model layer. The built-in `terminal-babysitter` role deliberately locks `gpt-5.6-luna` with low reasoning for bounded monitored-wait seams.
 - Live `inspect_agent_tree` rows expose the effective model and reasoning effort from each loaded thread's configuration snapshot. Stale rows leave both fields null because persisted agent metadata does not prove a runtime configuration; these values are configuration evidence, not provider-usage proof.
 - The TUI carries the same identity boundary into its activity and picker surfaces: V2 start activity includes the effective child model and reasoning effort, `/agent` and `/subagents` retain friendly names and canonical paths, and waiting rows say who they are waiting on with the known model/effort. Searchable picker rows hide inactive or stale sidecars by default while keeping them available through a `closed` search; the existing slash aliases remain unchanged.
@@ -2132,13 +2152,20 @@ decisions.
   - `codex-rs/core/src/agent/registry_tests.rs`
   - `codex-rs/core/src/agent/role.rs`
   - `codex-rs/core/src/agent/role_tests.rs`
+  - `codex-rs/features/src/feature_configs.rs`
+  - `codex-rs/features/src/tests.rs`
   - `codex-rs/config/src/config_toml.rs`
   - `codex-rs/core/config.schema.json`
+  - `codex-rs/core/src/codex_thread.rs`
   - `codex-rs/core/src/codex_delegate.rs`
   - `codex-rs/core/src/config/mod.rs`
+  - `codex-rs/core/src/config/config_tests.rs`
   - `codex-rs/core/src/config/schema_tests.rs`
+  - `codex-rs/core/src/session/config_lock.rs`
+  - `codex-rs/core/src/session/handlers.rs`
   - `codex-rs/core/src/session/input_queue.rs`
   - `codex-rs/core/src/session/mod.rs`
+  - `codex-rs/core/src/tasks/mod.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs`
   - `codex-rs/protocol/src/items.rs`
@@ -2159,6 +2186,7 @@ decisions.
   - `codex-rs/core/src/tools/spec_plan.rs`
   - `codex-rs/core/src/tools/tool_runtime_capabilities.rs`
   - `codex-rs/core/src/thread_manager.rs`
+  - `codex-rs/core/src/unified_exec/async_watcher.rs`
   - `codex-rs/core/tests/suite/agent_execution.rs`
   - `codex-rs/core/tests/suite/spawn_agent_description.rs`
   - `codex-rs/core/tests/suite/multi_agent_resume.rs`
@@ -2633,9 +2661,11 @@ decisions.
   `shutdown_and_wait()` before generation-fenced, thread-instance-checked
   removal so runtime-backed resource access does not retain the evicted
   connection set.
-  Timed idle eviction remains follow-up work and must retain the capacity path's
-  existing active-turn and pending-mailbox guards; idle timestamps,
-  configuration, and operator observability remain outside this bounded slice.
+  Configurable terminal-idle eviction now uses that same orderly shutdown path
+  after exact generation, runtime, activity, active-turn, background-terminal,
+  finalizer, completion, accepted-submission, trigger-mail, and durable-history
+  checks. Rehydrated runtimes reinstall the watcher and can release a later MCP
+  fleet after their next terminal-idle interval.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - The 2026-07-23 sync adopts upstream `e497325a6a` as the sole owner of

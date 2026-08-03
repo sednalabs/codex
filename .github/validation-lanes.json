@@ -759,6 +759,35 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.session-tui-resource-stability-targeted",
+      "groups": [
+        "core",
+        "ui_protocol"
+      ],
+      "lane_sets": [
+        "all",
+        "subagents",
+        "ui-protocol",
+        "core-carry"
+      ],
+      "explicit_only": true,
+      "frontier_default": false,
+      "summary_family": "session-tui-resource-stability",
+      "setup_class": "rust_integration",
+      "batch_weight_seconds": 900,
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "session-tui-resource-stability-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": true,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": true,
+      "needs_sccache": true
+    },
+    {
       "lane_id": "codex.blocking-waits-core-targeted",
       "groups": [
         "core",
