@@ -408,7 +408,35 @@ impl SessionTelemetry {
         terminal_type: String,
         session_source: SessionSource,
     ) -> SessionTelemetry {
-        let app_version = RELEASE_VERSION;
+        Self::new_with_app_version(
+            conversation_id,
+            model,
+            slug,
+            account_id,
+            account_email,
+            auth_mode,
+            originator,
+            log_user_prompts,
+            terminal_type,
+            session_source,
+            RELEASE_VERSION,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_app_version(
+        conversation_id: ThreadId,
+        model: &str,
+        slug: &str,
+        account_id: Option<String>,
+        account_email: Option<String>,
+        auth_mode: Option<TelemetryAuthMode>,
+        originator: String,
+        log_user_prompts: bool,
+        terminal_type: String,
+        session_source: SessionSource,
+        app_version: &'static str,
+    ) -> SessionTelemetry {
         Self {
             metadata: SessionTelemetryMetadata {
                 conversation_id,
