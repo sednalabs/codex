@@ -15,10 +15,10 @@
         "codex-rs/app-server/src/in_process.rs",
         "codex-rs/app-server-client/src/lib.rs"
       ],
-      "behavior": "Both bounded in-process delivery tiers preserve the same nineteen authoritative transcript, completion, thread lifecycle, goal, usage, name, settings, and request-resolution notifications under backpressure. Reconstructible progress remains best-effort, counted lag is reported before later writer traffic, and the lower runtime retains at most one required notification while continuing to service shutdown and client control.",
+      "behavior": "Both bounded in-process delivery tiers preserve the same nineteen authoritative transcript, completion, thread lifecycle, goal, usage, name, settings, and request-resolution notifications under backpressure. Reconstructible progress remains best-effort, counted lag is aggregated across both bounded tiers and reported before later writer traffic, and the lower runtime retains at most one required notification while continuing to service shutdown and client control.",
       "upstream_equivalent": false,
       "introduced_in": {
-        "carry_commit": "7f95ea88fed09d7ae907c119fc3dd529fa8da4d0",
+        "carry_commit": "05f79d293bdeebe92ac0a5699272808af0583ec1",
         "upstream_commit": null
       },
       "guardrail_lane": "rust-ci-full; hosted focused codex-app-server and codex-app-server-client library validation",
@@ -26,10 +26,11 @@
         "tiny_event_queue_preserves_required_fifo_and_reports_dropped_progress",
         "full_required_event_queue_still_allows_orderly_runtime_shutdown",
         "guaranteed_delivery_classifier_covers_every_required_notification",
+        "in_process_facade_aggregates_a_dropped_lower_lag_marker",
         "in_process_facade_preserves_every_required_notification_under_backpressure"
       ],
       "owner": "downstream",
-      "notes": "Manually carries the bounded delivery semantics from app-server ancestry 7bd0a5515506584520235579e2472fb2ffefcc9c without importing that branch's wider stack. Keep both classifiers in exact parity and retain production-equivalent shutdown sender custody until an adopted upstream line provides equivalent bounded delivery and regressions.",
+      "notes": "Manually carries the bounded delivery semantics from app-server ancestry 7bd0a5515506584520235579e2472fb2ffefcc9c without importing that branch's wider stack. Keep both classifiers in exact parity, preserve lower lag counts when the facade is also saturated, and retain production-equivalent shutdown sender custody until an adopted upstream line provides equivalent bounded delivery and regressions.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
