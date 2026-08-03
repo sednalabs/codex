@@ -2093,6 +2093,8 @@ mod tests {
         CollabAgentState {
             status,
             message: message.map(str::to_string),
+            agent_nickname: None,
+            agent_role: None,
         }
     }
 

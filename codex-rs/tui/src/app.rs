@@ -334,6 +334,55 @@ fn collab_receiver_is_not_found(
     }
 }
 
+/// Returns the V1 identity carried by a completed collab lifecycle item for one receiver.
+///
+/// V1 does not assign an agent path. Its canonical nickname and role arrive with the terminal
+/// lifecycle record, which can precede the child's `ThreadStarted` notification. The effective
+/// spawn model and reasoning effort live on the item itself.
+fn collab_receiver_identity(
+    notification: &ServerNotification,
+    receiver_thread_id: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<codex_protocol::openai_models::ReasoningEffort>,
+) {
+    let item = match notification {
+        ServerNotification::ItemStarted(notification) => &notification.item,
+        ServerNotification::ItemCompleted(notification) => &notification.item,
+        _ => return Default::default(),
+    };
+    let ThreadItem::CollabAgentToolCall {
+        tool,
+        model,
+        reasoning_effort,
+        agents_states,
+        ..
+    } = item
+    else {
+        return Default::default();
+    };
+    let Some(agent_state) = agents_states.get(receiver_thread_id) else {
+        return Default::default();
+    };
+
+    let (model, reasoning_effort) = if matches!(
+        tool,
+        codex_app_server_protocol::CollabAgentTool::SpawnAgent
+    ) {
+        (model.clone(), reasoning_effort.clone())
+    } else {
+        (None, None)
+    };
+    (
+        agent_state.agent_nickname.clone(),
+        agent_state.agent_role.clone(),
+        model,
+        reasoning_effort,
+    )
+}
+
 fn default_exec_approval_decisions(
     network_approval_context: Option<&codex_app_server_protocol::NetworkApprovalContext>,
     proposed_execpolicy_amendment: Option<&codex_app_server_protocol::ExecPolicyAmendment>,

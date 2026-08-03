@@ -1435,6 +1435,81 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
 }
 
 #[tokio::test]
+async fn v1_spawn_completion_before_thread_started_caches_identity_for_waiting() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+
+    // The parent can receive this V1 completion before the child sends ThreadStarted. Do not add
+    // a ThreadStarted notification here: the lifecycle record itself must be enough to render the
+    // name and effective identity, and the following wait must retain that cached metadata.
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: sender_thread_id.to_string(),
+            turn_id: "turn-spawn".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "spawn-before-thread-started".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("inspect the lifecycle".to_string()),
+                model: Some("gpt-5.6-sol".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::XHigh),
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    codex_app_server_protocol::CollabAgentState {
+                        status: codex_app_server_protocol::CollabAgentStatus::Running,
+                        message: None,
+                        agent_nickname: Some("Scout".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                    },
+                )]),
+            },
+        }),
+    ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: sender_thread_id.to_string(),
+            turn_id: "turn-wait".to_string(),
+            started_at_ms: 1,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "wait-before-thread-started".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::Wait,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+    ));
+
+    assert!(app.agent_navigation.get(&receiver_thread_id).is_some_and(|entry| {
+        entry.agent_nickname.as_deref() == Some("Scout")
+            && entry.agent_role.as_deref() == Some("explorer")
+            && entry.agent_path.is_none()
+            && entry.model.as_deref() == Some("gpt-5.6-sol")
+            && entry.reasoning_effort == Some(ReasoningEffortConfig::XHigh)
+    }));
+
+    let rendered = collect_rendered_history_cells(&mut app_event_rx);
+    assert!(rendered.contains("Scout [explorer]"), "got {rendered:?}");
+    assert!(
+        rendered.contains("effective: gpt-5.6-sol xhigh"),
+        "got {rendered:?}"
+    );
+    assert!(rendered.contains("Waiting on Scout [explorer]"), "got {rendered:?}");
+}
+
+#[tokio::test]
 async fn revisioned_watcher_idle_wins_when_activity_materializes_picker_row() {
     let mut app = make_test_app().await;
     let child_thread_id = ThreadId::new();
@@ -1546,6 +1621,8 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                     codex_app_server_protocol::CollabAgentState {
                         status: codex_app_server_protocol::CollabAgentStatus::NotFound,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]),
             },

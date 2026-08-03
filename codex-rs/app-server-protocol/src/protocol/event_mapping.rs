@@ -110,6 +110,8 @@ pub fn item_event_to_server_notification(
         }
         EventMsg::CollabAgentSpawnEnd(end_event) => {
             let has_receiver = end_event.new_thread_id.is_some();
+            let agent_nickname = end_event.new_agent_nickname.clone();
+            let agent_role = end_event.new_agent_role.clone();
             let status = match &end_event.status {
                 codex_protocol::protocol::AgentStatus::Errored(_)
                 | codex_protocol::protocol::AgentStatus::NotFound => {
@@ -121,7 +123,8 @@ pub fn item_event_to_server_notification(
             let (receiver_thread_ids, agents_states) = match end_event.new_thread_id {
                 Some(id) => {
                     let receiver_id = id.to_string();
-                    let received_status = CollabAgentState::from(end_event.status.clone());
+                    let received_status = CollabAgentState::from(end_event.status.clone())
+                        .with_agent_identity(agent_nickname, agent_role);
                     (
                         vec![receiver_id.clone()],
                         [(receiver_id, received_status)].into_iter().collect(),
@@ -679,6 +682,51 @@ mod tests {
                 Some("gpt-requested".to_string()),
                 Some(codex_protocol::openai_models::ReasoningEffort::Medium),
             )
+        );
+    }
+
+    #[test]
+    fn collab_spawn_end_preserves_v1_receiver_identity() {
+        let receiver_thread_id = ThreadId::new();
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                call_id: "call-spawn-v1-identity".to_string(),
+                completed_at_ms: 456,
+                sender_thread_id: ThreadId::new(),
+                new_thread_id: Some(receiver_thread_id),
+                new_agent_nickname: Some("Scout".to_string()),
+                new_agent_role: Some("explorer".to_string()),
+                prompt: "inspect the repository".to_string(),
+                model: "gpt-5.6-sol".to_string(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::XHigh,
+                status: codex_protocol::protocol::AgentStatus::Running,
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        let ServerNotification::ItemCompleted(ItemCompletedNotification {
+            item:
+                ThreadItem::CollabAgentToolCall {
+                    model,
+                    reasoning_effort,
+                    agents_states,
+                    ..
+                },
+            ..
+        }) = notification.expect("spawn terminal should map")
+        else {
+            panic!("expected completed spawn notification");
+        };
+        let state = agents_states
+            .get(&receiver_thread_id.to_string())
+            .expect("spawned child state");
+        assert_eq!(state.agent_nickname.as_deref(), Some("Scout"));
+        assert_eq!(state.agent_role.as_deref(), Some("explorer"));
+        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::XHigh)
         );
     }
 
