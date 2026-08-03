@@ -66,6 +66,9 @@ pub struct MultiAgentV2ConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 0, max = 3600000))]
     pub default_wait_timeout_ms: Option<i64>,
+    /// Milliseconds before unloading an idle terminal agent. Set to `0` to disable unloading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_idle_unload_timeout_ms: Option<u64>,
     /// Deprecated compatibility field. Its value is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_hint_enabled: Option<bool>,
