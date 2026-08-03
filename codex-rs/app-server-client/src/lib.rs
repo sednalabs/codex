@@ -2980,6 +2980,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_consumer_closure_terminates_in_flight_server_request_custody() {
+        let (client_request_seen_tx, client_request_seen_rx) = oneshot::channel();
+        let (send_server_request_tx, send_server_request_rx) = oneshot::channel();
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+
+            let JSONRPCMessage::Request(client_request) =
+                read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected retained handle request");
+            };
+            assert_eq!(client_request.method, "account/read");
+            client_request_seen_tx
+                .send(())
+                .expect("client request observation should reach the test");
+            send_server_request_rx
+                .await
+                .expect("server request release should reach the server");
+
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: RequestId::String("srv-consumer-closed".to_string()),
+                    method: "item/tool/requestUserInput".to_string(),
+                    params: Some(
+                        serde_json::to_value(ToolRequestUserInputParams {
+                            thread_id: "thread-1".to_string(),
+                            turn_id: "turn-1".to_string(),
+                            item_id: "call-1".to_string(),
+                            questions: vec![ToolRequestUserInputQuestion {
+                                id: "question-1".to_string(),
+                                header: "Mode".to_string(),
+                                question: "Pick one".to_string(),
+                                is_other: false,
+                                is_secret: false,
+                                options: Some(vec![]),
+                            }],
+                            auto_resolution_ms: None,
+                        })
+                        .expect("params should serialize"),
+                    ),
+                    trace: None,
+                }),
+            )
+            .await;
+
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+
+        let delivery_pause = Arc::clone(&client._test_server_request_delivery_gate)
+            .acquire_owned()
+            .await
+            .expect("server request delivery gate should stay open");
+        let request_handle = client.request_handle();
+        let request_task = tokio::spawn(async move {
+            request_handle
+                .request(remote_get_account_request(/*request_id*/ 95))
+                .await
+        });
+        timeout(Duration::from_secs(1), client_request_seen_rx)
+            .await
+            .expect("server should observe the retained handle request")
+            .expect("client request observation channel should stay open");
+
+        let delivery_started = client._test_server_request_delivery_started.notified();
+        send_server_request_tx
+            .send(())
+            .expect("server request should be released");
+        timeout(Duration::from_secs(1), delivery_started)
+            .await
+            .expect("server request should enter the delivery seam");
+
+        drop(client);
+        drop(delivery_pause);
+
+        let request_error = timeout(Duration::from_secs(1), request_task)
+            .await
+            .expect("retained handle request should settle promptly")
+            .expect("retained handle request task should join")
+            .expect_err("retained handle request should receive a terminal error");
+        assert_eq!(request_error.kind(), ErrorKind::BrokenPipe);
+        assert!(
+            request_error
+                .to_string()
+                .contains("event consumer channel is closed")
+        );
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should promptly observe the close frame")
+            .expect("close observation channel should stay open");
+    }
+
+    #[tokio::test]
     async fn remote_server_request_received_during_initialize_is_delivered() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
