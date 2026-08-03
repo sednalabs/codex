@@ -1023,7 +1023,10 @@ impl ThreadHistoryBuilder {
             _ => CollabAgentToolCallStatus::Completed,
         };
         let receiver_id = payload.receiver_thread_id.to_string();
-        let received_status = CollabAgentState::from(payload.status.clone());
+        let received_status = CollabAgentState::from(payload.status.clone()).with_agent_identity(
+            payload.receiver_agent_nickname.clone(),
+            payload.receiver_agent_role.clone(),
+        );
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SendInput,
@@ -1082,8 +1085,19 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingEndEvent,
     ) {
-        let status = if payload
-            .statuses
+        let mut statuses = payload.statuses.clone();
+        let mut agent_identities = HashMap::new();
+        for agent_status in &payload.agent_statuses {
+            agent_identities.insert(
+                agent_status.thread_id,
+                (
+                    agent_status.agent_nickname.clone(),
+                    agent_status.agent_role.clone(),
+                ),
+            );
+            statuses.insert(agent_status.thread_id, agent_status.status.clone());
+        }
+        let status = if statuses
             .values()
             .any(|status| matches!(status, AgentStatus::Errored(_) | AgentStatus::NotFound))
         {
@@ -1092,12 +1106,19 @@ impl ThreadHistoryBuilder {
             CollabAgentToolCallStatus::Completed
         };
         let mut receiver_thread_ids: Vec<String> =
-            payload.statuses.keys().map(ToString::to_string).collect();
+            statuses.keys().map(ToString::to_string).collect();
         receiver_thread_ids.sort();
-        let agents_states = payload
-            .statuses
+        let agents_states = statuses
             .iter()
-            .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
+            .map(|(id, status)| {
+                let (agent_nickname, agent_role) =
+                    agent_identities.get(id).cloned().unwrap_or_default();
+                (
+                    id.to_string(),
+                    CollabAgentState::from(status.clone())
+                        .with_agent_identity(agent_nickname, agent_role),
+                )
+            })
             .collect();
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
@@ -4801,6 +4822,162 @@ mod tests {
                         agent_role: None,
                     },
                 )]
+                .into_iter()
+                .collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn replays_legacy_terminal_collab_identity_and_status_in_order() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let interaction_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+                .expect("valid interaction receiver thread id");
+        let completed_wait_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000003")
+                .expect("valid completed wait receiver thread id");
+        let errored_wait_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000004")
+                .expect("valid errored wait receiver thread id");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "inspect the agent state".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            }),
+            EventMsg::CollabAgentInteractionBegin(
+                codex_protocol::protocol::CollabAgentInteractionBeginEvent {
+                    call_id: "send-v1-identity".into(),
+                    started_at_ms: 100,
+                    sender_thread_id: sender,
+                    receiver_thread_id: interaction_receiver,
+                    prompt: "continue the implementation".into(),
+                },
+            ),
+            EventMsg::CollabAgentInteractionEnd(
+                codex_protocol::protocol::CollabAgentInteractionEndEvent {
+                    call_id: "send-v1-identity".into(),
+                    completed_at_ms: 200,
+                    sender_thread_id: sender,
+                    receiver_thread_id: interaction_receiver,
+                    receiver_agent_nickname: Some("Atlas".into()),
+                    receiver_agent_role: Some("worker".into()),
+                    prompt: "continue the implementation".into(),
+                    status: AgentStatus::Completed(Some("done".into())),
+                },
+            ),
+            EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
+                started_at_ms: 300,
+                sender_thread_id: sender,
+                receiver_thread_ids: vec![completed_wait_receiver, errored_wait_receiver],
+                receiver_agents: vec![
+                    codex_protocol::protocol::CollabAgentRef {
+                        thread_id: completed_wait_receiver,
+                        agent_nickname: Some("Euclid".into()),
+                        agent_role: Some("reviewer".into()),
+                    },
+                    codex_protocol::protocol::CollabAgentRef {
+                        thread_id: errored_wait_receiver,
+                        agent_nickname: Some("Noether".into()),
+                        agent_role: Some("worker".into()),
+                    },
+                ],
+                call_id: "wait-v1-identity".into(),
+            }),
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: sender,
+                call_id: "wait-v1-identity".into(),
+                completed_at_ms: 400,
+                agent_statuses: vec![
+                    codex_protocol::protocol::CollabAgentStatusEntry {
+                        thread_id: completed_wait_receiver,
+                        agent_nickname: Some("Euclid".into()),
+                        agent_role: Some("reviewer".into()),
+                        status: AgentStatus::Completed(Some("reviewed".into())),
+                    },
+                    codex_protocol::protocol::CollabAgentStatusEntry {
+                        thread_id: errored_wait_receiver,
+                        agent_nickname: Some("Noether".into()),
+                        agent_role: Some("worker".into()),
+                        status: AgentStatus::Errored("connection lost".into()),
+                    },
+                ],
+                statuses: HashMap::new(),
+            }),
+        ];
+
+        let items = events
+            .into_iter()
+            .map(RolloutItem::EventMsg)
+            .collect::<Vec<_>>();
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        let [_, interaction, wait] = turns[0].items.as_slice() else {
+            panic!("expected user input, interaction, then wait items");
+        };
+        assert_eq!(
+            interaction,
+            &ThreadItem::CollabAgentToolCall {
+                id: "send-v1-identity".into(),
+                tool: CollabAgentTool::SendInput,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender.to_string(),
+                receiver_thread_ids: vec![interaction_receiver.to_string()],
+                prompt: Some("continue the implementation".into()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: [(
+                    interaction_receiver.to_string(),
+                    CollabAgentState::from(AgentStatus::Completed(Some("done".into())))
+                        .with_agent_identity(Some("Atlas".into()), Some("worker".into())),
+                )]
+                .into_iter()
+                .collect(),
+            }
+        );
+        let mut wait_receiver_thread_ids = vec![
+            completed_wait_receiver.to_string(),
+            errored_wait_receiver.to_string(),
+        ];
+        wait_receiver_thread_ids.sort();
+        assert_eq!(
+            wait,
+            &ThreadItem::CollabAgentToolCall {
+                id: "wait-v1-identity".into(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::Failed,
+                sender_thread_id: sender.to_string(),
+                receiver_thread_ids: wait_receiver_thread_ids,
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: [
+                    (
+                        completed_wait_receiver.to_string(),
+                        CollabAgentState::from(AgentStatus::Completed(Some("reviewed".into())))
+                            .with_agent_identity(
+                                Some("Euclid".into()),
+                                Some("reviewer".into()),
+                            ),
+                    ),
+                    (
+                        errored_wait_receiver.to_string(),
+                        CollabAgentState::from(AgentStatus::Errored("connection lost".into()))
+                            .with_agent_identity(
+                                Some("Noether".into()),
+                                Some("worker".into()),
+                            ),
+                    ),
+                ]
                 .into_iter()
                 .collect(),
             }
