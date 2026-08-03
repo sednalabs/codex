@@ -50,7 +50,9 @@ fn json_schema_fixtures_match_generated() -> Result<()> {
 
 /// Locks the additive subagent terminal-state contract across every checked-in JSON schema that
 /// exposes a subagent activity. The whole-tree fixture test above proves the files are generated
-/// from Rust; this focused check gives a compatibility failure a direct, legible assertion.
+/// from Rust; this focused check gives a compatibility failure a direct, legible assertion. Raw
+/// aggregate bundles retain a trailing newline, while per-schema JSON files do not; read_tree
+/// normalizes both forms before comparing them with freshly generated output.
 #[test]
 fn json_schema_fixtures_keep_subagent_activity_kind_legacy_and_terminal_detail_additive(
 ) -> Result<()> {
@@ -63,12 +65,17 @@ fn json_schema_fixtures_keep_subagent_activity_kind_legacy_and_terminal_detail_a
         path.extension().is_some_and(|extension| extension == "json")
             && String::from_utf8_lossy(bytes).contains("\"SubAgentActivityKind\"")
     }) {
+        let raw_path = schema_root.join("json").join(path);
+        let raw_bytes = std::fs::read(&raw_path)
+            .with_context(|| format!("read raw JSON schema fixture {}", raw_path.display()))?;
+        let expected_suffix = expected_json_fixture_suffix(path);
         anyhow::ensure!(
-            bytes.last() == Some(&b'}'),
-            "{} must use serde_json::to_vec_pretty bytes without a trailing newline",
-            path.display()
+            raw_bytes.ends_with(expected_suffix),
+            "{} must end with the checked-in JSON suffix {:?}",
+            path.display(),
+            String::from_utf8_lossy(expected_suffix)
         );
-        let schema: Value = serde_json::from_slice(bytes)
+        let schema: Value = serde_json::from_slice(&raw_bytes)
             .with_context(|| format!("parse JSON schema fixture {}", path.display()))?;
         let mut activity_kinds = Vec::new();
         collect_named_schema_values(&schema, "SubAgentActivityKind", &mut activity_kinds);
@@ -137,6 +144,15 @@ fn json_schema_fixtures_keep_subagent_activity_kind_legacy_and_terminal_detail_a
     }
 
     Ok(())
+}
+
+fn expected_json_fixture_suffix(path: &Path) -> &'static [u8] {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("codex_app_server_protocol.schemas.json" | "codex_app_server_protocol.v2.schemas.json") => {
+            b"}\n"
+        }
+        _ => b"}",
+    }
 }
 
 fn collect_named_schema_values<'a>(
