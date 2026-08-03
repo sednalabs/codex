@@ -844,13 +844,13 @@ def _preserve_current_protocol_fields(out_path: Path) -> None:
         source,
         "ThreadLoadedListParams",
         'limit: Annotated[\n        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)\n    ] = None',
-        'limit: Annotated[\n        int | None,\n        Field(\n            description="Optional page size. When omitted, the server returns its bounded default of 100 sessions. Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to continue when more loaded sessions remain.",\n            ge=0,\n        ),\n    ] = None',
+        'limit: Annotated[\n        int | None,\n        Field(\n            description="Optional page size. The legacy unfiltered form preserves its original semantics: omitted `limit` returns every loaded thread and supplied values retain their legacy page-size behavior, including treating zero as one, without a server maximum. With `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow `nextCursor` until it is null to continue a filtered result.",\n            ge=0,\n        ),\n    ] = None',
     )
     source = _replace_generated_class_text(
         source,
         "ThreadLoadedListResponse",
         'description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return."',
-        'description="Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate window inspected by the server, which can include loaded sessions that did not match an ancestor filter. If None, there are no more items to return."',
+        'description="Opaque cursor to pass as `cursor` on the next call. For legacy unfiltered calls, it resumes after the last returned loaded thread. For ancestor-filtered calls, it resumes after the bounded candidate window inspected by the server. If it is null, there are no more items to return."',
     )
     source = _replace_generated_class_text(
         source,
