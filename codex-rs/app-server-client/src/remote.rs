@@ -230,16 +230,8 @@ impl RemoteAppServerClient {
             let mut exit_after_pending_events = false;
             loop {
                 if exit_after_pending_events {
-                    let (err_kind, err_message) = worker_exit_error.as_ref().map_or_else(
-                        || {
-                            (
-                                ErrorKind::BrokenPipe,
-                                "remote app-server transport is closing after required events drain"
-                                    .to_string(),
-                            )
-                        },
-                        |(kind, message)| (*kind, message.clone()),
-                    );
+                    let (err_kind, err_message) =
+                        terminal_remote_transport_error(&worker_exit_error);
                     fail_pending_remote_requests(
                         &mut pending_requests,
                         err_kind,
@@ -273,14 +265,7 @@ impl RemoteAppServerClient {
                             RemoteClientCommand::Request { request, response_tx } => {
                                 if exit_after_pending_events {
                                     let (error_kind, message) =
-                                        worker_exit_error.as_ref().map_or_else(
-                                            || (
-                                                ErrorKind::BrokenPipe,
-                                                "remote app-server transport is closing after required events drain"
-                                                    .to_string(),
-                                            ),
-                                            |(kind, message)| (*kind, message.clone()),
-                                        );
+                                        terminal_remote_transport_error(&worker_exit_error);
                                     let _ = response_tx.send(Err(IoError::new(
                                         error_kind,
                                         message,
@@ -329,6 +314,14 @@ impl RemoteAppServerClient {
                                         break;
                                     }
                                 }
+                            }
+                            RemoteClientCommand::Notify { response_tx, .. }
+                            | RemoteClientCommand::ResolveServerRequest { response_tx, .. }
+                            | RemoteClientCommand::RejectServerRequest { response_tx, .. }
+                                if exit_after_pending_events => {
+                                let (error_kind, message) =
+                                    terminal_remote_transport_error(&worker_exit_error);
+                                let _ = response_tx.send(Err(IoError::new(error_kind, message)));
                             }
                             RemoteClientCommand::Notify { notification, response_tx } => {
                                 let result = write_jsonrpc_message(
@@ -1467,6 +1460,20 @@ fn fail_pending_remote_requests(
     }
 }
 
+fn terminal_remote_transport_error(
+    worker_exit_error: &Option<(ErrorKind, String)>,
+) -> (ErrorKind, String) {
+    worker_exit_error.as_ref().map_or_else(
+        || {
+            (
+                ErrorKind::BrokenPipe,
+                "remote app-server transport is closing after required events drain".to_string(),
+            )
+        },
+        |(kind, message)| (*kind, message.clone()),
+    )
+}
+
 fn event_consumer_closed() -> IoError {
     IoError::new(
         ErrorKind::BrokenPipe,
@@ -1949,7 +1956,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_disconnect_fails_pending_rpc_before_event_fifo_drains() {
+    async fn terminal_disconnect_fails_outbound_commands_before_event_fifo_drains() {
         let (client_io, server_io) = duplex(64 * 1024);
         let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
         let mut server_stream =
@@ -2012,6 +2019,27 @@ mod tests {
             assert_eq!(request.id, RequestId::Integer(42));
             assert_eq!(request.method, "test/pending");
 
+            let server_request = thread_scoped_server_message(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: RequestId::Integer(43),
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        auto_resolution_ms: None,
+                    },
+                },
+                "terminal-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&server_request)
+                        .expect("server request should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send a request before closing the transport");
             for status_revision in [1, 2] {
                 let event = thread_scoped_server_message(
                     thread_status_changed_notification(status_revision),
@@ -2075,6 +2103,56 @@ mod tests {
             "the one-slot event receiver must still be full when the RPC fails"
         );
 
+        for command_error in [
+            timeout(Duration::from_secs(1), client.notify(ClientNotification::Initialized))
+                .await
+                .expect(
+                    "terminal transport should fail notifications without waiting for events",
+                )
+                .err()
+                .expect("terminal transport should not write a notification"),
+            timeout(
+                Duration::from_secs(1),
+                client.resolve_server_request(RequestId::Integer(43), serde_json::json!({})),
+            )
+            .await
+            .expect(
+                "terminal transport should fail server-request resolution without waiting for events",
+            )
+            .err()
+            .expect("terminal transport should not write a server-request resolution"),
+            timeout(
+                Duration::from_secs(1),
+                client.reject_server_request(
+                    RequestId::Integer(43),
+                    JSONRPCErrorError {
+                        code: -32000,
+                        message: "transport was already closed".to_string(),
+                        data: None,
+                    },
+                ),
+            )
+            .await
+            .expect(
+                "terminal transport should fail server-request rejection without waiting for events",
+            )
+            .err()
+            .expect("terminal transport should not write a server-request rejection"),
+        ] {
+            assert_eq!(command_error.kind(), ErrorKind::ConnectionAborted);
+            assert!(command_error.to_string().contains("disconnected"));
+        }
+
+        match client.next_tagged_event().await {
+            Some(TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request: ServerRequest::ToolRequestUserInput { request_id, .. },
+            }) => {
+                assert_eq!(thread_subscription_id, "terminal-subscription");
+                assert_eq!(request_id, RequestId::Integer(43));
+            }
+            event => panic!("expected retained terminal-path server request, got {event:?}"),
+        }
         for status_revision in [1, 2] {
             match client.next_tagged_event().await {
                 Some(TaggedAppServerEvent::ThreadServerNotification {
