@@ -19,6 +19,11 @@ use std::io::Result as IoResult;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::OnceLock;
+
 use crate::AppServerEvent;
 use crate::RequestResult;
 use crate::SHUTDOWN_TIMEOUT;
@@ -72,6 +77,78 @@ const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
 // the bytes travel over the Unix socket, not TCP.
 const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RemoteWorkerTestEvent {
+    ServerRequestQueued(RequestId),
+    ServerRequestPublished(RequestId),
+}
+
+#[cfg(test)]
+pub(super) struct RemoteWorkerTestHooks {
+    endpoint: String,
+    events: mpsc::UnboundedReceiver<RemoteWorkerTestEvent>,
+}
+
+#[cfg(test)]
+impl RemoteWorkerTestHooks {
+    pub(super) async fn next(&mut self) -> RemoteWorkerTestEvent {
+        self.events
+            .recv()
+            .await
+            .expect("remote worker test hook should stay connected")
+    }
+}
+
+#[cfg(test)]
+impl Drop for RemoteWorkerTestHooks {
+    fn drop(&mut self) {
+        let mut hooks = remote_worker_test_hooks()
+            .lock()
+            .expect("remote worker test hook mutex should not be poisoned");
+        hooks.remove(&self.endpoint);
+    }
+}
+
+#[cfg(test)]
+type RemoteWorkerTestHookSenders = HashMap<String, mpsc::UnboundedSender<RemoteWorkerTestEvent>>;
+
+#[cfg(test)]
+static REMOTE_WORKER_TEST_HOOKS: OnceLock<Mutex<RemoteWorkerTestHookSenders>> = OnceLock::new();
+
+#[cfg(test)]
+fn remote_worker_test_hooks() -> &'static Mutex<RemoteWorkerTestHookSenders> {
+    REMOTE_WORKER_TEST_HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+pub(super) fn install_remote_worker_test_hooks(endpoint: &str) -> RemoteWorkerTestHooks {
+    let (event_tx, events) = mpsc::unbounded_channel();
+    let mut hooks = remote_worker_test_hooks()
+        .lock()
+        .expect("remote worker test hook mutex should not be poisoned");
+    assert!(
+        hooks.insert(endpoint.to_string(), event_tx).is_none(),
+        "remote worker test hooks should be unique per endpoint"
+    );
+    RemoteWorkerTestHooks {
+        endpoint: endpoint.to_string(),
+        events,
+    }
+}
+
+#[cfg(test)]
+fn record_remote_worker_test_event(endpoint: &str, event: RemoteWorkerTestEvent) {
+    let event_tx = remote_worker_test_hooks()
+        .lock()
+        .expect("remote worker test hook mutex should not be poisoned")
+        .get(endpoint)
+        .cloned();
+    if let Some(event_tx) = event_tx {
+        let _ = event_tx.send(event);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteAppServerEndpoint {
@@ -450,8 +527,9 @@ impl RemoteAppServerRequestHandle {
 /// JSON-RPC payloads can still be large. The public channel has the same
 /// capacity, so a connection keeps at most `2 * capacity` ordinary events
 /// between the worker and its caller. Server request ownership uses that same
-/// bound across the private backlog and public channel until the client sends
-/// its response. Terminal finalization may additionally synthesize one
+/// bound across the private backlog and public channel until the client starts
+/// a response attempt. The bounded ledger also preserves request order for
+/// terminal cleanup. Terminal finalization may additionally synthesize one
 /// `Lagged` marker and one `Disconnected` event.
 struct RemoteEventBacklog {
     events: VecDeque<AppServerEvent>,
@@ -460,7 +538,14 @@ struct RemoteEventBacklog {
     // The virtual Lagged event is emitted immediately after these entries.
     lagged_after: Option<usize>,
     capacity: usize,
-    unresolved_server_request_ids: HashSet<RequestId>,
+    server_request_dispositions: HashMap<RequestId, ServerRequestResponseDisposition>,
+    server_request_order: VecDeque<RequestId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerRequestResponseDisposition {
+    Pending,
+    ResponseAttempted,
 }
 
 #[derive(Debug)]
@@ -476,7 +561,8 @@ impl RemoteEventBacklog {
             skipped_events: 0,
             lagged_after: None,
             capacity,
-            unresolved_server_request_ids: HashSet::new(),
+            server_request_dispositions: HashMap::new(),
+            server_request_order: VecDeque::new(),
         }
     }
 
@@ -488,7 +574,7 @@ impl RemoteEventBacklog {
         if let Some(request_id) = &server_request_id {
             // A repeated peer request ID denotes the same in-flight request.
             // Do not publish a second prompt or generate a second response.
-            if self.unresolved_server_request_ids.contains(request_id) {
+            if self.server_request_dispositions.contains_key(request_id) {
                 warn!(%request_id, "ignoring duplicate remote app-server server request");
                 return Ok(());
             }
@@ -497,7 +583,7 @@ impl RemoteEventBacklog {
             // events, but they remain owned after crossing event_tx. Bound
             // that retained ownership so a fast event consumer that never
             // answers prompts cannot turn it into an unbounded side queue.
-            if self.unresolved_server_request_ids.len() >= self.capacity.saturating_mul(2) {
+            if self.server_request_dispositions.len() >= self.capacity.saturating_mul(2) {
                 return Err(RequiredEventOverflow {
                     server_request_id: Some(request_id.clone()),
                 });
@@ -506,7 +592,9 @@ impl RemoteEventBacklog {
 
         if self.events.len() < self.capacity {
             if let Some(request_id) = server_request_id {
-                self.unresolved_server_request_ids.insert(request_id);
+                self.server_request_dispositions
+                    .insert(request_id.clone(), ServerRequestResponseDisposition::Pending);
+                self.server_request_order.push_back(request_id);
             }
             self.events.push_back(event);
             return Ok(());
@@ -548,16 +636,37 @@ impl RemoteEventBacklog {
         Some(event)
     }
 
-    fn has_unresolved_server_request(&self, request_id: &RequestId) -> bool {
-        self.unresolved_server_request_ids.contains(request_id)
+    fn begin_server_request_response(&mut self, request_id: &RequestId) -> bool {
+        let Some(disposition) = self.server_request_dispositions.get_mut(request_id) else {
+            return false;
+        };
+        if *disposition == ServerRequestResponseDisposition::ResponseAttempted {
+            return false;
+        }
+        // A timed-out or failed socket write might still have reached the
+        // peer. Keep this disposition through terminal cleanup so that ID is
+        // never answered a second time.
+        *disposition = ServerRequestResponseDisposition::ResponseAttempted;
+        true
     }
 
     fn complete_server_request(&mut self, request_id: &RequestId) {
-        self.unresolved_server_request_ids.remove(request_id);
+        if self.server_request_dispositions.remove(request_id).is_some() {
+            self.server_request_order
+                .retain(|pending_request_id| pending_request_id != request_id);
+        }
     }
 
-    fn take_unresolved_server_request_ids(&mut self) -> Vec<RequestId> {
-        self.unresolved_server_request_ids.drain().collect()
+    fn take_unanswered_server_request_ids(&mut self) -> Vec<RequestId> {
+        let mut unanswered = Vec::new();
+        while let Some(request_id) = self.server_request_order.pop_front() {
+            match self.server_request_dispositions.remove(&request_id) {
+                Some(ServerRequestResponseDisposition::Pending) => unanswered.push(request_id),
+                Some(ServerRequestResponseDisposition::ResponseAttempted) | None => {}
+            }
+        }
+        debug_assert!(self.server_request_dispositions.is_empty());
+        unanswered
     }
 
     fn finalize(mut self, message: String) -> VecDeque<AppServerEvent> {
@@ -585,15 +694,24 @@ struct PendingRemoteRequest {
 struct RemoteTerminal {
     error_kind: ErrorKind,
     message: String,
-    reject_request_ids: Vec<RequestId>,
+    server_request_error: JSONRPCErrorError,
+    overflowed_server_request_ids: Vec<RequestId>,
 }
 
 impl RemoteTerminal {
     fn new(error_kind: ErrorKind, message: String) -> Self {
+        let server_request_error = JSONRPCErrorError {
+            code: -32603,
+            message: format!(
+                "remote app-server client stopped before answering server request: {message}"
+            ),
+            data: None,
+        };
         Self {
             error_kind,
             message,
-            reject_request_ids: Vec::new(),
+            server_request_error,
+            overflowed_server_request_ids: Vec::new(),
         }
     }
 
@@ -612,13 +730,14 @@ impl RemoteTerminal {
             ),
         );
         if let Some(request_id) = server_request_id {
-            terminal.reject_server_request(request_id);
+            terminal.overflowed_server_request_ids.push(request_id);
         }
+        terminal.server_request_error = JSONRPCErrorError {
+            code: -32001,
+            message: "remote app-server event queue is full".to_string(),
+            data: None,
+        };
         terminal
-    }
-
-    fn reject_server_request(&mut self, request_id: RequestId) {
-        self.reject_request_ids.push(request_id);
     }
 
     fn io_error(&self) -> IoError {
@@ -692,7 +811,21 @@ where
                         let event = backlog
                             .pop_next_for_public()
                             .expect("backlog advertised a public event");
+                        #[cfg(test)]
+                        let server_request_id = match &event {
+                            AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
+                            AppServerEvent::Lagged { .. }
+                            | AppServerEvent::ServerNotification(_)
+                            | AppServerEvent::Disconnected { .. } => None,
+                        };
                         permit.send(event);
+                        #[cfg(test)]
+                        if let Some(request_id) = server_request_id {
+                            record_remote_worker_test_event(
+                                &endpoint,
+                                RemoteWorkerTestEvent::ServerRequestPublished(request_id),
+                            );
+                        }
                     }
                     Err(_) => {
                         terminal = Some(RemoteTerminal::new(
@@ -719,15 +852,15 @@ where
     }
     fail_queued_commands(&mut command_rx, &terminal);
 
-    let mut reject_request_ids = terminal.reject_request_ids;
-    reject_request_ids.extend(backlog.take_unresolved_server_request_ids());
+    let mut reject_request_ids = backlog.take_unanswered_server_request_ids();
+    reject_request_ids.extend(terminal.overflowed_server_request_ids.iter().cloned());
     let terminal_events = backlog.finalize(terminal.message.clone());
 
     // Event publication is independent from socket cleanup. In particular, a
     // peer that stalls request rejections or the close handshake cannot delay
     // a consumer that is ready to observe the terminal event sequence.
     let (cleanup_result, ()) = tokio::join!(
-        cleanup_terminal_socket(&mut stream, &endpoint, reject_request_ids),
+        cleanup_terminal_socket(&mut stream, &endpoint, &terminal, reject_request_ids),
         publish_terminal_events(&event_tx, terminal_events),
     );
     cleanup_result
@@ -799,7 +932,7 @@ where
             result,
             response_tx,
         } => {
-            if !backlog.has_unresolved_server_request(&request_id) {
+            if !backlog.begin_server_request_response(&request_id) {
                 let _ = response_tx.send(Err(IoError::new(
                     ErrorKind::InvalidInput,
                     format!("remote app-server server request id `{request_id}` is not pending"),
@@ -833,7 +966,7 @@ where
             error,
             response_tx,
         } => {
-            if !backlog.has_unresolved_server_request(&request_id) {
+            if !backlog.begin_server_request_response(&request_id) {
                 let _ = response_tx.send(Err(IoError::new(
                     ErrorKind::InvalidInput,
                     format!("remote app-server server request id `{request_id}` is not pending"),
@@ -960,8 +1093,24 @@ fn enqueue_remote_event(
     endpoint: &str,
     event: AppServerEvent,
 ) -> Option<RemoteTerminal> {
+    #[cfg(test)]
+    let server_request_id = match &event {
+        AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
+        AppServerEvent::Lagged { .. }
+        | AppServerEvent::ServerNotification(_)
+        | AppServerEvent::Disconnected { .. } => None,
+    };
     match backlog.enqueue(event) {
-        Ok(()) => None,
+        Ok(()) => {
+            #[cfg(test)]
+            if let Some(request_id) = server_request_id {
+                record_remote_worker_test_event(
+                    endpoint,
+                    RemoteWorkerTestEvent::ServerRequestQueued(request_id),
+                );
+            }
+            None
+        }
         Err(overflow) => Some(RemoteTerminal::required_event_overflow(
             endpoint,
             overflow.server_request_id,
@@ -1001,6 +1150,7 @@ async fn publish_terminal_events(
 async fn cleanup_terminal_socket<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
+    terminal: &RemoteTerminal,
     reject_request_ids: Vec<RequestId>,
 ) -> IoResult<()>
 where
@@ -1015,18 +1165,14 @@ where
             if let Err(err) = write_jsonrpc_message_unbounded(
                 stream,
                 JSONRPCMessage::Error(JSONRPCError {
-                    error: JSONRPCErrorError {
-                        code: -32001,
-                        message: "remote app-server event queue is full".to_string(),
-                        data: None,
-                    },
+                    error: terminal.server_request_error.clone(),
                     id: request_id,
                 }),
                 endpoint,
             )
             .await
             {
-                warn!(%err, "failed to reject undispatched remote app-server server request");
+                warn!(%err, "failed to reject unanswered remote app-server server request");
                 break;
             }
         }
@@ -1323,9 +1469,9 @@ where
     })??;
 
     if let Some(terminal) = terminal.take() {
-        let mut reject_request_ids = terminal.reject_request_ids;
-        reject_request_ids.extend(backlog.take_unresolved_server_request_ids());
-        cleanup_terminal_socket(stream, endpoint, reject_request_ids).await?;
+        let mut reject_request_ids = backlog.take_unanswered_server_request_ids();
+        reject_request_ids.extend(terminal.overflowed_server_request_ids.iter().cloned());
+        cleanup_terminal_socket(stream, endpoint, &terminal, reject_request_ids).await?;
         return Err(terminal.io_error());
     }
 
@@ -1482,11 +1628,11 @@ mod tests {
         }
 
         assert_eq!(backlog.events.len(), 33);
-        assert_eq!(backlog.take_unresolved_server_request_ids().len(), 33);
+        assert_eq!(backlog.take_unanswered_server_request_ids().len(), 33);
     }
 
     #[test]
-    fn required_server_request_overflow_keeps_all_unresolved_ids_for_rejection() {
+    fn required_server_request_overflow_keeps_all_unanswered_ids_for_rejection() {
         let mut backlog = RemoteEventBacklog::new(1);
         backlog
             .enqueue(server_request(1))
@@ -1506,10 +1652,8 @@ mod tests {
             .expect_err("third required server request should overflow");
         assert_eq!(overflow.server_request_id, Some(RequestId::Integer(3)));
 
-        let mut unresolved = backlog.take_unresolved_server_request_ids();
-        unresolved.sort_by_key(|request_id| request_id.to_string());
         assert_eq!(
-            unresolved,
+            backlog.take_unanswered_server_request_ids(),
             vec![RequestId::Integer(1), RequestId::Integer(2)]
         );
     }
@@ -1524,9 +1668,9 @@ mod tests {
             .pop_next_for_public()
             .expect("server request should cross the public boundary");
 
-        assert!(backlog.has_unresolved_server_request(&RequestId::Integer(1)));
+        assert!(backlog.begin_server_request_response(&RequestId::Integer(1)));
         backlog.complete_server_request(&RequestId::Integer(1));
-        assert!(!backlog.has_unresolved_server_request(&RequestId::Integer(1)));
+        assert!(!backlog.begin_server_request_response(&RequestId::Integer(1)));
     }
 
     #[test]
@@ -1562,9 +1706,61 @@ mod tests {
 
         assert!(!backlog.has_pending_public_event());
         assert_eq!(
-            backlog.take_unresolved_server_request_ids(),
+            backlog.take_unanswered_server_request_ids(),
             vec![RequestId::Integer(1)]
         );
+    }
+
+    #[test]
+    fn response_attempt_is_not_rejected_again_during_terminal_cleanup() {
+        let mut backlog = RemoteEventBacklog::new(1);
+        backlog
+            .enqueue(server_request(1))
+            .expect("server request should fit");
+
+        assert!(backlog.begin_server_request_response(&RequestId::Integer(1)));
+        assert!(!backlog.begin_server_request_response(&RequestId::Integer(1)));
+        assert!(backlog.take_unanswered_server_request_ids().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_close_server_response_write_is_not_rejected_again_during_terminal_cleanup() {
+        let (socket, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let mut stream = WebSocketStream::from_raw_socket(
+            socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut pending_requests = HashMap::new();
+        let mut backlog = RemoteEventBacklog::new(1);
+        backlog
+            .enqueue(server_request(1))
+            .expect("server request should fit");
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let terminal = handle_remote_command(
+            RemoteClientCommand::ResolveServerRequest {
+                request_id: RequestId::Integer(1),
+                result: serde_json::json!({}),
+                response_tx,
+            },
+            &mut stream,
+            "test://closed-peer",
+            &mut pending_requests,
+            &mut backlog,
+        )
+        .await
+        .expect("post-close response write should terminate the transport");
+
+        let error = response_rx
+            .await
+            .expect("response write result should be returned")
+            .expect_err("post-close response write should fail");
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+        assert_eq!(terminal.server_request_error.code, -32603);
+        assert!(backlog.take_unanswered_server_request_ids().is_empty());
     }
 
     #[test]

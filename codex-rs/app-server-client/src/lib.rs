@@ -913,6 +913,7 @@ impl AppServerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::RemoteWorkerTestEvent;
     use codex_app_server_protocol::AccountUpdatedNotification;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::GetAccountResponse;
@@ -2067,24 +2068,32 @@ mod tests {
     #[tokio::test]
     async fn remote_terminal_rejects_public_private_and_overflowed_server_requests_once() {
         let (rejected_tx, rejected_rx) = tokio::sync::oneshot::channel();
+        let (advance_tx, mut advance_rx) = tokio::sync::mpsc::channel(2);
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
-            for id in 0..3 {
-                write_websocket_message(
-                    &mut websocket,
-                    JSONRPCMessage::Request(remote_request_user_input(RequestId::Integer(id))),
-                )
-                .await;
-                // Let the worker move the first request into its public
-                // C=1 channel before the next one arrives. The second then
-                // occupies the private C=1 backlog and the third closes
-                // required-event admission.
-                if id < 2 {
-                    for _ in 0..8 {
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_request_user_input(RequestId::Integer(0))),
+            )
+            .await;
+            advance_rx
+                .recv()
+                .await
+                .expect("test should confirm request 0 crossed the public boundary");
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_request_user_input(RequestId::Integer(1))),
+            )
+            .await;
+            advance_rx
+                .recv()
+                .await
+                .expect("test should confirm request 1 entered the private backlog");
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_request_user_input(RequestId::Integer(2))),
+            )
+            .await;
             let mut rejected = Vec::new();
             while rejected.len() < 3 {
                 let JSONRPCMessage::Error(error) = timeout(
@@ -2092,13 +2101,12 @@ mod tests {
                     read_websocket_message(&mut websocket),
                 )
                 .await
-                .expect("every unresolved server request should be rejected")
+                .expect("every unanswered server request should be rejected")
                 else {
                     panic!("terminal cleanup should only send JSON-RPC errors");
                 };
                 rejected.push((error.id, error.error.code));
             }
-            rejected.sort_by_key(|(request_id, _)| request_id.to_string());
             rejected_tx
                 .send(rejected)
                 .expect("all terminal rejections should be observed");
@@ -2109,12 +2117,43 @@ mod tests {
             }
         })
         .await;
+        let mut worker_hooks = crate::remote::install_remote_worker_test_hooks(&websocket_url);
         let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
             channel_capacity: 1,
             ..test_remote_connect_args(websocket_url)
         })
         .await
         .expect("remote client should connect");
+
+        assert_eq!(
+            timeout(Duration::from_secs(2), worker_hooks.next())
+                .await
+                .expect("request 0 should enter the bounded worker backlog"),
+            RemoteWorkerTestEvent::ServerRequestQueued(RequestId::Integer(0))
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(2), worker_hooks.next())
+                .await
+                .expect("request 0 should cross the public event boundary"),
+            RemoteWorkerTestEvent::ServerRequestPublished(RequestId::Integer(0))
+        );
+        advance_tx
+            .send(())
+            .await
+            .expect("server should accept the public-boundary confirmation");
+        // Request 0 remains in the full C=1 public channel because this test
+        // has not called next_event. Therefore request 1 can only be queued
+        // in the private C=1 backlog.
+        assert_eq!(
+            timeout(Duration::from_secs(2), worker_hooks.next())
+                .await
+                .expect("request 1 should enter the bounded worker backlog"),
+            RemoteWorkerTestEvent::ServerRequestQueued(RequestId::Integer(1))
+        );
+        advance_tx
+            .send(())
+            .await
+            .expect("server should accept the private-backlog confirmation");
 
         let rejected = timeout(Duration::from_secs(2), rejected_rx)
             .await
@@ -2151,6 +2190,63 @@ mod tests {
         assert!(client.next_event().await.is_none());
 
         client.shutdown().await.expect("terminal shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_shutdown_rejects_unanswered_server_requests_as_internal_errors() {
+        let (rejection_tx, rejection_rx) = tokio::sync::oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(remote_request_user_input(RequestId::Integer(7))),
+            )
+            .await;
+
+            let JSONRPCMessage::Error(error) = timeout(
+                Duration::from_secs(2),
+                read_websocket_message(&mut websocket),
+            )
+            .await
+            .expect("shutdown should reject the unanswered server request")
+            else {
+                panic!("shutdown should send a JSON-RPC error response");
+            };
+            rejection_tx
+                .send((error.id, error.error.code, error.error.message))
+                .expect("shutdown rejection should be observed");
+
+            match websocket.next().await {
+                Some(Ok(Message::Close(_))) | None => {}
+                frame => panic!("expected terminal websocket close, got {frame:?}"),
+            }
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+
+        let AppServerEvent::ServerRequest(request) = timeout(
+            Duration::from_secs(2),
+            client.next_event(),
+        )
+        .await
+        .expect("server request should arrive before shutdown")
+        .expect("event stream should stay open before shutdown")
+        else {
+            panic!("expected server request before shutdown");
+        };
+        assert_eq!(request.id(), &RequestId::Integer(7));
+
+        client.shutdown().await.expect("shutdown should complete");
+
+        let (request_id, code, message) = timeout(Duration::from_secs(2), rejection_rx)
+            .await
+            .expect("server should observe the shutdown rejection")
+            .expect("shutdown rejection should be delivered");
+        assert_eq!(request_id, RequestId::Integer(7));
+        assert_eq!(code, -32603);
+        assert!(message.contains("stopped before answering server request"));
     }
 
     #[tokio::test]
