@@ -128,6 +128,7 @@ async fn handle_spawn_agent(
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
+            spawn_call_id: Some(call_id.clone()),
         },
     ))
     .await
@@ -219,6 +220,13 @@ async fn handle_spawn_agent(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        // The tool runtime must wait while AgentControl reconciles a cancellation-owned
+        // provisional child. Returning an aborted result before that cleanup could leave an
+        // unseen child running after the parent believes the spawn failed.
+        true
     }
 }
 

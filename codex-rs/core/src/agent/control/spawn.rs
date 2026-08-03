@@ -26,6 +26,53 @@ enum SpawnInitialInput {
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
 }
 
+fn spawn_publication_key(options: &SpawnAgentOptions) -> Option<SpawnPublicationKey> {
+    Some(SpawnPublicationKey::new(
+        options.parent_thread_id?,
+        options.spawn_call_id.as_deref()?,
+    ))
+}
+
+fn spawn_cancellation_owns_child(
+    control: &AgentControl,
+    publication_key: Option<&SpawnPublicationKey>,
+) -> bool {
+    publication_key.is_some_and(|key| {
+        control.state.spawn_publication_decision(key)
+            == SpawnPublicationDecision::CancellationOwned
+    })
+}
+
+fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
+    matches!(
+        error.details(),
+        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+    )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum UnpublishedSpawnReconciliation {
+    ShutdownCancellationOwned,
+    PreserveNaturalTerminal,
+    ShutdownPreexistingInterrupted,
+    ChildDied,
+}
+
+pub(super) fn unpublished_spawn_reconciliation(
+    status: &AgentStatus,
+) -> UnpublishedSpawnReconciliation {
+    match status {
+        AgentStatus::PendingInit | AgentStatus::Running => {
+            UnpublishedSpawnReconciliation::ShutdownCancellationOwned
+        }
+        AgentStatus::Interrupted => UnpublishedSpawnReconciliation::ShutdownPreexistingInterrupted,
+        AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Shutdown => {
+            UnpublishedSpawnReconciliation::PreserveNaturalTerminal
+        }
+        AgentStatus::NotFound => UnpublishedSpawnReconciliation::ChildDied,
+    }
+}
+
 /// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
 /// Role configuration is loaded first so role-local providers are available, while the caller's
 /// config remains the source of current runtime policy such as permissions and cwd.
@@ -440,7 +487,14 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        let publication_key = spawn_publication_key(&options);
+        if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            return Err(CodexErr::TurnAborted);
+        }
         let state = self.upgrade()?;
+        if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            return Err(CodexErr::TurnAborted);
+        }
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -545,6 +599,62 @@ impl AgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
+        if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
+            self.reconcile_unpublished_spawn(
+                &state,
+                &new_thread,
+                /*registry_committed*/ false,
+            )
+            .await?;
+            return Err(CodexErr::TurnAborted);
+        }
+        let initial_input_result = match initial_input {
+            SpawnInitialInput::UserInput(input) => {
+                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
+                    .await
+                    .map(drop)
+            }
+            SpawnInitialInput::InterAgentCommunication(communication, context) => {
+                self.send_inter_agent_communication_after_capacity_check(
+                    new_thread.thread_id,
+                    &state,
+                    communication,
+                    context,
+                )
+                .await
+                .map(drop)
+            }
+        };
+        if let Err(error) = initial_input_result {
+            self.reconcile_unpublished_spawn(
+                &state,
+                &new_thread,
+                /*registry_committed*/ false,
+            )
+            .await?;
+            return Err(error);
+        }
+
+        // This compare-and-swap is the parent-visible publication boundary. Once it wins, the
+        // runtime cancellation owner observes `Published` and must return the successful tool
+        // result. When cancellation wins first, it owns reconciliation below before the parent
+        // receives its aborted result.
+        let publication_decision = publication_key.as_ref().map_or(
+            SpawnPublicationDecision::Untracked,
+            |key| self.state.publish_spawn_publication(key),
+        );
+        if publication_decision == SpawnPublicationDecision::CancellationOwned {
+            self.reconcile_unpublished_spawn(
+                &state,
+                &new_thread,
+                /*registry_committed*/ false,
+            )
+            .await?;
+            return Err(CodexErr::TurnAborted);
+        }
+
+        // Capacity and residency reservations remain private until the publication CAS above
+        // wins, so `/agents` cannot observe a child while cancellation still owns the outcome.
         agent_metadata.agent_id = Some(new_thread.thread_id);
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
@@ -596,21 +706,6 @@ impl AgentControl {
         )
         .await;
 
-        match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
-                    .await?;
-            }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
-                )
-                .await?;
-            }
-        }
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -630,6 +725,69 @@ impl AgentControl {
             metadata: agent_metadata,
             status: self.get_status(new_thread.thread_id).await,
         })
+    }
+
+    /// Reconcile a child that was created but never crossed the parent-visible publication
+    /// boundary. A cancellation never relabels a naturally terminal child as interrupted.
+    async fn reconcile_unpublished_spawn(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        new_thread: &crate::thread_manager::NewThread,
+        registry_committed: bool,
+    ) -> CodexResult<()> {
+        let child_thread_id = new_thread.thread_id;
+        let child_thread = match state.get_thread(child_thread_id).await {
+            Ok(thread) => thread,
+            Err(error) if is_benign_unpublished_spawn_cleanup_error(&error) => {
+                if registry_committed {
+                    self.state.release_spawned_thread(child_thread_id);
+                    self.forget_v2_residency(child_thread_id);
+                }
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        let status = child_thread.agent_status().await;
+        match unpublished_spawn_reconciliation(&status) {
+            UnpublishedSpawnReconciliation::ShutdownCancellationOwned
+            | UnpublishedSpawnReconciliation::ShutdownPreexistingInterrupted => {
+                // `Interrupted` was already true before this cancellation path. Sending only a
+                // shutdown prevents us from attributing that prior terminal-turn state to the
+                // cancelled spawn call.
+                let shutdown_result = state.send_op(child_thread_id, Op::Shutdown {}).await;
+                child_thread.wait_until_terminated().await;
+                if let Err(error) = shutdown_result
+                    && !is_benign_unpublished_spawn_cleanup_error(&error)
+                {
+                    return Err(error);
+                }
+            }
+            UnpublishedSpawnReconciliation::PreserveNaturalTerminal => {
+                // Materialize the natural terminal event before teardown. The follow-on shutdown
+                // only releases the unpublished runtime; it does not relabel the completed or
+                // errored turn as an interruption by this parent cancellation.
+                child_thread.session.ensure_rollout_materialized().await;
+                child_thread.session.flush_rollout().await?;
+                child_thread.shutdown_and_wait().await?;
+            }
+            UnpublishedSpawnReconciliation::ChildDied => {}
+        }
+
+        let registry = Arc::clone(&self.state);
+        let removal = state
+            .remove_thread_if_same(&child_thread_id, &child_thread, || {
+                if registry_committed {
+                    registry.release_spawned_thread(child_thread_id);
+                }
+            })
+            .await;
+        if registry_committed && matches!(removal, RemoveThreadIfSameResult::Missing) {
+            self.state.release_spawned_thread(child_thread_id);
+        }
+        if !matches!(removal, RemoveThreadIfSameResult::Replaced) {
+            self.forget_v2_residency(child_thread_id);
+        }
+        Ok(())
     }
 
     async fn spawn_forked_thread(
