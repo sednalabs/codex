@@ -1026,6 +1026,59 @@ decisions.
 
 ## Current Live Divergences
 
+### Bounded In-Process Delivery And Metric Version Tags
+
+- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`,
+  `6f3fe98f88`, `c259bc1fef`, `9c7bfc8663`, and `ef453a9666` manually carry bounded
+  lower-queue delivery and
+  facade-classification parity
+  semantics from app-server ancestry `7bd0a55155` without importing its wider
+  programme stack. The capacity remains finite; one authoritative notification
+  may wait for a permit while the runtime continues polling client control and
+  shutdown. Reconstructible progress remains best-effort, and a counted lag
+  marker is emitted before later writer traffic so a consumer can detect the
+  gap; if that lower marker meets a saturated facade, its skipped count is
+  aggregated rather than collapsed to one. Both bounded tiers treat every
+  server notification as authoritative by default, including future protocol
+  additions. Reconstructible command-execution output deltas and coalescible
+  fuzzy-search snapshot updates are the two explicit best-effort exceptions;
+  fuzzy-search completion remains authoritative. Each fuzzy-search session now
+  has one serialized notification forwarder with at most one in-flight
+  notification and one replace-latest pending snapshot; compact counters retain
+  completion ordering across replaced snapshots, while stop cancels the task
+  and clears pending custody. That bounded-custody statement applies only at
+  the in-process transport and fuzzy-forwarder boundary. It does not cover the
+  pre-existing core session source-event channel, which remains outside this
+  carry and is handled by a separately tracked core session source-boundary
+  follow-up. The exact
+  `forwarder_serializes_replace_latest_completion_and_cancellation_under_backpressure`
+  regression in `codex-rs/app-server/src/fuzzy_file_search_tests.rs` drives the
+  real reporter, serialized forwarder, and capacity-one outgoing sender through
+  replacement, completion ordering, and cancellation cleanup without
+  filesystem timing. Thirty-two reviewed
+  consumer-state fixtures cover
+  account, process, search, sandbox, realtime, transcript, item, turn, thread,
+  goal, usage, settings, and request-resolution surfaces. The deterministic
+  capacity-one regressions cover FIFO delivery, visible lag, fuzzy snapshot
+  shedding before required completion, facade saturation, stacked lag
+  accounting, and shutdown after a test signal proves an authoritative
+  notification is pending;
+  test-only sender custody is released before the runtime joins its outbound
+  router so shutdown has production-equivalent last-sender semantics. A
+  facade-level capacity-one regression also proves that shutdown drops its
+  receiver, releases a required event waiting on capacity, and then completes
+  the embedded runtime shutdown.
+- Commit `b52b676538` follows upstream metric-tag sanitizer commits
+  `bd861ff550` and `d9559390ec` while keeping the ordinary release version
+  exact. Only the `app.version` value supplied to metrics replaces unsupported
+  tag characters; session metadata and other release-version consumers retain
+  the unmodified string. Its constructor regression uses the production
+  `RELEASE_VERSION` path and an injected nontrivial release value, then checks
+  both values and the complete metric-tag vector together.
+- These carries can be removed when the corresponding bounded delivery and
+  metric-only sanitizer semantics are present in the adopted upstream line with
+  equivalent regressions.
+
 ### Fork Workflow And Validation Policy
 
 - `main` is now the default PR and integration branch, while `upstream-main`
