@@ -1335,6 +1335,58 @@ mod tests {
             .expect("message should send");
     }
 
+    async fn write_remote_server_notification<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        notification: ServerNotification,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        write_websocket_message(
+            websocket,
+            JSONRPCMessage::Notification(
+                serde_json::from_value(
+                    serde_json::to_value(notification).expect("notification should serialize"),
+                )
+                .expect("notification should convert to JSON-RPC"),
+            ),
+        )
+        .await;
+    }
+
+    async fn expect_websocket_close<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        loop {
+            let frame = websocket
+                .next()
+                .await
+                .expect("close frame should be available")
+                .expect("close frame should decode");
+            match frame {
+                Message::Close(_) => return,
+                Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                Message::Text(text) => panic!("unexpected text before close: {text}"),
+            }
+        }
+    }
+
+    fn remote_thread_closed_notification(thread_id: &str) -> ServerNotification {
+        ServerNotification::ThreadClosed(codex_app_server_protocol::ThreadClosedNotification {
+            thread_id: thread_id.to_string(),
+        })
+    }
+
+    fn remote_get_account_request(request_id: i64) -> ClientRequest {
+        ClientRequest::GetAccount {
+            request_id: RequestId::Integer(request_id),
+            params: codex_app_server_protocol::GetAccountParams {
+                refresh_token: false,
+            },
+        }
+    }
+
     fn command_execution_output_delta_notification(delta: &str) -> ServerNotification {
         ServerNotification::CommandExecutionOutputDelta(
             codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
@@ -2665,6 +2717,210 @@ mod tests {
 
         done_tx.send(()).expect("server should be released");
         client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_write_failure_preserves_pending_required_before_disconnect() {
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("queued"),
+            )
+            .await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("pending"),
+            )
+            .await;
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(
+            Duration::from_secs(1),
+            client._test_pending_required_event.notified(),
+        )
+        .await
+        .expect("second required event should enter remote custody");
+        client
+            .close_stream_for_test()
+            .await
+            .expect("test stream close should succeed");
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should observe the close frame")
+            .expect("close observation channel should stay open");
+
+        let request_error = timeout(
+            Duration::from_secs(1),
+            client.request(remote_get_account_request(/*request_id*/ 93)),
+        )
+        .await
+        .expect("failed request write should settle promptly")
+        .expect_err("request waiter should receive the terminal transport error");
+        assert_eq!(request_error.kind(), ErrorKind::BrokenPipe);
+        assert!(request_error.to_string().contains("write failed"));
+
+        let first = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("queued required event should arrive")
+            .expect("remote event stream should stay open");
+        let second = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("retained required event should arrive")
+            .expect("remote event stream should stay open");
+        let terminal = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("terminal event should arrive")
+            .expect("remote event stream should stay open");
+        assert!(matches!(
+            first,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "queued"
+        ));
+        assert!(matches!(
+            second,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "pending"
+        ));
+        assert!(matches!(
+            terminal,
+            AppServerEvent::Disconnected { message } if message.contains("write failed")
+        ));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_write_failure_delivers_lag_before_disconnect() {
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("queued"),
+            )
+            .await;
+            write_remote_server_notification(
+                &mut websocket,
+                command_execution_output_delta_notification("dropped"),
+            )
+            .await;
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(Duration::from_secs(1), client._test_pending_lag.notified())
+            .await
+            .expect("dropped best-effort event should establish pending lag");
+        client
+            .close_stream_for_test()
+            .await
+            .expect("test stream close should succeed");
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should observe the close frame")
+            .expect("close observation channel should stay open");
+
+        let request_error = timeout(
+            Duration::from_secs(1),
+            client.request(remote_get_account_request(/*request_id*/ 94)),
+        )
+        .await
+        .expect("failed request write should settle promptly")
+        .expect_err("request waiter should receive the terminal transport error");
+        assert_eq!(request_error.kind(), ErrorKind::BrokenPipe);
+
+        let first = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("queued required event should arrive")
+            .expect("remote event stream should stay open");
+        let lag = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("lag marker should arrive")
+            .expect("remote event stream should stay open");
+        let terminal = timeout(Duration::from_secs(1), client.next_event())
+            .await
+            .expect("terminal event should arrive")
+            .expect("remote event stream should stay open");
+        assert!(matches!(
+            first,
+            AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
+                if notification.thread_id == "queued"
+        ));
+        assert!(matches!(lag, AppServerEvent::Lagged { skipped: 1 }));
+        assert!(matches!(
+            terminal,
+            AppServerEvent::Disconnected { message } if message.contains("write failed")
+        ));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_shutdown_closes_promptly_with_pending_required_event() {
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("queued"),
+            )
+            .await;
+            write_remote_server_notification(
+                &mut websocket,
+                remote_thread_closed_notification("pending"),
+            )
+            .await;
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        timeout(
+            Duration::from_secs(1),
+            client._test_pending_required_event.notified(),
+        )
+        .await
+        .expect("second required event should enter remote custody");
+        let shutdown_task = tokio::spawn(client.shutdown());
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("server should promptly observe the shutdown close frame")
+            .expect("close observation channel should stay open");
+        timeout(Duration::from_secs(1), shutdown_task)
+            .await
+            .expect("shutdown should not wait for the fallback timeout")
+            .expect("shutdown task should join")
+            .expect("shutdown should complete");
     }
 
     #[tokio::test]
