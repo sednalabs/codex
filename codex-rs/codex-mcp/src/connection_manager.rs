@@ -104,8 +104,11 @@ impl McpServerConnection {
         if !self.client.startup_complete.load(Ordering::Acquire) {
             return false;
         }
+        if self.client.recovered_client_closed() {
+            return true;
+        }
         let Ok(client) = self.client.client().await else {
-            return false;
+            return self.client.recovered_client_closed();
         };
         client.client.is_closed().await
     }
@@ -115,9 +118,7 @@ impl McpServerConnection {
     }
 
     fn cancel_startup(&self) {
-        if !self.client.startup_complete.load(Ordering::Acquire) {
-            self.client.cancel_token.cancel();
-        }
+        self.client.cancel_startup();
     }
 }
 
