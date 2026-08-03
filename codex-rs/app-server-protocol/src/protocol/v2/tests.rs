@@ -160,6 +160,92 @@ fn collab_agent_state_uses_camel_case_identity_and_accepts_legacy_aliases() {
 }
 
 #[test]
+fn v1_receiver_identity_materializes_pending_state_without_losing_terminal_details() {
+    let sender_thread_id = codex_protocol::ThreadId::default();
+    let receiver_thread_id = codex_protocol::ThreadId::default();
+    let cases = [
+        (
+            "wait start",
+            CoreCollabAgentTool::Wait,
+            CollabAgentTool::Wait,
+            CoreCollabAgentToolCallStatus::InProgress,
+            None,
+            CollabAgentState {
+                status: CollabAgentStatus::PendingInit,
+                message: None,
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            },
+        ),
+        (
+            "resume start",
+            CoreCollabAgentTool::ResumeAgent,
+            CollabAgentTool::ResumeAgent,
+            CoreCollabAgentToolCallStatus::InProgress,
+            None,
+            CollabAgentState {
+                status: CollabAgentStatus::PendingInit,
+                message: None,
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            },
+        ),
+        (
+            "reported terminal state",
+            CoreCollabAgentTool::Wait,
+            CollabAgentTool::Wait,
+            CoreCollabAgentToolCallStatus::Completed,
+            Some(CoreAgentStatus::Completed(Some("reviewed".to_string()))),
+            CollabAgentState {
+                status: CollabAgentStatus::Completed,
+                message: Some("reviewed".to_string()),
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            },
+        ),
+    ];
+
+    for (case, core_tool, tool, status, reported_state, expected_state) in cases {
+        let agents_states = reported_state
+            .map(|reported_state| [(receiver_thread_id, reported_state)].into_iter().collect())
+            .unwrap_or_default();
+        let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            id: format!("collab-{case}"),
+            tool: core_tool,
+            status,
+            sender_thread_id,
+            receiver_thread_ids: vec![receiver_thread_id],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: receiver_thread_id,
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            }],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            agents_states,
+        });
+
+        let ThreadItem::CollabAgentToolCall {
+            tool: actual_tool,
+            agents_states,
+            ..
+        } = ThreadItem::from(item)
+        else {
+            panic!("expected converted collab item for {case}");
+        };
+        assert_eq!(actual_tool, tool, "{case}");
+        assert_eq!(
+            agents_states.get(&receiver_thread_id.to_string()),
+            Some(&expected_state),
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn turn_defaults_legacy_missing_items_view_to_full() {
     let turn: Turn = serde_json::from_value(json!({
         "id": "turn_123",

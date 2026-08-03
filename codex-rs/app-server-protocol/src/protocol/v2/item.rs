@@ -53,6 +53,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_with::serde_as;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io;
 use std::path::PathBuf;
 use ts_rs::TS;
@@ -1077,11 +1078,21 @@ impl From<CoreTurnItem> for ThreadItem {
                     .into_iter()
                     .map(|agent| {
                         (
-                            agent.thread_id,
+                            agent.thread_id.to_string(),
                             (agent.agent_nickname, agent.agent_role),
                         )
                     })
-                    .collect::<HashMap<_, _>>();
+                    .collect::<Vec<_>>();
+                let agents_states = call
+                    .agents_states
+                    .into_iter()
+                    .map(|(thread_id, status)| {
+                        (
+                            thread_id.to_string(),
+                            CollabAgentState::from(status),
+                        )
+                    })
+                    .collect();
                 ThreadItem::CollabAgentToolCall {
                     id: call.id,
                     tool: call.tool.into(),
@@ -1097,19 +1108,14 @@ impl From<CoreTurnItem> for ThreadItem {
                     reasoning_effort: call.reasoning_effort,
                     requested_model: call.requested_model,
                     requested_reasoning_effort: call.requested_reasoning_effort,
-                    agents_states: call
-                        .agents_states
-                        .into_iter()
-                        .map(|(thread_id, status)| {
-                            let (agent_nickname, agent_role) =
-                                receiver_agents.get(&thread_id).cloned().unwrap_or_default();
-                            (
-                                thread_id.to_string(),
-                                CollabAgentState::from(status)
-                                    .with_agent_identity(agent_nickname, agent_role),
-                            )
-                        })
-                        .collect(),
+                    agents_states: normalize_legacy_collab_agent_states(
+                        agents_states,
+                        receiver_agents.into_iter().map(
+                            |(thread_id, (agent_nickname, agent_role))| {
+                                (thread_id, agent_nickname, agent_role)
+                            },
+                        ),
+                    ),
                 }
             },
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
@@ -1472,6 +1478,49 @@ impl CollabAgentState {
         self.agent_role = agent_role;
         self
     }
+
+    fn merge_agent_identity(
+        &mut self,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) {
+        if let Some(agent_nickname) = agent_nickname {
+            self.agent_nickname = Some(agent_nickname);
+        }
+        if let Some(agent_role) = agent_role {
+            self.agent_role = Some(agent_role);
+        }
+    }
+}
+
+/// Carries V1 receiver identity into the v2 state map without changing a reported status.
+///
+/// Older lifecycle records can supply a receiver nickname and role before they have persisted an
+/// `agents_states` entry. Materializing that receiver as pending lets v2 consumers render the
+/// durable identity while preserving explicit terminal state and message data when present.
+pub(crate) fn normalize_legacy_collab_agent_states(
+    mut agents_states: HashMap<String, CollabAgentState>,
+    receiver_agents: impl IntoIterator<Item = (String, Option<String>, Option<String>)>,
+) -> HashMap<String, CollabAgentState> {
+    for (thread_id, agent_nickname, agent_role) in receiver_agents {
+        if agent_nickname.is_none() && agent_role.is_none() {
+            continue;
+        }
+        match agents_states.entry(thread_id) {
+            Entry::Occupied(mut state) => {
+                state
+                    .get_mut()
+                    .merge_agent_identity(agent_nickname, agent_role);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(
+                    CollabAgentState::from(CoreAgentStatus::PendingInit)
+                        .with_agent_identity(agent_nickname, agent_role),
+                );
+            }
+        }
+    }
+    agents_states
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
