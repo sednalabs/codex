@@ -123,7 +123,7 @@ impl McpServerConnection {
 
 impl Drop for McpServerConnection {
     fn drop(&mut self) {
-        self.client.cancel_token.cancel();
+        self.client.cancel();
     }
 }
 

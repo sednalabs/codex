@@ -268,6 +268,7 @@ struct McpStartupReconnectState {
     reconnect_in_flight: bool,
     consecutive_failures: u32,
     retry_not_before: Option<TokioInstant>,
+    cancelled: bool,
 }
 
 #[derive(Clone)]
@@ -306,12 +307,28 @@ impl McpStartupReconnect {
         self
     }
 
-    fn current_client(&self) -> Option<ManagedClient> {
-        self.state
+    async fn current_client(&self) -> Option<ManagedClient> {
+        let client = self
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .current_client
-            .clone()
+            .clone()?;
+        if !client.client.is_closed().await {
+            return Some(client);
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .current_client = None;
+        None
+    }
+
+    fn cancel(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancelled = true;
     }
 
     fn reconnect_in_background(self: &Arc<Self>) {
@@ -320,7 +337,7 @@ impl McpStartupReconnect {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.current_client.is_some() || state.reconnect_in_flight {
+            if state.cancelled || state.current_client.is_some() || state.reconnect_in_flight {
                 return;
             }
             if state
@@ -334,34 +351,52 @@ impl McpStartupReconnect {
 
         let reconnect = Arc::clone(self);
         tokio::spawn(async move {
-            let result = (reconnect.factory)().await;
+            let result = match (reconnect.factory)().await {
+                Ok(client) if client.client.is_closed().await => {
+                    Err("recreated MCP client is closed".to_string())
+                }
+                Ok(client) => Ok(client),
+                Err(error) => Err(error.to_string()),
+            };
             let startup_status_context = reconnect.startup_status_context.clone();
+            let mut client_to_shutdown = None;
             let recovered = {
                 let mut state = reconnect
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 state.reconnect_in_flight = false;
-                match result {
-                    Ok(client) => {
-                        state.current_client = Some(client);
-                        state.consecutive_failures = 0;
-                        state.retry_not_before = None;
-                        true
-                    }
-                    Err(error) => {
-                        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                        let retry_after = mcp_reconnect_backoff(state.consecutive_failures);
-                        state.retry_not_before = Some(TokioInstant::now() + retry_after);
-                        warn!(
-                            error = %error,
-                            retry_after_ms = retry_after.as_millis(),
-                            "MCP startup reconnect failed"
-                        );
-                        false
+                if state.cancelled {
+                    client_to_shutdown = result.ok();
+                    false
+                } else {
+                    match result {
+                        Ok(client) => {
+                            state.current_client = Some(client);
+                            state.consecutive_failures = 0;
+                            state.retry_not_before = None;
+                            true
+                        }
+                        Err(error) => {
+                            state.consecutive_failures =
+                                state.consecutive_failures.saturating_add(1);
+                            let retry_after = mcp_reconnect_backoff(state.consecutive_failures);
+                            state.retry_not_before = Some(TokioInstant::now() + retry_after);
+                            warn!(
+                                error = %error,
+                                retry_after_ms = retry_after.as_millis(),
+                                "MCP startup reconnect failed"
+                            );
+                            false
+                        }
                     }
                 }
             };
+
+            if let Some(client) = client_to_shutdown {
+                client.client.shutdown().await;
+                return;
+            }
 
             if recovered && let Some(context) = startup_status_context {
                 let _ = context
@@ -590,12 +625,10 @@ impl AsyncManagedClient {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
-        if let Some(client) = self
-            .startup_reconnect
-            .as_ref()
-            .and_then(|reconnect| reconnect.current_client())
-        {
-            return Ok(client);
+        if let Some(reconnect) = self.startup_reconnect.as_ref() {
+            if let Some(client) = reconnect.current_client().await {
+                return Ok(client);
+            }
         }
         self.client.clone().await
     }
@@ -619,8 +652,15 @@ impl AsyncManagedClient {
         }
     }
 
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) fn cancel(&self) {
+        if let Some(startup_reconnect) = self.startup_reconnect.as_ref() {
+            startup_reconnect.cancel();
+        }
         self.cancel_token.cancel();
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.cancel();
         match self.client().await {
             Ok(client) => client.client.shutdown().await,
             Err(StartupOutcomeError::Cancelled) => {}
@@ -653,17 +693,20 @@ impl AsyncManagedClient {
 
     pub(crate) async fn listed_tools(&self) -> Option<Vec<ToolInfo>> {
         // Plugin provenance is resolved per-session rather than stored in shared cache payloads.
-        if !self.startup_complete.load(Ordering::Acquire)
-            && self.is_codex_apps_mcp_server
-            && let Some(startup_tools) = self.cached_tools()
-        {
-            Some(startup_tools)
-        } else {
-            match self.client().await {
-                Ok(client) => Some(client.listed_tools()),
-                Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
-                Err(_) => None,
+        if !self.startup_complete.load(Ordering::Acquire) {
+            if self.is_codex_apps_mcp_server
+                && let Some(startup_tools) = self.cached_tools()
+            {
+                return Some(startup_tools);
             }
+            if !self.is_codex_apps_mcp_server && self.has_cached_tools() {
+                return None;
+            }
+        }
+        match self.client().await {
+            Ok(client) => Some(client.listed_tools()),
+            Err(_) if self.is_codex_apps_mcp_server => self.cached_tools(),
+            Err(_) => None,
         }
     }
 }
