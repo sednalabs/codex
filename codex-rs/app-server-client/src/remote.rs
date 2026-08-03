@@ -250,9 +250,18 @@ impl RemoteAppServerClient {
                         match command {
                             RemoteClientCommand::Request { request, response_tx } => {
                                 if exit_after_pending_authoritative_events {
+                                    let (error_kind, message) =
+                                        worker_exit_error.as_ref().map_or_else(
+                                            || (
+                                                ErrorKind::BrokenPipe,
+                                                "remote app-server transport is closing after required events drain"
+                                                    .to_string(),
+                                            ),
+                                            |(kind, message)| (*kind, message.clone()),
+                                        );
                                     let _ = response_tx.send(Err(IoError::new(
-                                        ErrorKind::BrokenPipe,
-                                        "remote app-server transport is closing after required events drain",
+                                        error_kind,
+                                        message,
                                     )));
                                     continue;
                                 }
@@ -279,21 +288,19 @@ impl RemoteAppServerClient {
                                     if let Some(response_tx) = pending_requests.remove(&request_id) {
                                         let _ = response_tx.send(Err(err));
                                     }
-                                    match try_deliver_event(
+                                    if let Err(err) = queue_remote_event(
                                         &event_tx,
                                         &mut skipped_events,
+                                        &mut pending_authoritative_events,
                                         TaggedAppServerEvent::Disconnected {
                                             message: message.clone(),
                                         },
+                                        /*exit_after_delivery*/ true,
+                                        &endpoint,
+                                        &mut worker_exit_error,
+                                        &mut exit_after_pending_authoritative_events,
                                     ) {
-                                        Ok(RemoteEventDelivery::Forwarded) => {}
-                                        Ok(RemoteEventDelivery::Pending(events)) => {
-                                            pending_authoritative_events = events;
-                                            exit_after_pending_authoritative_events = true;
-                                        }
-                                        Err(err) => {
-                                            warn!(%err, "failed to deliver remote app-server disconnect event");
-                                        }
+                                        warn!(%err, "failed to deliver remote app-server disconnect event");
                                     }
                                     worker_exit_error = Some((ErrorKind::BrokenPipe, message));
                                     if !exit_after_pending_authoritative_events {
@@ -359,7 +366,7 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
-                    message = stream.next(), if pending_authoritative_events.is_empty() && !exit_after_pending_authoritative_events => {
+                    message = stream.next(), if !exit_after_pending_authoritative_events => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
                                 match server_message_and_subscription_id(&text) {
@@ -380,20 +387,18 @@ impl RemoteAppServerClient {
                                             thread_subscription_id,
                                         )
                                         {
-                                            match try_deliver_event(
+                                            if let Err(err) = queue_remote_event(
                                                 &event_tx,
                                                 &mut skipped_events,
+                                                &mut pending_authoritative_events,
                                                 event,
-                                            )
-                                            {
-                                                Ok(RemoteEventDelivery::Forwarded) => {}
-                                                Ok(RemoteEventDelivery::Pending(events)) => {
-                                                    pending_authoritative_events = events;
-                                                }
-                                                Err(err) => {
-                                                    warn!(%err, "failed to deliver remote app-server event");
-                                                    break;
-                                                }
+                                                /*exit_after_delivery*/ false,
+                                                &endpoint,
+                                                &mut worker_exit_error,
+                                                &mut exit_after_pending_authoritative_events,
+                                            ) {
+                                                warn!(%err, "failed to deliver remote app-server event");
+                                                break;
                                             }
                                         }
                                     }
@@ -413,20 +418,18 @@ impl RemoteAppServerClient {
                                                         TaggedAppServerEvent::ServerRequest(request)
                                                     }
                                                 };
-                                                match try_deliver_event(
+                                                if let Err(err) = queue_remote_event(
                                                     &event_tx,
                                                     &mut skipped_events,
+                                                    &mut pending_authoritative_events,
                                                     event,
-                                                )
-                                                {
-                                                    Ok(RemoteEventDelivery::Forwarded) => {}
-                                                    Ok(RemoteEventDelivery::Pending(events)) => {
-                                                        pending_authoritative_events = events;
-                                                    }
-                                                    Err(err) => {
-                                                        warn!(%err, "failed to deliver remote app-server server request");
-                                                        break;
-                                                    }
+                                                    /*exit_after_delivery*/ false,
+                                                    &endpoint,
+                                                    &mut worker_exit_error,
+                                                    &mut exit_after_pending_authoritative_events,
+                                                ) {
+                                                    warn!(%err, "failed to deliver remote app-server server request");
+                                                    break;
                                                 }
                                             }
                                             Err(err) => {
@@ -451,21 +454,19 @@ impl RemoteAppServerClient {
                                                     let message = format!(
                                                         "remote app server at `{endpoint}` write failed: {err_message}"
                                                     );
-                                                    match try_deliver_event(
+                                                    if let Err(err) = queue_remote_event(
                                                         &event_tx,
                                                         &mut skipped_events,
+                                                        &mut pending_authoritative_events,
                                                         TaggedAppServerEvent::Disconnected {
                                                             message: message.clone(),
                                                         },
+                                                        /*exit_after_delivery*/ true,
+                                                        &endpoint,
+                                                        &mut worker_exit_error,
+                                                        &mut exit_after_pending_authoritative_events,
                                                     ) {
-                                                        Ok(RemoteEventDelivery::Forwarded) => {}
-                                                        Ok(RemoteEventDelivery::Pending(events)) => {
-                                                            pending_authoritative_events = events;
-                                                            exit_after_pending_authoritative_events = true;
-                                                        }
-                                                        Err(err) => {
-                                                            warn!(%err, "failed to deliver remote app-server disconnect event");
-                                                        }
+                                                        warn!(%err, "failed to deliver remote app-server disconnect event");
                                                     }
                                                     worker_exit_error =
                                                         Some((ErrorKind::BrokenPipe, message));
@@ -481,21 +482,19 @@ impl RemoteAppServerClient {
                                         let message = format!(
                                             "remote app server at `{endpoint}` sent invalid JSON-RPC: {err}"
                                         );
-                                        match try_deliver_event(
+                                        if let Err(deliver_err) = queue_remote_event(
                                             &event_tx,
                                             &mut skipped_events,
+                                            &mut pending_authoritative_events,
                                             TaggedAppServerEvent::Disconnected {
                                                 message: message.clone(),
                                             },
+                                            /*exit_after_delivery*/ true,
+                                            &endpoint,
+                                            &mut worker_exit_error,
+                                            &mut exit_after_pending_authoritative_events,
                                         ) {
-                                            Ok(RemoteEventDelivery::Forwarded) => {}
-                                            Ok(RemoteEventDelivery::Pending(events)) => {
-                                                pending_authoritative_events = events;
-                                                exit_after_pending_authoritative_events = true;
-                                            }
-                                            Err(deliver_err) => {
-                                                warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
-                                            }
+                                            warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
                                         }
                                         worker_exit_error =
                                             Some((ErrorKind::InvalidData, message));
@@ -514,21 +513,19 @@ impl RemoteAppServerClient {
                                 let message = format!(
                                     "remote app server at `{endpoint}` disconnected: {reason}"
                                 );
-                                match try_deliver_event(
+                                if let Err(err) = queue_remote_event(
                                     &event_tx,
                                     &mut skipped_events,
+                                    &mut pending_authoritative_events,
                                     TaggedAppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
+                                    /*exit_after_delivery*/ true,
+                                    &endpoint,
+                                    &mut worker_exit_error,
+                                    &mut exit_after_pending_authoritative_events,
                                 ) {
-                                    Ok(RemoteEventDelivery::Forwarded) => {}
-                                    Ok(RemoteEventDelivery::Pending(events)) => {
-                                        pending_authoritative_events = events;
-                                        exit_after_pending_authoritative_events = true;
-                                    }
-                                    Err(err) => {
-                                        warn!(%err, "failed to deliver remote app-server disconnect event");
-                                    }
+                                    warn!(%err, "failed to deliver remote app-server disconnect event");
                                 }
                                 worker_exit_error = Some((
                                     ErrorKind::ConnectionAborted,
@@ -546,21 +543,19 @@ impl RemoteAppServerClient {
                                 let message = format!(
                                     "remote app server at `{endpoint}` transport failed: {err}"
                                 );
-                                match try_deliver_event(
+                                if let Err(deliver_err) = queue_remote_event(
                                     &event_tx,
                                     &mut skipped_events,
+                                    &mut pending_authoritative_events,
                                     TaggedAppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
+                                    /*exit_after_delivery*/ true,
+                                    &endpoint,
+                                    &mut worker_exit_error,
+                                    &mut exit_after_pending_authoritative_events,
                                 ) {
-                                    Ok(RemoteEventDelivery::Forwarded) => {}
-                                    Ok(RemoteEventDelivery::Pending(events)) => {
-                                        pending_authoritative_events = events;
-                                        exit_after_pending_authoritative_events = true;
-                                    }
-                                    Err(deliver_err) => {
-                                        warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
-                                    }
+                                    warn!(%deliver_err, "failed to deliver remote app-server disconnect event");
                                 }
                                 worker_exit_error = Some((ErrorKind::InvalidData, message));
                                 if !exit_after_pending_authoritative_events {
@@ -571,21 +566,19 @@ impl RemoteAppServerClient {
                                 let message = format!(
                                     "remote app server at `{endpoint}` closed the connection"
                                 );
-                                match try_deliver_event(
+                                if let Err(err) = queue_remote_event(
                                     &event_tx,
                                     &mut skipped_events,
+                                    &mut pending_authoritative_events,
                                     TaggedAppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
+                                    /*exit_after_delivery*/ true,
+                                    &endpoint,
+                                    &mut worker_exit_error,
+                                    &mut exit_after_pending_authoritative_events,
                                 ) {
-                                    Ok(RemoteEventDelivery::Forwarded) => {}
-                                    Ok(RemoteEventDelivery::Pending(events)) => {
-                                        pending_authoritative_events = events;
-                                        exit_after_pending_authoritative_events = true;
-                                    }
-                                    Err(err) => {
-                                        warn!(%err, "failed to deliver remote app-server disconnect event");
-                                    }
+                                    warn!(%err, "failed to deliver remote app-server disconnect event");
                                 }
                                 worker_exit_error = Some((ErrorKind::UnexpectedEof, message));
                                 if !exit_after_pending_authoritative_events {
@@ -1127,6 +1120,45 @@ enum RemoteEventDelivery {
     Pending(VecDeque<TaggedAppServerEvent>),
 }
 
+/// Queues one remote event without allowing a later required event to overwrite the bounded
+/// pending FIFO. The worker keeps reading responses while one required event is pending; if the
+/// server sends another required event before that FIFO drains, it terminates the transport with
+/// an explicit overload error rather than silently dropping or retaining an unbounded backlog.
+fn queue_remote_event(
+    event_tx: &mpsc::Sender<TaggedAppServerEvent>,
+    skipped_events: &mut usize,
+    pending_authoritative_events: &mut VecDeque<TaggedAppServerEvent>,
+    event: TaggedAppServerEvent,
+    exit_after_delivery: bool,
+    endpoint: &str,
+    worker_exit_error: &mut Option<(ErrorKind, String)>,
+    exit_after_pending_authoritative_events: &mut bool,
+) -> IoResult<()> {
+    if !pending_authoritative_events.is_empty() && remote_event_requires_delivery(&event) {
+        let message = format!(
+            "remote app server at `{endpoint}` exceeded the bounded required-event backlog"
+        );
+        warn!(
+            %message,
+            "closing remote app-server transport after retained required events drain"
+        );
+        *worker_exit_error = Some((ErrorKind::WouldBlock, message));
+        *exit_after_pending_authoritative_events = true;
+        return Ok(());
+    }
+
+    match try_deliver_event(event_tx, skipped_events, event)? {
+        RemoteEventDelivery::Forwarded => {}
+        RemoteEventDelivery::Pending(events) => {
+            *pending_authoritative_events = events;
+        }
+    }
+    if exit_after_delivery {
+        *exit_after_pending_authoritative_events = true;
+    }
+    Ok(())
+}
+
 /// Makes one bounded, non-blocking forwarding attempt. Required events remain in the returned
 /// fixed-size pending queue when the consumer is full; the transport worker keeps command and
 /// shutdown handling selectable while that queue waits for capacity.
@@ -1266,6 +1298,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use futures::SinkExt;
     use futures::StreamExt;
+    use pretty_assertions::assert_eq;
     use std::time::Duration;
     use tokio::io::duplex;
     use tokio_tungstenite::tungstenite::protocol::Role;
@@ -1337,7 +1370,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_worker_preserves_server_subscription_identity() {
+    async fn transport_worker_preserves_server_subscription_identity_and_response_liveness() {
         let (client_io, server_io) = duplex(64 * 1024);
         let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
         let mut server_stream =
@@ -1548,7 +1581,7 @@ mod tests {
 
         // Fill the one-slot consumer queue with required lifecycle state, then send another
         // required lifecycle event. The worker must retain the second event without awaiting the
-        // full queue so a client command remains selectable and acknowledged.
+        // full queue, while continuing to read a JSON-RPC response that follows it.
         server_event_tx
             .send(thread_scoped_server_message(
                 ServerNotification::ThreadStatusChanged(
@@ -1580,20 +1613,49 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        timeout(Duration::from_secs(1), client.notify(ClientNotification::Initialized))
+        let expected_request = JSONRPCRequest {
+            id: RequestId::Integer(8),
+            method: "test/echo".to_string(),
+            params: Some(serde_json::json!({"value": "backpressure"})),
+            trace: None,
+        };
+        let request_handle = client.request_handle();
+        let request_task = tokio::spawn({
+            let request = expected_request.clone();
+            async move { request_handle.request_json_rpc(request).await }
+        });
+
+        let JSONRPCMessage::Request(request) =
+            timeout(Duration::from_secs(1), server_message_rx.recv())
+                .await
+                .expect("remote request should reach the server while events are backpressured")
+                .expect("test server should stay open")
+        else {
+            panic!("expected request while required events are pending");
+        };
+        assert_eq!(request, expected_request);
+        server_event_tx
+            .send(
+                serde_json::to_value(JSONRPCMessage::Response(JSONRPCResponse {
+                    id: RequestId::Integer(8),
+                    result: serde_json::json!({"accepted": true}),
+                }))
+                .expect("response should serialize"),
+            )
+            .expect("test server channel should be open");
+
+        let response = timeout(Duration::from_secs(1), request_task)
             .await
-            .expect("full required-event queue must not block a selectable client command")
-            .expect("client command should receive the worker write acknowledgement");
-        match timeout(Duration::from_secs(1), server_message_rx.recv())
-            .await
-            .expect("server should observe the command while required events are pending")
-            .expect("test server should stay open")
-        {
-            JSONRPCMessage::Notification(notification) => {
-                assert_eq!(notification.method, "initialized");
-            }
-            message => panic!("expected command notification during backpressure, got {message:?}"),
-        }
+            .expect("required-event backpressure must not block a JSON-RPC response")
+            .expect("request task should not panic")
+            .expect("remote request should complete")
+            .expect("server should return a successful response");
+        assert_eq!(response, serde_json::json!({"accepted": true}));
+        assert_eq!(
+            client.event_rx.len(),
+            1,
+            "the one-slot event receiver must remain full until the client drains it"
+        );
 
         match timeout(Duration::from_secs(1), client.next_tagged_event())
             .await
