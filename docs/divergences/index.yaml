@@ -20,7 +20,7 @@
       "behavior": "Both bounded in-process delivery tiers treat every server notification as authoritative by default, including future protocol additions. Reconstructible command-execution output deltas and coalescible fuzzy-search snapshot updates are the two explicit best-effort exceptions; fuzzy-search completion remains authoritative. Counted lag is aggregated across both bounded tiers and reported before later writer traffic, and the lower runtime retains at most one authoritative notification while continuing to service shutdown and client control. The fuzzy-search producer uses one serialized per-session forwarder with at most one in-flight notification and one replace-latest pending snapshot; compact counters keep completion notifications ordered across replacements, and session stop cancels the forwarder and clears pending custody. This bounded-custody claim is limited to the in-process transport and fuzzy-forwarder boundary; w11380 separately owns the pre-existing core session source-event channel and is not covered here. Capacity-one fixtures cover thirty-two reviewed consumer-state families across account, process, search, sandbox, realtime, transcript, item, turn, thread, goal, usage, settings, and request-resolution surfaces.",
       "upstream_equivalent": false,
       "introduced_in": {
-        "carry_commit": "9c7bfc8663755a8a7148d0fa0ec59774d74f2607",
+        "carry_commit": "ef453a9666eb7abadf99f9ebdd8525c78493dd8e",
         "upstream_commit": null
       },
       "guardrail_lane": "rust-ci-full; hosted focused codex-app-server and codex-app-server-client library validation",
