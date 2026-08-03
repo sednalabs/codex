@@ -186,7 +186,7 @@ tui-config-refresh-session-targeted:
 
 # Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
-    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_filters_loaded_spawn_descendants -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_filters_and_paginates_loaded_spawn_descendants -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_list::thread_list_relation_filters_read_spawn_graph_from_state_db -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_query_fails -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
