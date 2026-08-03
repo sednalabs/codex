@@ -1048,8 +1048,9 @@ decisions.
   completion ordering across replaced snapshots, while stop cancels the task
   and clears pending custody. That bounded-custody statement applies only at
   the in-process transport and fuzzy-forwarder boundary. It does not cover the
-  pre-existing core session source-event channel, which remains separately
-  routed under w11380. Thirty-two reviewed
+  pre-existing core session source-event channel, which remains outside this
+  carry and is handled by a separately tracked core session source-boundary
+  follow-up. Thirty-two reviewed
   consumer-state fixtures cover
   account, process, search, sandbox, realtime, transcript, item, turn, thread,
   goal, usage, settings, and request-resolution surfaces. The deterministic
