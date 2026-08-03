@@ -728,6 +728,64 @@ class RouteSelectionTests(unittest.TestCase):
         ):
             self.assertIn(test_name, recipe)
 
+    def test_session_tui_resource_stability_lane_pins_the_full_regression_slice(
+        self,
+    ) -> None:
+        lane = next(
+            lane
+            for lane in self.catalog["lanes"]
+            if lane["lane_id"] == "codex.session-tui-resource-stability-targeted"
+        )
+        self.assertTrue(lane["explicit_only"])
+        self.assertFalse(lane["frontier_default"])
+        self.assertEqual(lane["setup_class"], "rust_integration")
+        self.assertEqual(
+            lane["script_args"],
+            ["session-tui-resource-stability-targeted"],
+        )
+
+        justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
+        self.assertIn(
+            "session-tui-resource-stability-targeted: "
+            "core-multi-agent-orchestration-targeted",
+            justfile,
+        )
+        recipe = "\n".join(
+            just_recipe_bodies(REPO_ROOT / "justfile")[
+                "session-tui-resource-stability-targeted"
+            ]
+        )
+        for package in (
+            "codex-app-server",
+            "codex-app-server-client",
+            "codex-otel",
+            "codex-features",
+            "codex-core",
+        ):
+            self.assertIn(package, recipe)
+        for test_name in (
+            "tiny_event_queue_preserves_required_fifo_and_reports_dropped_progress",
+            "full_required_event_queue_still_allows_orderly_runtime_shutdown",
+            "shutdown_releases_pending_required_write_completion_before_task_joins",
+            "delivery_classifier_preserves_reviewed_consumer_state_notifications",
+            "fuzzy_file_search::tests::",
+            "in_process_facade_",
+            "shutdown_unblocks_a_required_event_waiting_on_the_facade_queue",
+            "in_process_pending_required_event_still_allows_",
+            "shutdown_releases_a_pending_required_facade_event",
+            "remote_pending_required_event_keeps_control_commands_responsive",
+            "remote_write_failure_preserves_pending_required_before_disconnect",
+            "remote_write_failure_delivers_lag_before_disconnect",
+            "remote_shutdown_closes_promptly_with_pending_required_event",
+            "session_constructor_sanitizes_only_the_metric_app_version",
+            "multi_agent_v2_feature_config_deserializes_table",
+            "multi_agent_v2_config_from_feature_table",
+            "profile_multi_agent_v2_config_overrides_base",
+            "lock_contains_prompts_and_materializes_features",
+            "config_schema_matches_fixture",
+        ):
+            self.assertIn(test_name, recipe)
+
     def test_openai_models_route_stays_out_of_app_server_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/protocol/src/openai_models.rs"],
