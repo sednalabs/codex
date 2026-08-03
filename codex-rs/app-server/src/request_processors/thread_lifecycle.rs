@@ -1030,18 +1030,14 @@ pub(super) async fn handle_pending_thread_resume_request(
         let pending_thread_unloads = pending_thread_unloads.lock().await;
         if pending_thread_unloads.contains(&conversation_id) {
             Err(/*is_closing*/ true)
-        } else if !thread_state_manager
-            .pending_thread_resume_matches(conversation_id, connection_id, &reservation_id)
-            .await
-        {
-            Err(/*is_closing*/ false)
         } else {
             Ok(
                 thread_state_manager
-                    .try_add_connection_to_thread_with_subscription(
+                    .try_add_connection_to_pending_thread_resume_with_subscription(
                         conversation_id,
                         connection_id,
-                        Some(thread_subscription_id.clone()),
+                        &reservation_id,
+                        thread_subscription_id.clone(),
                     )
                     .await,
             )
