@@ -539,8 +539,8 @@ class ThreadResumeResponse(BaseModel):
     assert "omitted `limit` returns every loaded thread" in once
     assert "without a server maximum" in once
     assert "With `ancestorThreadId`, the server applies a bounded default and maximum of 100" in once
-    assert "For legacy unfiltered calls, it resumes after the last returned loaded thread" in once
-    assert "For ancestor-filtered calls, it resumes after the bounded candidate window" in once
+    assert "Opaque cursor to pass unchanged as `cursor` on the next call" in once
+    assert "Its representation and page boundary are server-defined" in once
     assert "Effective model selected for the spawned agent" in once
     assert "Effective reasoning effort selected for the spawned agent" in once
 

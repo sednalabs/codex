@@ -17033,7 +17033,7 @@
           "type": "array"
         },
         "nextCursor": {
-          "description": "Opaque cursor to pass as `cursor` on the next call. For legacy unfiltered calls, it\nresumes after the last returned loaded thread. For ancestor-filtered calls, it resumes\nafter the bounded candidate window inspected by the server. If it is null, there are no\nmore items to return.",
+          "description": "Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and\npage boundary are server-defined. If it is null, there are no more items to return.",
           "type": [
             "string",
             "null"
