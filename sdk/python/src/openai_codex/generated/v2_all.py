@@ -4404,7 +4404,7 @@ class ThreadLoadedListResponse(BaseModel):
         str | None,
         Field(
             alias="nextCursor",
-            description="Opaque cursor to pass as `cursor` on the next call. For legacy unfiltered calls, it resumes after the last returned loaded thread. For ancestor-filtered calls, it resumes after the bounded candidate window inspected by the server. If it is null, there are no more items to return.",
+            description="Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and page boundary are server-defined. If it is null, there are no more items to return.",
         ),
     ] = None
 
