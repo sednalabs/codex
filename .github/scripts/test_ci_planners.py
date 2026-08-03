@@ -703,7 +703,6 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(recipe.count("cargo nextest run"), 4)
         self.assertEqual(recipe.count("RUST_MIN_STACK="), 4)
         self.assertEqual(recipe.count("--no-tests=fail"), 4)
-        self.assertIn("--test-threads 1", recipe)
         for test_name in (
             "agent::control::residency::tests::"
             "terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent",

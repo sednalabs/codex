@@ -30,11 +30,12 @@ use std::time::Duration;
 use tokio::task::yield_now;
 use tokio::time::advance;
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     let (_home, config, manager, control, first, metadata) =
         terminal_idle_test_agent(/*timeout_ms*/ 1_000, /*ephemeral*/ false, /*sqlite*/ true)
             .await;
+    tokio::time::pause();
     let first_message = test_communication("first queued message", /*trigger_turn*/ false);
     let second_message = test_communication("second queued message", /*trigger_turn*/ false);
     first
