@@ -83,6 +83,21 @@ pub(crate) enum PendingThreadResumeReservationState {
     Superseded,
 }
 
+struct PendingThreadResumeReservation {
+    request_id: RequestId,
+    /// B remains unpublished in the outgoing map while a running resume hydrates over A. Keep
+    /// its exact owner with the reservation so `thread/unsubscribe` can remove B without ever
+    /// guessing from a newer state attachment.
+    provisional_subscription_id: Option<String>,
+}
+
+/// The canceled reservation's exact provisional owner, if listener attachment had reached B.
+/// This is intentionally distinct from the current state owner: a newer C can replace B before
+/// the unsubscribe consumes this result.
+pub(crate) struct PendingThreadResumeCancellation {
+    pub(crate) provisional_subscription_id: Option<String>,
+}
+
 /// Result of making a running listener eligible for one explicitly minted connection token.
 /// The predecessor is captured under the same state lock that installs the new token so a later
 /// hydration failure can restore the still-valid prior lifecycle rather than guessing from a
@@ -538,6 +553,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsubscribe_captured_a_never_removes_concurrent_c_after_provisional_b() {
+        let thread_state_manager = ThreadStateManager::new();
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = crate::outgoing_message::OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        );
+
+        let subscription_a = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(subscription_a.clone()),
+            )
+            .await
+            .expect("A should establish the original state owner");
+
+        let reservation_id = RequestId::Integer(101);
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, reservation_id.clone())
+            .await;
+        let subscription_b = outgoing.mint_thread_subscription();
+        thread_state_manager
+            .try_add_connection_to_pending_thread_resume_with_subscription(
+                thread_id,
+                connection_id,
+                &reservation_id,
+                subscription_b.clone(),
+            )
+            .await
+            .expect("the pending running resume should atomically record and attach B");
+
+        // U captures published A. It cancels B before its state cleanup, while an independent C
+        // wins state ownership but has not published a transport replacement yet.
+        let observed_a = outgoing
+            .current_thread_subscription_id(connection_id, thread_id)
+            .await
+            .expect("U should capture A before B's final publication fence");
+        let canceled_resume = thread_state_manager
+            .cancel_pending_thread_resume_with_provisional_subscription(thread_id, connection_id)
+            .await
+            .expect("U should cancel B's still-pending reservation");
+        assert_eq!(
+            canceled_resume.provisional_subscription_id.as_deref(),
+            Some(subscription_b.as_str())
+        );
+
+        let subscription_c = "concurrent-c".to_string();
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(subscription_c.clone()),
+            )
+            .await
+            .expect("C should replace B in state before U performs its exact cleanup");
+        assert!(
+            outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    &observed_a,
+                )
+                .await,
+            "U should remove only the A transport it captured"
+        );
+
+        assert!(
+            !thread_state_manager
+                .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+                    thread_id,
+                    connection_id,
+                    &observed_a,
+                    canceled_resume.provisional_subscription_id.as_deref(),
+                )
+                .await,
+            "A's failed exact check and B's canceled token must not remove C"
+        );
+        assert_eq!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await,
+            Some(subscription_c),
+            "C must remain the state owner after U's stale A/B cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_captured_a_removes_its_canceled_provisional_b() {
+        let thread_state_manager = ThreadStateManager::new();
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = crate::outgoing_message::OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        );
+
+        let subscription_a = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(subscription_a.clone()),
+            )
+            .await
+            .expect("A should establish the original state owner");
+
+        let reservation_id = RequestId::Integer(102);
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, reservation_id.clone())
+            .await;
+        let subscription_b = outgoing.mint_thread_subscription();
+        thread_state_manager
+            .try_add_connection_to_pending_thread_resume_with_subscription(
+                thread_id,
+                connection_id,
+                &reservation_id,
+                subscription_b,
+            )
+            .await
+            .expect("the pending running resume should atomically record and attach B");
+
+        let observed_a = outgoing
+            .current_thread_subscription_id(connection_id, thread_id)
+            .await
+            .expect("U should capture A before B publishes");
+        let canceled_resume = thread_state_manager
+            .cancel_pending_thread_resume_with_provisional_subscription(thread_id, connection_id)
+            .await
+            .expect("U should cancel B's pending reservation");
+        assert!(
+            outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    &observed_a,
+                )
+                .await
+        );
+
+        assert!(
+            thread_state_manager
+                .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+                    thread_id,
+                    connection_id,
+                    &observed_a,
+                    canceled_resume.provisional_subscription_id.as_deref(),
+                )
+                .await,
+            "U must remove B only when B is the exact token recorded by its canceled reservation"
+        );
+        assert!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await
+                .is_none(),
+            "the canceled provisional B must not survive explicit unsubscribe"
+        );
+    }
+
+    #[tokio::test]
     async fn missing_or_closed_listener_discards_thread_request_resolution_targets() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
         let outgoing = Arc::new(crate::outgoing_message::OutgoingMessageSender::new(
@@ -801,7 +991,8 @@ struct ThreadStateManagerInner {
     live_connections: HashMap<ConnectionId, ConnectionCapabilities>,
     threads: HashMap<ThreadId, ThreadEntry>,
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
-    pending_thread_resume_reservations: HashMap<(ThreadId, ConnectionId), RequestId>,
+    pending_thread_resume_reservations:
+        HashMap<(ThreadId, ConnectionId), PendingThreadResumeReservation>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -857,7 +1048,13 @@ impl ThreadStateManager {
             .lock()
             .await
             .pending_thread_resume_reservations
-            .insert((thread_id, connection_id), request_id);
+            .insert(
+                (thread_id, connection_id),
+                PendingThreadResumeReservation {
+                    request_id,
+                    provisional_subscription_id: None,
+                },
+            );
     }
 
     /// Returns whether this running-thread resume still owns its reservation.
@@ -872,7 +1069,7 @@ impl ThreadStateManager {
             .await
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
-            .is_some_and(|current_request_id| current_request_id == request_id)
+            .is_some_and(|reservation| &reservation.request_id == request_id)
     }
 
     /// Classifies a deferred resume's ownership without treating an older command as the owner
@@ -889,7 +1086,7 @@ impl ThreadStateManager {
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
         {
-            Some(current_request_id) if current_request_id == request_id => {
+            Some(reservation) if &reservation.request_id == request_id => {
                 PendingThreadResumeReservationState::Current
             }
             Some(_) => PendingThreadResumeReservationState::Superseded,
@@ -913,7 +1110,7 @@ impl ThreadStateManager {
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
         {
-            Some(current_request_id) if current_request_id == request_id => {
+            Some(reservation) if &reservation.request_id == request_id => {
                 state
                     .pending_thread_resume_reservations
                     .remove(&(thread_id, connection_id));
@@ -932,12 +1129,27 @@ impl ThreadStateManager {
         thread_id: ThreadId,
         connection_id: ConnectionId,
     ) -> bool {
+        self.cancel_pending_thread_resume_with_provisional_subscription(thread_id, connection_id)
+            .await
+            .is_some()
+    }
+
+    /// Cancels a running resume and returns the immutable B token that reservation installed, if
+    /// any. Callers must use that token for exact cleanup rather than treating whatever state
+    /// owner happens to be current as the canceled resume.
+    pub(crate) async fn cancel_pending_thread_resume_with_provisional_subscription(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> Option<PendingThreadResumeCancellation> {
         self.state
             .lock()
             .await
             .pending_thread_resume_reservations
             .remove(&(thread_id, connection_id))
-            .is_some()
+            .map(|reservation| PendingThreadResumeCancellation {
+                provisional_subscription_id: reservation.provisional_subscription_id,
+            })
     }
 
     /// Finishes a resume only if it still owns the reservation, preserving a replacement that
@@ -952,7 +1164,7 @@ impl ThreadStateManager {
         if state
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
-            .is_some_and(|current_request_id| current_request_id == request_id)
+            .is_some_and(|reservation| &reservation.request_id == request_id)
         {
             state
                 .pending_thread_resume_reservations
@@ -1306,34 +1518,8 @@ impl ThreadStateManager {
         thread_id: ThreadId,
         connection_id: ConnectionId,
     ) -> bool {
-        {
-            let mut state = self.state.lock().await;
-            if !state.threads.contains_key(&thread_id) {
-                return false;
-            }
-
-            if !state
-                .thread_ids_by_connection
-                .get(&connection_id)
-                .is_some_and(|thread_ids| thread_ids.contains(&thread_id))
-            {
-                return false;
-            }
-
-            if let Some(thread_ids) = state.thread_ids_by_connection.get_mut(&connection_id) {
-                thread_ids.remove(&thread_id);
-                if thread_ids.is_empty() {
-                    state.thread_ids_by_connection.remove(&connection_id);
-                }
-            }
-            if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
-                thread_entry.connection_ids.remove(&connection_id);
-                thread_entry.connection_subscription_ids.remove(&connection_id);
-                thread_entry.update_has_connections();
-            }
-        };
-
-        true
+        let mut state = self.state.lock().await;
+        Self::remove_connection_from_thread_locked(&mut state, thread_id, connection_id)
     }
 
     /// Removes an explicit attachment only when its immutable subscription identity still owns
@@ -1357,18 +1543,58 @@ impl ThreadStateManager {
             return false;
         }
 
-        if let Some(thread_ids) = state.thread_ids_by_connection.get_mut(&connection_id) {
-            thread_ids.remove(&thread_id);
-            if thread_ids.is_empty() {
-                state.thread_ids_by_connection.remove(&connection_id);
-            }
+        Self::remove_connection_from_thread_locked(&mut state, thread_id, connection_id)
+    }
+
+    /// Removes an explicit connection only if it is still owned either by the transport token
+    /// observed by an unsubscribe or by that unsubscribe's canceled, unpublished running-resume
+    /// token. This single state-lock decision cannot accidentally remove a concurrent C.
+    pub(crate) async fn unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        observed_subscription_id: &str,
+        provisional_subscription_id: Option<&str>,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(thread_entry) = state.threads.get(&thread_id) else {
+            return false;
+        };
+        let Some(current_subscription_id) = thread_entry
+            .connection_subscription_ids
+            .get(&connection_id)
+        else {
+            return false;
+        };
+        if current_subscription_id != observed_subscription_id
+            && provisional_subscription_id
+                .is_none_or(|subscription_id| current_subscription_id != subscription_id)
+        {
+            return false;
         }
-        if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
-            thread_entry.connection_ids.remove(&connection_id);
-            thread_entry.connection_subscription_ids.remove(&connection_id);
-            thread_entry.update_has_connections();
+
+        Self::remove_connection_from_thread_locked(&mut state, thread_id, connection_id)
+    }
+
+    /// Removes a legacy untagged attachment only while it remains untagged. This is the safe
+    /// fallback when an unsubscribe observed no outgoing token: a concurrent explicit C must not
+    /// be removed merely because it arrived after that observation.
+    pub(crate) async fn unsubscribe_connection_from_thread_if_untagged(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(thread_entry) = state.threads.get(&thread_id) else {
+            return false;
+        };
+        if !thread_entry.connection_ids.contains(&connection_id)
+            || thread_entry.connection_subscription_ids.contains_key(&connection_id)
+        {
+            return false;
         }
-        true
+
+        Self::remove_connection_from_thread_locked(&mut state, thread_id, connection_id)
     }
 
     #[cfg(test)]
@@ -1457,37 +1683,38 @@ impl ThreadStateManager {
         subscription_id: Option<String>,
     ) -> Option<ThreadSubscriptionAttachment> {
         let mut state = self.state.lock().await;
-        if !state.live_connections.contains_key(&connection_id) {
+        Self::add_connection_to_thread_with_subscription_locked(
+            &mut state,
+            thread_id,
+            connection_id,
+            subscription_id,
+        )
+    }
+
+    /// Atomically verifies a deferred running resume's reservation, records its unpublished B,
+    /// and attaches B in state. Once this returns `Some`, an overlapping unsubscribe can target
+    /// only that returned reservation's B rather than a later C.
+    pub(crate) async fn try_add_connection_to_pending_thread_resume_with_subscription(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        request_id: &RequestId,
+        subscription_id: String,
+    ) -> Option<ThreadSubscriptionAttachment> {
+        let mut state = self.state.lock().await;
+        let reservation = state
+            .pending_thread_resume_reservations
+            .get_mut(&(thread_id, connection_id))?;
+        if &reservation.request_id != request_id {
             return None;
         }
-        state
-            .thread_ids_by_connection
-            .entry(connection_id)
-            .or_default()
-            .insert(thread_id);
-        let thread_entry = state.threads.entry(thread_id).or_default();
-        thread_entry.connection_ids.insert(connection_id);
-        let predecessor_subscription_id = subscription_id.as_ref().and_then(|subscription_id| {
-            thread_entry
-                .connection_subscription_ids
-                .get(&connection_id)
-                .filter(|previous_subscription_id| *previous_subscription_id != subscription_id)
-                .cloned()
-        });
-        match subscription_id {
-            Some(subscription_id) => {
-                thread_entry
-                    .connection_subscription_ids
-                    .insert(connection_id, subscription_id);
-            }
-            None => {
-                thread_entry.connection_subscription_ids.remove(&connection_id);
-            }
-        }
-        thread_entry.update_has_connections();
-        Some(ThreadSubscriptionAttachment {
-            predecessor_subscription_id,
-        })
+        reservation.provisional_subscription_id = Some(subscription_id.clone());
+        Self::add_connection_to_thread_with_subscription_locked(
+            &mut state,
+            thread_id,
+            connection_id,
+            Some(subscription_id),
+        )
     }
 
     /// Restores a predecessor token only while the failed provisional token is still current in
@@ -1521,6 +1748,73 @@ impl ThreadStateManager {
             connection_id,
             predecessor_subscription_id.to_string(),
         );
+        true
+    }
+
+    fn add_connection_to_thread_with_subscription_locked(
+        state: &mut ThreadStateManagerInner,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        subscription_id: Option<String>,
+    ) -> Option<ThreadSubscriptionAttachment> {
+        if !state.live_connections.contains_key(&connection_id) {
+            return None;
+        }
+        state
+            .thread_ids_by_connection
+            .entry(connection_id)
+            .or_default()
+            .insert(thread_id);
+        let thread_entry = state.threads.entry(thread_id).or_default();
+        thread_entry.connection_ids.insert(connection_id);
+        let predecessor_subscription_id = subscription_id.as_ref().and_then(|subscription_id| {
+            thread_entry
+                .connection_subscription_ids
+                .get(&connection_id)
+                .filter(|previous_subscription_id| *previous_subscription_id != subscription_id)
+                .cloned()
+        });
+        match subscription_id {
+            Some(subscription_id) => {
+                thread_entry
+                    .connection_subscription_ids
+                    .insert(connection_id, subscription_id);
+            }
+            None => {
+                thread_entry.connection_subscription_ids.remove(&connection_id);
+            }
+        }
+        thread_entry.update_has_connections();
+        Some(ThreadSubscriptionAttachment {
+            predecessor_subscription_id,
+        })
+    }
+
+    fn remove_connection_from_thread_locked(
+        state: &mut ThreadStateManagerInner,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+    ) -> bool {
+        if !state.threads.contains_key(&thread_id)
+            || !state
+                .thread_ids_by_connection
+                .get(&connection_id)
+                .is_some_and(|thread_ids| thread_ids.contains(&thread_id))
+        {
+            return false;
+        }
+
+        if let Some(thread_ids) = state.thread_ids_by_connection.get_mut(&connection_id) {
+            thread_ids.remove(&thread_id);
+            if thread_ids.is_empty() {
+                state.thread_ids_by_connection.remove(&connection_id);
+            }
+        }
+        if let Some(thread_entry) = state.threads.get_mut(&thread_id) {
+            thread_entry.connection_ids.remove(&connection_id);
+            thread_entry.connection_subscription_ids.remove(&connection_id);
+            thread_entry.update_has_connections();
+        }
         true
     }
 

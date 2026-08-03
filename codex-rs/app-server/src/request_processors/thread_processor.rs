@@ -958,10 +958,15 @@ impl ThreadRequestProcessor {
             .outgoing
             .current_thread_subscription_id(connection_id, thread_id)
             .await;
+        let observed_state_subscription_id = self
+            .thread_state_manager
+            .connection_thread_subscription_id(thread_id, connection_id)
+            .await;
         let canceled_pending_resume = self
             .thread_state_manager
-            .cancel_pending_thread_resume(thread_id, connection_id)
+            .cancel_pending_thread_resume_with_provisional_subscription(thread_id, connection_id)
             .await;
+        let canceled_pending_resume_exists = canceled_pending_resume.is_some();
 
         if self.thread_manager.get_thread(thread_id).await.is_err() {
             if let Some(subscription_id) = observed_subscription_id.as_deref() {
@@ -1004,39 +1009,59 @@ impl ThreadRequestProcessor {
                 )
                 .await
             {
-                let observed_state_subscription_removed = self.thread_state_manager
-                    .unsubscribe_connection_from_thread_if_subscription_matches(
+                // A running resume can have installed unpublished B while the transport still
+                // presents A. The canceled reservation tells us B's immutable token; use the
+                // single state-lock check below so C, installed after this unsubscribe captured
+                // A, cannot be removed by a broad fallback.
+                self.thread_state_manager
+                    .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
                         thread_id,
                         connection_id,
                         subscription_id,
+                        canceled_pending_resume
+                            .as_ref()
+                            .and_then(|cancellation| {
+                                cancellation.provisional_subscription_id.as_deref()
+                            }),
                     )
-                    .await;
-                if observed_state_subscription_removed {
-                    true
-                } else {
-                    // A provisional running resume keeps published transport A while
-                    // ThreadStateManager has already installed B. Once this unsubscribe removes
-                    // A from the current outgoing map, it must also remove that unpublished B;
-                    // otherwise B's late rollback could recreate A after an explicit unsubscribe.
-                    self.thread_state_manager
-                        .unsubscribe_connection_from_thread(thread_id, connection_id)
-                        .await
-                }
+                    .await
             } else {
                 false
             }
+        } else if let Some(subscription_id) = observed_state_subscription_id.as_deref() {
+            // No outgoing owner was captured, so do not unregister a transport that a newer
+            // attach may have published after the observation. Remove only the state token U
+            // actually observed (or its canceled provisional B).
+            self.thread_state_manager
+                .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+                    thread_id,
+                    connection_id,
+                    subscription_id,
+                    canceled_pending_resume
+                        .as_ref()
+                        .and_then(|cancellation| {
+                            cancellation.provisional_subscription_id.as_deref()
+                        }),
+                )
+                .await
+        } else if let Some(provisional_subscription_id) = canceled_pending_resume
+            .as_ref()
+            .and_then(|cancellation| cancellation.provisional_subscription_id.as_deref())
+        {
+            self.thread_state_manager
+                .unsubscribe_connection_from_thread_if_subscription_matches(
+                    thread_id,
+                    connection_id,
+                    provisional_subscription_id,
+                )
+                .await
         } else {
-            let was_subscribed = self
-                .thread_state_manager
-                .unsubscribe_connection_from_thread(thread_id, connection_id)
-                .await;
-            self.outgoing
-                .unregister_thread_subscription(connection_id, thread_id)
-                .await;
-            was_subscribed
+            self.thread_state_manager
+                .unsubscribe_connection_from_thread_if_untagged(thread_id, connection_id)
+                .await
         };
 
-        let status = if was_subscribed || canceled_pending_resume {
+        let status = if was_subscribed || canceled_pending_resume_exists {
             ThreadUnsubscribeStatus::Unsubscribed
         } else {
             ThreadUnsubscribeStatus::NotSubscribed
