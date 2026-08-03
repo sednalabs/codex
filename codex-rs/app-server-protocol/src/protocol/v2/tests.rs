@@ -124,6 +124,42 @@ fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagen
 }
 
 #[test]
+fn collab_agent_state_uses_camel_case_identity_and_accepts_legacy_aliases() {
+    let state = CollabAgentState {
+        status: CollabAgentStatus::Running,
+        message: None,
+        agent_nickname: Some("Scout".to_string()),
+        agent_role: Some("explorer".to_string()),
+    };
+    let value = serde_json::to_value(&state).expect("serialize collab agent state");
+
+    assert_eq!(
+        value,
+        json!({
+            "status": "running",
+            "message": null,
+            "agentNickname": "Scout",
+            "agentRole": "explorer",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<CollabAgentState>(value)
+            .expect("deserialize canonical collab agent state"),
+        state
+    );
+    assert_eq!(
+        serde_json::from_value::<CollabAgentState>(json!({
+            "status": "running",
+            "message": null,
+            "agent_nickname": "Scout",
+            "agent_role": "explorer",
+        }))
+        .expect("deserialize legacy collab agent state"),
+        state
+    );
+}
+
+#[test]
 fn turn_defaults_legacy_missing_items_view_to_full() {
     let turn: Turn = serde_json::from_value(json!({
         "id": "turn_123",

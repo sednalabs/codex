@@ -167,14 +167,14 @@
     },
     "CollabAgentState": {
       "properties": {
-        "agent_nickname": {
+        "agentNickname": {
           "default": null,
           "type": [
             "string",
             "null"
           ]
         },
-        "agent_role": {
+        "agentRole": {
           "default": null,
           "type": [
             "string",

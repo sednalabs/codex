@@ -181,7 +181,7 @@ fn json_schema_fixtures_keep_collab_agent_identity_additive() -> Result<()> {
             .with_context(|| {
                 format!("{} CollabAgentState must have required fields", path.display())
             })?;
-        for field in ["agent_nickname", "agent_role"] {
+        for field in ["agentNickname", "agentRole"] {
             let property = properties
                 .get(field)
                 .with_context(|| format!("{} must expose {field}", path.display()))?;

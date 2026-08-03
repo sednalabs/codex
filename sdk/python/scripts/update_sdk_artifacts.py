@@ -834,19 +834,31 @@ def _preserve_subagent_activity_protocol_contract(out_path: Path) -> None:
 def _preserve_current_protocol_fields(out_path: Path) -> None:
     """Keep protocol fields added after the pinned runtime's generated SDK shape."""
     source = out_path.read_text()
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentState",
+        "    agent_nickname: str | None = None\n",
+        '    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None\n',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentState",
+        "    agent_role: str | None = None\n",
+        '    agent_role: Annotated[str | None, Field(alias="agentRole")] = None\n',
+    )
     source = _insert_generated_class_fields_before(
         source,
         "CollabAgentState",
         "    message: str | None = None\n",
         "agent_nickname",
-        "    agent_nickname: str | None = None\n",
+        '    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None\n',
     )
     source = _insert_generated_class_fields_before(
         source,
         "CollabAgentState",
         "    message: str | None = None\n",
         "agent_role",
-        "    agent_role: str | None = None\n",
+        '    agent_role: Annotated[str | None, Field(alias="agentRole")] = None\n',
     )
     source = _replace_generated_class_text(
         source,
