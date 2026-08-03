@@ -665,6 +665,24 @@ impl AgentControl {
         let initial_input_result = self
             .deliver_spawn_initial_input(new_thread.thread_id, &state, initial_input)
             .await;
+        if self
+            .spawned_child_was_removed_after_internal_error(
+                &state,
+                new_thread.thread_id,
+                initial_input_result.as_ref().err(),
+            )
+            .await
+        {
+            self.close_thread_spawn_edge_after_unexpected_child_exit(
+                new_thread.thread.as_ref(),
+                new_thread.thread_id,
+            )
+            .await?;
+            let Err(error) = initial_input_result else {
+                unreachable!("only an initial-input error can remove the spawned child");
+            };
+            return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error });
+        }
         let initial_input_delivered = initial_input_result.is_ok();
         let cancellation_after_initial_delivery =
             initial_input_delivered && spawn_cancellation_requested(&options);
@@ -707,8 +725,29 @@ impl AgentControl {
             }
         };
         let status = if cancellation_after_initial_delivery {
-            self.interrupt_spawned_agent_for_cancellation(new_thread.thread_id)
-                .await?
+            match self
+                .interrupt_spawned_agent_for_cancellation(new_thread.thread_id)
+                .await
+            {
+                Ok(status) => status,
+                Err(error)
+                    if self
+                        .spawned_child_was_removed_after_internal_error(
+                            &state,
+                            new_thread.thread_id,
+                            Some(&error),
+                        )
+                        .await =>
+                {
+                    self.close_thread_spawn_edge_after_unexpected_child_exit(
+                        new_thread.thread.as_ref(),
+                        new_thread.thread_id,
+                    )
+                    .await?;
+                    return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error });
+                }
+                Err(error) => return Err(error),
+            }
         } else {
             status
         };
@@ -736,6 +775,15 @@ impl AgentControl {
         agent_id: ThreadId,
     ) -> CodexResult<AgentStatus> {
         let mut status_rx = self.subscribe_status(agent_id).await?;
+        #[cfg(test)]
+        if self.take_kill_next_spawn_cancellation_interrupt_child().await {
+            let state = self.upgrade()?;
+            state
+                .get_thread(agent_id)
+                .await?
+                .shutdown_and_wait()
+                .await?;
+        }
         self.interrupt_agent(agent_id).await?;
         loop {
             let status = status_rx.borrow().clone();
@@ -762,6 +810,20 @@ impl AgentControl {
             return Err(error);
         }
 
+        #[cfg(test)]
+        if self.take_kill_next_spawn_initial_input_child().await {
+            state
+                .get_thread(agent_id)
+                .await?
+                .shutdown_and_wait()
+                .await?;
+            let (thread, result) = state.send_op_with_thread(agent_id, Op::Interrupt).await;
+            return self
+                .handle_thread_request_result(agent_id, state, thread.as_ref(), result)
+                .await
+                .map(drop);
+        }
+
         match initial_input {
             SpawnInitialInput::UserInput(input) => self
                 .send_input_after_capacity_check(agent_id, state, input)
@@ -777,6 +839,19 @@ impl AgentControl {
                 .await
                 .map(drop),
         }
+    }
+
+    async fn spawned_child_was_removed_after_internal_error(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        agent_id: ThreadId,
+        error: Option<&CodexErr>,
+    ) -> bool {
+        matches!(
+            error.map(|error| error.details()),
+            Some(CodexErrorDetails::InternalAgentDied)
+        ) && state.get_thread(agent_id).await.is_err()
+            && self.get_agent_metadata(agent_id).is_none()
     }
 
     async fn spawn_forked_thread(

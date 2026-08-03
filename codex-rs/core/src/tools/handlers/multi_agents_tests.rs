@@ -873,6 +873,119 @@ async fn spawn_agent_cancellation_interrupts_child_after_successful_initial_deli
 }
 
 #[tokio::test]
+async fn spawn_agent_child_death_during_initial_delivery_reports_no_child_lifecycle() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.kill_next_spawn_initial_input_child().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control.clone();
+        session.thread_id = root.thread_id;
+    }
+
+    let error = SpawnAgentHandler::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo"})),
+        ))
+        .await
+        .expect_err("a dead child should make spawn fail");
+    assert!(
+        matches!(error, FunctionCallError::RespondToModel(_)),
+        "the real child-death error should remain visible to the caller"
+    );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical spawn terminal event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected canonical spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn terminal event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activity() {
     let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
     let mut config = (*turn.config).clone();
@@ -983,6 +1096,90 @@ async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activi
     assert_eq!(legacy_activity.reasoning_effort, activity.reasoning_effort);
     assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
     assert!(rx.try_recv().is_err(), "no extra activity events expected");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_child_death_during_initial_delivery_publishes_no_activity() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow MultiAgentV2");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.kill_next_spawn_initial_input_child().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control.clone();
+        session.thread_id = root.thread_id;
+    }
+
+    let error = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "dead_child",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect_err("a dead child should make V2 spawn fail");
+    assert!(matches!(error, FunctionCallError::RespondToModel(_)));
+    assert!(
+        rx.try_recv().is_err(),
+        "V2 must not publish canonical or legacy child activity for a removed child"
+    );
+
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none()
+    );
 }
 
 #[tokio::test]

@@ -104,12 +104,16 @@ pub(crate) struct LiveAgent {
 /// Result of creating an agent and delivering its initial input.
 ///
 /// The child is committed before initial-input delivery. Callers that own a parent lifecycle
-/// must retain the child identity when that final delivery step fails so their terminal records
-/// do not contradict the live registry and spawn edge.
+/// retain its identity for ordinary delivery failures, where it remains live. A child that dies
+/// during the spawn transaction is reported separately so callers never publish a nonexistent
+/// child reference.
 #[derive(Debug)]
 pub(crate) enum SpawnAgentOutcome {
     Spawned(LiveAgent),
     InitialInputDeliveryFailed { agent: LiveAgent, error: CodexErr },
+    /// The child died during initial delivery or cancellation cleanup and was removed from the
+    /// live registry. No child identity is returned because it is no longer a valid target.
+    ChildDiedDuringSpawn { error: CodexErr },
     /// The initial input was accepted, then its owning spawn call was cancelled. The returned
     /// child has been interrupted so callers can publish a truthful terminal lifecycle item.
     Cancelled { agent: LiveAgent },
@@ -120,6 +124,7 @@ impl SpawnAgentOutcome {
         match self {
             Self::Spawned(agent) => Ok(agent),
             Self::InitialInputDeliveryFailed { error, .. } => Err(error),
+            Self::ChildDiedDuringSpawn { error } => Err(error),
             Self::Cancelled { .. } => Err(CodexErr::TurnAborted),
         }
     }
@@ -251,6 +256,10 @@ pub(crate) struct AgentControl {
     #[cfg(test)]
     next_spawn_initial_input_gate: Arc<tokio::sync::Mutex<Option<SpawnInitialInputGate>>>,
     #[cfg(test)]
+    kill_next_spawn_initial_input_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    kill_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
     hide_next_agent_config_snapshot: Arc<tokio::sync::Mutex<bool>>,
 }
 
@@ -292,6 +301,23 @@ impl AgentControl {
     }
 
     #[cfg(test)]
+    /// Terminate the next committed child immediately before its initial input is delivered.
+    /// The delivery path then observes a real closed submission channel and performs its normal
+    /// `InternalAgentDied` removal.
+    pub(crate) async fn kill_next_spawn_initial_input_child(&self) {
+        *self.kill_next_spawn_initial_input_child.lock().await = true;
+    }
+
+    #[cfg(test)]
+    /// Terminate the next child immediately before the cancellation interrupt is submitted.
+    pub(crate) async fn kill_next_spawn_cancellation_interrupt_child(&self) {
+        *self
+            .kill_next_spawn_cancellation_interrupt_child
+            .lock()
+            .await = true;
+    }
+
+    #[cfg(test)]
     pub(crate) async fn hide_next_agent_config_snapshot(&self) {
         *self.hide_next_agent_config_snapshot.lock().await = true;
     }
@@ -299,6 +325,21 @@ impl AgentControl {
     #[cfg(test)]
     async fn take_next_spawn_initial_input_error(&self) -> Option<CodexErr> {
         self.next_spawn_initial_input_error.lock().await.take()
+    }
+
+    #[cfg(test)]
+    async fn take_kill_next_spawn_initial_input_child(&self) -> bool {
+        std::mem::take(&mut *self.kill_next_spawn_initial_input_child.lock().await)
+    }
+
+    #[cfg(test)]
+    async fn take_kill_next_spawn_cancellation_interrupt_child(&self) -> bool {
+        std::mem::take(
+            &mut *self
+                .kill_next_spawn_cancellation_interrupt_child
+                .lock()
+                .await,
+        )
     }
 
     #[cfg(test)]
@@ -1352,6 +1393,34 @@ impl AgentControl {
         {
             warn!("failed to persist thread-spawn edge: {err}");
         }
+    }
+
+    /// Close the durable parent edge when a committed child unexpectedly dies before the spawn
+    /// operation can hand its identity back to the caller. Completion watchers are installed only
+    /// after initial input delivery, so this path must not rely on a watcher to do that work.
+    async fn close_thread_spawn_edge_after_unexpected_child_exit(
+        &self,
+        child_thread: &crate::CodexThread,
+        child_thread_id: ThreadId,
+    ) -> CodexResult<()> {
+        if child_thread.config_snapshot().await.ephemeral {
+            return Ok(());
+        }
+        let state = self.upgrade()?;
+        let Some(agent_graph_store) = state.agent_graph_store() else {
+            return Ok(());
+        };
+        agent_graph_store
+            .set_thread_spawn_edge_status(
+                child_thread_id,
+                codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!(
+                    "failed to close unexpected child-exit spawn edge for {child_thread_id}: {err}"
+                ))
+            })
     }
 
     #[allow(dead_code)]
