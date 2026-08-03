@@ -145,6 +145,8 @@ pub(crate) fn start_fuzzy_file_search_session(
         notification_ready: Notify::new(),
         #[cfg(test)]
         notification_dequeued: Notify::new(),
+        #[cfg(test)]
+        notification_waiting: Notify::new(),
     });
 
     let reporter = Arc::new(SessionReporterImpl {
@@ -180,6 +182,8 @@ struct SessionShared {
     notification_ready: Notify,
     #[cfg(test)]
     notification_dequeued: Notify,
+    #[cfg(test)]
+    notification_waiting: Notify,
 }
 
 impl SessionShared {
@@ -317,6 +321,8 @@ async fn forward_notifications(shared: Arc<SessionShared>) {
             if stopped {
                 return;
             }
+            #[cfg(test)]
+            shared.notification_waiting.notify_one();
             notified.await;
             continue;
         };
@@ -552,11 +558,16 @@ mod tests {
             pending_notifications: Mutex::new(PendingNotifications::new()),
             notification_ready: Notify::new(),
             notification_dequeued: Notify::new(),
+            notification_waiting: Notify::new(),
         });
         let reporter = SessionReporterImpl {
             shared: shared.clone(),
         };
+        let forwarder_waiting = shared.notification_waiting.notified();
         let forwarder = tokio::spawn(forward_notifications(shared.clone()));
+        timeout(Duration::from_secs(1), forwarder_waiting)
+            .await
+            .expect("forwarder should park on the notification wakeup");
 
         let in_flight_dequeued = shared.notification_dequeued.notified();
         report_snapshot(&reporter, &shared, "in-flight");
