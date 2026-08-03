@@ -54,6 +54,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::task;
 use tokio::time::sleep;
 
@@ -69,6 +70,8 @@ const MEMO_CONTENT: &str = "This is a sample MCP resource served by the rmcp tes
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 const SESSION_POST_FAILURE_CONTROL_PATH: &str = "/test/control/session-post-failure";
 const INITIALIZE_POST_FAILURE_CONTROL_PATH: &str = "/test/control/initialize-post-failure";
+const INITIALIZE_POST_FAILURE_STARTED_CONTROL_PATH: &str =
+    "/test/control/initialize-post-failure/wait-started";
 const INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH: &str =
     "/test/control/initialized-notification-post-failure";
 const MAX_MCP_POST_BODY_BYTES: usize = 1024 * 1024;
@@ -85,7 +88,7 @@ enum ArmedFailureTarget {
     Session,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ArmedFailure {
     target: ArmedFailureTarget,
     status: StatusCode,
@@ -95,6 +98,13 @@ struct ArmedFailure {
     retry_after: Option<HeaderValue>,
     content_type: Option<HeaderValue>,
     body: Option<String>,
+    hold: Option<FailureHold>,
+}
+
+#[derive(Clone)]
+struct FailureHold {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +117,8 @@ struct ArmSessionPostFailureRequest {
     retry_after: Option<String>,
     content_type: Option<String>,
     body: Option<String>,
+    #[serde(default)]
+    hold_until_released: bool,
 }
 
 #[derive(Deserialize)]
@@ -160,6 +172,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             INITIALIZE_POST_FAILURE_CONTROL_PATH,
             post(arm_initialize_post_failure),
+        )
+        .route(
+            INITIALIZE_POST_FAILURE_STARTED_CONTROL_PATH,
+            get(wait_initialize_post_failure_started),
         )
         .route(
             INITIALIZED_NOTIFICATION_POST_FAILURE_CONTROL_PATH,
@@ -515,6 +531,24 @@ async fn arm_initialize_post_failure(
     arm_post_failure(state, request, ArmedFailureTarget::Initialize).await
 }
 
+async fn wait_initialize_post_failure_started(
+    State(state): State<PostFailureState>,
+) -> StatusCode {
+    let hold = state
+        .armed_failure
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|failure| failure.hold.clone());
+    let Some(hold) = hold else {
+        return StatusCode::NOT_FOUND;
+    };
+    match tokio::time::timeout(Duration::from_secs(10), hold.started.notified()).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::REQUEST_TIMEOUT,
+    }
+}
+
 async fn arm_initialized_notification_post_failure(
     State(state): State<PostFailureState>,
     Json(request): Json<ArmSessionPostFailureRequest>,
@@ -541,6 +575,10 @@ async fn arm_post_failure(
         .retry_after
         .map(|value| HeaderValue::from_str(&value).map_err(|_| StatusCode::BAD_REQUEST))
         .transpose()?;
+    let hold = request.hold_until_released.then(|| FailureHold {
+        started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    });
     let armed_failure = if request.remaining == 0 {
         None
     } else {
@@ -552,9 +590,13 @@ async fn arm_post_failure(
             retry_after,
             content_type,
             body: request.body,
+            hold,
         })
     };
-    *state.armed_failure.lock().await = armed_failure;
+    let previous = state.armed_failure.lock().await.replace(armed_failure);
+    if let Some(previous) = previous.and_then(|failure| failure.hold) {
+        previous.release.notify_one();
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -578,7 +620,7 @@ async fn fail_mcp_post_when_armed(
     let has_session_id = parts.headers.contains_key(MCP_SESSION_ID_HEADER);
     let mcp_method = request_mcp_method(&body_bytes);
 
-    {
+    let armed_response = {
         let mut armed_failure = state.armed_failure.lock().await;
         if let Some(failure) = armed_failure.as_mut()
             && failure.remaining > 0
@@ -597,11 +639,12 @@ async fn fail_mcp_post_when_armed(
             let www_authenticate_headers = failure.www_authenticate_headers.clone();
             let retry_after = failure.retry_after.clone();
             let content_type = failure.content_type.clone();
+            let hold = failure.hold.clone();
             let body = failure
                 .body
                 .clone()
                 .unwrap_or_else(|| format!("forced session failure with status {status}"));
-            if failure.remaining == 0 {
+            if failure.remaining == 0 && hold.is_none() {
                 *armed_failure = None;
             }
             let mut response = Response::new(Body::from(body));
@@ -617,8 +660,17 @@ async fn fail_mcp_post_when_armed(
             if let Some(retry_after) = retry_after {
                 response.headers_mut().insert(RETRY_AFTER, retry_after);
             }
-            return response;
+            Some((response, hold))
+        } else {
+            None
         }
+    };
+    if let Some((response, hold)) = armed_response {
+        if let Some(hold) = hold {
+            hold.started.notify_one();
+            hold.release.notified().await;
+        }
+        return response;
     }
 
     next.run(Request::from_parts(parts, Body::from(body_bytes)))
