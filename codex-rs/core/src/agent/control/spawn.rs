@@ -667,14 +667,27 @@ impl AgentControl {
                     .map(drop)
             }
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
-                )
-                .await
-                .map(drop)
+                if multi_agent_version == MultiAgentVersion::V2 {
+                    let mut provisional_metadata = agent_metadata.clone();
+                    provisional_metadata.agent_id = Some(new_thread.thread_id);
+                    self.prepare_provisional_v2_agent_delivery(
+                        new_thread.thread_id,
+                        provisional_metadata,
+                    )
+                    .await?
+                    .send_after_capacity_check(communication, context, /*interrupt*/ false)
+                    .await
+                    .map(drop)
+                } else {
+                    self.send_inter_agent_communication_after_capacity_check(
+                        new_thread.thread_id,
+                        &state,
+                        communication,
+                        context,
+                    )
+                    .await
+                    .map(drop)
+                }
             }
         };
         if let Err(error) = initial_input_result {
@@ -697,6 +710,10 @@ impl AgentControl {
             }
             return Err(error);
         }
+
+        #[cfg(test)]
+        self.await_after_initial_delivery_test_hook(new_thread.thread_id)
+            .await;
 
         // This compare-and-swap is the parent-visible publication boundary. Once it wins, the
         // runtime cancellation owner observes `Published` and must return the successful tool

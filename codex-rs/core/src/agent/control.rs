@@ -236,6 +236,7 @@ pub(crate) struct AgentControl {
 #[derive(Default)]
 struct SpawnTestHooks {
     after_new_thread: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
+    after_initial_delivery: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
     fail_unpublished_shutdown_once: AtomicBool,
     retained_unpublished_cleanup: std::sync::Mutex<Option<RetainedUnpublishedCleanupTestHook>>,
 }
@@ -320,6 +321,11 @@ impl AgentControl {
     }
 
     #[cfg(test)]
+    pub(crate) fn v2_resident_count_for_test(&self) -> usize {
+        self.v2_residency.resident_count()
+    }
+
+    #[cfg(test)]
     pub(crate) fn pause_spawn_after_new_thread_for_test(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
@@ -334,6 +340,23 @@ impl AgentControl {
             resume_spawn: Arc::clone(&resume_spawn),
         });
         (child_created, resume_spawn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_spawn_after_initial_delivery_for_test(
+        &self,
+    ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
+        let (observed_child, initial_delivery_finished) = tokio::sync::oneshot::channel();
+        let resume_spawn = Arc::new(tokio::sync::Notify::new());
+        *self
+            .spawn_test_hooks
+            .after_initial_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(AfterNewThreadTestHook {
+            observed_child,
+            resume_spawn: Arc::clone(&resume_spawn),
+        });
+        (initial_delivery_finished, resume_spawn)
     }
 
     #[cfg(test)]
@@ -366,6 +389,20 @@ impl AgentControl {
         let hook = self
             .spawn_test_hooks
             .after_new_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            let _ = hook.observed_child.send(child_thread_id);
+            hook.resume_spawn.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_after_initial_delivery_test_hook(&self, child_thread_id: ThreadId) {
+        let hook = self
+            .spawn_test_hooks
+            .after_initial_delivery
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
