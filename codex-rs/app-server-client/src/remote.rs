@@ -228,7 +228,18 @@ impl RemoteAppServerClient {
             let mut skipped_events = 0usize;
             let mut pending_remote_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
             let mut exit_after_pending_events = false;
+            let mut event_consumer_closed = false;
             loop {
+                if !event_consumer_closed && event_tx.is_closed() {
+                    if !pending_remote_events.is_empty() {
+                        warn!("remote app-server event consumer closed while required event was pending");
+                        pending_remote_events.clear();
+                    }
+                    // `RemoteAppServerClient::shutdown` drops its receiver before sending
+                    // `Shutdown`. Keep the worker alive long enough to close the transport and
+                    // acknowledge that command instead of waiting for its timeout.
+                    event_consumer_closed = true;
+                }
                 if exit_after_pending_events {
                     let (err_kind, err_message) =
                         terminal_remote_transport_error(&worker_exit_error);
@@ -238,11 +249,15 @@ impl RemoteAppServerClient {
                         &err_message,
                     );
                 }
-                if exit_after_pending_events && pending_remote_events.is_empty() {
+                if exit_after_pending_events
+                    && pending_remote_events.is_empty()
+                    && !event_consumer_closed
+                {
                     break;
                 }
                 tokio::select! {
-                    permit = event_tx.reserve(), if !pending_remote_events.is_empty() => {
+                    permit = event_tx.reserve(),
+                    if !event_consumer_closed && !pending_remote_events.is_empty() => {
                         match permit {
                             Ok(permit) => {
                                 let event = pending_remote_events
@@ -252,7 +267,8 @@ impl RemoteAppServerClient {
                             }
                             Err(_) => {
                                 warn!("remote app-server event consumer closed while required event was pending");
-                                break;
+                                pending_remote_events.clear();
+                                event_consumer_closed = true;
                             }
                         }
                     }
@@ -381,7 +397,7 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
-                    message = stream.next(), if !exit_after_pending_events => {
+                    message = stream.next(), if !exit_after_pending_events && !event_consumer_closed => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
                                 match server_message_and_subscription_id(&text) {
@@ -1347,9 +1363,15 @@ fn queue_remote_event(
             return Ok(());
         }
 
-        let message = format!(
+        let mut message = format!(
             "remote app server at `{endpoint}` exceeded the bounded remote event backlog"
         );
+        if *skipped_events > 0 {
+            let skipped = *skipped_events;
+            message.push_str(&format!(
+                "; {skipped} best-effort remote event(s) were dropped before disconnect"
+            ));
+        }
         warn!(
             %message,
             "closing remote app-server transport after retained required events drain"
@@ -2795,6 +2817,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn required_event_overflow_reports_unreported_best_effort_loss() {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        event_tx
+            .send(TaggedAppServerEvent::ServerNotification(
+                thread_status_changed_notification(0),
+            ))
+            .await
+            .expect("initial required event should fill the consumer queue");
+
+        let mut skipped_events = 0usize;
+        let mut pending_remote_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
+        let mut worker_exit_error = None;
+        let mut exit_after_pending_events = false;
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::ServerNotification(thread_status_changed_notification(1)),
+            /*exit_after_delivery*/ false,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("first required event should remain in the bounded pending FIFO");
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "queued progress",
+            )),
+            /*exit_after_delivery*/ false,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("first best-effort event should remain behind the retained required event");
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "dropped progress",
+            )),
+            /*exit_after_delivery*/ false,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("second best-effort event should be accounted for without growing the FIFO");
+        assert_eq!(skipped_events, 1);
+
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::ServerNotification(thread_status_changed_notification(2)),
+            /*exit_after_delivery*/ false,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("required overflow should close through the reserved terminal slot");
+
+        assert_eq!(pending_remote_events.len(), REMOTE_PENDING_EVENT_CAPACITY);
+        assert_eq!(skipped_events, 0);
+        assert!(exit_after_pending_events);
+        assert!(matches!(
+            pending_remote_events.pop_front(),
+            Some(TaggedAppServerEvent::ServerNotification(
+                ServerNotification::ThreadStatusChanged(notification)
+            )) if notification.status_revision == Some(1)
+        ));
+        assert!(matches!(
+            pending_remote_events.pop_front(),
+            Some(TaggedAppServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(notification)
+            )) if notification.delta == "queued progress"
+        ));
+        match pending_remote_events
+            .pop_front()
+            .expect("terminal overload must preserve the accumulated loss count")
+        {
+            TaggedAppServerEvent::Disconnected { message } => {
+                assert!(message.contains("1 best-effort remote event(s) were dropped"));
+            }
+            event => panic!("expected overload disconnect with loss accounting, got {event:?}"),
+        }
+        match worker_exit_error {
+            Some((ErrorKind::WouldBlock, message)) => {
+                assert!(message.contains("1 best-effort remote event(s) were dropped"));
+            }
+            error => panic!("expected overload error with loss accounting, got {error:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn required_event_overflow_appends_an_explicit_disconnect() {
         let (event_tx, _event_rx) = mpsc::channel(1);
         event_tx
@@ -2973,6 +3092,136 @@ mod tests {
             }
             assert_eq!(skipped_events, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_command_acknowledges_after_event_receiver_closes_with_pending_fifo() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (events_sent_tx, events_sent_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            let initialize_response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({"userAgent": "test-server/1.0"}),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&initialize_response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            let Message::Text(text) = initialized else {
+                panic!("expected initialized text frame");
+            };
+            let JSONRPCMessage::Notification(initialized) =
+                serde_json::from_str(&text).expect("initialized frame should contain JSON-RPC")
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+
+            for status_revision in [1, 2, 3] {
+                let event = thread_scoped_server_message(
+                    thread_status_changed_notification(status_revision),
+                    "shutdown-subscription",
+                );
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&event)
+                            .expect("status notification should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server should send required status");
+            }
+            let _ = events_sent_tx.send(());
+
+            let close = timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("client shutdown should promptly close the transport")
+                .expect("client shutdown should send a close frame")
+                .expect("close frame should succeed");
+            assert!(matches!(close, Message::Close(_)));
+        });
+
+        let client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory shutdown pending FIFO transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize over the in-memory transport");
+        events_sent_rx
+            .await
+            .expect("server should send the retained required events");
+        timeout(Duration::from_secs(1), async {
+            while client.event_rx.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first required event should fill the one-slot consumer queue");
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        let RemoteAppServerClient {
+            command_tx,
+            event_rx,
+            pending_events: _,
+            server_version: _,
+            codex_home: _,
+            worker_handle,
+        } = client;
+        drop(event_rx);
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(RemoteClientCommand::Shutdown { response_tx })
+            .await
+            .expect("shutdown command should reach the remote worker");
+        timeout(Duration::from_secs(1), response_rx)
+            .await
+            .expect("closed event receiver must not delay shutdown acknowledgement")
+            .expect("remote worker must acknowledge the queued shutdown command")
+            .expect("remote close should succeed");
+        timeout(Duration::from_secs(1), worker_handle)
+            .await
+            .expect("worker should exit after acknowledging shutdown")
+            .expect("worker should not panic during shutdown");
+        server_task
+            .await
+            .expect("test server task should not panic");
     }
 
     #[tokio::test]
