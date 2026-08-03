@@ -107,34 +107,14 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    // This runtime queue is upstream of the `codex-app-server-client` facade,
-    // so it cannot discard the facade's lossless transcript/completion tier or
-    // the lifecycle, goal, usage, rename, and request-resolution state needed
-    // to keep an in-process client synchronized.
-    matches!(
+    // This runtime queue is upstream of the `codex-app-server-client` facade.
+    // Treat new notification kinds as authoritative by default so protocol
+    // growth cannot silently create another droppable terminal/control state.
+    // Command output is reconstructible from its completed item; lag reports
+    // any dropped progress before later writer traffic.
+    !matches!(
         notification,
-        ServerNotification::ThreadStarted(_)
-            | ServerNotification::ThreadClosed(_)
-            | ServerNotification::ThreadDeleted(_)
-            | ServerNotification::ThreadArchived(_)
-            | ServerNotification::ThreadUnarchived(_)
-            | ServerNotification::ThreadStatusChanged(_)
-            | ServerNotification::ThreadGoalUpdated(_)
-            | ServerNotification::ThreadGoalCleared(_)
-            | ServerNotification::ThreadTokenUsageUpdated(_)
-            | ServerNotification::ThreadNameUpdated(_)
-            | ServerNotification::ServerRequestResolved(_)
-            | ServerNotification::AccountRateLimitsUpdated(_)
-            | ServerNotification::TurnStarted(_)
-            | ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ItemStarted(_)
-            | ServerNotification::ItemCompleted(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
-            | ServerNotification::AgentMessageDelta(_)
-            | ServerNotification::PlanDelta(_)
-            | ServerNotification::ReasoningSummaryTextDelta(_)
-            | ServerNotification::ReasoningTextDelta(_)
+        ServerNotification::CommandExecutionOutputDelta(_)
     )
 }
 
@@ -979,7 +959,7 @@ mod tests {
         )
     }
 
-    fn required_server_notifications() -> Vec<ServerNotification> {
+    fn reviewed_consumer_state_notifications() -> Vec<ServerNotification> {
         let thread_id = || "thread".to_string();
         let turn_id = || "turn".to_string();
         let item_id = || "item".to_string();
@@ -1098,6 +1078,49 @@ mod tests {
                     },
                 },
             ),
+            ServerNotification::AccountLoginCompleted(
+                codex_app_server_protocol::AccountLoginCompletedNotification {
+                    login_id: Some("login".to_string()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::AccountUpdated(
+                codex_app_server_protocol::AccountUpdatedNotification {
+                    auth_mode: None,
+                    plan_type: None,
+                },
+            ),
+            ServerNotification::McpServerOauthLoginCompleted(
+                codex_app_server_protocol::McpServerOauthLoginCompletedNotification {
+                    name: "server".to_string(),
+                    thread_id: Some(thread_id()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::ProcessExited(
+                codex_app_server_protocol::ProcessExitedNotification {
+                    process_handle: "process".to_string(),
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stdout_cap_reached: false,
+                    stderr: String::new(),
+                    stderr_cap_reached: false,
+                },
+            ),
+            ServerNotification::FuzzyFileSearchSessionCompleted(
+                codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification {
+                    session_id: "search".to_string(),
+                },
+            ),
+            ServerNotification::WindowsSandboxSetupCompleted(
+                codex_app_server_protocol::WindowsSandboxSetupCompletedNotification {
+                    mode: codex_app_server_protocol::WindowsSandboxSetupMode::Unelevated,
+                    success: true,
+                    error: None,
+                },
+            ),
             ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
                 thread_id: thread_id(),
                 turn: Turn {
@@ -1202,6 +1225,31 @@ mod tests {
                     item_id: item_id(),
                     delta: "reasoning".to_string(),
                     content_index: 0,
+                },
+            ),
+            ServerNotification::ThreadRealtimeStarted(
+                codex_app_server_protocol::ThreadRealtimeStartedNotification {
+                    thread_id: thread_id(),
+                    realtime_session_id: Some("realtime".to_string()),
+                    version: codex_protocol::protocol::RealtimeConversationVersion::V1,
+                },
+            ),
+            ServerNotification::ThreadRealtimeSdp(
+                codex_app_server_protocol::ThreadRealtimeSdpNotification {
+                    thread_id: thread_id(),
+                    sdp: "answer".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeError(
+                codex_app_server_protocol::ThreadRealtimeErrorNotification {
+                    thread_id: thread_id(),
+                    message: "error".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeClosed(
+                codex_app_server_protocol::ThreadRealtimeClosedNotification {
+                    thread_id: thread_id(),
+                    reason: Some("done".to_string()),
                 },
             ),
         ]
@@ -1436,9 +1484,9 @@ mod tests {
     }
 
     #[test]
-    fn guaranteed_delivery_classifier_covers_every_required_notification() {
-        let notifications = required_server_notifications();
-        assert_eq!(notifications.len(), 22);
+    fn delivery_classifier_preserves_reviewed_consumer_state_notifications() {
+        let notifications = reviewed_consumer_state_notifications();
+        assert_eq!(notifications.len(), 32);
         assert!(
             notifications
                 .iter()
