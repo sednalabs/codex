@@ -279,6 +279,16 @@ impl AgentControl {
             .finish_spawn_publication(&SpawnPublicationKey::new(parent_thread_id, call_id));
     }
 
+    #[cfg(test)]
+    pub(crate) fn tool_spawn_publication_decision_for_test(
+        &self,
+        parent_thread_id: ThreadId,
+        call_id: &str,
+    ) -> SpawnPublicationDecision {
+        self.state
+            .spawn_publication_decision(&SpawnPublicationKey::new(parent_thread_id, call_id))
+    }
+
     /// Send rich user input items to an existing agent thread.
     pub(crate) async fn send_input(
         &self,

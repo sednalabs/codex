@@ -7,6 +7,7 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
+use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -68,23 +69,6 @@ async fn handle_spawn_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
-    session
-        .emit_turn_item_started(
-            &turn,
-            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                id: call_id.clone(),
-                tool: CollabAgentTool::SpawnAgent,
-                status: CollabAgentToolCallStatus::InProgress,
-                sender_thread_id: session.thread_id,
-                receiver_thread_ids: Vec::new(),
-                receiver_agents: Vec::new(),
-                prompt: Some(prompt.clone()),
-                model: Some(args.model.clone().unwrap_or_default()),
-                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
-                agents_states: Default::default(),
-            }),
-        )
-        .await;
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
     if let Some(service_tier) = args.service_tier.as_ref() {
@@ -131,8 +115,11 @@ async fn handle_spawn_agent(
             spawn_call_id: Some(call_id.clone()),
         },
     ))
-    .await
-    .map_err(collab_spawn_error);
+    .await;
+    let cancellation_owned = result.as_ref().is_err_and(|error| {
+        matches!(error.details(), CodexErrorDetails::TurnAborted)
+    });
+    let result = result.map_err(collab_spawn_error);
     let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),
@@ -186,23 +173,42 @@ async fn handle_spawn_agent(
     let agents_states = new_thread_id
         .map(|thread_id| [(thread_id, status.clone())].into_iter().collect())
         .unwrap_or_default();
-    session
-        .emit_turn_item_completed(
-            &turn,
-            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                id: call_id,
-                tool: CollabAgentTool::SpawnAgent,
-                status: collab_tool_call_status(&status, new_thread_id),
-                sender_thread_id: session.thread_id,
-                receiver_thread_ids,
-                receiver_agents,
-                prompt: Some(prompt),
-                model: Some(effective_model),
-                reasoning_effort: Some(effective_reasoning_effort),
-                agents_states,
-            }),
-        )
-        .await;
+    if !cancellation_owned {
+        session
+            .emit_turn_item_started(
+                &turn,
+                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    id: call_id.clone(),
+                    tool: CollabAgentTool::SpawnAgent,
+                    status: CollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: session.thread_id,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: Some(prompt.clone()),
+                    model: Some(args.model.clone().unwrap_or_default()),
+                    reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                    agents_states: Default::default(),
+                }),
+            )
+            .await;
+        session
+            .emit_turn_item_completed(
+                &turn,
+                TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                    id: call_id,
+                    tool: CollabAgentTool::SpawnAgent,
+                    status: collab_tool_call_status(&status, new_thread_id),
+                    sender_thread_id: session.thread_id,
+                    receiver_thread_ids,
+                    receiver_agents,
+                    prompt: Some(prompt),
+                    model: Some(effective_model),
+                    reasoning_effort: Some(effective_reasoning_effort),
+                    agents_states,
+                }),
+            )
+            .await;
+    }
     let new_thread_id = result?.thread_id;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(

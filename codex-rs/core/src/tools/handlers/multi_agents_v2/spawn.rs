@@ -154,24 +154,23 @@ async fn handle_spawn_agent(
         .as_ref()
         .map(|snapshot| snapshot.reasoning_effort.clone())
         .unwrap_or_else(|| args.reasoning_effort.clone());
-    if matches!(
-        spawned_agent.status,
-        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted
-    ) {
-        emit_sub_agent_activity(
-            &session,
-            &turn,
-            SubAgentActivityItem {
-                id: call_id,
-                agent_thread_id: new_thread_id,
-                agent_path: new_agent_path.clone(),
-                model: Some(effective_model.clone()),
-                reasoning_effort: effective_reasoning_effort.clone(),
-                kind: SubAgentActivityKind::Started,
-            },
-        )
-        .await;
-    }
+    // `spawn_agent_with_communication` only returns `Ok` after winning publication. A child
+    // that finished its first turn quickly is still a real published child and must retain the
+    // same V2 Started activity as a running child; cancellation-owned spawns return `Err` above
+    // and therefore remain invisible.
+    emit_sub_agent_activity(
+        &session,
+        &turn,
+        SubAgentActivityItem {
+            id: call_id,
+            agent_thread_id: new_thread_id,
+            agent_path: new_agent_path.clone(),
+            model: Some(effective_model.clone()),
+            reasoning_effort: effective_reasoning_effort.clone(),
+            kind: SubAgentActivityKind::Started,
+        },
+    )
+    .await;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
