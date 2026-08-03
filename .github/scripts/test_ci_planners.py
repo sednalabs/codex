@@ -668,13 +668,20 @@ class RouteSelectionTests(unittest.TestCase):
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             [
                 "codex-rs/core/src/agent/control.rs",
+                "codex-rs/core/src/agent/control/lifecycle.rs",
                 "codex-rs/core/src/agent/control/residency.rs",
                 "codex-rs/core/src/agent/control/residency_tests.rs",
                 "codex-rs/core/src/agent/control/spawn.rs",
                 "codex-rs/core/src/agent/control_tests.rs",
+                "codex-rs/core/src/agent/lifecycle.rs",
                 "codex-rs/core/src/agent/registry.rs",
                 "codex-rs/core/src/agent/registry_tests.rs",
+                "codex-rs/core/src/codex_thread.rs",
+                "codex-rs/core/src/session/handlers.rs",
+                "codex-rs/core/src/session/input_queue.rs",
+                "codex-rs/core/src/tasks/mod.rs",
                 "codex-rs/core/src/thread_manager.rs",
+                "codex-rs/core/src/unified_exec/async_watcher.rs",
                 "codex-rs/core/tests/suite/agent_execution.rs",
                 ".github/scripts/test_ci_planners.py",
                 ".github/validation-lanes.json",
@@ -697,6 +704,18 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(recipe.count("RUST_MIN_STACK="), 4)
         self.assertEqual(recipe.count("--no-tests=fail"), 4)
         for test_name in (
+            "agent::control::residency::tests::"
+            "terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent",
+            "agent::control::residency::tests::"
+            "terminal_idle_unload_timeout_zero_disables_unload",
+            "agent::control::residency::tests::"
+            "terminal_idle_unload_is_invalidated_by_new_user_work",
+            "agent::control::residency::tests::"
+            "terminal_idle_unload_failure_preserves_trigger_mail_and_residency",
+            "agent::control::residency::tests::"
+            "terminal_idle_unload_waits_for_terminal_finalization",
+            "agent::control::residency::tests::"
+            "terminal_idle_unload_waits_for_accepted_submission_acknowledgement",
             "agent::control::residency::tests::"
             "residency_slot_reservation_unloads_oldest_idle_v2_agent",
             "agent::control::residency::tests::"

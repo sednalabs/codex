@@ -4,6 +4,7 @@ use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
+use crate::session::new_submission_id;
 use crate::session::session::Session;
 use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_features::Feature;
@@ -194,6 +195,39 @@ struct OutOfBandElicitations {
     registration: Option<ElicitationRegistration>,
 }
 
+struct PendingResidencySubmission {
+    session: Arc<Session>,
+    submission_id: String,
+    handed_off: bool,
+}
+
+impl PendingResidencySubmission {
+    fn new(session: Arc<Session>, submission_id: String) -> Self {
+        session
+            .input_queue
+            .register_residency_submission(submission_id.clone());
+        Self {
+            session,
+            submission_id,
+            handed_off: false,
+        }
+    }
+
+    fn hand_off(&mut self) {
+        self.handed_off = true;
+    }
+}
+
+impl Drop for PendingResidencySubmission {
+    fn drop(&mut self) {
+        if !self.handed_off {
+            self.session
+                .input_queue
+                .finish_residency_submission(&self.submission_id);
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct BackgroundTerminalInfo {
     pub item_id: String,
@@ -223,7 +257,7 @@ impl CodexThread {
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
-        self.io.submit(op).await
+        self.submit_with_trace(op, /*trace*/ None).await
     }
 
     pub async fn notify_computer_use_response(
@@ -285,7 +319,15 @@ impl CodexThread {
         op: Op,
         trace: Option<W3cTraceContext>,
     ) -> CodexResult<String> {
-        self.io.submit_with_trace(op, trace).await
+        let id = new_submission_id();
+        self.submit_tracked(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id: None,
+            trace,
+        })
+        .await?;
+        Ok(id)
     }
 
     pub async fn submit_user_input_with_client_user_message_id(
@@ -299,9 +341,15 @@ impl CodexThread {
             .agent_control
             .ensure_execution_capacity_for_op(self.session.thread_id(), &op)
             .await?;
-        self.io
-            .submit_user_input_with_client_user_message_id(op, trace, client_user_message_id)
-            .await
+        let id = new_submission_id();
+        self.submit_tracked(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id,
+            trace,
+        })
+        .await?;
+        Ok(id)
     }
 
     /// Persist whether this thread is eligible for future memory generation.
@@ -317,6 +365,7 @@ impl CodexThread {
         client_user_message_id: Option<String>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session
             .steer_input(
                 input,
@@ -337,6 +386,7 @@ impl CodexThread {
         &self,
         items: Vec<ResponseItem>,
     ) -> Result<(), Vec<ResponseItem>> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session.inject_if_running(items).await
     }
 
@@ -357,6 +407,7 @@ impl CodexThread {
         &self,
         items: Vec<ResponseItem>,
     ) -> Result<(), TryStartTurnIfIdleError> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
         self.session.try_start_turn_if_idle(items).await
     }
 
@@ -438,7 +489,21 @@ impl CodexThread {
 
     /// Use sparingly: this is intended to be removed soon.
     pub async fn submit_with_id(&self, sub: Submission) -> CodexResult<()> {
-        self.io.submit_with_id(sub).await
+        self.submit_tracked(sub).await
+    }
+
+    async fn submit_tracked(&self, sub: Submission) -> CodexResult<()> {
+        let submission_id = sub.id.clone();
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
+        let mut pending = PendingResidencySubmission::new(
+            Arc::clone(&self.session),
+            submission_id,
+        );
+        let result = self.io.submit_with_id(sub).await;
+        if result.is_ok() {
+            pending.hand_off();
+        }
+        result
     }
 
     pub async fn next_event(&self) -> CodexResult<Event> {

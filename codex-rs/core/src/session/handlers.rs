@@ -702,6 +702,7 @@ pub(super) async fn submission_loop(
     let mut shutdown_received = false;
     while let Ok(sub) = rx_sub.recv().await {
         debug!(?sub, "Submission");
+        let submission_id = sub.id.clone();
         let dispatch_span = submission_dispatch_span(&sub);
         let should_exit = async {
             match sub.op.clone() {
@@ -834,6 +835,9 @@ pub(super) async fn submission_loop(
         }
         .instrument(dispatch_span)
         .await;
+        sess.input_queue
+            .acknowledge_residency_submission(&submission_id)
+            .await;
         if should_exit {
             shutdown_received = true;
             break;

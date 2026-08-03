@@ -10,10 +10,12 @@ use crate::init_state_db;
 use crate::thread_manager::ThreadManagerState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -21,8 +23,320 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::yield_now;
+use tokio::time::advance;
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
+    let (_home, config, manager, control, first, metadata) =
+        terminal_idle_test_agent(/*timeout_ms*/ 1_000, /*ephemeral*/ false, /*sqlite*/ true)
+            .await;
+    let first_message = test_communication("first queued message", /*trigger_turn*/ false);
+    let second_message = test_communication("second queued message", /*trigger_turn*/ false);
+    first
+        .thread
+        .session
+        .input_queue
+        .enqueue_mailbox_communications(vec![first_message.clone(), second_message.clone()])
+        .await;
+
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("done".to_string())),
+    )
+    .await;
+    yield_now().await;
+    advance(Duration::from_millis(999)).await;
+    assert!(manager.get_thread(first.thread_id).await.is_ok());
+
+    advance(Duration::from_millis(1)).await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    assert_eq!(
+        control.get_status(first.thread_id).await,
+        AgentStatus::Completed(Some("done".to_string()))
+    );
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 2);
+
+    control
+        .ensure_v2_agent_loaded(config, first.thread_id)
+        .await
+        .expect("cold agent should reload");
+    let reloaded = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("reloaded thread should be resident");
+    assert_eq!(
+        reloaded
+            .session
+            .input_queue
+            .drain_mailbox_communications()
+            .await,
+        vec![first_message, second_message]
+    );
+    assert_eq!(
+        control.state.cold_status(first.thread_id, Some(&reloaded)),
+        None
+    );
+
+    mark_thread_status(
+        reloaded.as_ref(),
+        AgentStatus::Completed(Some("reloaded turn complete".to_string())),
+    )
+    .await;
+    yield_now().await;
+    advance(Duration::from_millis(1_000)).await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    assert_eq!(
+        control.get_status(first.thread_id).await,
+        AgentStatus::Completed(Some("reloaded turn complete".to_string()))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_timeout_zero_disables_unload() {
+    let (_home, _config, manager, _control, first, _metadata) =
+        terminal_idle_test_agent(/*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ false)
+            .await;
+    mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
+
+    advance(Duration::from_secs(3_600)).await;
+    yield_now().await;
+    let resident = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("zero timeout should keep the runtime resident");
+    assert!(Arc::ptr_eq(&resident, &first.thread));
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
+    let (_home, _config, manager, control, first, _metadata) =
+        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
+            .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("first turn complete".to_string())),
+    )
+    .await;
+    yield_now().await;
+    advance(Duration::from_millis(50)).await;
+
+    control
+        .send_input(
+            first.thread_id,
+            vec![UserInput::Text {
+                text: "new user work".to_string(),
+                text_elements: Vec::new(),
+            }],
+        )
+        .await
+        .expect("new user work should be accepted");
+    advance(Duration::from_millis(50)).await;
+    yield_now().await;
+
+    let resident = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("new user work should invalidate idle unload");
+    assert!(Arc::ptr_eq(&resident, &first.thread));
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
+    let (_home, _config, manager, _control, first, _metadata) =
+        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
+            .await;
+    let queued = vec![
+        test_communication("queue-only", /*trigger_turn*/ false),
+        test_communication("trigger work", /*trigger_turn*/ true),
+    ];
+    first
+        .thread
+        .session
+        .input_queue
+        .enqueue_mailbox_communications(queued.clone())
+        .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Errored("terminal failure".to_string()),
+    )
+    .await;
+    yield_now().await;
+
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    let resident = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("pending trigger work should keep the runtime resident");
+    assert!(Arc::ptr_eq(&resident, &first.thread));
+    assert_eq!(
+        resident
+            .session
+            .input_queue
+            .drain_mailbox_communications()
+            .await,
+        queued
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_waits_for_terminal_finalization() {
+    let (_home, _config, manager, _control, first, _metadata) =
+        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
+            .await;
+    first
+        .thread
+        .session
+        .input_queue
+        .register_terminal_finalizer();
+    mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
+    yield_now().await;
+
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    assert!(manager.get_thread(first.thread_id).await.is_ok());
+
+    let finalization = first
+        .thread
+        .session
+        .input_queue
+        .begin_residency_activity()
+        .await;
+    first
+        .thread
+        .session
+        .input_queue
+        .finish_terminal_finalizer();
+    drop(finalization);
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    advance(Duration::from_millis(100)).await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
+    let (_home, _config, manager, _control, first, _metadata) =
+        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
+            .await;
+    first
+        .thread
+        .session
+        .input_queue
+        .register_residency_submission("held-submission".to_string());
+    mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
+    yield_now().await;
+
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    assert!(manager.get_thread(first.thread_id).await.is_ok());
+
+    first
+        .thread
+        .session
+        .input_queue
+        .acknowledge_residency_submission("held-submission")
+        .await;
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    advance(Duration::from_millis(100)).await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
+}
+
+async fn terminal_idle_test_agent(
+    timeout_ms: u64,
+    ephemeral: bool,
+    sqlite: bool,
+) -> (
+    tempfile::TempDir,
+    Config,
+    ThreadManager,
+    AgentControl,
+    crate::thread_manager::NewThread,
+    AgentMetadata,
+) {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    config.multi_agent_v2.terminal_idle_unload_timeout_ms = timeout_ms;
+    config.ephemeral = ephemeral;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let state_db = if sqlite {
+        let _ = config.features.enable(Feature::Sqlite);
+        Some(
+            init_state_db(&config)
+                .await
+                .expect("sqlite state db should initialize"),
+        )
+    } else {
+        None
+    };
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        state_db,
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+    let residency_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("reserve resident slot");
+    let first =
+        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
+    residency_slot.commit(first.thread_id);
+    control
+        .state
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve registry slot")
+        .commit(AgentMetadata {
+            agent_id: Some(first.thread_id),
+            ..Default::default()
+        });
+    let metadata = control
+        .state
+        .agent_metadata_for_thread(first.thread_id)
+        .expect("registered metadata");
+    control.start_terminal_idle_unload_watcher(
+        Arc::clone(&first.thread),
+        metadata.clone(),
+        timeout_ms,
+    );
+    (temp_home, config, manager, control, first, metadata)
+}
+
+fn test_communication(text: &str, trigger_turn: bool) -> InterAgentCommunication {
+    InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root(),
+        Vec::new(),
+        text.to_string(),
+        trigger_turn,
+    )
+}
+
+async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) {
+    for _ in 0..64 {
+        if manager.get_thread(thread_id).await.is_err() {
+            return;
+        }
+        yield_now().await;
+    }
+    panic!("thread {thread_id} should be unloaded");
+}
 
 #[tokio::test]
 async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {

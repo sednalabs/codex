@@ -15,6 +15,7 @@ use codex_protocol::protocol::SessionSource;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tracing::warn;
 
 #[derive(Default)]
@@ -77,6 +78,79 @@ impl AgentControl {
 
     pub(super) fn forget_v2_residency(&self, thread_id: ThreadId) {
         self.v2_residency.remove(thread_id);
+    }
+
+    pub(super) fn start_terminal_idle_unload_watcher(
+        &self,
+        thread: Arc<CodexThread>,
+        metadata: crate::agent::registry::AgentMetadata,
+        timeout_ms: u64,
+    ) {
+        if timeout_ms == 0
+            || !is_resident_candidate(thread.as_ref())
+            || thread.session.live_thread().is_none()
+        {
+            return;
+        }
+
+        let control = self.clone();
+        tokio::spawn(async move {
+            let thread_id = thread.thread_id;
+            let mut status_rx = thread.subscribe_status();
+            loop {
+                let status = status_rx.borrow().clone();
+                match status {
+                    AgentStatus::Completed(_)
+                    | AgentStatus::Errored(_)
+                    | AgentStatus::Interrupted => {
+                        let timer_generation = {
+                            let mut lifecycle = metadata.lifecycle.lock().await;
+                            if !control.state.metadata_is_current(thread_id, &metadata) {
+                                return;
+                            }
+                            lifecycle.arm_terminal_idle_unload()
+                        };
+                        let runtime_activity_generation = thread
+                            .session
+                            .input_queue
+                            .residency_activity_generation();
+                        tokio::select! {
+                            () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {}
+                            changed = status_rx.changed() => {
+                                if changed.is_err() {
+                                    return;
+                                }
+                                continue;
+                            }
+                        }
+                        let Ok(manager) = control.upgrade() else {
+                            return;
+                        };
+                        if control
+                            .v2_residency
+                            .try_unload_terminal_idle(
+                                &manager,
+                                control.state.as_ref(),
+                                &metadata,
+                                &thread,
+                                timer_generation,
+                                runtime_activity_generation,
+                            )
+                            .await
+                        {
+                            control.forget_v2_residency(thread_id);
+                            return;
+                        }
+                    }
+                    AgentStatus::PendingInit | AgentStatus::Running => {
+                        if status_rx.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                    AgentStatus::Shutdown | AgentStatus::NotFound => return,
+                }
+            }
+        });
     }
 }
 
@@ -148,120 +222,207 @@ impl V2Residency {
             else {
                 continue;
             };
-            // Cold identities are reloadable only when the session has durable history.
-            if candidate_thread.session.live_thread().is_none() {
-                self.touch(candidate_thread_id);
-                continue;
-            }
-            let status = candidate_thread.agent_status().await;
-            if !is_unloadable(candidate_thread.as_ref(), &status).await {
-                self.touch(candidate_thread_id);
-                continue;
-            }
-            let cold_status = match status {
-                AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted => {
-                    Some(status)
-                }
-                AgentStatus::PendingInit
-                | AgentStatus::Running
-                | AgentStatus::Shutdown
-                | AgentStatus::NotFound => {
-                    self.touch(candidate_thread_id);
-                    continue;
-                }
-            };
-            if let Err(err) = candidate_thread
-                .session
-                .try_ensure_rollout_materialized()
-                .await
-            {
-                warn!(
-                    "failed to materialize v2 resident thread before unloading {candidate_thread_id}: {err}"
-                );
-                self.touch(candidate_thread_id);
-                continue;
-            }
-            if let Err(err) = candidate_thread.flush_rollout().await {
-                warn!(
-                    "failed to flush v2 resident thread before unloading {candidate_thread_id}: {err}"
-                );
-                self.touch(candidate_thread_id);
-                continue;
-            }
-            let pending_mail = candidate_thread
+            let _residency_transition = candidate_thread
                 .session
                 .input_queue
-                .drain_mailbox_communications()
+                .lock_residency_transition()
                 .await;
-            if pending_mail.iter().any(|mail| mail.trigger_turn)
-                || (metadata.is_none() && !pending_mail.is_empty())
+            if self
+                .try_unload_candidate(
+                    manager,
+                    registry,
+                    metadata.as_ref(),
+                    lifecycle.as_mut().map(|guard| &mut **guard),
+                    candidate_thread,
+                )
+                .await
             {
-                candidate_thread
-                    .session
-                    .input_queue
-                    .prepend_mailbox_communications(pending_mail)
-                    .await;
-                self.touch(candidate_thread_id);
-                continue;
+                return true;
             }
-            if let Err(err) = candidate_thread.shutdown_and_wait().await {
-                warn!(
-                    "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
-                );
-                candidate_thread
-                    .session
-                    .input_queue
-                    .prepend_mailbox_communications(pending_mail)
-                    .await;
-                self.touch(candidate_thread_id);
-                continue;
-            }
-            let removal = manager
-                .remove_thread_if_same(&candidate_thread_id, &candidate_thread, || {
-                    if let (Some(metadata), Some(status)) = (&metadata, cold_status) {
-                        registry.publish_cold_status_if_current(
-                            candidate_thread_id,
-                            metadata,
-                            &candidate_thread,
-                            status,
-                        );
-                    }
-                })
-                .await;
-            match removal {
-                RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
-                    if let Some(lifecycle) = lifecycle.as_mut() {
-                        lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
-                            ColdMailboxItem {
-                                receive_id: None,
-                                communication,
-                            }
-                        }));
-                    }
-                    return true;
-                }
-                RemoveThreadIfSameResult::Replaced => {
-                    if let Ok(replacement) = manager.get_thread(candidate_thread_id).await {
-                        replacement
-                            .session
-                            .input_queue
-                            .prepend_mailbox_communications(pending_mail)
-                            .await;
-                    } else {
-                        if let Some(lifecycle) = lifecycle.as_mut() {
-                            lifecycle.extend_cold_mail(pending_mail.into_iter().map(
-                                |communication| ColdMailboxItem {
-                                    receive_id: None,
-                                    communication,
-                                },
-                            ));
-                        }
-                    }
-                    self.touch(candidate_thread_id);
-                }
-            }
+            self.touch(candidate_thread_id);
         }
         false
+    }
+
+    async fn try_unload_terminal_idle(
+        &self,
+        manager: &Arc<ThreadManagerState>,
+        registry: &AgentRegistry,
+        metadata: &crate::agent::registry::AgentMetadata,
+        expected_thread: &Arc<CodexThread>,
+        timer_generation: u64,
+        runtime_activity_generation: u64,
+    ) -> bool {
+        let _reload = metadata.lifecycle.lock_reload().await;
+        let mut lifecycle = metadata.lifecycle.lock().await;
+        if !registry.metadata_is_current(expected_thread.thread_id, metadata)
+            || !lifecycle.terminal_idle_unload_is_current(timer_generation)
+        {
+            return false;
+        }
+        let Ok(thread) = manager.get_thread(expected_thread.thread_id).await else {
+            return false;
+        };
+        if !Arc::ptr_eq(&thread, expected_thread) || !is_resident_candidate(thread.as_ref()) {
+            return false;
+        }
+        let _residency_transition = thread
+            .session
+            .input_queue
+            .lock_residency_transition()
+            .await;
+        if thread
+            .session
+            .input_queue
+            .residency_activity_generation()
+            != runtime_activity_generation
+        {
+            return false;
+        }
+        self.try_unload_candidate(
+            manager,
+            registry,
+            Some(metadata),
+            Some(&mut lifecycle),
+            thread,
+        )
+        .await
+    }
+
+    async fn try_unload_candidate(
+        &self,
+        manager: &Arc<ThreadManagerState>,
+        registry: &AgentRegistry,
+        metadata: Option<&crate::agent::registry::AgentMetadata>,
+        mut lifecycle: Option<&mut crate::agent::lifecycle::AgentLifecycleState>,
+        candidate_thread: Arc<CodexThread>,
+    ) -> bool {
+        let candidate_thread_id = candidate_thread.thread_id;
+        // Cold identities are reloadable only when the session has durable history.
+        if candidate_thread.session.live_thread().is_none() {
+            return false;
+        }
+        let status = candidate_thread.agent_status().await;
+        if !is_unloadable(candidate_thread.as_ref(), &status).await
+            || candidate_thread
+                .session
+                .input_queue
+                .has_pending_terminal_completions()
+                .await
+            || candidate_thread
+                .session
+                .input_queue
+                .has_pending_terminal_finalizers()
+            || candidate_thread
+                .session
+                .input_queue
+                .has_pending_residency_submissions()
+        {
+            return false;
+        }
+        let cold_status = match status {
+            AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted => {
+                Some(status)
+            }
+            AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Shutdown
+            | AgentStatus::NotFound => return false,
+        };
+        if let Err(err) = candidate_thread
+            .session
+            .try_ensure_rollout_materialized()
+            .await
+        {
+            warn!(
+                "failed to materialize v2 resident thread before unloading {candidate_thread_id}: {err}"
+            );
+            return false;
+        }
+        if let Err(err) = candidate_thread.flush_rollout().await {
+            warn!(
+                "failed to flush v2 resident thread before unloading {candidate_thread_id}: {err}"
+            );
+            return false;
+        }
+        let pending_mail = candidate_thread
+            .session
+            .input_queue
+            .drain_mailbox_communications()
+            .await;
+        if pending_mail.iter().any(|mail| mail.trigger_turn)
+            || (metadata.is_none() && !pending_mail.is_empty())
+        {
+            candidate_thread
+                .session
+                .input_queue
+                .prepend_mailbox_communications(pending_mail)
+                .await;
+            return false;
+        }
+        if metadata.is_some_and(|metadata| {
+            !registry.metadata_is_current(candidate_thread_id, metadata)
+        }) {
+            candidate_thread
+                .session
+                .input_queue
+                .prepend_mailbox_communications(pending_mail)
+                .await;
+            return false;
+        }
+        if let Err(err) = candidate_thread.shutdown_and_wait().await {
+            warn!(
+                "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
+            );
+            candidate_thread
+                .session
+                .input_queue
+                .prepend_mailbox_communications(pending_mail)
+                .await;
+            return false;
+        }
+        let removal = manager
+            .remove_thread_if_same(&candidate_thread_id, &candidate_thread, || {
+                if let (Some(metadata), Some(status)) = (metadata, cold_status) {
+                    registry.publish_cold_status_if_current(
+                        candidate_thread_id,
+                        metadata,
+                        &candidate_thread,
+                        status,
+                    );
+                }
+            })
+            .await;
+        match removal {
+            RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing => {
+                if let Some(lifecycle) = lifecycle.as_mut() {
+                    lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                        ColdMailboxItem {
+                            receive_id: None,
+                            communication,
+                        }
+                    }));
+                }
+                true
+            }
+            RemoveThreadIfSameResult::Replaced => {
+                if let Ok(replacement) = manager.get_thread(candidate_thread_id).await {
+                    replacement
+                        .session
+                        .input_queue
+                        .prepend_mailbox_communications(pending_mail)
+                        .await;
+                } else if let Some(lifecycle) = lifecycle.as_mut() {
+                    lifecycle.extend_cold_mail(pending_mail.into_iter().map(|communication| {
+                        ColdMailboxItem {
+                            receive_id: None,
+                            communication,
+                        }
+                    }));
+                }
+                false
+            }
+        }
     }
 
     fn resident_count(&self) -> usize {
@@ -342,6 +503,7 @@ async fn is_unloadable(thread: &CodexThread, status: &AgentStatus) -> bool {
         status,
         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
     ) && thread.session.active_turn.lock().await.is_none()
+        && thread.list_background_terminals().await.is_empty()
 }
 
 #[cfg(test)]

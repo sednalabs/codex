@@ -306,6 +306,8 @@ impl AgentControl {
         residency_slot: V2ResidencySlot,
         lifecycle: &mut crate::agent::lifecycle::AgentLifecycleState,
     ) -> CodexResult<()> {
+        let terminal_idle_unload_timeout_ms =
+            config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         if state.get_thread(thread_id).await.is_ok() {
             metadata.clear_cold_status();
             self.touch_loaded_v2_residency(state, thread_id).await;
@@ -415,6 +417,11 @@ impl AgentControl {
             Ok(reloaded_thread) => {
                 metadata.clear_cold_status();
                 residency_slot.commit(reloaded_thread.thread_id);
+                self.start_terminal_idle_unload_watcher(
+                    Arc::clone(&reloaded_thread.thread),
+                    metadata.clone(),
+                    terminal_idle_unload_timeout_ms,
+                );
                 state.notify_thread_created(reloaded_thread.thread_id);
                 self.restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
                     .await
@@ -458,6 +465,8 @@ impl AgentControl {
             && session_source
                 .as_ref()
                 .is_some_and(is_v2_resident_session_source);
+        let terminal_idle_unload_timeout_ms =
+            config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         let residency_slot = if spawn_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
@@ -549,6 +558,13 @@ impl AgentControl {
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
+        }
+        if spawn_uses_v2_residency {
+            self.start_terminal_idle_unload_watcher(
+                Arc::clone(&new_thread.thread),
+                agent_metadata.clone(),
+                terminal_idle_unload_timeout_ms,
+            );
         }
 
         if let Some(SessionSource::SubAgent(
