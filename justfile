@@ -347,6 +347,7 @@ session-tui-resource-stability-targeted: core-multi-agent-orchestration-targeted
     cargo test -p codex-app-server-client --lib remote_write_failure_delivers_lag_before_disconnect -- --test-threads=1
     cargo test -p codex-app-server-client --lib remote_shutdown_closes_promptly_with_pending_required_event -- --test-threads=1
     cargo test -p codex-app-server-client --lib remote_consumer_closure_terminates_in_flight_server_request_custody -- --test-threads=1
+    cargo test -p codex-app-server-client --lib remote_idle_consumer_closure_terminates_retained_request_handle -- --test-threads=1
     cargo test -p codex-otel --lib session_constructor_sanitizes_only_the_metric_app_version -- --test-threads=1
     cargo test -p codex-features --lib multi_agent_v2_feature_config_deserializes_table -- --test-threads=1
     cargo test -p codex-core --lib multi_agent_v2_config_from_feature_table -- --test-threads=1

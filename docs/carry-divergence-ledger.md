@@ -1030,7 +1030,7 @@ decisions.
 
 - Commits `4c13d4d948`, `93a224621b`, `3087953141`, `53529c220c`,
   `a3520d0dcb`, `1b77a6a9cd`, `cae2710084`, `cefa12a82d`, `7fd969cb5c`,
-  `1a04d09d2b`, `d26566801a`, and `3f6c645277`
+  `1a04d09d2b`, `d26566801a`, `3f6c645277`, and `05dd8d25b7`
   manually carry bounded
   lower-runtime, facade, remote-client, and fuzzy-forwarder delivery
   semantics from app-server ancestry `7bd0a55155` without importing its wider
@@ -1045,7 +1045,8 @@ decisions.
   terminal metadata separately from its retained authoritative payload, fails
   pending request waiters immediately, and materializes exactly one disconnected
   event only after outstanding lag and the retained payload. A closed remote
-  event consumer clears delivery custody, fails pending request waiters,
+  event consumer is observed directly even if the peer sends no further
+  traffic; the worker clears delivery custody, fails pending request waiters,
   performs a close handshake bounded by the shutdown timeout, and exits so an
   independently cloned request handle cannot retain the worker or WebSocket.
   All three transport tiers treat every
@@ -1091,7 +1092,9 @@ decisions.
   `remote_consumer_closure_terminates_in_flight_server_request_custody`
   regression holds an independent request handle and a delivered server
   request in flight, then proves consumer closure fails the pending request and
-  closes the peer transport without retaining a command-only worker.
+  closes the peer transport without retaining a command-only worker. The exact
+  `remote_idle_consumer_closure_terminates_retained_request_handle` regression
+  proves the same termination contract with no event arriving from the peer.
 - Commit `8f6777cd91` follows upstream metric-tag sanitizer commits
   `bd861ff550` and `d9559390ec` while keeping the ordinary release version
   exact. Only the `app.version` value supplied to metrics replaces unsupported

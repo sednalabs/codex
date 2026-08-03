@@ -779,6 +779,7 @@ class RouteSelectionTests(unittest.TestCase):
             "remote_write_failure_delivers_lag_before_disconnect",
             "remote_shutdown_closes_promptly_with_pending_required_event",
             "remote_consumer_closure_terminates_in_flight_server_request_custody",
+            "remote_idle_consumer_closure_terminates_retained_request_handle",
             "session_constructor_sanitizes_only_the_metric_app_version",
             "multi_agent_v2_feature_config_deserializes_table",
             "multi_agent_v2_config_from_feature_table",
