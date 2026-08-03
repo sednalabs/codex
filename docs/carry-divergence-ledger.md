@@ -1028,8 +1028,8 @@ decisions.
 
 ### Bounded In-Process Delivery And Metric Version Tags
 
-- Commits `faa62f2d6d`, `7f95ea88fe`, and `05f79d293b` manually carry bounded
-  lower-queue delivery and facade-classification parity
+- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, and `fab1000903`
+  manually carry bounded lower-queue delivery and facade-classification parity
   semantics from app-server ancestry `7bd0a55155` without importing its wider
   programme stack. The capacity remains finite; one authoritative notification
   may wait for a permit while the runtime continues polling client control and
@@ -1043,7 +1043,10 @@ decisions.
   facade saturation, stacked lag accounting, and shutdown after a test signal
   proves a required notification is pending;
   test-only sender custody is released before the runtime joins its outbound
-  router so shutdown has production-equivalent last-sender semantics.
+  router so shutdown has production-equivalent last-sender semantics. A
+  facade-level capacity-one regression also proves that shutdown drops its
+  receiver, releases a required event waiting on capacity, and then completes
+  the embedded runtime shutdown.
 - Commit `b52b676538` follows upstream metric-tag sanitizer commits
   `bd861ff550` and `d9559390ec` while keeping the ordinary release version
   exact. Only the `app.version` value supplied to metrics replaces unsupported
