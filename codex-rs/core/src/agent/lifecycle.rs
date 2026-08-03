@@ -68,6 +68,11 @@ impl AgentLifecycleState {
     pub(super) fn cold_mail_len(&self) -> usize {
         self.cold_mailbox.len()
     }
+
+    #[cfg(test)]
+    pub(super) fn terminal_idle_unload_generation(&self) -> u64 {
+        self.terminal_idle_unload_generation
+    }
 }
 
 #[cfg(test)]

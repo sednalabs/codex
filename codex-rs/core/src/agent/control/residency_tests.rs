@@ -45,12 +45,13 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         .enqueue_mailbox_communications(vec![first_message.clone(), second_message.clone()])
         .await;
 
+    let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(
         first.thread.as_ref(),
         AgentStatus::Completed(Some("done".to_string())),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
     advance(Duration::from_millis(999)).await;
     assert!(manager.get_thread(first.thread_id).await.is_ok());
 
@@ -83,12 +84,13 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         None
     );
 
+    let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(
         reloaded.as_ref(),
         AgentStatus::Completed(Some("reloaded turn complete".to_string())),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
     advance(Duration::from_millis(1_000)).await;
     wait_for_thread_unloaded(&manager, first.thread_id).await;
     assert_eq!(
@@ -187,7 +189,7 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_waits_for_terminal_finalization() {
-    let (_home, _config, manager, _control, first, _metadata) =
+    let (_home, _config, manager, _control, first, metadata) =
         terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     first
@@ -195,11 +197,13 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
         .session
         .input_queue
         .register_terminal_finalizer();
+    let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
-    yield_now().await;
+    let generation =
+        wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
 
     advance(Duration::from_millis(100)).await;
-    yield_now().await;
+    let generation = wait_for_terminal_idle_generation_after(&metadata, generation).await;
     assert!(manager.get_thread(first.thread_id).await.is_ok());
 
     let finalization = first
@@ -215,14 +219,14 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
         .finish_terminal_finalizer();
     drop(finalization);
     advance(Duration::from_millis(100)).await;
-    yield_now().await;
+    wait_for_terminal_idle_generation_after(&metadata, generation).await;
     advance(Duration::from_millis(100)).await;
     wait_for_thread_unloaded(&manager, first.thread_id).await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
-    let (_home, _config, manager, _control, first, _metadata) =
+    let (_home, _config, manager, _control, first, metadata) =
         terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     first
@@ -230,11 +234,13 @@ async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
         .session
         .input_queue
         .register_residency_submission("held-submission".to_string());
+    let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
-    yield_now().await;
+    let generation =
+        wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
 
     advance(Duration::from_millis(100)).await;
-    yield_now().await;
+    wait_for_terminal_idle_generation_after(&metadata, generation).await;
     assert!(manager.get_thread(first.thread_id).await.is_ok());
 
     first
@@ -243,13 +249,8 @@ async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
         .input_queue
         .acknowledge_residency_submission("held-submission")
         .await;
-    advance_until_thread_unloaded(
-        &manager,
-        first.thread_id,
-        Duration::from_millis(100),
-        /*max_intervals*/ 4,
-    )
-    .await;
+    advance(Duration::from_millis(100)).await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
 }
 
 async fn terminal_idle_test_agent(
@@ -342,23 +343,26 @@ async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) 
     panic!("thread {thread_id} should be unloaded");
 }
 
-async fn advance_until_thread_unloaded(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-    interval: Duration,
-    max_intervals: usize,
-) {
-    for _ in 0..max_intervals {
-        yield_now().await;
-        advance(interval).await;
-        for _ in 0..64 {
-            if manager.get_thread(thread_id).await.is_err() {
-                return;
-            }
-            yield_now().await;
+async fn terminal_idle_unload_generation(metadata: &AgentMetadata) -> u64 {
+    metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation()
+}
+
+async fn wait_for_terminal_idle_generation_after(
+    metadata: &AgentMetadata,
+    previous_generation: u64,
+) -> u64 {
+    for _ in 0..256 {
+        let generation = terminal_idle_unload_generation(metadata).await;
+        if generation != previous_generation {
+            return generation;
         }
+        yield_now().await;
     }
-    panic!("thread {thread_id} should be unloaded after {max_intervals} idle intervals");
+    panic!("terminal idle unload watcher should re-arm");
 }
 
 #[tokio::test]
