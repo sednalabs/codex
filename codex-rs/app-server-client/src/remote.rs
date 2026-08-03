@@ -449,6 +449,40 @@ impl RemoteAppServerClient {
                                                         TaggedAppServerEvent::ServerRequest(request)
                                                     }
                                                 };
+                                                // A terminal overload replaces this request with a
+                                                // disconnect event, so answer it before starting drain.
+                                                let required_event_count =
+                                                    if skipped_events > 0 { 2 } else { 1 };
+                                                if !pending_remote_events.is_empty()
+                                                    && pending_remote_events.len()
+                                                        + required_event_count
+                                                        > REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY
+                                                {
+                                                    let message =
+                                                        remote_event_backlog_overflow_message(
+                                                            &endpoint,
+                                                            skipped_events,
+                                                        );
+                                                    if let Err(reject_err) = write_jsonrpc_message(
+                                                        &mut stream,
+                                                        JSONRPCMessage::Error(JSONRPCError {
+                                                            error: JSONRPCErrorError {
+                                                                code: -32000,
+                                                                message,
+                                                                data: None,
+                                                            },
+                                                            id: request_id,
+                                                        }),
+                                                        &endpoint,
+                                                    )
+                                                    .await
+                                                    {
+                                                        warn!(
+                                                            %reject_err,
+                                                            "failed to reject remote app-server server request after event backlog overflow"
+                                                        );
+                                                    }
+                                                }
                                                 if let Err(err) = queue_remote_event(
                                                     &event_tx,
                                                     &mut skipped_events,
@@ -1292,6 +1326,17 @@ enum RemoteEventDelivery {
     Pending(VecDeque<TaggedAppServerEvent>),
 }
 
+fn remote_event_backlog_overflow_message(endpoint: &str, skipped_events: usize) -> String {
+    let mut message =
+        format!("remote app server at `{endpoint}` exceeded the bounded remote event backlog");
+    if skipped_events > 0 {
+        message.push_str(&format!(
+            "; {skipped_events} best-effort remote event(s) were dropped before disconnect"
+        ));
+    }
+    message
+}
+
 /// Queues one remote event without allowing a later event to bypass the bounded pending FIFO.
 /// The FIFO reserves one slot for a terminal disconnect so a transport error remains visible after
 /// previously queued events. If a further required event would exhaust that reserve, the worker
@@ -1363,15 +1408,7 @@ fn queue_remote_event(
             return Ok(());
         }
 
-        let mut message = format!(
-            "remote app server at `{endpoint}` exceeded the bounded remote event backlog"
-        );
-        if *skipped_events > 0 {
-            let skipped = *skipped_events;
-            message.push_str(&format!(
-                "; {skipped} best-effort remote event(s) were dropped before disconnect"
-            ));
-        }
+        let message = remote_event_backlog_overflow_message(endpoint, *skipped_events);
         warn!(
             %message,
             "closing remote app-server transport after retained required events drain"
@@ -2192,6 +2229,208 @@ mod tests {
                 assert!(message.contains("disconnected"));
             }
             event => panic!("expected retained terminal disconnect, got {event:?}"),
+        }
+        assert!(
+            timeout(Duration::from_secs(1), client.next_tagged_event())
+                .await
+                .expect("worker should exit after the retained terminal FIFO drains")
+                .is_none()
+        );
+        server_task
+            .await
+            .expect("test server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn postinitialize_server_request_overflow_is_rejected_before_terminal_drain() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (first_event_sent_tx, first_event_sent_rx) = oneshot::channel();
+        let (send_overflow_tx, send_overflow_rx) = oneshot::channel();
+        let (rejection_observed_tx, rejection_observed_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            let initialize_response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({"userAgent": "test-server/1.0"}),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&initialize_response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            let Message::Text(text) = initialized else {
+                panic!("expected initialized text frame");
+            };
+            let JSONRPCMessage::Notification(initialized) =
+                serde_json::from_str(&text).expect("initialized frame should contain JSON-RPC")
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+
+            let first_event = thread_scoped_server_message(
+                thread_status_changed_notification(1),
+                "overflow-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&first_event)
+                        .expect("first required event should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send first required event");
+            first_event_sent_tx
+                .send(())
+                .expect("test client should wait for the first required event");
+            send_overflow_rx
+                .await
+                .expect("test client should hold the first required event in its full queue");
+
+            for status_revision in [2, 3] {
+                let event = thread_scoped_server_message(
+                    thread_status_changed_notification(status_revision),
+                    "overflow-subscription",
+                );
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&event)
+                            .expect("required event should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server should send required event");
+            }
+
+            let overflow_request = thread_scoped_server_message(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: RequestId::Integer(99),
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        auto_resolution_ms: None,
+                    },
+                },
+                "overflow-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&overflow_request)
+                        .expect("overflow request should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send overflowing request");
+
+            let rejection = timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("client should promptly reject the overflowing server request")
+                .expect("client should send an overflowing server request rejection")
+                .expect("overflow rejection frame should succeed");
+            let Message::Text(text) = rejection else {
+                panic!("expected overflowing server request error text frame");
+            };
+            let JSONRPCMessage::Error(rejection) =
+                serde_json::from_str(&text).expect("overflow rejection should contain JSON-RPC")
+            else {
+                panic!("expected overflowing server request rejection");
+            };
+            assert_eq!(rejection.id, RequestId::Integer(99));
+            assert_eq!(rejection.error.code, -32000);
+            assert!(
+                rejection
+                    .error
+                    .message
+                    .contains("exceeded the bounded remote event backlog")
+            );
+            rejection_observed_tx
+                .send(())
+                .expect("test client should wait for the server-request rejection");
+        });
+
+        let mut client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory post-initialize overflow transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize over the in-memory transport");
+
+        first_event_sent_rx
+            .await
+            .expect("server should send the first required event after initialize");
+        timeout(Duration::from_secs(1), async {
+            while client.event_rx.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the first required event should fill the one-slot consumer queue");
+        send_overflow_tx
+            .send(())
+            .expect("test server should still accept the overflow sequence");
+        timeout(Duration::from_secs(1), rejection_observed_rx)
+            .await
+            .expect("overflowing server request should be rejected before event drain")
+            .expect("server should observe the overflowing request rejection");
+
+        for status_revision in [1, 2, 3] {
+            match timeout(Duration::from_secs(1), client.next_tagged_event())
+                .await
+                .expect("retained required event should drain promptly")
+            {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadStatusChanged(notification),
+                }) => {
+                    assert_eq!(thread_subscription_id, "overflow-subscription");
+                    assert_eq!(notification.status_revision, Some(status_revision));
+                }
+                event => panic!("expected retained required event, got {event:?}"),
+            }
+        }
+        match timeout(Duration::from_secs(1), client.next_tagged_event())
+            .await
+            .expect("overflow disconnect should remain observable")
+        {
+            Some(TaggedAppServerEvent::Disconnected { message }) => {
+                assert!(message.contains("exceeded the bounded remote event backlog"));
+            }
+            event => panic!("expected terminal overload disconnect, got {event:?}"),
         }
         assert!(
             timeout(Duration::from_secs(1), client.next_tagged_event())
