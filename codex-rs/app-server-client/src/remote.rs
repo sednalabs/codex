@@ -229,6 +229,23 @@ impl RemoteAppServerClient {
             let mut pending_remote_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
             let mut exit_after_pending_events = false;
             loop {
+                if exit_after_pending_events {
+                    let (err_kind, err_message) = worker_exit_error.as_ref().map_or_else(
+                        || {
+                            (
+                                ErrorKind::BrokenPipe,
+                                "remote app-server transport is closing after required events drain"
+                                    .to_string(),
+                            )
+                        },
+                        |(kind, message)| (*kind, message.clone()),
+                    );
+                    fail_pending_remote_requests(
+                        &mut pending_requests,
+                        err_kind,
+                        &err_message,
+                    );
+                }
                 if exit_after_pending_events && pending_remote_events.is_empty() {
                     break;
                 }
@@ -601,9 +618,7 @@ impl RemoteAppServerClient {
                     "remote app-server worker channel is closed".to_string(),
                 )
             });
-            for (_, response_tx) in pending_requests {
-                let _ = response_tx.send(Err(IoError::new(err_kind, err_message.clone())));
-            }
+            fail_pending_remote_requests(&mut pending_requests, err_kind, &err_message);
         });
 
         Ok(Self {
@@ -1272,11 +1287,13 @@ enum RemoteEventDelivery {
 /// The FIFO reserves one slot for a terminal disconnect so a transport error remains visible after
 /// previously queued events. If a further required event would exhaust that reserve, the worker
 /// reports an explicit overload disconnect rather than retaining an unbounded backlog.
+/// If that final slot is the only remaining space, its disconnect message carries any unreported
+/// best-effort loss count so backpressure accounting remains visible without exceeding the bound.
 fn queue_remote_event(
     event_tx: &mpsc::Sender<TaggedAppServerEvent>,
     skipped_events: &mut usize,
     pending_remote_events: &mut VecDeque<TaggedAppServerEvent>,
-    event: TaggedAppServerEvent,
+    mut event: TaggedAppServerEvent,
     exit_after_delivery: bool,
     endpoint: &str,
     worker_exit_error: &mut Option<(ErrorKind, String)>,
@@ -1290,6 +1307,14 @@ fn queue_remote_event(
                 pending_remote_events.push_back(TaggedAppServerEvent::Lagged {
                     skipped: *skipped_events,
                 });
+            } else if *skipped_events > 0 {
+                let skipped = *skipped_events;
+                let TaggedAppServerEvent::Disconnected { message } = &mut event else {
+                    unreachable!("terminal remote event delivery must use a disconnect event");
+                };
+                message.push_str(&format!(
+                    "; {skipped} best-effort remote event(s) were dropped before disconnect"
+                ));
             }
             *skipped_events = 0;
             if pending_remote_events.len() >= REMOTE_PENDING_EVENT_CAPACITY {
@@ -1427,6 +1452,18 @@ fn remote_event_requires_delivery(event: &TaggedAppServerEvent) -> bool {
         TaggedAppServerEvent::ServerRequest(_)
         | TaggedAppServerEvent::ThreadServerRequest { .. }
         | TaggedAppServerEvent::Disconnected { .. } => true,
+    }
+}
+
+/// Fails every outstanding outbound RPC as soon as the transport has a terminal state. Taking
+/// the map makes the cleanup exactly-once while retained events continue draining independently.
+fn fail_pending_remote_requests(
+    pending_requests: &mut HashMap<RequestId, oneshot::Sender<IoResult<RequestResult>>>,
+    err_kind: ErrorKind,
+    err_message: &str,
+) {
+    for (_, response_tx) in std::mem::take(pending_requests) {
+        let _ = response_tx.send(Err(IoError::new(err_kind, err_message.to_string())));
     }
 }
 
@@ -1912,6 +1949,162 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_disconnect_fails_pending_rpc_before_event_fifo_drains() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            let initialize_response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({"userAgent": "test-server/1.0"}),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&initialize_response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            let Message::Text(text) = initialized else {
+                panic!("expected initialized text frame");
+            };
+            let JSONRPCMessage::Notification(initialized) =
+                serde_json::from_str(&text).expect("initialized frame should contain JSON-RPC")
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+
+            let request = server_stream
+                .next()
+                .await
+                .expect("client should send a request")
+                .expect("request frame should succeed");
+            let Message::Text(text) = request else {
+                panic!("expected request text frame");
+            };
+            let JSONRPCMessage::Request(request) =
+                serde_json::from_str(&text).expect("request frame should contain JSON-RPC")
+            else {
+                panic!("expected client request");
+            };
+            assert_eq!(request.id, RequestId::Integer(42));
+            assert_eq!(request.method, "test/pending");
+
+            for status_revision in [1, 2] {
+                let event = thread_scoped_server_message(
+                    thread_status_changed_notification(status_revision),
+                    "terminal-subscription",
+                );
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&event)
+                            .expect("server event should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server should send required event");
+            }
+            server_stream
+                .send(Message::Close(None))
+                .await
+                .expect("server should close the test transport");
+        });
+
+        let mut client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory terminal RPC transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize over the in-memory transport");
+
+        let request_task = tokio::spawn({
+            let request_handle = client.request_handle();
+            async move {
+                request_handle
+                    .request_json_rpc(JSONRPCRequest {
+                        id: RequestId::Integer(42),
+                        method: "test/pending".to_string(),
+                        params: None,
+                        trace: None,
+                    })
+                    .await
+            }
+        });
+        let request_error = timeout(Duration::from_secs(1), request_task)
+            .await
+            .expect("terminal transport state should fail the pending RPC promptly")
+            .expect("request task should not panic")
+            .err()
+            .expect("terminal transport state should fail the pending RPC");
+        assert_eq!(request_error.kind(), ErrorKind::ConnectionAborted);
+        assert!(request_error.to_string().contains("disconnected"));
+        assert_eq!(
+            client.event_rx.len(),
+            1,
+            "the one-slot event receiver must still be full when the RPC fails"
+        );
+
+        for status_revision in [1, 2] {
+            match client.next_tagged_event().await {
+                Some(TaggedAppServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadStatusChanged(notification),
+                }) => {
+                    assert_eq!(thread_subscription_id, "terminal-subscription");
+                    assert_eq!(notification.status_revision, Some(status_revision));
+                }
+                event => panic!("expected retained terminal-path status, got {event:?}"),
+            }
+        }
+        match client.next_tagged_event().await {
+            Some(TaggedAppServerEvent::Disconnected { message }) => {
+                assert!(message.contains("disconnected"));
+            }
+            event => panic!("expected retained terminal disconnect, got {event:?}"),
+        }
+        assert!(
+            timeout(Duration::from_secs(1), client.next_tagged_event())
+                .await
+                .expect("worker should exit after the retained terminal FIFO drains")
+                .is_none()
+        );
+        server_task
+            .await
+            .expect("test server task should not panic");
+    }
+
+    #[tokio::test]
     async fn initialize_queues_preinit_events_and_keeps_server_requests_replyable() {
         let (client_io, server_io) = duplex(64 * 1024);
         let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
@@ -2381,6 +2574,146 @@ mod tests {
         assert!(pending_remote_events.is_empty());
         assert_eq!(skipped_events, 0);
         assert!(worker_exit_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_remote_fifo_delivers_lag_before_disconnect() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(TaggedAppServerEvent::ServerNotification(
+                thread_status_changed_notification(0),
+            ))
+            .await
+            .expect("initial required event should fill the consumer queue");
+
+        let mut skipped_events = 0usize;
+        let mut pending_remote_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
+        let mut worker_exit_error = None;
+        let mut exit_after_pending_events = false;
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::ServerNotification(thread_status_changed_notification(1)),
+            /*exit_after_delivery*/ false,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("required event should be retained when the consumer queue is full");
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(TaggedAppServerEvent::ServerNotification(
+                ServerNotification::ThreadStatusChanged(_)
+            ))
+        ));
+
+        skipped_events = 2;
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::Disconnected {
+                message: "remote transport failed".to_string(),
+            },
+            /*exit_after_delivery*/ true,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("terminal transport error should preserve skipped-event accounting");
+
+        assert_eq!(pending_remote_events.len(), REMOTE_PENDING_EVENT_CAPACITY);
+        assert_eq!(skipped_events, 0);
+        assert!(exit_after_pending_events);
+        assert!(matches!(
+            pending_remote_events.pop_front(),
+            Some(TaggedAppServerEvent::ServerNotification(
+                ServerNotification::ThreadStatusChanged(notification)
+            )) if notification.status_revision == Some(1)
+        ));
+        assert!(matches!(
+            pending_remote_events.pop_front(),
+            Some(TaggedAppServerEvent::Lagged { skipped: 2 })
+        ));
+        match pending_remote_events
+            .pop_front()
+            .expect("disconnect should follow the lag marker")
+        {
+            TaggedAppServerEvent::Disconnected { message } => {
+                assert_eq!(message, "remote transport failed");
+            }
+            event => panic!("expected disconnect after lag marker, got {event:?}"),
+        }
+        assert!(pending_remote_events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn full_pending_remote_fifo_reports_skipped_events_in_disconnect() {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        event_tx
+            .send(TaggedAppServerEvent::ServerNotification(
+                thread_status_changed_notification(0),
+            ))
+            .await
+            .expect("initial required event should fill the consumer queue");
+
+        let mut skipped_events = 0usize;
+        let mut pending_remote_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
+        let mut worker_exit_error = None;
+        let mut exit_after_pending_events = false;
+        for status_revision in [1, 2] {
+            queue_remote_event(
+                &event_tx,
+                &mut skipped_events,
+                &mut pending_remote_events,
+                TaggedAppServerEvent::ServerNotification(thread_status_changed_notification(
+                    status_revision,
+                )),
+                /*exit_after_delivery*/ false,
+                "test transport",
+                &mut worker_exit_error,
+                &mut exit_after_pending_events,
+            )
+            .expect("required event should remain in the bounded pending FIFO");
+        }
+
+        skipped_events = 3;
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_remote_events,
+            TaggedAppServerEvent::Disconnected {
+                message: "remote transport failed".to_string(),
+            },
+            /*exit_after_delivery*/ true,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("terminal transport error should preserve combined skipped-event accounting");
+
+        assert_eq!(pending_remote_events.len(), REMOTE_PENDING_EVENT_CAPACITY);
+        assert_eq!(skipped_events, 0);
+        assert!(exit_after_pending_events);
+        for status_revision in [1, 2] {
+            assert!(matches!(
+                pending_remote_events.pop_front(),
+                Some(TaggedAppServerEvent::ServerNotification(
+                    ServerNotification::ThreadStatusChanged(notification)
+                )) if notification.status_revision == Some(status_revision)
+            ));
+        }
+        match pending_remote_events
+            .pop_front()
+            .expect("combined terminal accounting should remain visible")
+        {
+            TaggedAppServerEvent::Disconnected { message } => {
+                assert!(message.contains("3 best-effort remote event(s) were dropped"));
+            }
+            event => panic!("expected disconnect with combined accounting, got {event:?}"),
+        }
+        assert!(pending_remote_events.is_empty());
     }
 
     #[tokio::test]
