@@ -740,6 +740,139 @@ async fn spawn_agent_cancellation_waits_for_terminal_lifecycle_with_created_chil
 }
 
 #[tokio::test]
+async fn spawn_agent_cancellation_interrupts_child_after_successful_initial_delivery() {
+    assert!(
+        SpawnAgentHandler::default().waits_for_runtime_cancellation(),
+        "the runtime must await V1 spawn cancellation cleanup"
+    );
+
+    let (mut session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandler::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandler::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({"message": "inspect this repo"})),
+        },
+        cancellation_token.clone(),
+    ));
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn start event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("legacy spawn begin channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial input delivery should pause after the child is committed")
+        .expect("initial input delivery pause should signal");
+
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial input pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should return after it interrupts the delivered child")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("terminal spawn event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert_eq!(completed.receiver_thread_ids.len(), 1);
+    let child_thread_id = completed.receiver_thread_ids[0];
+    assert_eq!(
+        completed.agents_states.get(&child_thread_id),
+        Some(&AgentStatus::Interrupted),
+        "the delivered child must be interrupted before the parent reports cancellation"
+    );
+    let child = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("interrupted child should remain registered");
+    assert_eq!(child.agent_status().await, AgentStatus::Interrupted);
+    assert_eq!(
+        control_for_assertion.get_status(child_thread_id).await,
+        AgentStatus::Interrupted
+    );
+    let child_ops = manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| (thread_id == child_thread_id).then_some(op))
+        .collect::<Vec<_>>();
+    assert!(
+        child_ops
+            .iter()
+            .any(|op| matches!(op, Op::UserInput { .. })),
+        "the regression requires successful initial input delivery"
+    );
+    assert!(
+        child_ops.iter().any(|op| matches!(op, Op::Interrupt)),
+        "cancellation must interrupt the child whose input was accepted"
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, Some(child_thread_id));
+    assert_eq!(legacy_end.status, AgentStatus::Interrupted);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activity() {
     let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
     let mut config = (*turn.config).clone();
@@ -993,6 +1126,123 @@ async fn multi_agent_v2_spawn_cancellation_waits_for_errored_activity_cleanup() 
     let legacy_activity = timeout(Duration::from_secs(1), rx.recv())
         .await
         .expect("legacy errored activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::SubAgentActivity(legacy_activity) = legacy_activity.msg else {
+        panic!("expected legacy sub-agent activity");
+    };
+    assert_eq!(legacy_activity.agent_thread_id, activity.agent_thread_id);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
+    assert!(rx.try_recv().is_err(), "no extra activity events expected");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cancellation_interrupts_child_after_successful_initial_delivery() {
+    assert!(
+        SpawnAgentHandlerV2::default().waits_for_runtime_cancellation(),
+        "the runtime must await V2 spawn cancellation cleanup"
+    );
+
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandlerV2::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandlerV2::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "cancelled_successful_delivery",
+                "fork_turns": "none"
+            })),
+        },
+        cancellation_token.clone(),
+    ));
+
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial communication should pause after the child is committed")
+        .expect("initial communication pause should signal");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial communication pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should return after it interrupts the delivered child")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled V2 spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled V2 spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical interrupted activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical activity completion");
+    };
+    let TurnItem::SubAgentActivity(activity) = completed.item else {
+        panic!("expected sub-agent activity item");
+    };
+    assert_eq!(activity.kind, SubAgentActivityKind::Interrupted);
+    assert_eq!(activity.terminal_state, None);
+    assert_eq!(
+        activity.agent_path.as_str(),
+        "/root/cancelled_successful_delivery"
+    );
+    let child = manager
+        .get_thread(activity.agent_thread_id)
+        .await
+        .expect("interrupted child should remain registered");
+    assert_eq!(child.agent_status().await, AgentStatus::Interrupted);
+    assert_eq!(
+        control_for_assertion
+            .get_status(activity.agent_thread_id)
+            .await,
+        AgentStatus::Interrupted
+    );
+
+    let legacy_activity = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy interrupted activity should arrive")
         .expect("spawn event channel should remain open");
     let EventMsg::SubAgentActivity(legacy_activity) = legacy_activity.msg else {
         panic!("expected legacy sub-agent activity");
