@@ -746,9 +746,9 @@ impl AgentControl {
 
         // A fork snapshot or watcher setup can yield after delivery. Check once more immediately
         // before publishing the child so an already-observed cancellation never leaves it running.
-        let cancellation_after_initial_delivery = cancellation_after_initial_delivery
+        let mut cancellation_after_initial_delivery = cancellation_after_initial_delivery
             || (initial_input_delivered && spawn_cancellation_requested(&options));
-        let status = match &initial_input_result {
+        let mut status = match &initial_input_result {
             Ok(()) => self.get_status(new_thread.thread_id).await,
             Err(error) => {
                 let message = format!("initial input delivery failed: {error}");
@@ -768,15 +768,17 @@ impl AgentControl {
             }
         };
         let mut terminal_before_cancellation = false;
-        let status = if cancellation_after_initial_delivery {
+        if cancellation_after_initial_delivery {
             match self
                 .interrupt_spawned_agent_for_cancellation(new_thread.thread_id)
                 .await
             {
-                Ok(SpawnCancellationResolution::Interrupted(status)) => status,
-                Ok(SpawnCancellationResolution::NaturallyTerminal(status)) => {
+                Ok(SpawnCancellationResolution::Interrupted(interrupted_status)) => {
+                    status = interrupted_status;
+                }
+                Ok(SpawnCancellationResolution::NaturallyTerminal(natural_status)) => {
                     terminal_before_cancellation = true;
-                    status
+                    status = natural_status;
                 }
                 Err(error) => {
                     if self
@@ -793,9 +795,7 @@ impl AgentControl {
                     return Err(error);
                 }
             }
-        } else {
-            status
-        };
+        }
         if self
             .spawned_child_was_removed(&state, new_thread.thread_id)
             .await
@@ -808,6 +808,58 @@ impl AgentControl {
             return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn {
                 error: CodexErr::ThreadNotFound(new_thread.thread_id),
             });
+        }
+
+        #[cfg(test)]
+        self.wait_for_next_spawn_final_status().await;
+
+        // The final status and liveness checks above can yield. Re-sample cancellation at the
+        // publication boundary so a cancellation observed during that window follows the same
+        // interruption, natural-terminal, and removed-child reconciliation as an earlier one.
+        if initial_input_delivered
+            && !cancellation_after_initial_delivery
+            && spawn_cancellation_requested(&options)
+        {
+            cancellation_after_initial_delivery = true;
+            match self
+                .interrupt_spawned_agent_for_cancellation(new_thread.thread_id)
+                .await
+            {
+                Ok(SpawnCancellationResolution::Interrupted(interrupted_status)) => {
+                    status = interrupted_status;
+                }
+                Ok(SpawnCancellationResolution::NaturallyTerminal(natural_status)) => {
+                    terminal_before_cancellation = true;
+                    status = natural_status;
+                }
+                Err(error) => {
+                    if self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await
+                    {
+                        self.close_thread_spawn_edge_after_unexpected_child_exit(
+                            new_thread.thread.as_ref(),
+                            new_thread.thread_id,
+                        )
+                        .await?;
+                        return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error });
+                    }
+                    return Err(error);
+                }
+            }
+            if self
+                .spawned_child_was_removed(&state, new_thread.thread_id)
+                .await
+            {
+                self.close_thread_spawn_edge_after_unexpected_child_exit(
+                    new_thread.thread.as_ref(),
+                    new_thread.thread_id,
+                )
+                .await?;
+                return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn {
+                    error: CodexErr::ThreadNotFound(new_thread.thread_id),
+                });
+            }
         }
         let agent = LiveAgent {
             thread_id: new_thread.thread_id,

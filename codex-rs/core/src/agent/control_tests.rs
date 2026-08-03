@@ -694,6 +694,120 @@ async fn spawn_cancellation_preserves_naturally_completed_and_errored_child_stat
     }
 }
 
+async fn spawn_with_cancellation_in_final_status_window(
+    harness: &AgentControlHarness,
+    parent_thread_id: ThreadId,
+) -> SpawnAgentOutcome {
+    let (final_status_started, allow_final_status) =
+        harness.control.pause_next_spawn_final_status().await;
+    let cancellation_token = CancellationToken::new();
+    let control = harness.control.clone();
+    let child_config = harness.config.clone();
+    let child_cancellation_token = cancellation_token.clone();
+    let spawn_task = tokio::spawn(async move {
+        control
+            .spawn_agent_with_metadata_outcome(
+                child_config,
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    cancellation_token: Some(child_cancellation_token),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+
+    final_status_started
+        .await
+        .expect("spawn should pause after its final status and liveness checks");
+    cancellation_token.cancel();
+    allow_final_status
+        .send(())
+        .expect("final status pause should still be waiting");
+    spawn_task
+        .await
+        .expect("spawn task should join")
+        .expect("late cancellation should be represented as a spawn outcome")
+}
+
+#[tokio::test]
+async fn spawn_cancellation_in_final_status_window_interrupts_active_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let outcome = spawn_with_cancellation_in_final_status_window(&harness, parent_thread_id).await;
+    let SpawnAgentOutcome::Cancelled { agent } = outcome else {
+        panic!("an active child cancelled at the publication boundary must be interrupted");
+    };
+    assert_eq!(agent.status, AgentStatus::Interrupted);
+    assert_eq!(harness.control.get_status(agent.thread_id).await, agent.status);
+    assert!(
+        harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .any(|(thread_id, op)| thread_id == agent.thread_id && matches!(op, Op::Interrupt)),
+        "late cancellation must submit the same interrupt as an earlier cancellation"
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_in_final_status_window_preserves_natural_terminal_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let expected_status = AgentStatus::Completed(Some("child finished first".to_string()));
+    harness
+        .control
+        .finish_next_spawn_cancellation_before_interrupt(expected_status.clone())
+        .await;
+    let outcome = spawn_with_cancellation_in_final_status_window(&harness, parent_thread_id).await;
+    let SpawnAgentOutcome::TerminalBeforeCancellation { agent } = outcome else {
+        panic!("a naturally terminal child at the publication boundary must not be interrupted");
+    };
+    assert_eq!(agent.status, expected_status);
+    assert_eq!(harness.control.get_status(agent.thread_id).await, expected_status);
+    assert!(
+        !harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .any(|(thread_id, op)| thread_id == agent.thread_id && matches!(op, Op::Interrupt)),
+        "a naturally terminal child must not receive a synthetic cancellation interrupt"
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_in_final_status_window_reconciles_removed_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .remove_next_spawn_cancellation_interrupt_child()
+        .await;
+    let outcome = spawn_with_cancellation_in_final_status_window(&harness, parent_thread_id).await;
+    let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
+        panic!("a removed child at the publication boundary must not be reported as cancelled");
+    };
+    assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
+    assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+    assert!(
+        harness
+            .control
+            .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+            .await
+            .expect("live agent inventory should load")
+            .is_empty(),
+        "the removed child must not retain a live agent identity"
+    );
+}
+
 async fn persisted_originator(thread: &CodexThread) -> String {
     thread.ensure_rollout_materialized().await;
     thread
