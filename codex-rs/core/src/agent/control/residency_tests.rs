@@ -605,6 +605,94 @@ async fn ephemeral_v2_agent_is_not_evicted_without_reloadable_history() {
     );
 }
 
+#[tokio::test]
+async fn explicit_v2_resume_reserves_the_only_child_residency_slot() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+
+    let first_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("first resident slot");
+    let first =
+        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker").await;
+    first_slot.commit(first.thread_id);
+    control
+        .state
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve first registry slot")
+        .commit(AgentMetadata {
+            agent_id: Some(first.thread_id),
+            ..Default::default()
+        });
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("persisted worker".to_string())),
+    )
+    .await;
+    control
+        .shutdown_live_agent(first.thread_id)
+        .await
+        .expect("close persisted worker");
+    assert!(manager.get_thread(first.thread_id).await.is_err());
+
+    let worker_path = AgentPath::root().join("worker").expect("worker path");
+    let resumed_thread_id = control
+        .resume_agent_from_rollout(
+            config.clone(),
+            first.thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect("explicit V2 resume should succeed");
+    assert_eq!(resumed_thread_id, first.thread_id);
+    let resumed = manager
+        .get_thread(resumed_thread_id)
+        .await
+        .expect("resumed worker should be loaded");
+    assert_eq!(resumed.agent_status().await, AgentStatus::PendingInit);
+
+    let err = match control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+    {
+        Ok(_) => panic!("resumed worker must consume the only V2 child residency slot"),
+        Err(err) => err,
+    };
+    let CodexErrorDetails::AgentLimitReached { max_threads } = err.details() else {
+        panic!("expected AgentLimitReached, got {err:?}");
+    };
+    assert_eq!(*max_threads, 1);
+    assert!(manager.get_thread(resumed_thread_id).await.is_ok());
+}
+
 async fn spawn_v2_subagent(
     control: &AgentControl,
     state: &Arc<ThreadManagerState>,
