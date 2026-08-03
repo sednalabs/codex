@@ -1382,10 +1382,8 @@ pub struct ThreadLoadedListResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional)]
     pub ancestor_filter_applied: bool,
-    /// Opaque cursor to pass as `cursor` on the next call. For legacy unfiltered calls, it
-    /// resumes after the last returned loaded thread. For ancestor-filtered calls, it resumes
-    /// after the bounded candidate window inspected by the server. If it is null, there are no
-    /// more items to return.
+    /// Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and
+    /// page boundary are server-defined. If it is null, there are no more items to return.
     pub next_cursor: Option<String>,
 }
 
