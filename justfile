@@ -458,6 +458,11 @@ app-server-thread-cwd-targeted:
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol
     cargo test --locked -p codex-app-server-transport serialize_outgoing_message_preserves_wire_shape --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_paginates -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_omitted_limit_returns_all_loaded_thread_ids -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_explicit_limit_above_100_is_not_clamped -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_filters_and_paginates_loaded_spawn_descendants -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_query_fails -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::app_read:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::plugin_list::plugin_list_force_refetch_waits_for_same_path_local_plugin_upgrade -- --exact --test-threads=1
