@@ -1255,9 +1255,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         turns_backwards_cursor,
         items_backwards_cursor,
     };
-    // This seals the deferred reservation immediately before the transport half of B's final
-    // publication fence. A later unsubscribe or replacement can still win that transport fence,
-    // in which case this request returns its terminal error before exposing a B response.
+    // This transitions the deferred reservation into B's final transport-publication fence. The
+    // reservation retains B until activation succeeds, so an unsubscribe in this narrow window
+    // can remove B rather than leaving rollback free to restore A.
     if !commit_pending_thread_resume_or_reply(
         thread_state_manager,
         outgoing,
@@ -1296,14 +1296,47 @@ pub(super) async fn handle_pending_thread_resume_request(
             predecessor_subscription_id.as_deref(),
         )
         .await;
-        outgoing
-            .send_error(
-                request_id,
-                invalid_request(
-                    "thread/resume subscription was superseded before publication completed",
-                ),
+        // Retain committed B throughout rollback as well. An unsubscribe that observes A while
+        // this failure path restores it still needs B's exact identity to remove the state owner
+        // and prevent a stale transport restoration from surviving the cancellation.
+        if thread_state_manager
+            .complete_committed_thread_resume_if_matches(
+                conversation_id,
+                connection_id,
+                &reservation_id,
+                &thread_subscription_id,
             )
-            .await;
+            .await
+        {
+            outgoing
+                .send_error(
+                    request_id,
+                    invalid_request(
+                        "thread/resume subscription was superseded before publication completed",
+                    ),
+                )
+                .await;
+        }
+        return;
+    }
+    if !thread_state_manager
+        .complete_committed_thread_resume_if_matches(
+            conversation_id,
+            connection_id,
+            &reservation_id,
+            &thread_subscription_id,
+        )
+        .await
+    {
+        rollback_failed_thread_attach_with_predecessor(
+            thread_state_manager,
+            outgoing,
+            conversation_id,
+            connection_id,
+            &thread_subscription_id,
+            predecessor_subscription_id.as_deref(),
+        )
+        .await;
         return;
     }
     outgoing
@@ -1402,9 +1435,8 @@ async fn pending_thread_resume_is_current_or_reply(
     }
 }
 
-/// Atomically removes the provisional reservation immediately before the final transport
-/// publication fence. Cancellation or replacement that wins before that fence still receives the
-/// original terminal error.
+/// Transitions the provisional reservation into the final transport-publication fence. The exact
+/// B token remains owned by the reservation until transport activation has succeeded.
 async fn commit_pending_thread_resume_or_reply(
     thread_state_manager: &ThreadStateManager,
     outgoing: &Arc<OutgoingMessageSender>,
@@ -1845,6 +1877,227 @@ mod tests {
         assert!(
             thread_state_manager.has_subscribers(thread_id).await,
             "a committed response must not be made to point at a torn-down attachment"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_after_resume_commit_before_activation_cannot_resurrect_a_or_publish_b() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let resume_request_id = RequestId::Integer(56);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let subscription_a = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(subscription_a.clone()),
+            )
+            .await
+            .expect("A should establish the pre-existing attachment");
+
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, resume_request_id.clone())
+            .await;
+        let subscription_b = outgoing.mint_thread_subscription();
+        let provisional_attachment = thread_state_manager
+            .try_add_connection_to_pending_thread_resume_with_subscription(
+                thread_id,
+                connection_id,
+                &resume_request_id,
+                subscription_b.clone(),
+            )
+            .await
+            .expect("the queued resume should atomically attach B in state");
+        assert_eq!(
+            provisional_attachment.predecessor_subscription_id.as_deref(),
+            Some(subscription_a.as_str())
+        );
+        assert_eq!(
+            thread_state_manager
+                .commit_pending_thread_resume(thread_id, connection_id, &resume_request_id)
+                .await,
+            crate::thread_state::PendingThreadResumeReservationState::Current,
+            "the final response fence should retain committed B until activation"
+        );
+
+        // U observes only published A. Its cancellation must nevertheless consume the exact
+        // committed B held in the reservation, before activation or any failure rollback can
+        // restore the predecessor.
+        let observed_a = outgoing
+            .current_thread_subscription_id(connection_id, thread_id)
+            .await
+            .expect("A remains the published transport owner before B activates");
+        let canceled_resume = thread_state_manager
+            .cancel_pending_thread_resume_with_provisional_subscription(thread_id, connection_id)
+            .await
+            .expect("U should still be able to cancel B after the response fence commits");
+        assert_eq!(
+            canceled_resume.provisional_subscription_id.as_deref(),
+            Some(subscription_b.as_str())
+        );
+        assert!(
+            outgoing
+                .unregister_thread_subscription_if_matches(connection_id, thread_id, &observed_a)
+                .await,
+            "U removes the outgoing A it observed"
+        );
+        assert!(
+            thread_state_manager
+                .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+                    thread_id,
+                    connection_id,
+                    &observed_a,
+                    canceled_resume.provisional_subscription_id.as_deref(),
+                )
+                .await,
+            "U removes the exact committed B state attachment"
+        );
+
+        assert!(
+            !outgoing
+                .activate_minted_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    Some(subscription_a.as_str()),
+                    subscription_b.clone(),
+                )
+                .await,
+            "a canceled B must not publish after U removed A"
+        );
+        assert!(
+            !thread_state_manager
+                .complete_committed_thread_resume_if_matches(
+                    thread_id,
+                    connection_id,
+                    &resume_request_id,
+                    &subscription_b,
+                )
+                .await,
+            "the canceled publication fence must suppress the late response path"
+        );
+        rollback_failed_thread_attach_with_predecessor(
+            &thread_state_manager,
+            &outgoing,
+            thread_id,
+            connection_id,
+            &subscription_b,
+            provisional_attachment.predecessor_subscription_id.as_deref(),
+        )
+        .await;
+
+        assert!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .is_none(),
+            "stale B rollback must not resurrect A after explicit unsubscribe"
+        );
+        assert!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await
+                .is_none(),
+            "stale B rollback must not leave any state attachment able to emit traffic"
+        );
+        assert!(
+            timeout(Duration::from_millis(10), outgoing_rx.recv())
+                .await
+                .is_err(),
+            "the canceled commit-to-activation window must not emit a receipt or scoped event"
+        );
+    }
+
+    #[tokio::test]
+    async fn successfully_activated_committed_resume_keeps_b_attachment() {
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let resume_request_id = RequestId::Integer(57);
+        let thread_state_manager = ThreadStateManager::new();
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+
+        let subscription_a = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        thread_state_manager
+            .try_add_connection_to_thread_with_subscription(
+                thread_id,
+                connection_id,
+                Some(subscription_a.clone()),
+            )
+            .await
+            .expect("A should establish the pre-existing attachment");
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, resume_request_id.clone())
+            .await;
+        let subscription_b = outgoing.mint_thread_subscription();
+        thread_state_manager
+            .try_add_connection_to_pending_thread_resume_with_subscription(
+                thread_id,
+                connection_id,
+                &resume_request_id,
+                subscription_b.clone(),
+            )
+            .await
+            .expect("the queued resume should attach B in state");
+        assert_eq!(
+            thread_state_manager
+                .commit_pending_thread_resume(thread_id, connection_id, &resume_request_id)
+                .await,
+            crate::thread_state::PendingThreadResumeReservationState::Current
+        );
+        assert!(
+            outgoing
+                .activate_minted_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    Some(subscription_a.as_str()),
+                    subscription_b.clone(),
+                )
+                .await,
+            "B should publish while its predecessor is still current"
+        );
+        assert!(
+            thread_state_manager
+                .complete_committed_thread_resume_if_matches(
+                    thread_id,
+                    connection_id,
+                    &resume_request_id,
+                    &subscription_b,
+                )
+                .await,
+            "only the successful publication path releases the committed fence"
+        );
+        assert_eq!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await,
+            Some(subscription_b.clone()),
+            "successful B must remain the state owner"
+        );
+        assert!(
+            outgoing
+                .thread_subscription_matches(connection_id, thread_id, &subscription_b)
+                .await,
+            "successful B must remain the outgoing owner"
         );
     }
 

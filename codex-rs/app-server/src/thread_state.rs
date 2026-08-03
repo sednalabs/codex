@@ -89,6 +89,13 @@ struct PendingThreadResumeReservation {
     /// its exact owner with the reservation so `thread/unsubscribe` can remove B without ever
     /// guessing from a newer state attachment.
     provisional_subscription_id: Option<String>,
+    phase: PendingThreadResumePhase,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PendingThreadResumePhase {
+    Pending,
+    Committed,
 }
 
 /// The canceled reservation's exact provisional owner, if listener attachment had reached B.
@@ -728,6 +735,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn path_resolved_running_resume_claim_is_cancelable_before_listener_hydration() {
+        let thread_state_manager = ThreadStateManager::new();
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let resume_request_id = RequestId::Integer(103);
+        thread_state_manager
+            .connection_initialized(connection_id, ConnectionCapabilities::default())
+            .await;
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = crate::outgoing_message::OutgoingMessageSender::new(
+            outgoing_tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        );
+
+        // This is the claim made as soon as a path resolves to an already-running thread, before
+        // listener startup, storage hydration, or replay construction can await.
+        thread_state_manager
+            .reserve_pending_thread_resume(thread_id, connection_id, resume_request_id.clone())
+            .await;
+        assert!(
+            thread_state_manager
+                .cancel_pending_thread_resume(thread_id, connection_id)
+                .await,
+            "an unsubscribe that arrives during path-only hydration must own the resume"
+        );
+
+        let subscription_b = outgoing.mint_thread_subscription();
+        assert!(
+            thread_state_manager
+                .try_add_connection_to_pending_thread_resume_with_subscription(
+                    thread_id,
+                    connection_id,
+                    &resume_request_id,
+                    subscription_b.clone(),
+                )
+                .await
+                .is_none(),
+            "a canceled path-only resume must not attach B after later listener or storage work"
+        );
+        assert!(
+            thread_state_manager
+                .connection_thread_subscription_id(thread_id, connection_id)
+                .await
+                .is_none(),
+            "the canceled path-only flow has no state owner that can replay traffic"
+        );
+        assert!(
+            outgoing
+                .thread_subscription_target_for_connection(connection_id, thread_id)
+                .await
+                .is_none(),
+            "the canceled path-only flow has no transport owner that can publish a receipt"
+        );
+    }
+
+    #[tokio::test]
     async fn missing_or_closed_listener_discards_thread_request_resolution_targets() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
         let outgoing = Arc::new(crate::outgoing_message::OutgoingMessageSender::new(
@@ -1053,6 +1116,7 @@ impl ThreadStateManager {
                 PendingThreadResumeReservation {
                     request_id,
                     provisional_subscription_id: None,
+                    phase: PendingThreadResumePhase::Pending,
                 },
             );
     }
@@ -1069,7 +1133,10 @@ impl ThreadStateManager {
             .await
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
-            .is_some_and(|reservation| &reservation.request_id == request_id)
+            .is_some_and(|reservation| {
+                &reservation.request_id == request_id
+                    && reservation.phase == PendingThreadResumePhase::Pending
+            })
     }
 
     /// Classifies a deferred resume's ownership without treating an older command as the owner
@@ -1086,7 +1153,10 @@ impl ThreadStateManager {
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
         {
-            Some(reservation) if &reservation.request_id == request_id => {
+            Some(reservation)
+                if &reservation.request_id == request_id
+                    && reservation.phase == PendingThreadResumePhase::Pending =>
+            {
                 PendingThreadResumeReservationState::Current
             }
             Some(_) => PendingThreadResumeReservationState::Superseded,
@@ -1096,9 +1166,9 @@ impl ThreadStateManager {
 
     /// Atomically commits a deferred running-thread resume before its success response is sent.
     ///
-    /// `Current` means this caller removed its own provisional reservation and may enter its
-    /// final transport-publication fence. A later unsubscribe or replacement still owns that
-    /// transport race and can make the caller return a terminal failure before response.
+    /// `Current` means this caller transitioned its own reservation into the committed transport
+    /// fence. The exact B identity remains cancelable until transport activation finishes, so an
+    /// unsubscribe in that window cannot leave B alive or allow rollback to restore A.
     pub(crate) async fn commit_pending_thread_resume(
         &self,
         thread_id: ThreadId,
@@ -1106,19 +1176,19 @@ impl ThreadStateManager {
         request_id: &RequestId,
     ) -> PendingThreadResumeReservationState {
         let mut state = self.state.lock().await;
-        match state
+        let Some(reservation) = state
             .pending_thread_resume_reservations
-            .get(&(thread_id, connection_id))
+            .get_mut(&(thread_id, connection_id))
+        else {
+            return PendingThreadResumeReservationState::Canceled;
+        };
+        if &reservation.request_id != request_id
+            || reservation.phase != PendingThreadResumePhase::Pending
         {
-            Some(reservation) if &reservation.request_id == request_id => {
-                state
-                    .pending_thread_resume_reservations
-                    .remove(&(thread_id, connection_id));
-                PendingThreadResumeReservationState::Current
-            }
-            Some(_) => PendingThreadResumeReservationState::Superseded,
-            None => PendingThreadResumeReservationState::Canceled,
+            return PendingThreadResumeReservationState::Superseded;
         }
+        reservation.phase = PendingThreadResumePhase::Committed;
+        PendingThreadResumeReservationState::Current
     }
 
     /// Cancels any queued or in-progress resume for this connection/thread. This deliberately
@@ -1164,7 +1234,10 @@ impl ThreadStateManager {
         if state
             .pending_thread_resume_reservations
             .get(&(thread_id, connection_id))
-            .is_some_and(|reservation| &reservation.request_id == request_id)
+            .is_some_and(|reservation| {
+                &reservation.request_id == request_id
+                    && reservation.phase == PendingThreadResumePhase::Pending
+            })
         {
             state
                 .pending_thread_resume_reservations
@@ -1173,6 +1246,34 @@ impl ThreadStateManager {
         } else {
             false
         }
+    }
+
+    /// Releases a B reservation only after B won the transport publication fence. If an
+    /// unsubscribe or replacement removed/replaced it first, the caller must suppress its
+    /// response and post-commit effects.
+    pub(crate) async fn complete_committed_thread_resume_if_matches(
+        &self,
+        thread_id: ThreadId,
+        connection_id: ConnectionId,
+        request_id: &RequestId,
+        subscription_id: &str,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if !state
+            .pending_thread_resume_reservations
+            .get(&(thread_id, connection_id))
+            .is_some_and(|reservation| {
+                &reservation.request_id == request_id
+                    && reservation.phase == PendingThreadResumePhase::Committed
+                    && reservation.provisional_subscription_id.as_deref() == Some(subscription_id)
+            })
+        {
+            return false;
+        }
+        state
+            .pending_thread_resume_reservations
+            .remove(&(thread_id, connection_id));
+        true
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(
