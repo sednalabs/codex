@@ -2066,19 +2066,25 @@ mod tests {
                     ServerNotification::CommandExecutionOutputDelta(_)
                 ))
             ));
+            let (delivery_result, (lag, completion)) = timeout(Duration::from_secs(1), async {
+                tokio::join!(&mut delivery, async {
+                    let lag = event_rx.recv().await.expect("lag marker should arrive");
+                    let completion = event_rx.recv().await.expect("completion should arrive");
+                    (lag, completion)
+                })
+            })
+            .await
+            .expect("lag and completion should drain promptly");
+            assert_eq!(delivery_result, ForwardEventResult::Continue);
+            assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 1 }));
             assert!(matches!(
-                event_rx.recv().await,
-                Some(InProcessServerEvent::Lagged { skipped: 1 })
+                completion,
+                InProcessServerEvent::ServerNotification(
+                    ServerNotification::FuzzyFileSearchSessionCompleted(_)
+                )
             ));
-            assert_eq!(delivery.await, ForwardEventResult::Continue);
         }
         assert_eq!(skipped_events, 0);
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(InProcessServerEvent::ServerNotification(
-                ServerNotification::FuzzyFileSearchSessionCompleted(_)
-            ))
-        ));
     }
 
     #[tokio::test]
