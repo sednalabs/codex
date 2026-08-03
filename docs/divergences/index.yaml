@@ -15,10 +15,10 @@
         "codex-rs/app-server/src/in_process.rs",
         "codex-rs/app-server-client/src/lib.rs"
       ],
-      "behavior": "Both bounded in-process delivery tiers preserve the same nineteen authoritative transcript, completion, thread lifecycle, goal, usage, name, settings, and request-resolution notifications under backpressure. Reconstructible progress remains best-effort, counted lag is aggregated across both bounded tiers and reported before later writer traffic, and the lower runtime retains at most one required notification while continuing to service shutdown and client control.",
+      "behavior": "Both bounded in-process delivery tiers preserve the same twenty-two authoritative transcript, item and turn start/completion, thread lifecycle, goal, usage, name, settings, request-resolution, and account-rate-limit notifications under backpressure. Reconstructible progress remains best-effort, counted lag is aggregated across both bounded tiers and reported before later writer traffic, and the lower runtime retains at most one required notification while continuing to service shutdown and client control.",
       "upstream_equivalent": false,
       "introduced_in": {
-        "carry_commit": "05f79d293bdeebe92ac0a5699272808af0583ec1",
+        "carry_commit": "6f3fe98f88bd642f0ba8931ace4698bb3029464f",
         "upstream_commit": null
       },
       "guardrail_lane": "rust-ci-full; hosted focused codex-app-server and codex-app-server-client library validation",
@@ -31,7 +31,7 @@
         "shutdown_unblocks_a_required_event_waiting_on_the_facade_queue"
       ],
       "owner": "downstream",
-      "notes": "Manually carries the bounded delivery semantics from app-server ancestry 7bd0a5515506584520235579e2472fb2ffefcc9c without importing that branch's wider stack. Keep both classifiers in exact parity, preserve lower lag counts when the facade is also saturated, retain production-equivalent shutdown sender custody, and drop the facade receiver before shutdown so a required event waiting on capacity cannot strand the worker. Preserve these semantics until an adopted upstream line provides equivalent bounded delivery and regressions.",
+      "notes": "Manually carries the bounded delivery mechanics from app-server ancestry 7bd0a5515506584520235579e2472fb2ffefcc9c without importing that branch's wider stack, and extends its required tier to non-reconstructible TurnStarted, ItemStarted, and AccountRateLimitsUpdated consumer state. Keep both classifiers in exact parity, preserve lower lag counts when the facade is also saturated, retain production-equivalent shutdown sender custody, and drop the facade receiver before shutdown so a required event waiting on capacity cannot strand the worker. Preserve these semantics until an adopted upstream line provides equivalent bounded delivery and regressions.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
