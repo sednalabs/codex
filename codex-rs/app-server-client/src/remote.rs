@@ -242,7 +242,7 @@ impl RemoteAppServerClient {
             std::sync::Arc::clone(&test_server_request_delivery_started);
         #[cfg(test)]
         let test_server_request_delivery_gate =
-            std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+            std::sync::Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1));
         #[cfg(test)]
         let worker_test_server_request_delivery_gate =
             std::sync::Arc::clone(&test_server_request_delivery_gate);
@@ -1383,6 +1383,12 @@ mod tests {
             worker_handle,
             _test_pending_required_event: std::sync::Arc::new(tokio::sync::Notify::new()),
             _test_pending_lag: std::sync::Arc::new(tokio::sync::Notify::new()),
+            _test_server_request_delivery_started: std::sync::Arc::new(
+                tokio::sync::Notify::new(),
+            ),
+            _test_server_request_delivery_gate: std::sync::Arc::new(
+                tokio::sync::Semaphore::new(/*permits*/ 1),
+            ),
         };
 
         client
