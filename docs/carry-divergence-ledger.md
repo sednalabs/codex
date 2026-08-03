@@ -1028,8 +1028,8 @@ decisions.
 
 ### Bounded In-Process Delivery And Metric Version Tags
 
-- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`, and
-  `6f3fe98f88` manually carry bounded lower-queue delivery and
+- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`,
+  `6f3fe98f88`, and `c259bc1fef` manually carry bounded lower-queue delivery and
   facade-classification parity
   semantics from app-server ancestry `7bd0a55155` without importing its wider
   programme stack. The capacity remains finite; one authoritative notification
@@ -1037,13 +1037,15 @@ decisions.
   shutdown. Reconstructible progress remains best-effort, and a counted lag
   marker is emitted before later writer traffic so a consumer can detect the
   gap; if that lower marker meets a saturated facade, its skipped count is
-  aggregated rather than collapsed to one. Both bounded tiers preserve the
-  same twenty-two transcript, item and turn start/completion, lifecycle, goal,
-  usage, name, settings, request-resolution, and account-rate-limit variants.
-  The
-  deterministic capacity-one regressions cover FIFO delivery, visible lag,
-  facade saturation, stacked lag accounting, and shutdown after a test signal
-  proves a required notification is pending;
+  aggregated rather than collapsed to one. Both bounded tiers treat every
+  server notification as authoritative by default, including future protocol
+  additions; only reconstructible command-execution output deltas are
+  explicitly best-effort. Thirty-two reviewed consumer-state fixtures cover
+  account, process, search, sandbox, realtime, transcript, item, turn, thread,
+  goal, usage, settings, and request-resolution surfaces. The deterministic
+  capacity-one regressions cover FIFO delivery, visible lag, facade saturation,
+  stacked lag accounting, and shutdown after a test signal proves an
+  authoritative notification is pending;
   test-only sender custody is released before the runtime joins its outbound
   router so shutdown has production-equivalent last-sender semantics. A
   facade-level capacity-one regression also proves that shutdown drops its
