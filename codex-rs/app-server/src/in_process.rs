@@ -1370,72 +1370,73 @@ mod tests {
 
     #[tokio::test]
     async fn tiny_event_queue_preserves_required_fifo_and_reports_dropped_progress() {
-        let mut client =
-            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
-        let outgoing = Arc::clone(
+        for best_effort_notification in [
+            command_execution_output_delta_notification("reconstructible progress"),
+            fuzzy_file_search_session_updated_notification("coalescible snapshot"),
+        ] {
+            let mut client =
+                start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+            let outgoing = Arc::clone(
+                client
+                    ._test_outgoing_message_sender
+                    .as_ref()
+                    .expect("test runtime should expose its outbound sender"),
+            );
+
+            // The first required event occupies the only event slot. Waiting
+            // for the best-effort write acknowledgement makes its drop
+            // deterministic. Each variant uses a fresh runtime so the lag
+            // marker is drained before any later writer traffic is processed.
+            outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    thread_goal_updated_notification("first"),
+                )
+                .await;
+            outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    best_effort_notification,
+                )
+                .await;
+            outgoing
+                .send_server_notification(thread_goal_updated_notification("second"))
+                .await;
+
+            let first = timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("first required event should arrive")
+                .expect("event stream should remain open");
+            assert!(matches!(
+                first,
+                InProcessServerEvent::ServerNotification(ServerNotification::ThreadGoalUpdated(
+                    notification
+                )) if notification.goal.objective == "first"
+            ));
+
+            let lag = timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("lag marker should arrive")
+                .expect("event stream should remain open");
+            assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 1 }));
+
+            let second = timeout(Duration::from_secs(1), client.next_event())
+                .await
+                .expect("second required event should arrive")
+                .expect("event stream should remain open");
+            assert!(matches!(
+                second,
+                InProcessServerEvent::ServerNotification(ServerNotification::ThreadGoalUpdated(
+                    notification
+                )) if notification.goal.objective == "second"
+            ));
+
+            drop(outgoing);
             client
-                ._test_outgoing_message_sender
-                .as_ref()
-                .expect("test runtime should expose its outbound sender"),
-        );
-
-        // The first required event occupies the only event slot. Waiting for
-        // each write acknowledgement makes the full-queue drop deterministic.
-        outgoing
-            .send_server_notification_to_connection_and_wait(
-                IN_PROCESS_CONNECTION_ID,
-                thread_goal_updated_notification("first"),
-            )
-            .await;
-        outgoing
-            .send_server_notification_to_connection_and_wait(
-                IN_PROCESS_CONNECTION_ID,
-                command_execution_output_delta_notification("reconstructible progress"),
-            )
-            .await;
-        outgoing
-            .send_server_notification_to_connection_and_wait(
-                IN_PROCESS_CONNECTION_ID,
-                fuzzy_file_search_session_updated_notification("coalescible snapshot"),
-            )
-            .await;
-        outgoing
-            .send_server_notification(thread_goal_updated_notification("second"))
-            .await;
-
-        let first = timeout(Duration::from_secs(1), client.next_event())
-            .await
-            .expect("first required event should arrive")
-            .expect("event stream should remain open");
-        assert!(matches!(
-            first,
-            InProcessServerEvent::ServerNotification(ServerNotification::ThreadGoalUpdated(
-                notification
-            )) if notification.goal.objective == "first"
-        ));
-
-        let lag = timeout(Duration::from_secs(1), client.next_event())
-            .await
-            .expect("lag marker should arrive")
-            .expect("event stream should remain open");
-        assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 2 }));
-
-        let second = timeout(Duration::from_secs(1), client.next_event())
-            .await
-            .expect("second required event should arrive")
-            .expect("event stream should remain open");
-        assert!(matches!(
-            second,
-            InProcessServerEvent::ServerNotification(ServerNotification::ThreadGoalUpdated(
-                notification
-            )) if notification.goal.objective == "second"
-        ));
-
-        drop(outgoing);
-        client
-            .shutdown()
-            .await
-            .expect("in-process runtime should shutdown cleanly");
+                .shutdown()
+                .await
+                .expect("in-process runtime should shutdown cleanly");
+        }
     }
 
     #[tokio::test]
