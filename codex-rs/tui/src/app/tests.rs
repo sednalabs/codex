@@ -2399,6 +2399,55 @@ async fn thread_status_revisions_gate_error_recovery_picker_liveness() -> Result
 }
 
 #[tokio::test]
+async fn delayed_thread_read_terminal_error_cannot_override_newer_watcher_liveness() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("Delayed read worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    // Model a watcher update received while a revisionless thread/read is in flight. Its
+    // terminal NotLoaded error must be evaluated after the await, against the watcher provenance
+    // that is current at the mutation fence.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(31),
+        },
+    );
+    let stale_not_loaded = color_eyre::eyre::eyre!(
+        "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &stale_not_loaded));
+    assert!(app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+        entry.is_running && !entry.is_closed && !entry.has_system_error
+    }));
+
+    // A matching SystemError watcher is equally newer than the same delayed read. The stale
+    // terminal observation must neither prune the row nor turn that failure into recovery.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::SystemError,
+            status_revision: Some(32),
+        },
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &stale_not_loaded));
+    assert!(app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+        !entry.is_running && !entry.is_closed && entry.has_system_error
+    }));
+    Ok(())
+}
+
+#[tokio::test]
 async fn picker_backfill_cannot_overwrite_newer_watcher_recovery() -> Result<()> {
     let mut app = make_test_app().await;
     let primary_thread_id = ThreadId::new();
@@ -3644,9 +3693,7 @@ async fn transient_liveness_failure_preserves_known_system_error_status() {
     let err = color_eyre::eyre::eyre!(
         "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
     );
-    assert!(app.handle_agent_picker_thread_liveness_read_error(
-        thread_id, /*has_replay_channel*/ false, &err,
-    ));
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &err));
 
     let entry = app
         .agent_navigation
@@ -3715,9 +3762,7 @@ async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_m
     let err = color_eyre::eyre::eyre!(
         "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
     );
-    assert!(app.handle_agent_picker_thread_liveness_read_error(
-        thread_id, /*has_replay_channel*/ true, &err,
-    ));
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &err));
 
     let entry = app
         .agent_navigation

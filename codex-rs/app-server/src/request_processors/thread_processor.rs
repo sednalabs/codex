@@ -4150,6 +4150,21 @@ impl ThreadRequestProcessor {
         Some(persisted_metadata)
     }
 
+    async fn clear_pending_running_resume_reservation(
+        &self,
+        thread_id: ThreadId,
+        request_id: &ConnectionRequestId,
+        reservation_id: &RequestId,
+    ) {
+        self.thread_state_manager
+            .clear_pending_thread_resume_if_matches(
+                thread_id,
+                request_id.connection_id,
+                reservation_id,
+            )
+            .await;
+    }
+
     async fn resume_running_thread(
         &self,
         request_id: &ConnectionRequestId,
@@ -4218,12 +4233,31 @@ impl ThreadRequestProcessor {
                     active_path.display()
                 )));
             }
-            if requested_tools_require_reload {
-                self.unload_loaded_thread_for_dynamic_tool_resume(
+            // A path-only request reaches this branch only after resolving its persisted path to
+            // this concrete running id. Claim it before the following history/listener awaits so
+            // `thread/unsubscribe` can cancel the same lifecycle before B becomes attachable.
+            let reservation_id = request_id.request_id.clone();
+            self.thread_state_manager
+                .reserve_pending_thread_resume(
                     existing_thread_id,
-                    existing_thread,
+                    request_id.connection_id,
+                    reservation_id.clone(),
                 )
-                .await?;
+                .await;
+            if requested_tools_require_reload {
+                let unload_result = self
+                    .unload_loaded_thread_for_dynamic_tool_resume(
+                        existing_thread_id,
+                        existing_thread,
+                    )
+                    .await;
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
+                unload_result?;
                 return Ok(RunningThreadResumeResult::NotRunning(None));
             }
             let config_snapshot = existing_thread.config_snapshot().await;
@@ -4249,6 +4283,12 @@ impl ThreadRequestProcessor {
                         ThreadShutdownResult::Complete => {
                             self.thread_manager.remove_thread(&existing_thread_id).await;
                             self.finalize_thread_teardown(existing_thread_id).await;
+                            self.clear_pending_running_resume_reservation(
+                                existing_thread_id,
+                                request_id,
+                                &reservation_id,
+                            )
+                            .await;
                             // Shutdown can flush newer rollout items, so reload the
                             // stored thread before starting the replacement session.
                             return Ok(RunningThreadResumeResult::NotRunning(None));
@@ -4278,24 +4318,41 @@ impl ThreadRequestProcessor {
             if needs_history {
                 let source_thread_id = source_thread.thread_id.to_string();
                 let source_rollout_path = source_thread.rollout_path.clone();
-                source_thread = self
+                source_thread = match self
                     .read_stored_thread_for_resume(
                         &source_thread_id,
                         source_rollout_path.as_ref(),
                         /*include_history*/ true,
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(source_thread) => source_thread,
+                    Err(error) => {
+                        self.clear_pending_running_resume_reservation(
+                            existing_thread_id,
+                            request_id,
+                            &reservation_id,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                };
             }
             let history_items = if needs_history {
-                source_thread
-                    .history
-                    .take()
-                    .map(|history| history.items)
-                    .ok_or_else(|| {
-                        internal_error(format!(
+                match source_thread.history.take().map(|history| history.items) {
+                    Some(history_items) => history_items,
+                    None => {
+                        self.clear_pending_running_resume_reservation(
+                            existing_thread_id,
+                            request_id,
+                            &reservation_id,
+                        )
+                        .await;
+                        return Err(internal_error(format!(
                             "thread {existing_thread_id} did not include persisted history"
-                        ))
-                    })?
+                        )));
+                    }
+                }
             } else {
                 Vec::new()
             };
@@ -4304,18 +4361,36 @@ impl ThreadRequestProcessor {
                 .thread_state_manager
                 .thread_state(existing_thread_id)
                 .await;
-            self.ensure_listener_task_running(
+            if let Err(error) = self.ensure_listener_task_running(
                 existing_thread_id,
                 existing_thread.clone(),
                 thread_state.clone(),
             )
-            .await?;
-            Self::set_app_server_client_info(
+            .await
+            {
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
+                return Err(error);
+            }
+            if let Err(error) = Self::set_app_server_client_info(
                 existing_thread.as_ref(),
                 app_server_client_name,
                 app_server_client_version,
             )
-            .await?;
+            .await
+            {
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
+                return Err(error);
+            }
 
             let mut thread_summary = self.stored_thread_to_api_thread(
                 source_thread,
@@ -4335,6 +4410,12 @@ impl ThreadRequestProcessor {
                 thread_state.listener_command_tx()
             };
             let Some(listener_command_tx) = listener_command_tx else {
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
                 return Err(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener is not running"
                 )));
@@ -4348,22 +4429,56 @@ impl ThreadRequestProcessor {
                 // Paginated JSONL is canonical, but its SQLite projection can lag after a
                 // previous write failure. Persist before legacy response hydration reads the
                 // latest durable turns and items.
-                self.thread_store
+                if let Err(error) = self
+                    .thread_store
                     .persist_thread(existing_thread_id)
                     .await
-                    .map_err(thread_store_resume_read_error)?;
+                    .map_err(thread_store_resume_read_error)
+                {
+                    self.clear_pending_running_resume_reservation(
+                        existing_thread_id,
+                        request_id,
+                        &reservation_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
             }
             let paginated_turns = if paginated_resume && include_turns {
-                Some(self.paginated_thread_full_turns(existing_thread_id).await?)
+                match self.paginated_thread_full_turns(existing_thread_id).await {
+                    Ok(turns) => Some(turns),
+                    Err(error) => {
+                        self.clear_pending_running_resume_reservation(
+                            existing_thread_id,
+                            request_id,
+                            &reservation_id,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                }
             } else {
                 None
             };
             let paginated_initial_turns_page = if paginated_resume {
                 match params.initial_turns_page.as_ref() {
-                    Some(params) => Some(
-                        self.paginated_resume_initial_turns_page(existing_thread_id, params)
-                            .await?,
-                    ),
+                    Some(params) => {
+                        match self
+                            .paginated_resume_initial_turns_page(existing_thread_id, params)
+                            .await
+                        {
+                            Ok(page) => Some(page),
+                            Err(error) => {
+                                self.clear_pending_running_resume_reservation(
+                                    existing_thread_id,
+                                    request_id,
+                                    &reservation_id,
+                                )
+                                .await;
+                                return Err(error);
+                            }
+                        }
+                    }
                     None => None,
                 }
             } else {
@@ -4377,13 +4492,24 @@ impl ThreadRequestProcessor {
                             SortDirection::Desc
                         ) =>
                     {
-                        Some(
-                            self.paginated_resume_initial_turns_page_with_active_slot(
+                        match self
+                            .paginated_resume_initial_turns_page_with_active_slot(
                                 existing_thread_id,
                                 params,
                             )
-                            .await?,
-                        )
+                            .await
+                        {
+                            Ok(page) => Some(page),
+                            Err(error) => {
+                                self.clear_pending_running_resume_reservation(
+                                    existing_thread_id,
+                                    request_id,
+                                    &reservation_id,
+                                )
+                                .await;
+                                return Err(error);
+                            }
+                        }
                     }
                     Some(_) | None => None,
                 }
@@ -4391,18 +4517,6 @@ impl ThreadRequestProcessor {
                 None
             };
             let resume_cursor_store = paginated_resume.then(|| Arc::clone(&self.thread_store));
-            // Claim this connection/thread before the listener command is visible. An
-            // unsubscribe can then cancel a queued resume even though the handler has not yet
-            // installed a connection subscription.
-            let reservation_id = request_id.request_id.clone();
-            self.thread_state_manager
-                .reserve_pending_thread_resume(
-                    existing_thread_id,
-                    request_id.connection_id,
-                    reservation_id.clone(),
-                )
-                .await;
-
             let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse(
                 Box::new(crate::thread_state::PendingThreadResumeRequest {
                     request_id: request_id.clone(),

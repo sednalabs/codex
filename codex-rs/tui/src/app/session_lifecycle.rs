@@ -580,13 +580,12 @@ impl App {
         thread_id: ThreadId,
     ) -> bool {
         let existing_entry = self.agent_navigation.get(&thread_id).cloned();
-        let accepts_snapshot_liveness = self
-            .agent_navigation
-            .accepts_unversioned_picker_snapshot_liveness(thread_id);
+        // This generation deliberately starts before the read: a newer error observation that
+        // races with the request must not be cleared by the older successful response. The
+        // separate watcher-provenance decision is recomputed after the await below.
         let error_observation_generation = self
             .agent_navigation
             .system_error_observation_generation(thread_id);
-        let has_replay_channel = self.thread_event_channels.contains_key(&thread_id);
         match app_server
             .thread_read(thread_id, /*include_turns*/ false)
             .await
@@ -596,6 +595,11 @@ impl App {
                 let agent_path = source_agent_path(&thread.source);
                 let status =
                     agent_picker_thread_status(&thread.status, /*has_live_channel*/ false);
+                // This read is revisionless. A watcher can update status while it awaited, so
+                // decide whether its liveness is still eligible at the exact mutation fence.
+                let accepts_snapshot_liveness = self
+                    .agent_navigation
+                    .accepts_unversioned_picker_snapshot_liveness(thread_id);
                 self.upsert_agent_picker_thread(
                     thread_id,
                     thread.agent_nickname.or_else(|| {
@@ -608,7 +612,7 @@ impl App {
                             .as_ref()
                             .and_then(|entry| entry.agent_role.clone())
                     }),
-                    status.is_closed,
+                    accepts_snapshot_liveness && status.is_closed,
                 );
                 if is_parent_owned {
                     self.agent_navigation.mark_parent_owned(thread_id);
@@ -627,6 +631,13 @@ impl App {
                     Some(thread.updated_at),
                 );
                 self.sync_agent_picker_identity(thread_id);
+                // `upsert` creates or updates a metadata row. Restore any revisioned watcher
+                // liveness it would otherwise overwrite before applying this stale snapshot.
+                self.agent_navigation
+                    .reconcile_revisioned_watcher_liveness(thread_id);
+                let accepts_snapshot_liveness = self
+                    .agent_navigation
+                    .accepts_unversioned_picker_snapshot_liveness(thread_id);
                 if accepts_snapshot_liveness {
                     if status.has_system_error {
                         self.agent_navigation
@@ -653,11 +664,7 @@ impl App {
                 }
                 true
             }
-            Err(err) => self.handle_agent_picker_thread_liveness_read_error(
-                thread_id,
-                has_replay_channel,
-                &err,
-            ),
+            Err(err) => self.handle_agent_picker_thread_liveness_read_error(thread_id, &err),
         }
     }
 
@@ -669,10 +676,10 @@ impl App {
     pub(super) fn handle_agent_picker_thread_liveness_read_error(
         &mut self,
         thread_id: ThreadId,
-        has_replay_channel: bool,
         err: &color_eyre::Report,
     ) -> bool {
         let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+        let has_replay_channel = self.thread_event_channels.contains_key(&thread_id);
         let accepts_snapshot_liveness = self
             .agent_navigation
             .accepts_unversioned_picker_snapshot_liveness(thread_id);
