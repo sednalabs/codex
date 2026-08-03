@@ -163,6 +163,10 @@ pub struct RemoteAppServerClient {
     pub(crate) _test_pending_required_event: std::sync::Arc<tokio::sync::Notify>,
     #[cfg(test)]
     pub(crate) _test_pending_lag: std::sync::Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    pub(crate) _test_server_request_delivery_started: std::sync::Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    pub(crate) _test_server_request_delivery_gate: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -230,22 +234,31 @@ impl RemoteAppServerClient {
         let test_pending_lag = std::sync::Arc::new(tokio::sync::Notify::new());
         #[cfg(test)]
         let worker_test_pending_lag = std::sync::Arc::clone(&test_pending_lag);
+        #[cfg(test)]
+        let test_server_request_delivery_started =
+            std::sync::Arc::new(tokio::sync::Notify::new());
+        #[cfg(test)]
+        let worker_test_server_request_delivery_started =
+            std::sync::Arc::clone(&test_server_request_delivery_started);
+        #[cfg(test)]
+        let test_server_request_delivery_gate =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        #[cfg(test)]
+        let worker_test_server_request_delivery_gate =
+            std::sync::Arc::clone(&test_server_request_delivery_gate);
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
             let mut terminal_state = None::<RemoteTerminalState>;
-            let mut event_delivery_enabled = true;
             let mut skipped_events = 0usize;
             let mut pending_required_event = None::<AppServerEvent>;
-            loop {
+            'worker: loop {
                 tokio::select! {
-                    permit = event_tx.reserve(), if event_delivery_enabled && (
-                        skipped_events > 0
-                            || pending_required_event.is_some()
-                            || terminal_state
-                                .as_ref()
-                                .is_some_and(|state| state.disconnected_pending)
-                    ) => {
+                    permit = event_tx.reserve(), if skipped_events > 0
+                        || pending_required_event.is_some()
+                        || terminal_state
+                            .as_ref()
+                            .is_some_and(|state| state.disconnected_pending) => {
                         match permit {
                             Ok(permit) => {
                                 if skipped_events > 0 {
@@ -269,13 +282,14 @@ impl RemoteAppServerClient {
                                 }
                             }
                             Err(_) => {
-                                skipped_events = 0;
-                                pending_required_event = None;
-                                disable_remote_event_delivery(
+                                terminate_for_closed_remote_event_consumer(
+                                    &mut stream,
+                                    &endpoint,
                                     &mut terminal_state,
                                     &mut pending_requests,
-                                );
-                                event_delivery_enabled = false;
+                                )
+                                .await;
+                                break 'worker;
                             }
                         }
                     }
@@ -415,8 +429,7 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
-                    message = stream.next(), if event_delivery_enabled
-                        && skipped_events == 0
+                    message = stream.next(), if skipped_events == 0
                         && pending_required_event.is_none()
                         && terminal_state.is_none() => {
                         match message {
@@ -451,11 +464,14 @@ impl RemoteAppServerClient {
                                                     worker_test_pending_lag.notify_one();
                                                 }
                                                 RemoteEventForwardResult::Closed => {
-                                                    disable_remote_event_delivery(
+                                                    terminate_for_closed_remote_event_consumer(
+                                                        &mut stream,
+                                                        &endpoint,
                                                         &mut terminal_state,
                                                         &mut pending_requests,
-                                                    );
-                                                    event_delivery_enabled = false;
+                                                    )
+                                                    .await;
+                                                    break 'worker;
                                                 }
                                             }
                                         }
@@ -465,6 +481,18 @@ impl RemoteAppServerClient {
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
+                                                #[cfg(test)]
+                                                {
+                                                    worker_test_server_request_delivery_started
+                                                        .notify_one();
+                                                    let _delivery_permit =
+                                                        worker_test_server_request_delivery_gate
+                                                            .acquire()
+                                                            .await
+                                                            .expect(
+                                                                "server request delivery gate should stay open",
+                                                            );
+                                                }
                                                 let delivery = try_deliver_event(
                                                     &event_tx,
                                                     &mut skipped_events,
@@ -484,11 +512,14 @@ impl RemoteAppServerClient {
                                                         );
                                                     }
                                                     RemoteEventForwardResult::Closed => {
-                                                        disable_remote_event_delivery(
+                                                        terminate_for_closed_remote_event_consumer(
+                                                            &mut stream,
+                                                            &endpoint,
                                                             &mut terminal_state,
                                                             &mut pending_requests,
-                                                        );
-                                                        event_delivery_enabled = false;
+                                                        )
+                                                        .await;
+                                                        break 'worker;
                                                     }
                                                 }
                                             }
@@ -613,6 +644,10 @@ impl RemoteAppServerClient {
             _test_pending_required_event: test_pending_required_event,
             #[cfg(test)]
             _test_pending_lag: test_pending_lag,
+            #[cfg(test)]
+            _test_server_request_delivery_started: test_server_request_delivery_started,
+            #[cfg(test)]
+            _test_server_request_delivery_gate: test_server_request_delivery_gate,
         })
     }
 
@@ -1157,6 +1192,18 @@ fn disable_remote_event_delivery(
     if let Some(terminal_state) = terminal_state {
         terminal_state.disconnected_pending = false;
     }
+}
+
+async fn terminate_for_closed_remote_event_consumer<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    terminal_state: &mut Option<RemoteTerminalState>,
+    pending_requests: &mut HashMap<RequestId, oneshot::Sender<IoResult<RequestResult>>>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    disable_remote_event_delivery(terminal_state, pending_requests);
+    let _ = timeout(SHUTDOWN_TIMEOUT, close_remote_stream(stream, endpoint)).await;
 }
 
 fn finish_remote_control_write(
