@@ -157,6 +157,11 @@ async fn handle_spawn_agent(
             .await;
             return Err(collab_spawn_error(error));
         }
+        Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error }) => {
+            // V2 has not published a Started activity yet. Do not invent an interrupted child
+            // activity for a thread that was removed from the live registry.
+            return Err(collab_spawn_error(error));
+        }
         Ok(SpawnAgentOutcome::Cancelled { agent }) => {
             emit_sub_agent_activity(
                 &session,

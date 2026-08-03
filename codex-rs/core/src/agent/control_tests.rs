@@ -65,6 +65,7 @@ use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 
 async fn test_config_with_cli_overrides(
@@ -299,6 +300,184 @@ async fn spawn_agent_outcome_preserves_committed_child_when_initial_input_fails(
             .await
             .contains(&(parent_thread_id, agent.thread_id)),
         "committed child should retain its parent edge"
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_outcome_reconciles_a_child_that_dies_during_initial_input() {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .kill_next_spawn_initial_input_child()
+        .await;
+
+    let outcome = harness
+        .control
+        .spawn_agent_with_metadata_outcome(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the child death should be represented as a spawn outcome");
+
+    let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
+        panic!("a removed child must not be represented as a live delivery failure");
+    };
+    assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+    assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+    assert!(
+        harness
+            .control
+            .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+            .await
+            .expect("live agent inventory should load")
+            .is_empty(),
+        "the dead child must be absent from the registry-backed inventory"
+    );
+
+    let open_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty(), "dead child edge must not remain open");
+    let closed_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        harness
+            .control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none(),
+        "the removed child must not retain live inventory or residency identity"
+    );
+    assert_eq!(
+        harness.control.get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let (initial_input_started, allow_initial_input) =
+        harness.control.pause_next_spawn_initial_input().await;
+    harness
+        .control
+        .kill_next_spawn_cancellation_interrupt_child()
+        .await;
+    let cancellation_token = CancellationToken::new();
+    let control = harness.control.clone();
+    let child_config = harness.config.clone();
+    let child_cancellation_token = cancellation_token.clone();
+    let spawn_task = tokio::spawn(async move {
+        control
+            .spawn_agent_with_metadata_outcome(
+                child_config,
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    cancellation_token: Some(child_cancellation_token),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+
+    initial_input_started
+        .await
+        .expect("initial delivery should pause after the child is committed");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial delivery pause should still be waiting");
+
+    let outcome = spawn_task
+        .await
+        .expect("spawn task should join")
+        .expect("the child death should be represented as a spawn outcome");
+    let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
+        panic!("a dead child during cancellation must not be reported as cancelled and live");
+    };
+    assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+    assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+
+    let open_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        harness
+            .control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none()
     );
 }
 
