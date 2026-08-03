@@ -55,6 +55,10 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Weak;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -220,6 +224,32 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    #[cfg(test)]
+    spawn_test_hooks: Arc<SpawnTestHooks>,
+}
+
+/// Deterministic race and failure controls for the post-creation spawn boundary.
+///
+/// These live on `AgentControl`, rather than the manager, because every spawned child shares the
+/// same control and publication registry as its parent. Production builds have no hook surface.
+#[cfg(test)]
+#[derive(Default)]
+struct SpawnTestHooks {
+    after_new_thread: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
+    fail_unpublished_shutdown_once: AtomicBool,
+    retained_unpublished_cleanup: std::sync::Mutex<Option<RetainedUnpublishedCleanupTestHook>>,
+}
+
+#[cfg(test)]
+struct AfterNewThreadTestHook {
+    observed_child: tokio::sync::oneshot::Sender<ThreadId>,
+    resume_spawn: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+struct RetainedUnpublishedCleanupTestHook {
+    observed_child: tokio::sync::oneshot::Sender<ThreadId>,
+    resume_cleanup: Arc<tokio::sync::Notify>,
 }
 
 impl AgentControl {
@@ -287,6 +317,86 @@ impl AgentControl {
     ) -> SpawnPublicationDecision {
         self.state
             .spawn_publication_decision(&SpawnPublicationKey::new(parent_thread_id, call_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_spawn_after_new_thread_for_test(
+        &self,
+    ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
+        let (observed_child, child_created) = tokio::sync::oneshot::channel();
+        let resume_spawn = Arc::new(tokio::sync::Notify::new());
+        *self
+            .spawn_test_hooks
+            .after_new_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(AfterNewThreadTestHook {
+            observed_child,
+            resume_spawn: Arc::clone(&resume_spawn),
+        });
+        (child_created, resume_spawn)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_unpublished_spawn_shutdown_for_test(&self) {
+        self.spawn_test_hooks
+            .fail_unpublished_shutdown_once
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_retained_unpublished_spawn_cleanup_for_test(
+        &self,
+    ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
+        let (observed_child, cleanup_retained) = tokio::sync::oneshot::channel();
+        let resume_cleanup = Arc::new(tokio::sync::Notify::new());
+        *self
+            .spawn_test_hooks
+            .retained_unpublished_cleanup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(RetainedUnpublishedCleanupTestHook {
+                observed_child,
+                resume_cleanup: Arc::clone(&resume_cleanup),
+            });
+        (cleanup_retained, resume_cleanup)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_after_new_thread_test_hook(&self, child_thread_id: ThreadId) {
+        let hook = self
+            .spawn_test_hooks
+            .after_new_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            let _ = hook.observed_child.send(child_thread_id);
+            hook.resume_spawn.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn await_retained_unpublished_spawn_cleanup_test_hook(
+        &self,
+        child_thread_id: ThreadId,
+    ) {
+        let hook = self
+            .spawn_test_hooks
+            .retained_unpublished_cleanup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(hook) = hook {
+            let _ = hook.observed_child.send(child_thread_id);
+            hook.resume_cleanup.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_unpublished_shutdown_failure_for_test(&self) -> bool {
+        self.spawn_test_hooks
+            .fail_unpublished_shutdown_once
+            .swap(false, Ordering::AcqRel)
     }
 
     /// Send rich user input items to an existing agent thread.
