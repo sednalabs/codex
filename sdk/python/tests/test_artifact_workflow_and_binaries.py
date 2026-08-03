@@ -571,6 +571,8 @@ class SubAgentActivityThreadItem(BaseModel):
     once = generated.read_text()
     script._preserve_subagent_activity_protocol_contract(generated)
 
+    compile(once, str(generated), "exec")
+
     kind_start = once.index("class SubAgentActivityKind(Enum):")
     kind_end = once.index("\n\nclass ", kind_start)
     kind_source = once[kind_start:kind_end]
