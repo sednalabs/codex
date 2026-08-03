@@ -138,7 +138,6 @@ impl AgentControl {
                             )
                             .await
                         {
-                            control.forget_v2_residency(thread_id);
                             return;
                         }
                     }
@@ -279,14 +278,20 @@ impl V2Residency {
         {
             return false;
         }
-        self.try_unload_candidate(
-            manager,
-            registry,
-            Some(metadata),
-            Some(&mut lifecycle),
-            thread,
-        )
-        .await
+        let thread_id = thread.session.thread_id();
+        let unloaded = self
+            .try_unload_candidate(
+                manager,
+                registry,
+                Some(metadata),
+                Some(&mut lifecycle),
+                thread,
+            )
+            .await;
+        if unloaded {
+            self.remove(thread_id);
+        }
+        unloaded
     }
 
     async fn try_unload_candidate(
