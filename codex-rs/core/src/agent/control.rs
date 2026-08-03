@@ -117,6 +117,9 @@ pub(crate) enum SpawnAgentOutcome {
     /// The initial input was accepted, then its owning spawn call was cancelled. The returned
     /// child has been interrupted so callers can publish a truthful terminal lifecycle item.
     Cancelled { agent: LiveAgent },
+    /// The initial input was accepted and cancellation was observed, but the child had already
+    /// reached its own completed or errored terminal state. The child was not interrupted.
+    TerminalBeforeCancellation { agent: LiveAgent },
 }
 
 impl SpawnAgentOutcome {
@@ -126,6 +129,7 @@ impl SpawnAgentOutcome {
             Self::InitialInputDeliveryFailed { error, .. } => Err(error),
             Self::ChildDiedDuringSpawn { error } => Err(error),
             Self::Cancelled { .. } => Err(CodexErr::TurnAborted),
+            Self::TerminalBeforeCancellation { agent } => Ok(agent),
         }
     }
 }
@@ -260,6 +264,12 @@ pub(crate) struct AgentControl {
     #[cfg(test)]
     kill_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
     #[cfg(test)]
+    remove_next_spawn_initial_input_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    remove_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    next_spawn_cancellation_terminal_status: Arc<tokio::sync::Mutex<Option<AgentStatus>>>,
+    #[cfg(test)]
     hide_next_agent_config_snapshot: Arc<tokio::sync::Mutex<bool>>,
 }
 
@@ -318,6 +328,38 @@ impl AgentControl {
     }
 
     #[cfg(test)]
+    /// Remove the next committed child before initial delivery, then make delivery observe the
+    /// same `ThreadNotFound` race that an external concurrent shutdown produces.
+    pub(crate) async fn remove_next_spawn_initial_input_child(&self) {
+        *self.remove_next_spawn_initial_input_child.lock().await = true;
+    }
+
+    #[cfg(test)]
+    /// Remove the next committed child before cancellation submits its interrupt request.
+    pub(crate) async fn remove_next_spawn_cancellation_interrupt_child(&self) {
+        *self
+            .remove_next_spawn_cancellation_interrupt_child
+            .lock()
+            .await = true;
+    }
+
+    #[cfg(test)]
+    /// Finish the next delivered child naturally in the cancellation-to-interrupt window.
+    ///
+    /// This models a child that independently completes or errors after the parent observes
+    /// cancellation, but before it can submit an interrupt request.
+    pub(crate) async fn finish_next_spawn_cancellation_before_interrupt(
+        &self,
+        status: AgentStatus,
+    ) {
+        assert!(
+            matches!(status, AgentStatus::Completed(_) | AgentStatus::Errored(_)),
+            "the cancellation-window fixture requires a natural terminal status"
+        );
+        *self.next_spawn_cancellation_terminal_status.lock().await = Some(status);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn hide_next_agent_config_snapshot(&self) {
         *self.hide_next_agent_config_snapshot.lock().await = true;
     }
@@ -340,6 +382,26 @@ impl AgentControl {
                 .lock()
                 .await,
         )
+    }
+
+    #[cfg(test)]
+    async fn take_remove_next_spawn_initial_input_child(&self) -> bool {
+        std::mem::take(&mut *self.remove_next_spawn_initial_input_child.lock().await)
+    }
+
+    #[cfg(test)]
+    async fn take_remove_next_spawn_cancellation_interrupt_child(&self) -> bool {
+        std::mem::take(
+            &mut *self
+                .remove_next_spawn_cancellation_interrupt_child
+                .lock()
+                .await,
+        )
+    }
+
+    #[cfg(test)]
+    async fn take_next_spawn_cancellation_terminal_status(&self) -> Option<AgentStatus> {
+        self.next_spawn_cancellation_terminal_status.lock().await.take()
     }
 
     #[cfg(test)]
