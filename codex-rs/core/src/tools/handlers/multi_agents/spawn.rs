@@ -7,7 +7,6 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
-use codex_protocol::error::CodexErrorDetails;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -97,6 +96,27 @@ async fn handle_spawn_agent(
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
 
+    // A spawn is an operation before it has a child identity. Emitting this before awaiting
+    // AgentControl preserves truthful in-progress visibility for slow creation without exposing
+    // a cancellation-owned provisional child through receiver fields.
+    session
+        .emit_turn_item_started(
+            &turn,
+            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id.clone(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: session.thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some(prompt.clone()),
+                model: Some(args.model.clone().unwrap_or_default()),
+                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                agents_states: Default::default(),
+            }),
+        )
+        .await;
+
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
         input_items,
@@ -116,9 +136,6 @@ async fn handle_spawn_agent(
         },
     ))
     .await;
-    let cancellation_owned = result.as_ref().is_err_and(|error| {
-        matches!(error.details(), CodexErrorDetails::TurnAborted)
-    });
     let result = result.map_err(collab_spawn_error);
     let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
@@ -173,42 +190,23 @@ async fn handle_spawn_agent(
     let agents_states = new_thread_id
         .map(|thread_id| [(thread_id, status.clone())].into_iter().collect())
         .unwrap_or_default();
-    if !cancellation_owned {
-        session
-            .emit_turn_item_started(
-                &turn,
-                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id.clone(),
-                    tool: CollabAgentTool::SpawnAgent,
-                    status: CollabAgentToolCallStatus::InProgress,
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids: Vec::new(),
-                    receiver_agents: Vec::new(),
-                    prompt: Some(prompt.clone()),
-                    model: Some(args.model.clone().unwrap_or_default()),
-                    reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
-                    agents_states: Default::default(),
-                }),
-            )
-            .await;
-        session
-            .emit_turn_item_completed(
-                &turn,
-                TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id,
-                    tool: CollabAgentTool::SpawnAgent,
-                    status: collab_tool_call_status(&status, new_thread_id),
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids,
-                    receiver_agents,
-                    prompt: Some(prompt),
-                    model: Some(effective_model),
-                    reasoning_effort: Some(effective_reasoning_effort),
-                    agents_states,
-                }),
-            )
-            .await;
-    }
+    session
+        .emit_turn_item_completed(
+            &turn,
+            TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id,
+                tool: CollabAgentTool::SpawnAgent,
+                status: collab_tool_call_status(&status, new_thread_id),
+                sender_thread_id: session.thread_id,
+                receiver_thread_ids,
+                receiver_agents,
+                prompt: Some(prompt),
+                model: Some(effective_model),
+                reasoning_effort: Some(effective_reasoning_effort),
+                agents_states,
+            }),
+        )
+        .await;
     let new_thread_id = result?.thread_id;
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
