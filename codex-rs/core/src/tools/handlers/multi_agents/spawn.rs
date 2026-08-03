@@ -259,6 +259,18 @@ async fn handle_spawn_agent(
             .await;
             return Err(collab_spawn_error(error));
         }
+        Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error }) => {
+            emit_failed_spawn_agent_lifecycle(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+            )
+            .await;
+            return Err(collab_spawn_error(error));
+        }
         Ok(SpawnAgentOutcome::Cancelled { agent }) => {
             emit_failed_spawn_agent_lifecycle_with_created_child(
                 session.as_ref(),
