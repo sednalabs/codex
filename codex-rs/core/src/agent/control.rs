@@ -154,6 +154,12 @@ struct SpawnCancellationCleanupGate {
     proceed: tokio::sync::oneshot::Receiver<()>,
 }
 
+#[cfg(test)]
+struct SpawnFinalStatusGate {
+    started: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
+}
+
 /// Internal inventory snapshot for a spawned sub-agent.
 ///
 /// `status` is the live agent state, while `effective_*` and `identity_source`
@@ -277,6 +283,8 @@ pub(crate) struct AgentControl {
     next_spawn_cancellation_cleanup_gate:
         Arc<tokio::sync::Mutex<Option<SpawnCancellationCleanupGate>>>,
     #[cfg(test)]
+    next_spawn_final_status_gate: Arc<tokio::sync::Mutex<Option<SpawnFinalStatusGate>>>,
+    #[cfg(test)]
     kill_next_spawn_initial_input_child: Arc<tokio::sync::Mutex<bool>>,
     #[cfg(test)]
     kill_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
@@ -343,6 +351,24 @@ impl AgentControl {
                 started: started_sender,
                 proceed: proceed_receiver,
             });
+        (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    /// Pause after the spawned child has passed its final status and liveness checks, before the
+    /// outcome is published to the caller.
+    pub(crate) async fn pause_next_spawn_final_status(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (proceed_sender, proceed_receiver) = tokio::sync::oneshot::channel();
+        *self.next_spawn_final_status_gate.lock().await = Some(SpawnFinalStatusGate {
+            started: started_sender,
+            proceed: proceed_receiver,
+        });
         (started_receiver, proceed_sender)
     }
 
@@ -464,6 +490,15 @@ impl AgentControl {
                 return;
             }
             gate
+        };
+        let _ = gate.started.send(());
+        let _ = gate.proceed.await;
+    }
+
+    #[cfg(test)]
+    async fn wait_for_next_spawn_final_status(&self) {
+        let Some(gate) = self.next_spawn_final_status_gate.lock().await.take() else {
+            return;
         };
         let _ = gate.started.send(());
         let _ = gate.proceed.await;
