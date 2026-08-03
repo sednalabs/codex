@@ -518,6 +518,14 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
         .start_thread(StartThreadOptions::new(harness.config.clone()))
         .await
         .expect("post-NewThread test child should start");
+    let mut reservation = Some(
+        harness
+            .control
+            .state
+            .reserve_spawn_slot(/*max_threads*/ None)
+            .expect("reserve cleanup capacity"),
+    );
+    let mut residency_slot = None;
     let child_turn = child.thread.session.new_default_turn().await;
     child
         .thread
@@ -545,9 +553,16 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
     // has yet received a thread-created notification.
     harness
         .control
-        .reconcile_unpublished_spawn(&state, &child, /*registry_committed*/ false)
+        .reconcile_unpublished_spawn(
+            &state,
+            child.thread_id,
+            &child.thread,
+            &mut reservation,
+            &mut residency_slot,
+        )
         .await
         .expect("terminal unpublished child should reconcile cleanly");
+    drop(reservation);
 
     assert_matches!(
         harness.manager.get_thread(child.thread_id).await,
@@ -581,6 +596,154 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
             .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnComplete(_)))),
         "reconciliation must flush a natural terminal event before removing its manager entry"
     );
+}
+
+#[tokio::test]
+async fn post_new_thread_cancellation_with_shutdown_failure_retains_manager_and_reservation() {
+    let (home, config) = test_config_with_cli_overrides(vec![
+        (
+            "agents.max_concurrent_threads_per_session".to_string(),
+            TomlValue::Integer(2),
+        ),
+    ])
+    .await;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let child_path = AgentPath::root()
+        .join("retained-cleanup")
+        .expect("child path should be valid");
+    let call_id = "post-new-thread-cancel";
+    let mut created_threads = harness.manager.subscribe_thread_created();
+
+    harness
+        .control
+        .begin_tool_spawn_publication(parent_thread_id, call_id);
+    let (child_created, resume_spawn) = harness.control.pause_spawn_after_new_thread_for_test();
+    let (cleanup_retained, resume_cleanup) = harness
+        .control
+        .pause_retained_unpublished_spawn_cleanup_for_test();
+    harness
+        .control
+        .fail_next_unpublished_spawn_shutdown_for_test();
+
+    let spawn_control = harness.control.clone();
+    let spawn_config = harness.config.clone();
+    let spawn_path = child_path.clone();
+    let spawn = tokio::spawn(async move {
+        spawn_control
+            .spawn_agent_with_metadata(
+                spawn_config,
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(spawn_path),
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    spawn_call_id: Some(call_id.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+
+    let child_thread_id = timeout(Duration::from_secs(5), child_created)
+        .await
+        .expect("spawn should create a child before publication")
+        .expect("post-NewThread hook should identify the child");
+    assert_eq!(
+        harness
+            .control
+            .cancel_tool_spawn_publication(parent_thread_id, call_id),
+        SpawnPublicationDecision::CancellationOwned
+    );
+    resume_spawn.notify_one();
+
+    let error = timeout(Duration::from_secs(5), spawn)
+        .await
+        .expect("cancelled spawn should return")
+        .expect("spawn task should not panic")
+        .expect_err("cancellation after NewThread must retain the caller's TurnAborted outcome");
+    assert_matches!(error.details(), CodexErrorDetails::TurnAborted);
+    assert_eq!(
+        timeout(Duration::from_secs(5), cleanup_retained)
+            .await
+            .expect("cleanup owner should retain the child before returning")
+            .expect("cleanup owner should report the retained child"),
+        child_thread_id
+    );
+
+    assert!(
+        harness.manager.get_thread(child_thread_id).await.is_ok(),
+        "a failed pre-publication shutdown must leave the live child addressable through the manager"
+    );
+    assert_eq!(
+        harness.control.get_status(child_thread_id).await,
+        AgentStatus::PendingInit,
+        "the injected shutdown failure must leave the exact unpublished child live until cleanup resumes"
+    );
+    assert!(
+        created_threads.try_recv().is_err(),
+        "a cancellation-owned child must not emit a parent-visible thread-created activity"
+    );
+    let capacity_error = match harness.control.state.reserve_spawn_slot(Some(1)) {
+        Ok(reservation) => {
+            drop(reservation);
+            panic!("retained unpublished cleanup must continue to occupy its spawn slot");
+        }
+        Err(error) => error,
+    };
+    assert_matches!(
+        capacity_error.details(),
+        CodexErrorDetails::AgentLimitReached { max_threads: 1 }
+    );
+
+    let path_error = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("must not reuse retained agent path"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(child_path.clone()),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+            SpawnAgentOptions::default(),
+        )
+        .await
+        .expect_err("retained cleanup must keep its requested agent path reserved");
+    assert_matches!(
+        path_error.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message.contains("agent path") && message.contains("already exists")
+    );
+
+    resume_cleanup.notify_one();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if harness.manager.get_thread(child_thread_id).await.is_err() {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("bounded cleanup should remove the terminal child");
+    let released = harness
+        .control
+        .state
+        .reserve_spawn_slot(Some(1))
+        .expect("terminal cleanup should release the held spawn slot");
+    drop(released);
+
+    harness
+        .control
+        .finish_tool_spawn_publication(parent_thread_id, call_id);
 }
 
 #[tokio::test]
