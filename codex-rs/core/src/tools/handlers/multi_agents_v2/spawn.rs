@@ -139,7 +139,8 @@ async fn handle_spawn_agent(
     )
     .await;
     let spawned_agent = match spawned_agent {
-        Ok(SpawnAgentOutcome::Spawned(agent)) => agent,
+        Ok(SpawnAgentOutcome::Spawned(agent))
+        | Ok(SpawnAgentOutcome::TerminalBeforeCancellation { agent }) => agent,
         Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }) => {
             emit_sub_agent_activity(
                 &session,
