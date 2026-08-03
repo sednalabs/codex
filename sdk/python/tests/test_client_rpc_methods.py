@@ -106,8 +106,8 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
         {
             "agentsStates": {
                 "child-thread-1": {
-                    "agent_nickname": "Scout",
-                    "agent_role": "explorer",
+                    "agentNickname": "Scout",
+                    "agentRole": "explorer",
                     "status": "running",
                 }
             },
@@ -167,8 +167,8 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     assert _params_dict(tool_call) == {
         "agentsStates": {
             "child-thread-1": {
-                "agent_nickname": "Scout",
-                "agent_role": "explorer",
+                "agentNickname": "Scout",
+                "agentRole": "explorer",
                 "status": "running",
             }
         },
@@ -194,8 +194,20 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     assert collab_state_model_aliases == set(collab_state_properties)
     assert tool_call.agents_states["child-thread-1"].agent_nickname == "Scout"
     assert tool_call.agents_states["child-thread-1"].agent_role == "explorer"
-    assert "agent_nickname" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
-    assert "agent_role" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
+    assert "agentNickname" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
+    assert "agentRole" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
+    legacy_collab_state = CollabAgentState.model_validate(
+        {
+            "agent_nickname": "Legacy Scout",
+            "agent_role": "explorer",
+            "status": "running",
+        }
+    )
+    assert legacy_collab_state.model_dump(by_alias=True, exclude_none=True) == {
+        "agentNickname": "Legacy Scout",
+        "agentRole": "explorer",
+        "status": "running",
+    }
     assert status_changed_model_aliases == set(status_changed_properties)
 
 

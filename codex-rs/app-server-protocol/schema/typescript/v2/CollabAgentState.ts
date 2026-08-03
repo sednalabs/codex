@@ -7,4 +7,4 @@ export type CollabAgentState = { status: CollabAgentStatus, message: string | nu
  * V1 lifecycle events identify agents by nickname and role before the child thread starts.
  * V2 agent paths remain available through `SubAgentActivity`.
  */
-agent_nickname?: string, agent_role?: string, };
+agentNickname?: string, agentRole?: string, };
