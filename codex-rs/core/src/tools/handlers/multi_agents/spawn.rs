@@ -9,6 +9,7 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
+use codex_protocol::error::CodexErr;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -51,6 +52,7 @@ async fn handle_spawn_agent(
         turn,
         payload,
         call_id,
+        cancellation_token,
         ..
     } = invocation;
     let arguments = function_arguments(payload)?;
@@ -237,6 +239,7 @@ async fn handle_spawn_agent(
                     fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    cancellation_token: Some(cancellation_token),
                 },
             ),
     )
@@ -255,6 +258,19 @@ async fn handle_spawn_agent(
             )
             .await;
             return Err(collab_spawn_error(error));
+        }
+        Ok(SpawnAgentOutcome::Cancelled { agent }) => {
+            emit_failed_spawn_agent_lifecycle_with_created_child(
+                session.as_ref(),
+                turn.as_ref(),
+                &call_id,
+                &prompt,
+                &requested_model,
+                &requested_reasoning_effort,
+                &agent,
+            )
+            .await;
+            return Err(collab_spawn_error(CodexErr::TurnAborted));
         }
         Err(error) => {
             emit_failed_spawn_agent_lifecycle(

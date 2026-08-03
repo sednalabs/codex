@@ -86,6 +86,9 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    /// The owning tool call's cancellation signal. Direct control-plane callers leave this
+    /// unset to retain their existing spawn behavior.
+    pub(crate) cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +110,9 @@ pub(crate) struct LiveAgent {
 pub(crate) enum SpawnAgentOutcome {
     Spawned(LiveAgent),
     InitialInputDeliveryFailed { agent: LiveAgent, error: CodexErr },
+    /// The initial input was accepted, then its owning spawn call was cancelled. The returned
+    /// child has been interrupted so callers can publish a truthful terminal lifecycle item.
+    Cancelled { agent: LiveAgent },
 }
 
 impl SpawnAgentOutcome {
@@ -114,6 +120,7 @@ impl SpawnAgentOutcome {
         match self {
             Self::Spawned(agent) => Ok(agent),
             Self::InitialInputDeliveryFailed { error, .. } => Err(error),
+            Self::Cancelled { .. } => Err(CodexErr::TurnAborted),
         }
     }
 }
