@@ -130,8 +130,9 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 /// Returns `true` for notifications that must survive backpressure.
 ///
 /// Server notifications are authoritative by default, including future
-/// protocol additions. Only command-output progress is explicitly
-/// reconstructible from its completed item and therefore best-effort.
+/// protocol additions. Command-output progress is reconstructible from its
+/// completed item, and fuzzy-search updates are superseded by later full
+/// snapshots; those two variants are explicitly best-effort.
 ///
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
@@ -139,6 +140,7 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
     !matches!(
         notification,
         ServerNotification::CommandExecutionOutputDelta(_)
+            | ServerNotification::FuzzyFileSearchSessionUpdated(_)
     )
 }
 
@@ -1178,6 +1180,16 @@ mod tests {
         )
     }
 
+    fn fuzzy_file_search_session_updated_notification(query: &str) -> ServerNotification {
+        ServerNotification::FuzzyFileSearchSessionUpdated(
+            codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification {
+                session_id: "search".to_string(),
+                query: query.to_string(),
+                files: Vec::new(),
+            },
+        )
+    }
+
     fn reviewed_consumer_state_notifications() -> Vec<ServerNotification> {
         let thread_id = || "thread".to_string();
         let turn_id = || "turn".to_string();
@@ -1781,6 +1793,70 @@ mod tests {
             InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
                 notification
             )) if notification.delta == "required"
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_reports_dropped_fuzzy_snapshot_before_completion() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::ServerNotification(
+                command_execution_output_delta_notification("queued"),
+            ))
+            .await
+            .expect("initial event should enqueue");
+        let mut skipped_events = 0usize;
+
+        assert_eq!(
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(
+                    fuzzy_file_search_session_updated_notification("snapshot"),
+                ),
+                |_| {},
+            )
+            .await,
+            ForwardEventResult::Continue
+        );
+        assert_eq!(skipped_events, 1);
+
+        let completion = ServerNotification::FuzzyFileSearchSessionCompleted(
+            codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification {
+                session_id: "search".to_string(),
+            },
+        );
+        let delivery = forward_in_process_event(
+            &event_tx,
+            &mut skipped_events,
+            InProcessServerEvent::ServerNotification(completion),
+            |_| {},
+        );
+        tokio::pin!(delivery);
+        assert!(
+            timeout(Duration::from_millis(20), &mut delivery)
+                .await
+                .is_err(),
+            "completion should wait while the facade queue is saturated"
+        );
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(_)
+            ))
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::Lagged { skipped: 1 })
+        ));
+        assert_eq!(delivery.await, ForwardEventResult::Continue);
+        assert_eq!(skipped_events, 0);
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::FuzzyFileSearchSessionCompleted(_)
+            ))
         ));
     }
 
@@ -2584,6 +2660,11 @@ mod tests {
                         delta: "stdout".to_string(),
                     }
                 )
+            )
+        ));
+        assert!(!event_requires_delivery(
+            &InProcessServerEvent::ServerNotification(
+                fuzzy_file_search_session_updated_notification("coalescible")
             )
         ));
     }
