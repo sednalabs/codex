@@ -432,6 +432,7 @@ mod tests {
     use crate::session::step_context::StepContext;
     use crate::tools::context::FunctionToolOutput;
     use crate::tools::context::ToolInvocation;
+    use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
     use crate::tools::registry::CoreToolRuntime;
     use crate::tools::registry::ToolExecutor;
     use crate::tools::registry::ToolRegistry;
@@ -700,6 +701,50 @@ mod tests {
         }
     }
 
+    struct ConfiguredV2SpawnHandler {
+        namespace: String,
+        handler: SpawnAgentHandlerV2,
+        started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+        allow_handler: Arc<Notify>,
+    }
+
+    impl ToolExecutor<ToolInvocation> for ConfiguredV2SpawnHandler {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            codex_tools::ToolName::namespaced(self.namespace.clone(), "spawn_agent")
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            self.handler.spec()
+        }
+
+        fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+            let started = self
+                .started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let allow_handler = Arc::clone(&self.allow_handler);
+            let handler = &self.handler;
+            Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                allow_handler.notified().await;
+                handler.handle(invocation).await
+            })
+        }
+    }
+
+    impl CoreToolRuntime for ConfiguredV2SpawnHandler {
+        fn matches_kind(&self, payload: &ToolPayload) -> bool {
+            self.handler.matches_kind(payload)
+        }
+
+        fn waits_for_runtime_cancellation(&self) -> bool {
+            self.handler.waits_for_runtime_cancellation()
+        }
+    }
+
     struct FinishRecorder {
         records: Arc<std::sync::Mutex<Vec<ToolCallOutcome>>>,
     }
@@ -841,6 +886,106 @@ mod tests {
             ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "aborted by user after 1.2s"
         );
+    }
+
+    #[tokio::test]
+    async fn configured_v2_spawn_namespace_cancellation_uses_runtime_publication_guard()
+    -> anyhow::Result<()> {
+        let (session, mut turn_context) =
+            crate::session::tests::make_session_and_context().await;
+        turn_context.config = Arc::new({
+            let mut config = (*turn_context.config).clone();
+            config
+                .features
+                .enable(codex_features::Feature::MultiAgentV2)
+                .expect("test config should enable MultiAgentV2");
+            config.multi_agent_v2.tool_namespace = Some("profile_agents".to_string());
+            config
+        });
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let (handler_started_tx, handler_started_rx) = oneshot::channel();
+        let allow_handler = Arc::new(Notify::new());
+        let handler = Arc::new(ConfiguredV2SpawnHandler {
+            namespace: "profile_agents".to_string(),
+            handler: SpawnAgentHandlerV2::default(),
+            started: std::sync::Mutex::new(Some(handler_started_tx)),
+            allow_handler: Arc::clone(&allow_handler),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(
+            router,
+            Arc::clone(&session),
+            StepContext::for_test(Arc::clone(&turn_context)),
+            tracker,
+        );
+
+        let cancellation_token = CancellationToken::new();
+        let response_task = tokio::spawn(runtime.handle_tool_call(
+            ToolCall {
+                tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
+                call_id: "call-1".to_string(),
+                payload: ToolPayload::Function {
+                    arguments: serde_json::json!({
+                        "message": "must not reach a child",
+                        "task_name": "cancelled_worker",
+                        "fork_turns": "none"
+                    })
+                    .to_string(),
+                },
+            },
+            cancellation_token.clone(),
+        ));
+
+        handler_started_rx
+            .await
+            .expect("configured V2 handler should start after runtime guard registration");
+        assert_eq!(
+            session
+                .services
+                .agent_control
+                .tool_spawn_publication_decision_for_test(session.thread_id, "call-1"),
+            SpawnPublicationDecision::Pending,
+            "configured V2 namespace must register its publication guard before dispatch"
+        );
+        cancellation_token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if session
+                    .services
+                    .agent_control
+                    .tool_spawn_publication_decision_for_test(session.thread_id, "call-1")
+                    == SpawnPublicationDecision::CancellationOwned
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("runtime cancellation should win the configured V2 publication guard");
+        allow_handler.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(1), response_task)
+            .await
+            .expect("timed out waiting for configured V2 cancellation")
+            .expect("configured V2 runtime task should join")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            anyhow::bail!("cancelled V2 spawn should return a function output");
+        };
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            anyhow::bail!("cancelled V2 spawn output should be text");
+        };
+        assert!(
+            message.contains("aborted by user"),
+            "configured V2 cancellation must return the runtime abort result: {message}"
+        );
+
+        Ok(())
     }
 
     #[test]

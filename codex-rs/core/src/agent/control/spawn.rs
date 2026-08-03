@@ -52,7 +52,7 @@ fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum UnpublishedSpawnReconciliation {
-    ShutdownCancellationOwned,
+    ShutdownThenVerifyTerminal,
     PreserveNaturalTerminal,
     ShutdownPreexistingInterrupted,
     ChildDied,
@@ -63,7 +63,7 @@ pub(super) fn unpublished_spawn_reconciliation(
 ) -> UnpublishedSpawnReconciliation {
     match status {
         AgentStatus::PendingInit | AgentStatus::Running => {
-            UnpublishedSpawnReconciliation::ShutdownCancellationOwned
+            UnpublishedSpawnReconciliation::ShutdownThenVerifyTerminal
         }
         AgentStatus::Interrupted => UnpublishedSpawnReconciliation::ShutdownPreexistingInterrupted,
         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Shutdown => {
@@ -600,12 +600,20 @@ impl AgentControl {
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
         if spawn_cancellation_owns_child(self, publication_key.as_ref()) {
-            self.reconcile_unpublished_spawn(
-                &state,
-                &new_thread,
-                /*registry_committed*/ false,
-            )
-            .await?;
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    &new_thread,
+                    /*registry_committed*/ false,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile cancellation-owned unpublished child"
+                );
+            }
             return Err(CodexErr::TurnAborted);
         }
         let initial_input_result = match initial_input {
@@ -626,12 +634,21 @@ impl AgentControl {
             }
         };
         if let Err(error) = initial_input_result {
-            self.reconcile_unpublished_spawn(
-                &state,
-                &new_thread,
-                /*registry_committed*/ false,
-            )
-            .await?;
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    &new_thread,
+                    /*registry_committed*/ false,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    spawn_error = %error,
+                    %cleanup_error,
+                    "failed to reconcile unpublished child after initial delivery error"
+                );
+            }
             return Err(error);
         }
 
@@ -644,12 +661,20 @@ impl AgentControl {
             |key| self.state.publish_spawn_publication(key),
         );
         if publication_decision == SpawnPublicationDecision::CancellationOwned {
-            self.reconcile_unpublished_spawn(
-                &state,
-                &new_thread,
-                /*registry_committed*/ false,
-            )
-            .await?;
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    &new_thread,
+                    /*registry_committed*/ false,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile cancellation-owned unpublished child"
+                );
+            }
             return Err(CodexErr::TurnAborted);
         }
 
@@ -694,9 +719,10 @@ impl AgentControl {
             );
         }
 
-        // Notify a new thread has been created. This notification will be processed by clients
-        // to subscribe or drain this newly created thread.
-        // TODO(jif) add helper for drain
+        // The child event receiver is an unbounded, single-consumer buffer. Initial delivery
+        // happens before this notification, but every event remains queued until the app-server
+        // listener attaches and drains it. Publishing only after the CAS therefore preserves
+        // cancellation-owned invisibility without dropping a fast child's early stream events.
         state.notify_thread_created(new_thread.thread_id);
 
         self.persist_thread_spawn_edge_for_source(
@@ -728,7 +754,10 @@ impl AgentControl {
     }
 
     /// Reconcile a child that was created but never crossed the parent-visible publication
-    /// boundary. A cancellation never relabels a naturally terminal child as interrupted.
+    /// boundary. Same-instance manager removal is attempted on every path before its reservation
+    /// can be released. Shutdown or persistence failures return an error; a same-ID replacement
+    /// is logged explicitly. Either outcome is auditable rather than silently leaving an
+    /// unregistered child in `ThreadManagerState`.
     async fn reconcile_unpublished_spawn(
         &self,
         state: &Arc<ThreadManagerState>,
@@ -736,46 +765,40 @@ impl AgentControl {
         registry_committed: bool,
     ) -> CodexResult<()> {
         let child_thread_id = new_thread.thread_id;
-        let child_thread = match state.get_thread(child_thread_id).await {
-            Ok(thread) => thread,
-            Err(error) if is_benign_unpublished_spawn_cleanup_error(&error) => {
-                if registry_committed {
-                    self.state.release_spawned_thread(child_thread_id);
-                    self.forget_v2_residency(child_thread_id);
-                }
-                return Ok(());
+        let child_thread = &new_thread.thread;
+        let initial_status = child_thread.agent_status().await;
+        let reconciliation = unpublished_spawn_reconciliation(&initial_status);
+        let mut cleanup_error = None;
+
+        if !matches!(reconciliation, UnpublishedSpawnReconciliation::ChildDied)
+            && let Err(error) = child_thread.shutdown_and_wait().await
+            && !is_benign_unpublished_spawn_cleanup_error(&error)
+        {
+            cleanup_error = Some(error);
+        }
+
+        // A PendingInit/Running sample can become a natural terminal event just before the
+        // shutdown reaches the child. Read again after teardown and materialize every terminal
+        // outcome: Shutdown can overwrite the status watch after a preceding TurnComplete, so
+        // flushing the queued rollout rather than trusting that final label preserves either
+        // terminal history.
+        let final_status = child_thread.agent_status().await;
+        if is_final(&final_status) {
+            if let Err(error) = child_thread.session.try_ensure_rollout_materialized().await
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(CodexErr::Io(error));
             }
-            Err(error) => return Err(error),
-        };
-        let status = child_thread.agent_status().await;
-        match unpublished_spawn_reconciliation(&status) {
-            UnpublishedSpawnReconciliation::ShutdownCancellationOwned
-            | UnpublishedSpawnReconciliation::ShutdownPreexistingInterrupted => {
-                // `Interrupted` was already true before this cancellation path. Sending only a
-                // shutdown prevents us from attributing that prior terminal-turn state to the
-                // cancelled spawn call.
-                let shutdown_result = state.send_op(child_thread_id, Op::Shutdown {}).await;
-                child_thread.wait_until_terminated().await;
-                if let Err(error) = shutdown_result
-                    && !is_benign_unpublished_spawn_cleanup_error(&error)
-                {
-                    return Err(error);
-                }
+            if let Err(error) = child_thread.flush_rollout().await
+                && cleanup_error.is_none()
+            {
+                cleanup_error = Some(CodexErr::Io(error));
             }
-            UnpublishedSpawnReconciliation::PreserveNaturalTerminal => {
-                // Materialize the natural terminal event before teardown. The follow-on shutdown
-                // only releases the unpublished runtime; it does not relabel the completed or
-                // errored turn as an interruption by this parent cancellation.
-                child_thread.session.ensure_rollout_materialized().await;
-                child_thread.session.flush_rollout().await?;
-                child_thread.shutdown_and_wait().await?;
-            }
-            UnpublishedSpawnReconciliation::ChildDied => {}
         }
 
         let registry = Arc::clone(&self.state);
         let removal = state
-            .remove_thread_if_same(&child_thread_id, &child_thread, || {
+            .remove_thread_if_same(&child_thread_id, child_thread, || {
                 if registry_committed {
                     registry.release_spawned_thread(child_thread_id);
                 }
@@ -786,6 +809,21 @@ impl AgentControl {
         }
         if !matches!(removal, RemoveThreadIfSameResult::Replaced) {
             self.forget_v2_residency(child_thread_id);
+        }
+
+        if matches!(removal, RemoveThreadIfSameResult::Replaced) {
+            tracing::error!(
+                %child_thread_id,
+                "unpublished child was replaced before reconciliation; preserving replacement and recording possible orphan"
+            );
+        }
+        if let Some(error) = cleanup_error {
+            tracing::error!(
+                %child_thread_id,
+                %error,
+                "removed unpublished child from ThreadManager after cleanup error; runtime is an auditable orphan"
+            );
+            return Err(error);
         }
         Ok(())
     }

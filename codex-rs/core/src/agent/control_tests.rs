@@ -482,7 +482,7 @@ fn unpublished_spawn_reconciliation_preserves_terminal_taxonomy() {
     for status in [AgentStatus::PendingInit, AgentStatus::Running] {
         assert_eq!(
             unpublished_spawn_reconciliation(&status),
-            UnpublishedSpawnReconciliation::ShutdownCancellationOwned
+            UnpublishedSpawnReconciliation::ShutdownThenVerifyTerminal
         );
     }
     assert_eq!(
@@ -502,6 +502,84 @@ fn unpublished_spawn_reconciliation_preserves_terminal_taxonomy() {
     assert_eq!(
         unpublished_spawn_reconciliation(&AgentStatus::NotFound),
         UnpublishedSpawnReconciliation::ChildDied
+    );
+}
+
+#[tokio::test]
+async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_and_removes_child() {
+    let harness = AgentControlHarness::new().await;
+    let state = harness
+        .control
+        .upgrade()
+        .expect("thread manager state should remain available");
+    let mut created_threads = harness.manager.subscribe_thread_created();
+    let child = harness
+        .manager
+        .start_thread(StartThreadOptions::new(harness.config.clone()))
+        .await
+        .expect("post-NewThread test child should start");
+    let child_turn = child.thread.session.new_default_turn().await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("completed before publication".to_string()),
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    // This simulates cancellation winning after NewThread exists but before AgentControl crosses
+    // the publication CAS. The child has already produced a terminal event, while no listener
+    // has yet received a thread-created notification.
+    harness
+        .control
+        .reconcile_unpublished_spawn(&state, &child, /*registry_committed*/ false)
+        .await
+        .expect("terminal unpublished child should reconcile cleanly");
+
+    assert_matches!(
+        harness.manager.get_thread(child.thread_id).await,
+        Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(id) if *id == child.thread_id)
+    );
+    assert!(
+        created_threads.try_recv().is_err(),
+        "a cancellation-owned child must remain invisible to thread-created subscribers"
+    );
+
+    // Session IO is an unbounded buffered-drain stream: its terminal event remains available to
+    // the first listener even though it was emitted before publication/attachment.
+    let buffered_event = child
+        .thread
+        .next_event()
+        .await
+        .expect("terminal child event should remain buffered until drained");
+    assert_matches!(buffered_event.msg, EventMsg::TurnComplete(_));
+
+    let stored_child = child
+        .thread
+        .read_thread(/*include_archived*/ true, /*include_history*/ true)
+        .await
+        .expect("terminal child history should remain readable after cleanup");
+    assert!(
+        stored_child
+            .history
+            .expect("terminal child should retain rollout history")
+            .items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnComplete(_)))),
+        "reconciliation must flush a natural terminal event before removing its manager entry"
     );
 }
 

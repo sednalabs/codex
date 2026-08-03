@@ -621,6 +621,54 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
 }
 
 #[tokio::test]
+async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity() {
+    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .begin_tool_spawn_publication(root.thread_id, "call-1");
+    assert_eq!(
+        session
+            .services
+            .agent_control
+            .cancel_tool_spawn_publication(root.thread_id, "call-1"),
+        crate::agent::SpawnPublicationDecision::CancellationOwned
+    );
+
+    let error = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({"message": "must not reach a child"})),
+        ))
+        .await
+        .expect_err("a cancellation-owned V1 spawn should fail before publication");
+    let FunctionCallError::RespondToModel(message) = &error else {
+        panic!("cancellation should return a model-visible tool error: {error:?}");
+    };
+    assert!(
+        message.contains("turn aborted"),
+        "the tool result must describe cancellation rather than a child identifier: {message}"
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "a cancelled pre-publication V1 spawn must not emit a Started/NotFound child history item"
+    );
+    assert!(
+        manager.captured_ops().is_empty(),
+        "the child must not receive an initial delivery operation"
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_accepts_luna_compatibility_override() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
