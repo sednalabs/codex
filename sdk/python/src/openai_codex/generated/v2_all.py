@@ -5950,6 +5950,8 @@ class CollabAgentState(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    agent_nickname: str | None = None
+    agent_role: str | None = None
     message: str | None = None
     status: CollabAgentStatus
 

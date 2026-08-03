@@ -11,6 +11,7 @@ from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
+    CollabAgentState,
     CollabAgentToolCallThreadItem,
     ReasoningEffort,
     ReasoningEffortOption,
@@ -103,7 +104,13 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     )
     tool_call = CollabAgentToolCallThreadItem.model_validate(
         {
-            "agentsStates": {},
+            "agentsStates": {
+                "child-thread-1": {
+                    "agent_nickname": "Scout",
+                    "agent_role": "explorer",
+                    "status": "running",
+                }
+            },
             "id": "call-1",
             "receiverThreadIds": ["child-thread-1"],
             "requestedModel": "gpt-5.6",
@@ -132,6 +139,10 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     collab_model_aliases = {
         field.alias or name for name, field in CollabAgentToolCallThreadItem.model_fields.items()
     }
+    collab_state_properties = schema_bundle["definitions"]["CollabAgentState"]["properties"]
+    collab_state_model_aliases = {
+        field.alias or name for name, field in CollabAgentState.model_fields.items()
+    }
     status_changed_properties = schema_bundle["definitions"]["ThreadStatusChangedNotification"][
         "properties"
     ]
@@ -154,7 +165,13 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
     # The RPC client converts models through `_params_dict` in Pydantic JSON mode before writing
     # the JSON-RPC payload. Assert that wire object rather than Python-mode Enum instances.
     assert _params_dict(tool_call) == {
-        "agentsStates": {},
+        "agentsStates": {
+            "child-thread-1": {
+                "agent_nickname": "Scout",
+                "agent_role": "explorer",
+                "status": "running",
+            }
+        },
         "id": "call-1",
         "receiverThreadIds": ["child-thread-1"],
         "requestedModel": "gpt-5.6",
@@ -174,6 +191,11 @@ def test_agent_picker_protocol_models_match_current_schema() -> None:
         "ancestorFilterApplied",
     } <= schema_bundle["definitions"]["ThreadListResponse"]["properties"].keys()
     assert collab_model_aliases == set(collab_properties)
+    assert collab_state_model_aliases == set(collab_state_properties)
+    assert tool_call.agents_states["child-thread-1"].agent_nickname == "Scout"
+    assert tool_call.agents_states["child-thread-1"].agent_role == "explorer"
+    assert "agent_nickname" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
+    assert "agent_role" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
     assert status_changed_model_aliases == set(status_changed_properties)
 
 

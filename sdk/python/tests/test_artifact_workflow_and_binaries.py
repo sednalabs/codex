@@ -468,7 +468,12 @@ def test_generation_preserves_current_agent_picker_protocol_fields(
     script = _load_update_script_module()
     generated = tmp_path / "v2_all.py"
     generated.write_text(
-        """class CollabAgentToolCallThreadItem(BaseModel):
+        """class CollabAgentState(BaseModel):
+    message: str | None = None
+    status: CollabAgentStatus
+
+
+class CollabAgentToolCallThreadItem(BaseModel):
     model: Annotated[str | None, Field(description="Model requested for the spawned agent, when applicable.")]
     reasoning_effort: Annotated[ReasoningEffort | None, Field(description="Reasoning effort requested for the spawned agent, when applicable.")]
     receiver_thread_ids: Annotated[
@@ -522,6 +527,8 @@ class ThreadResumeResponse(BaseModel):
 
     assert generated.read_text() == once
     for field in (
+        "agent_nickname",
+        "agent_role",
         "requested_model",
         "requested_reasoning_effort",
         "status_revision",
@@ -533,6 +540,8 @@ class ThreadResumeResponse(BaseModel):
     assert 'alias="requestedModel"' in once
     assert 'alias="requestedReasoningEffort"' in once
     assert 'alias="statusRevision"' in once
+    assert once.count("agent_nickname: str | None = None") == 1
+    assert once.count("agent_role: str | None = None") == 1
     assert "ge=0" in once
     assert once.count('alias="ancestorFilterApplied"') == 2
     assert once.count('alias="threadSubscriptionId"') == 3
