@@ -44,6 +44,13 @@ fn is_naturally_terminal_spawn_status(status: &AgentStatus) -> bool {
     matches!(status, AgentStatus::Completed(_) | AgentStatus::Errored(_))
 }
 
+fn is_benign_spawn_cancellation_cleanup_error(error: &CodexErr) -> bool {
+    matches!(
+        error.details(),
+        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+    )
+}
+
 /// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
 /// Role configuration is loaded first so role-local providers are available, while the caller's
 /// config remains the source of current runtime policy such as permissions and cwd.
@@ -611,6 +618,11 @@ impl AgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
+        #[cfg(test)]
+        self.wait_for_next_spawn_cancellation_cleanup(
+            SpawnCancellationCleanupPhase::BeforeRegistryCommit,
+        )
+        .await;
         if spawn_cancellation_requested(&options) {
             // The thread manager may finish creating a child concurrently with its caller's
             // cancellation. It has not entered the agent registry yet, so shut it down and
@@ -618,7 +630,14 @@ impl AgentControl {
             let shutdown_result = state.send_op(new_thread.thread_id, Op::Shutdown {}).await;
             new_thread.thread.wait_until_terminated().await;
             let _ = state.remove_thread(&new_thread.thread_id).await;
-            shutdown_result?;
+            if let Err(error) = shutdown_result
+                && !(is_benign_spawn_cancellation_cleanup_error(&error)
+                    && self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await)
+            {
+                return Err(error);
+            }
             return Err(CodexErr::TurnAborted);
         }
         agent_metadata.agent_id = Some(new_thread.thread_id);
@@ -626,10 +645,22 @@ impl AgentControl {
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
         }
+        #[cfg(test)]
+        self.wait_for_next_spawn_cancellation_cleanup(
+            SpawnCancellationCleanupPhase::AfterRegistryCommit,
+        )
+        .await;
         if spawn_cancellation_requested(&options) {
             // After the reservation is committed, use the regular control-plane shutdown path
             // so registry and residency ownership are released together.
-            self.shutdown_live_agent(new_thread.thread_id).await?;
+            if let Err(error) = self.shutdown_live_agent(new_thread.thread_id).await
+                && !(is_benign_spawn_cancellation_cleanup_error(&error)
+                    && self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await)
+            {
+                return Err(error);
+            }
             return Err(CodexErr::TurnAborted);
         }
 

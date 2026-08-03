@@ -140,6 +140,20 @@ struct SpawnInitialInputGate {
     proceed: tokio::sync::oneshot::Receiver<()>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpawnCancellationCleanupPhase {
+    BeforeRegistryCommit,
+    AfterRegistryCommit,
+}
+
+#[cfg(test)]
+struct SpawnCancellationCleanupGate {
+    phase: SpawnCancellationCleanupPhase,
+    started: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
+}
+
 /// Internal inventory snapshot for a spawned sub-agent.
 ///
 /// `status` is the live agent state, while `effective_*` and `identity_source`
@@ -260,6 +274,9 @@ pub(crate) struct AgentControl {
     #[cfg(test)]
     next_spawn_initial_input_gate: Arc<tokio::sync::Mutex<Option<SpawnInitialInputGate>>>,
     #[cfg(test)]
+    next_spawn_cancellation_cleanup_gate:
+        Arc<tokio::sync::Mutex<Option<SpawnCancellationCleanupGate>>>,
+    #[cfg(test)]
     kill_next_spawn_initial_input_child: Arc<tokio::sync::Mutex<bool>>,
     #[cfg(test)]
     kill_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
@@ -307,6 +324,25 @@ impl AgentControl {
             started: started_sender,
             proceed: proceed_receiver,
         });
+        (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_next_spawn_cancellation_cleanup(
+        &self,
+        phase: SpawnCancellationCleanupPhase,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (proceed_sender, proceed_receiver) = tokio::sync::oneshot::channel();
+        *self.next_spawn_cancellation_cleanup_gate.lock().await =
+            Some(SpawnCancellationCleanupGate {
+                phase,
+                started: started_sender,
+                proceed: proceed_receiver,
+            });
         (started_receiver, proceed_sender)
     }
 
@@ -408,6 +444,26 @@ impl AgentControl {
     async fn wait_for_next_spawn_initial_input(&self) {
         let Some(gate) = self.next_spawn_initial_input_gate.lock().await.take() else {
             return;
+        };
+        let _ = gate.started.send(());
+        let _ = gate.proceed.await;
+    }
+
+    #[cfg(test)]
+    async fn wait_for_next_spawn_cancellation_cleanup(
+        &self,
+        phase: SpawnCancellationCleanupPhase,
+    ) {
+        let gate = {
+            let mut next_gate = self.next_spawn_cancellation_cleanup_gate.lock().await;
+            let Some(gate) = next_gate.take() else {
+                return;
+            };
+            if gate.phase != phase {
+                *next_gate = Some(gate);
+                return;
+            }
+            gate
         };
         let _ = gate.started.send(());
         let _ = gate.proceed.await;
