@@ -67,9 +67,11 @@ use url::Url;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
-// Retain up to two ordinary events and reserve the final slot for an explicit terminal event.
-// The fixed bound keeps a stalled consumer from turning the remote transport into an unbounded
-// event buffer.
+// After initialization, retain up to two ordinary events and reserve the final slot for an
+// explicit terminal event. The fixed bound keeps a stalled consumer from turning the remote
+// transport into an unbounded event buffer. Initialization uses the same total budget while its
+// event receiver does not yet exist; an overflow rejects initialization rather than accumulating
+// indefinitely.
 const REMOTE_PENDING_EVENT_CAPACITY: usize = 3;
 const REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY: usize = REMOTE_PENDING_EVENT_CAPACITY - 1;
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
@@ -607,7 +609,7 @@ impl RemoteAppServerClient {
         Ok(Self {
             command_tx,
             event_rx,
-            pending_events: pending_events.into(),
+            pending_events,
             server_version,
             codex_home,
             worker_handle,
@@ -937,12 +939,17 @@ async fn initialize_remote_connection<S>(
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
-) -> IoResult<(Vec<TaggedAppServerEvent>, Option<String>, Option<String>)>
+) -> IoResult<(
+    VecDeque<TaggedAppServerEvent>,
+    Option<String>,
+    Option<String>,
+)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let initialize_request_id = RequestId::String("initialize".to_string());
-    let mut pending_events = Vec::new();
+    let mut pending_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
+    let mut skipped_events = 0usize;
     let mut server_version = None;
     let mut codex_home = None;
     write_jsonrpc_message(
@@ -968,6 +975,11 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
+                            if skipped_events > 0 {
+                                pending_events.push_back(TaggedAppServerEvent::Lagged {
+                                    skipped: skipped_events,
+                                });
+                            }
                             server_version = response
                                 .result
                                 .get("userAgent")
@@ -995,7 +1007,22 @@ where
                                 notification,
                                 thread_subscription_id,
                             ) {
-                                pending_events.push(event);
+                                if let Err(err) = queue_initialize_event(
+                                    &mut pending_events,
+                                    &mut skipped_events,
+                                    event,
+                                    endpoint,
+                                ) {
+                                    let message = err.to_string();
+                                    reject_pending_initialize_server_requests(
+                                        stream,
+                                        endpoint,
+                                        &pending_events,
+                                        &message,
+                                    )
+                                    .await;
+                                    return Err(err);
+                                }
                             }
                         }
                         JSONRPCMessage::Request(request) => {
@@ -1003,7 +1030,7 @@ where
                             let method = request.method.clone();
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
-                                    pending_events.push(match thread_subscription_id {
+                                    let event = match thread_subscription_id {
                                         Some(thread_subscription_id) => {
                                             TaggedAppServerEvent::ThreadServerRequest {
                                                 thread_subscription_id,
@@ -1011,7 +1038,42 @@ where
                                             }
                                         }
                                         None => TaggedAppServerEvent::ServerRequest(request),
-                                    });
+                                    };
+                                    if let Err(err) = queue_initialize_event(
+                                        &mut pending_events,
+                                        &mut skipped_events,
+                                        event,
+                                        endpoint,
+                                    ) {
+                                        let message = err.to_string();
+                                        reject_pending_initialize_server_requests(
+                                            stream,
+                                            endpoint,
+                                            &pending_events,
+                                            &message,
+                                        )
+                                        .await;
+                                        if let Err(reject_err) = write_jsonrpc_message(
+                                            stream,
+                                            JSONRPCMessage::Error(JSONRPCError {
+                                                error: JSONRPCErrorError {
+                                                    code: -32000,
+                                                    message,
+                                                    data: None,
+                                                },
+                                                id: request_id,
+                                            }),
+                                            endpoint,
+                                        )
+                                        .await
+                                        {
+                                            warn!(
+                                                %reject_err,
+                                                "failed to reject remote app-server request after initialize backlog overflow"
+                                            );
+                                        }
+                                        return Err(err);
+                                    }
                                 }
                                 Err(err) => {
                                     warn!(%err, method, "rejecting unknown remote app-server request during initialize");
@@ -1091,6 +1153,89 @@ where
 #[serde(rename_all = "camelCase")]
 struct ThreadSubscriptionExtension {
     thread_subscription_id: Option<String>,
+}
+
+/// Retains recognized events that arrive before initialization completes without allowing a
+/// slow initialize response to turn the handshake into an unbounded event buffer. This preserves
+/// the post-initialize split: best-effort events can become a later `Lagged` marker, but required
+/// state and server requests fail the connection explicitly rather than being silently dropped.
+fn queue_initialize_event(
+    pending_events: &mut VecDeque<TaggedAppServerEvent>,
+    skipped_events: &mut usize,
+    event: TaggedAppServerEvent,
+    endpoint: &str,
+) -> IoResult<()> {
+    let event_requires_delivery = remote_event_requires_delivery(&event);
+    let queued_event_count = if event_requires_delivery && *skipped_events > 0 {
+        2
+    } else {
+        1
+    };
+    if pending_events.len() + queued_event_count
+        <= REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY
+    {
+        if event_requires_delivery && *skipped_events > 0 {
+            pending_events.push_back(TaggedAppServerEvent::Lagged {
+                skipped: *skipped_events,
+            });
+            *skipped_events = 0;
+        }
+        pending_events.push_back(event);
+        return Ok(());
+    }
+
+    if !event_requires_delivery {
+        *skipped_events = skipped_events.saturating_add(1);
+        warn!("dropping remote app-server event because the initialize FIFO is full");
+        return Ok(());
+    }
+
+    Err(IoError::new(
+        ErrorKind::WouldBlock,
+        format!(
+            "remote app server at `{endpoint}` exceeded the bounded initialize event backlog"
+        ),
+    ))
+}
+
+async fn reject_pending_initialize_server_requests<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    pending_events: &VecDeque<TaggedAppServerEvent>,
+    message: &str,
+)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    for event in pending_events {
+        let request_id = match event {
+            TaggedAppServerEvent::ServerRequest(request)
+            | TaggedAppServerEvent::ThreadServerRequest { request, .. } => request.id().clone(),
+            TaggedAppServerEvent::ServerNotification(_)
+            | TaggedAppServerEvent::ThreadServerNotification { .. }
+            | TaggedAppServerEvent::Lagged { .. }
+            | TaggedAppServerEvent::Disconnected { .. } => continue,
+        };
+        if let Err(err) = write_jsonrpc_message(
+            stream,
+            JSONRPCMessage::Error(JSONRPCError {
+                error: JSONRPCErrorError {
+                    code: -32000,
+                    message: message.to_string(),
+                    data: None,
+                },
+                id: request_id,
+            }),
+            endpoint,
+        )
+        .await
+        {
+            warn!(
+                %err,
+                "failed to reject pending remote app-server request after initialize backlog overflow"
+            );
+        }
+    }
 }
 
 fn server_message_and_subscription_id(
@@ -1761,6 +1906,296 @@ mod tests {
             .await
             .expect("client shutdown should complete");
         drop(server_event_tx);
+        server_task
+            .await
+            .expect("test server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn initialize_queues_preinit_events_and_keeps_server_requests_replyable() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+
+            let preinit_notification = thread_scoped_server_message(
+                thread_status_changed_notification(1),
+                "preinit-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&preinit_notification)
+                        .expect("pre-initialize notification should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send pre-initialize notification");
+
+            let preinit_request = thread_scoped_server_message(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: RequestId::Integer(17),
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        auto_resolution_ms: None,
+                    },
+                },
+                "preinit-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&preinit_request)
+                        .expect("pre-initialize request should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send pre-initialize request");
+
+            let initialize_response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({
+                    "userAgent": "test-server/1.0",
+                    "codexHome": "/tmp/codex-app-server-client-test",
+                }),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&initialize_response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            let Message::Text(text) = initialized else {
+                panic!("expected initialized text frame");
+            };
+            let JSONRPCMessage::Notification(initialized) =
+                serde_json::from_str(&text).expect("initialized frame should contain JSON-RPC")
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+
+            let rejection = server_stream
+                .next()
+                .await
+                .expect("client should answer the pre-initialize request")
+                .expect("server request answer should succeed");
+            let Message::Text(text) = rejection else {
+                panic!("expected server request error text frame");
+            };
+            let JSONRPCMessage::Error(rejection) =
+                serde_json::from_str(&text).expect("server request answer should contain JSON-RPC")
+            else {
+                panic!("expected server request rejection");
+            };
+            assert_eq!(rejection.id, RequestId::Integer(17));
+            assert_eq!(rejection.error.code, -32000);
+            assert_eq!(rejection.error.message, "pre-initialize request was rejected");
+
+            match server_stream.next().await {
+                Some(Ok(Message::Close(_))) | None => {}
+                Some(Ok(message)) => panic!("expected client close, got {message:?}"),
+                Some(Err(err)) => panic!("test transport should not fail: {err}"),
+            }
+        });
+
+        let mut client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory initialize event transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize after pre-initialize events");
+
+        assert_eq!(client.server_version(), Some("1.0"));
+        assert_eq!(
+            client.codex_home(),
+            Some("/tmp/codex-app-server-client-test")
+        );
+        match client.next_tagged_event().await {
+            Some(TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification: ServerNotification::ThreadStatusChanged(notification),
+            }) => {
+                assert_eq!(thread_subscription_id, "preinit-subscription");
+                assert_eq!(notification.status_revision, Some(1));
+            }
+            event => panic!("expected pre-initialize thread status, got {event:?}"),
+        }
+        match client.next_tagged_event().await {
+            Some(TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request: ServerRequest::ToolRequestUserInput { request_id, params },
+            }) => {
+                assert_eq!(thread_subscription_id, "preinit-subscription");
+                assert_eq!(request_id, RequestId::Integer(17));
+                assert_eq!(params.thread_id, "thread");
+                assert_eq!(params.turn_id, "turn");
+                assert_eq!(params.item_id, "item");
+                assert!(params.questions.is_empty());
+                assert_eq!(params.auto_resolution_ms, None);
+            }
+            event => panic!("expected pre-initialize thread request, got {event:?}"),
+        }
+
+        client
+            .reject_server_request(
+                RequestId::Integer(17),
+                JSONRPCErrorError {
+                    code: -32000,
+                    message: "pre-initialize request was rejected".to_string(),
+                    data: None,
+                },
+            )
+            .await
+            .expect("pre-initialize request should retain a rejectable JSON-RPC id");
+        client
+            .shutdown()
+            .await
+            .expect("client shutdown should complete");
+        server_task
+            .await
+            .expect("test server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn delayed_initialize_event_flood_fails_with_a_bounded_backlog_error() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            assert_eq!(initialize.method, "initialize");
+
+            for status_revision in 0..REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY {
+                let notification = thread_scoped_server_message(
+                    thread_status_changed_notification(status_revision as u64),
+                    "flood-subscription",
+                );
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&notification)
+                            .expect("pre-initialize notification should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server should send pre-initialize notification");
+            }
+
+            let overflow_request = thread_scoped_server_message(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: RequestId::Integer(99),
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        auto_resolution_ms: None,
+                    },
+                },
+                "flood-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&overflow_request)
+                        .expect("overflow request should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send overflowing pre-initialize request");
+
+            let rejection = timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("client should promptly reject the overflowing server request")
+                .expect("client should send an overflowing server request rejection")
+                .expect("overflow rejection frame should succeed");
+            let Message::Text(text) = rejection else {
+                panic!("expected overflowing server request error text frame");
+            };
+            let JSONRPCMessage::Error(rejection) =
+                serde_json::from_str(&text).expect("overflow rejection should contain JSON-RPC")
+            else {
+                panic!("expected overflowing server request rejection");
+            };
+            assert_eq!(rejection.id, RequestId::Integer(99));
+            assert_eq!(rejection.error.code, -32000);
+            assert!(
+                rejection
+                    .error
+                    .message
+                    .contains("bounded initialize event backlog")
+            );
+        });
+
+        let err = timeout(
+            Duration::from_secs(1),
+            RemoteAppServerClient::connect_with_stream(
+                /*channel_capacity*/ 1,
+                "in-memory delayed initialize flood transport".to_string(),
+                client_stream,
+                InitializeParams {
+                    client_info: ClientInfo {
+                        name: "test-client".to_string(),
+                        title: None,
+                        version: "1.0".to_string(),
+                    },
+                    capabilities: None,
+                },
+            ),
+        )
+        .await
+        .expect("bounded initialization should fail promptly")
+        .err()
+        .expect("pre-initialize flood should reject the remote connection");
+        assert_eq!(err.kind(), ErrorKind::WouldBlock);
+        assert!(
+            err.to_string()
+                .contains("exceeded the bounded initialize event backlog")
+        );
         server_task
             .await
             .expect("test server task should not panic");
