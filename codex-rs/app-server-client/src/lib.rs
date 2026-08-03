@@ -435,6 +435,12 @@ enum ClientCommand {
     Shutdown {
         response_tx: oneshot::Sender<IoResult<()>>,
     },
+    #[cfg(test)]
+    InjectServerEvent {
+        event: InProcessServerEvent,
+        started_tx: oneshot::Sender<()>,
+        response_tx: oneshot::Sender<ForwardEventResult>,
+    },
 }
 
 /// Async facade over the in-process app-server runtime.
@@ -529,6 +535,22 @@ impl InProcessAppServerClient {
                                 let shutdown_result = handle.shutdown().await;
                                 let _ = response_tx.send(shutdown_result);
                                 break;
+                            }
+                            #[cfg(test)]
+                            Some(ClientCommand::InjectServerEvent {
+                                event,
+                                started_tx,
+                                response_tx,
+                            }) => {
+                                let _ = started_tx.send(());
+                                let result = forward_in_process_event(
+                                    &event_tx,
+                                    &mut skipped_events,
+                                    event,
+                                    |_| {},
+                                )
+                                .await;
+                                let _ = response_tx.send(result);
                             }
                             None => {
                                 let _ = handle.shutdown().await;
@@ -2588,6 +2610,71 @@ mod tests {
             .await
             .expect("shutdown should not wait for the 5s fallback timeout")
             .expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn shutdown_unblocks_a_required_event_waiting_on_the_facade_queue() {
+        let client = start_test_client_with_capacity(SessionSource::Cli, 1).await;
+        let required_event = || {
+            InProcessServerEvent::ServerNotification(ServerNotification::ThreadClosed(
+                codex_app_server_protocol::ThreadClosedNotification {
+                    thread_id: "thread".to_string(),
+                },
+            ))
+        };
+
+        let (first_started_tx, first_started_rx) = oneshot::channel();
+        let (first_response_tx, first_response_rx) = oneshot::channel();
+        client
+            .command_tx
+            .send(ClientCommand::InjectServerEvent {
+                event: required_event(),
+                started_tx: first_started_tx,
+                response_tx: first_response_tx,
+            })
+            .await
+            .expect("first injection should reach the worker");
+        first_started_rx
+            .await
+            .expect("first injection should start");
+        assert_eq!(
+            first_response_rx
+                .await
+                .expect("first injection should finish"),
+            ForwardEventResult::Continue
+        );
+
+        let (second_started_tx, second_started_rx) = oneshot::channel();
+        let (second_response_tx, mut second_response_rx) = oneshot::channel();
+        client
+            .command_tx
+            .send(ClientCommand::InjectServerEvent {
+                event: required_event(),
+                started_tx: second_started_tx,
+                response_tx: second_response_tx,
+            })
+            .await
+            .expect("second injection should reach the worker");
+        second_started_rx
+            .await
+            .expect("second injection should start");
+        assert!(
+            timeout(Duration::from_millis(20), &mut second_response_rx)
+                .await
+                .is_err(),
+            "second required event should wait for facade capacity"
+        );
+
+        timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("dropping the facade receiver should release the blocked event")
+            .expect("facade and runtime shutdown should complete");
+        assert_eq!(
+            second_response_rx
+                .await
+                .expect("blocked delivery should settle during shutdown"),
+            ForwardEventResult::DisableStream
+        );
     }
 
     #[tokio::test(start_paused = true)]
