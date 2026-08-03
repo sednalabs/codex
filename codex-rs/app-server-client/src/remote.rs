@@ -70,9 +70,9 @@ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
 // After initialization, retain up to two ordinary events and reserve the final slot for an
 // explicit terminal event. The fixed bound keeps a stalled consumer from turning the remote
-// transport into an unbounded event buffer. Initialization uses the same total budget while its
-// event receiver does not yet exist; an overflow rejects initialization rather than accumulating
-// indefinitely.
+// transport into an unbounded event buffer. Initialization uses the same non-terminal budget
+// while its event receiver does not yet exist; deferred loss accounting carries into the worker
+// instead of consuming the reserved terminal slot.
 const REMOTE_PENDING_EVENT_CAPACITY: usize = 3;
 const REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY: usize = REMOTE_PENDING_EVENT_CAPACITY - 1;
 const REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE: &str =
@@ -214,13 +214,14 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
-        let (pending_events, server_version, codex_home) = initialize_remote_connection(
-            &mut stream,
-            &endpoint,
-            initialize_params,
-            INITIALIZE_TIMEOUT,
-        )
-        .await?;
+        let (pending_events, skipped_events, server_version, codex_home) =
+            initialize_remote_connection(
+                &mut stream,
+                &endpoint,
+                initialize_params,
+                INITIALIZE_TIMEOUT,
+            )
+            .await?;
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<TaggedAppServerEvent>(channel_capacity);
@@ -236,20 +237,16 @@ impl RemoteAppServerClient {
                 .cloned()
                 .collect::<HashSet<_>>();
             let mut worker_exit_error: Option<(ErrorKind, String)> = None;
-            let mut skipped_events = 0usize;
+            let mut skipped_events = skipped_events;
             let mut exit_after_pending_events = false;
             let mut event_consumer_closed = false;
             loop {
                 if !event_consumer_closed && event_tx.is_closed() {
-                    if !pending_remote_events.is_empty() {
-                        warn!("remote app-server event consumer closed while required event was pending");
-                    }
-                    reject_pending_remote_server_requests(
+                    handle_event_consumer_closed(
                         &mut stream,
                         &endpoint,
                         &mut pending_server_request_ids,
                         &mut pending_remote_events,
-                        REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
                     )
                     .await;
                     // `RemoteAppServerClient::shutdown` drops its receiver before sending
@@ -266,30 +263,35 @@ impl RemoteAppServerClient {
                         &err_message,
                     );
                 }
-                if exit_after_pending_events
-                    && pending_remote_events.is_empty()
-                    && !event_consumer_closed
-                {
+                if remote_worker_should_exit(
+                    exit_after_pending_events,
+                    &pending_remote_events,
+                    skipped_events,
+                    event_consumer_closed,
+                ) {
                     break;
                 }
                 tokio::select! {
                     permit = event_tx.reserve(),
-                    if !event_consumer_closed && !pending_remote_events.is_empty() => {
+                    if !event_consumer_closed
+                        && (!pending_remote_events.is_empty() || skipped_events > 0) => {
                         match permit {
                             Ok(permit) => {
-                                let event = pending_remote_events
-                                    .pop_front()
-                                    .expect("pending remote event should exist");
+                                let event = take_next_pending_remote_event(
+                                    &mut pending_remote_events,
+                                    &mut skipped_events,
+                                )
+                                .expect(
+                                    "a pending remote event or skipped loss count should exist",
+                                );
                                 permit.send(event);
                             }
                             Err(_) => {
-                                warn!("remote app-server event consumer closed while required event was pending");
-                                reject_pending_remote_server_requests(
+                                handle_event_consumer_closed(
                                     &mut stream,
                                     &endpoint,
                                     &mut pending_server_request_ids,
                                     &mut pending_remote_events,
-                                    REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
                                 )
                                 .await;
                                 event_consumer_closed = true;
@@ -431,15 +433,11 @@ impl RemoteAppServerClient {
                     }
                     message = stream.next(), if !exit_after_pending_events => {
                         if !event_consumer_closed && event_tx.is_closed() {
-                            if !pending_remote_events.is_empty() {
-                                warn!("remote app-server event consumer closed while required event was pending");
-                            }
-                            reject_pending_remote_server_requests(
+                            handle_event_consumer_closed(
                                 &mut stream,
                                 &endpoint,
                                 &mut pending_server_request_ids,
                                 &mut pending_remote_events,
-                                REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
                             )
                             .await;
                             event_consumer_closed = true;
@@ -495,9 +493,16 @@ impl RemoteAppServerClient {
                                                 Err(err) => {
                                                     warn!(
                                                         %err,
-                                                        "failed to deliver remote app-server event"
+                                                        "event consumer closed while delivering a remote event"
                                                     );
-                                                    break;
+                                                    handle_event_consumer_closed(
+                                                        &mut stream,
+                                                        &endpoint,
+                                                        &mut pending_server_request_ids,
+                                                        &mut pending_remote_events,
+                                                    )
+                                                    .await;
+                                                    event_consumer_closed = true;
                                                 }
                                             }
                                         }
@@ -608,9 +613,16 @@ impl RemoteAppServerClient {
                                                     Err(err) => {
                                                         warn!(
                                                             %err,
-                                                            "failed to deliver remote app-server server request"
+                                                            "event consumer closed while delivering a remote server request"
                                                         );
-                                                        break;
+                                                        handle_event_consumer_closed(
+                                                            &mut stream,
+                                                            &endpoint,
+                                                            &mut pending_server_request_ids,
+                                                            &mut pending_remote_events,
+                                                        )
+                                                        .await;
+                                                        event_consumer_closed = true;
                                                     }
                                                 }
                                             }
@@ -1116,6 +1128,7 @@ async fn initialize_remote_connection<S>(
     initialize_timeout: Duration,
 ) -> IoResult<(
     VecDeque<TaggedAppServerEvent>,
+    usize,
     Option<String>,
     Option<String>,
 )>
@@ -1150,11 +1163,10 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
-                            if skipped_events > 0 {
-                                pending_events.push_back(TaggedAppServerEvent::Lagged {
-                                    skipped: skipped_events,
-                                });
-                            }
+                            queue_initialize_lagged_event_if_room(
+                                &mut pending_events,
+                                &mut skipped_events,
+                            );
                             server_version = response
                                 .result
                                 .get("userAgent")
@@ -1321,7 +1333,23 @@ where
     )
     .await?;
 
-    Ok((pending_events, server_version, codex_home))
+    Ok((pending_events, skipped_events, server_version, codex_home))
+}
+
+/// Materializes initialization loss only when it still fits in the ordinary-event portion of the
+/// FIFO. Otherwise the worker emits the marker after the retained FIFO drains, preserving the
+/// terminal disconnect reservation.
+fn queue_initialize_lagged_event_if_room(
+    pending_events: &mut VecDeque<TaggedAppServerEvent>,
+    skipped_events: &mut usize,
+) {
+    if *skipped_events > 0
+        && pending_events.len() < REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY
+    {
+        pending_events.push_back(TaggedAppServerEvent::Lagged {
+            skipped: std::mem::take(skipped_events),
+        });
+    }
 }
 
 #[derive(Deserialize)]
@@ -1436,6 +1464,27 @@ fn app_server_event_from_notification(
         }),
         Err(_) => None,
     }
+}
+
+fn take_next_pending_remote_event(
+    pending_remote_events: &mut VecDeque<TaggedAppServerEvent>,
+    skipped_events: &mut usize,
+) -> Option<TaggedAppServerEvent> {
+    pending_remote_events.pop_front().or_else(|| {
+        (*skipped_events > 0).then(|| TaggedAppServerEvent::Lagged {
+            skipped: std::mem::take(skipped_events),
+        })
+    })
+}
+
+fn remote_worker_should_exit(
+    exit_after_pending_events: bool,
+    pending_remote_events: &VecDeque<TaggedAppServerEvent>,
+    skipped_events: usize,
+    event_consumer_closed: bool,
+) -> bool {
+    exit_after_pending_events
+        && (event_consumer_closed || (pending_remote_events.is_empty() && skipped_events == 0))
 }
 
 enum RemoteEventDelivery {
@@ -1642,6 +1691,30 @@ fn tagged_server_request_id(event: &TaggedAppServerEvent) -> Option<&RequestId> 
         | TaggedAppServerEvent::ThreadServerNotification { .. }
         | TaggedAppServerEvent::Disconnected { .. } => None,
     }
+}
+
+/// Stops event delivery after its receiver closes while preserving a healthy remote transport for
+/// detached request handles. Every server request that was accepted before delivery became
+/// impossible is rejected exactly once by draining its ledger.
+async fn handle_event_consumer_closed<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    pending_server_request_ids: &mut HashSet<RequestId>,
+    pending_remote_events: &mut VecDeque<TaggedAppServerEvent>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    if !pending_remote_events.is_empty() {
+        warn!("remote app-server event consumer closed while required event was pending");
+    }
+    reject_pending_remote_server_requests(
+        stream,
+        endpoint,
+        pending_server_request_ids,
+        pending_remote_events,
+        REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
+    )
+    .await;
 }
 
 /// Fails every outstanding outbound RPC as soon as the transport has a terminal state. Taking
@@ -2615,6 +2688,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn closed_event_delivery_rejects_ledgered_server_request_exactly_once() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let mut client_stream =
+            WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let request_id = RequestId::Integer(73);
+        let request = ServerRequest::ToolRequestUserInput {
+            request_id: request_id.clone(),
+            params: ToolRequestUserInputParams {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                item_id: "item".to_string(),
+                questions: Vec::new(),
+                auto_resolution_ms: None,
+            },
+        };
+        let mut pending_server_request_ids = HashSet::from([request_id.clone()]);
+        let mut pending_remote_events =
+            VecDeque::from([TaggedAppServerEvent::ServerRequest(request)]);
+
+        handle_event_consumer_closed(
+            &mut client_stream,
+            "test transport",
+            &mut pending_server_request_ids,
+            &mut pending_remote_events,
+        )
+        .await;
+
+        let rejection = timeout(Duration::from_secs(1), server_stream.next())
+            .await
+            .expect("closed event delivery should reject the ledgered server request")
+            .expect("client should send the server request rejection")
+            .expect("server request rejection frame should succeed");
+        let Message::Text(text) = rejection else {
+            panic!("expected server request error text frame");
+        };
+        let JSONRPCMessage::Error(rejection) =
+            serde_json::from_str(&text).expect("server request rejection should contain JSON-RPC")
+        else {
+            panic!("expected server request rejection");
+        };
+        assert_eq!(rejection.id, request_id);
+        assert_eq!(rejection.error.code, -32000);
+        assert_eq!(
+            rejection.error.message,
+            REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE
+        );
+        assert!(pending_server_request_ids.is_empty());
+        assert!(pending_remote_events.is_empty());
+
+        handle_event_consumer_closed(
+            &mut client_stream,
+            "test transport",
+            &mut pending_server_request_ids,
+            &mut pending_remote_events,
+        )
+        .await;
+        assert!(
+            timeout(Duration::from_millis(50), server_stream.next())
+                .await
+                .is_err(),
+            "draining the ledger must prevent a duplicate server request rejection"
+        );
+    }
+
+    #[tokio::test]
     async fn terminal_overload_rejects_every_retained_server_request_before_drain() {
         let (client_io, server_io) = duplex(64 * 1024);
         let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
@@ -3123,6 +3263,72 @@ mod tests {
             .expect("test server task should not panic");
     }
 
+    #[test]
+    fn initialization_loss_keeps_the_terminal_disconnect_slot_reserved() {
+        let mut pending_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
+        let mut skipped_events = 0usize;
+        queue_initialize_event(
+            &mut pending_events,
+            &mut skipped_events,
+            TaggedAppServerEvent::ServerNotification(thread_status_changed_notification(1)),
+            "test transport",
+        )
+        .expect("initial required state should fit in the initialize FIFO");
+        queue_initialize_event(
+            &mut pending_events,
+            &mut skipped_events,
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "retained progress",
+            )),
+            "test transport",
+        )
+        .expect("first best-effort event should fit in the initialize FIFO");
+        queue_initialize_event(
+            &mut pending_events,
+            &mut skipped_events,
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "dropped progress",
+            )),
+            "test transport",
+        )
+        .expect("second best-effort event should be accounted for without growing the FIFO");
+
+        assert_eq!(pending_events.len(), REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY);
+        assert_eq!(skipped_events, 1);
+        queue_initialize_lagged_event_if_room(&mut pending_events, &mut skipped_events);
+        assert_eq!(pending_events.len(), REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY);
+        assert_eq!(skipped_events, 1);
+
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let mut worker_exit_error = None;
+        let mut exit_after_pending_events = false;
+        queue_remote_event(
+            &event_tx,
+            &mut skipped_events,
+            &mut pending_events,
+            TaggedAppServerEvent::Disconnected {
+                message: "remote transport failed".to_string(),
+            },
+            /*exit_after_delivery*/ true,
+            "test transport",
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+        )
+        .expect("the reserved slot should retain the terminal disconnect");
+
+        assert_eq!(pending_events.len(), REMOTE_PENDING_EVENT_CAPACITY);
+        assert!(exit_after_pending_events);
+        match pending_events
+            .pop_back()
+            .expect("terminal disconnect should occupy the reserved slot")
+        {
+            TaggedAppServerEvent::Disconnected { message } => {
+                assert!(message.contains("1 best-effort remote event(s) were dropped"));
+            }
+            event => panic!("expected terminal disconnect, got {event:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn pending_remote_fifo_keeps_best_effort_events_behind_required_events() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
@@ -3214,6 +3420,36 @@ mod tests {
         assert_eq!(skipped_events, 0);
         assert!(worker_exit_error.is_none());
         assert!(!exit_after_pending_events);
+    }
+
+    #[test]
+    fn drained_remote_fifo_emits_deferred_lagged_marker_without_later_traffic() {
+        let mut pending_events = VecDeque::from([
+            TaggedAppServerEvent::ServerNotification(thread_status_changed_notification(1)),
+            TaggedAppServerEvent::ServerNotification(command_execution_output_delta_notification(
+                "retained progress",
+            )),
+        ]);
+        let mut skipped_events = 2usize;
+
+        assert!(matches!(
+            take_next_pending_remote_event(&mut pending_events, &mut skipped_events),
+            Some(TaggedAppServerEvent::ServerNotification(
+                ServerNotification::ThreadStatusChanged(notification)
+            )) if notification.status_revision == Some(1)
+        ));
+        assert!(matches!(
+            take_next_pending_remote_event(&mut pending_events, &mut skipped_events),
+            Some(TaggedAppServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(notification)
+            )) if notification.delta == "retained progress"
+        ));
+        assert!(matches!(
+            take_next_pending_remote_event(&mut pending_events, &mut skipped_events),
+            Some(TaggedAppServerEvent::Lagged { skipped: 2 })
+        ));
+        assert_eq!(skipped_events, 0);
+        assert!(take_next_pending_remote_event(&mut pending_events, &mut skipped_events).is_none());
     }
 
     #[tokio::test]
@@ -3721,6 +3957,27 @@ mod tests {
             }
             assert_eq!(skipped_events, 0);
         }
+    }
+
+    #[test]
+    fn terminal_worker_exits_after_event_receiver_closes_with_an_idle_detached_sender() {
+        let (_detached_command_tx, _command_rx) = mpsc::channel::<RemoteClientCommand>(1);
+        let pending_remote_events = VecDeque::from([TaggedAppServerEvent::Disconnected {
+            message: "remote transport failed".to_string(),
+        }]);
+
+        assert!(remote_worker_should_exit(
+            /*exit_after_pending_events*/ true,
+            &pending_remote_events,
+            /*skipped_events*/ 0,
+            /*event_consumer_closed*/ true,
+        ));
+        assert!(!remote_worker_should_exit(
+            /*exit_after_pending_events*/ true,
+            &pending_remote_events,
+            /*skipped_events*/ 0,
+            /*event_consumer_closed*/ false,
+        ));
     }
 
     #[tokio::test]
