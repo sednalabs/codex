@@ -3081,6 +3081,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_idle_consumer_closure_terminates_retained_request_handle() {
+        let (client_request_seen_tx, client_request_seen_rx) = oneshot::channel();
+        let (close_seen_tx, close_seen_rx) = oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+
+            let JSONRPCMessage::Request(client_request) =
+                read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected retained handle request");
+            };
+            assert_eq!(client_request.method, "account/read");
+            client_request_seen_tx
+                .send(())
+                .expect("client request observation should reach the test");
+
+            expect_websocket_close(&mut websocket).await;
+            close_seen_tx
+                .send(())
+                .expect("close observation should reach the test");
+        })
+        .await;
+        let client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+
+        let request_handle = client.request_handle();
+        let request_task = tokio::spawn(async move {
+            request_handle
+                .request(remote_get_account_request(/*request_id*/ 96))
+                .await
+        });
+        timeout(Duration::from_secs(1), client_request_seen_rx)
+            .await
+            .expect("server should observe the retained handle request")
+            .expect("client request observation channel should stay open");
+
+        drop(client);
+
+        let request_error = timeout(Duration::from_secs(1), request_task)
+            .await
+            .expect("retained handle request should settle promptly")
+            .expect("retained handle request task should join")
+            .expect_err("retained handle request should receive a terminal error");
+        assert_eq!(request_error.kind(), ErrorKind::BrokenPipe);
+        assert!(
+            request_error
+                .to_string()
+                .contains("event consumer channel is closed")
+        );
+        timeout(Duration::from_secs(1), close_seen_rx)
+            .await
+            .expect("idle server should promptly observe the close frame")
+            .expect("close observation channel should stay open");
+    }
+
+    #[tokio::test]
     async fn remote_server_request_received_during_initialize_is_delivered() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
