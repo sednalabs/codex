@@ -1042,7 +1042,14 @@ decisions.
   server notification as authoritative by default, including future protocol
   additions. Reconstructible command-execution output deltas and coalescible
   fuzzy-search snapshot updates are the two explicit best-effort exceptions;
-  fuzzy-search completion remains authoritative. Thirty-two reviewed
+  fuzzy-search completion remains authoritative. Each fuzzy-search session now
+  has one serialized notification forwarder with at most one in-flight
+  notification and one replace-latest pending snapshot; compact counters retain
+  completion ordering across replaced snapshots, while stop cancels the task
+  and clears pending custody. That bounded-custody statement applies only at
+  the in-process transport and fuzzy-forwarder boundary. It does not cover the
+  pre-existing core session source-event channel, which remains separately
+  routed under w11380. Thirty-two reviewed
   consumer-state fixtures cover
   account, process, search, sandbox, realtime, transcript, item, turn, thread,
   goal, usage, settings, and request-resolution surfaces. The deterministic
