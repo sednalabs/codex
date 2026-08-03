@@ -403,7 +403,7 @@ async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
         harness.control.pause_next_spawn_initial_input().await;
     harness
         .control
-        .remove_next_spawn_cancellation_interrupt_child()
+        .kill_next_spawn_cancellation_interrupt_child()
         .await;
     let cancellation_token = CancellationToken::new();
     let control = harness.control.clone();
@@ -445,7 +445,7 @@ async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
     let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
         panic!("a dead child during cancellation must not be reported as cancelled and live");
     };
-    assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
+    assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
     assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
 
     let open_children = harness
@@ -479,6 +479,137 @@ async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
             .await
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_cleanup_owns_already_removed_precommit_and_postcommit_children() {
+    for phase in [
+        SpawnCancellationCleanupPhase::BeforeRegistryCommit,
+        SpawnCancellationCleanupPhase::AfterRegistryCommit,
+    ] {
+        let (home, mut config) = test_config().await;
+        config
+            .features
+            .enable(Feature::Sqlite)
+            .expect("test config should allow sqlite");
+        let harness = AgentControlHarness::new_with_config(home, config).await;
+        let (parent_thread_id, _) = harness.start_thread().await;
+        let (cleanup_started, allow_cleanup) = harness
+            .control
+            .pause_next_spawn_cancellation_cleanup(phase)
+            .await;
+        let cancellation_token = CancellationToken::new();
+        let control = harness.control.clone();
+        let child_config = harness.config.clone();
+        let child_cancellation_token = cancellation_token.clone();
+        let spawn_task = tokio::spawn(async move {
+            control
+                .spawn_agent_with_metadata_outcome(
+                    child_config,
+                    text_input("child task"),
+                    Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 1,
+                        agent_path: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                    })),
+                    SpawnAgentOptions {
+                        parent_thread_id: Some(parent_thread_id),
+                        cancellation_token: Some(child_cancellation_token),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+
+        cleanup_started
+            .await
+            .expect("spawn should pause before its selected cancellation cleanup phase");
+        let child_thread_id = harness
+            .manager
+            .list_thread_ids()
+            .await
+            .into_iter()
+            .find(|thread_id| *thread_id != parent_thread_id)
+            .expect("created child should remain visible until the concurrent teardown");
+        assert_eq!(
+            harness.control.get_agent_metadata(child_thread_id).is_some(),
+            phase == SpawnCancellationCleanupPhase::AfterRegistryCommit
+        );
+        cancellation_token.cancel();
+        match phase {
+            SpawnCancellationCleanupPhase::BeforeRegistryCommit => {
+                let child = harness
+                    .manager
+                    .get_thread(child_thread_id)
+                    .await
+                    .expect("precommit child should still be managed");
+                child
+                    .shutdown_and_wait()
+                    .await
+                    .expect("concurrent precommit teardown should complete");
+                let error = child
+                    .submit(Op::Shutdown {})
+                    .await
+                    .expect_err("the closed child submission channel should report child death");
+                assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+            }
+            SpawnCancellationCleanupPhase::AfterRegistryCommit => {
+                harness
+                    .control
+                    .shutdown_live_agent(child_thread_id)
+                    .await
+                    .expect("concurrent postcommit teardown should complete");
+                assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+                assert!(harness.manager.get_thread(child_thread_id).await.is_err());
+                let error = harness
+                    .control
+                    .shutdown_live_agent(child_thread_id)
+                    .await
+                    .expect_err("a postcommit cleanup retry should observe the removed child");
+                assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
+            }
+        }
+        allow_cleanup
+            .send(())
+            .expect("cancellation cleanup pause should still be waiting");
+
+        let error = spawn_task
+            .await
+            .expect("spawn task should join")
+            .expect_err("the caller cancellation should own benign cleanup races");
+        assert_matches!(error.details(), CodexErrorDetails::TurnAborted);
+        assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+        assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+        assert!(
+            harness
+                .control
+                .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+                .await
+                .expect("live agent inventory should load")
+                .is_empty(),
+            "cancellation cleanup must not leave a live child identity"
+        );
+
+        let state_db = harness
+            .state_db
+            .as_ref()
+            .expect("sqlite state db should be configured");
+        for status in [
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        ] {
+            assert!(
+                state_db
+                    .list_thread_spawn_children_with_status(parent_thread_id, status)
+                    .await
+                    .expect("child edge state should load")
+                    .is_empty(),
+                "cleanup before lifecycle publication must not leave a persisted child edge"
+            );
+        }
+    }
 }
 
 #[tokio::test]
