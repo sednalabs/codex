@@ -449,8 +449,10 @@ impl RemoteAppServerRequestHandle {
 /// The private event buffer has a count bound, not a byte bound: individual
 /// JSON-RPC payloads can still be large. The public channel has the same
 /// capacity, so a connection keeps at most `2 * capacity` ordinary events
-/// between the worker and its caller. Terminal finalization may additionally
-/// synthesize one `Lagged` marker and one `Disconnected` event.
+/// between the worker and its caller. Server request ownership uses that same
+/// bound across the private backlog and public channel until the client sends
+/// its response. Terminal finalization may additionally synthesize one
+/// `Lagged` marker and one `Disconnected` event.
 struct RemoteEventBacklog {
     events: VecDeque<AppServerEvent>,
     skipped_events: usize,
@@ -458,7 +460,7 @@ struct RemoteEventBacklog {
     // The virtual Lagged event is emitted immediately after these entries.
     lagged_after: Option<usize>,
     capacity: usize,
-    undispatched_server_request_ids: HashSet<RequestId>,
+    unresolved_server_request_ids: HashSet<RequestId>,
 }
 
 #[derive(Debug)]
@@ -474,15 +476,37 @@ impl RemoteEventBacklog {
             skipped_events: 0,
             lagged_after: None,
             capacity,
-            undispatched_server_request_ids: HashSet::new(),
+            unresolved_server_request_ids: HashSet::new(),
         }
     }
 
     fn enqueue(&mut self, event: AppServerEvent) -> Result<(), RequiredEventOverflow> {
+        let server_request_id = match &event {
+            AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
+            _ => None,
+        };
+        if let Some(request_id) = &server_request_id {
+            // A repeated peer request ID denotes the same in-flight request.
+            // Do not publish a second prompt or generate a second response.
+            if self.unresolved_server_request_ids.contains(request_id) {
+                warn!(%request_id, "ignoring duplicate remote app-server server request");
+                return Ok(());
+            }
+
+            // Server requests occupy the same two bounded queues as ordinary
+            // events, but they remain owned after crossing event_tx. Bound
+            // that retained ownership so a fast event consumer that never
+            // answers prompts cannot turn it into an unbounded side queue.
+            if self.unresolved_server_request_ids.len() >= self.capacity.saturating_mul(2) {
+                return Err(RequiredEventOverflow {
+                    server_request_id: Some(request_id.clone()),
+                });
+            }
+        }
+
         if self.events.len() < self.capacity {
-            if let AppServerEvent::ServerRequest(request) = &event {
-                self.undispatched_server_request_ids
-                    .insert(request.id().clone());
+            if let Some(request_id) = server_request_id {
+                self.unresolved_server_request_ids.insert(request_id);
             }
             self.events.push_back(event);
             return Ok(());
@@ -518,17 +542,22 @@ impl RemoteEventBacklog {
         }
 
         let event = self.events.pop_front()?;
-        if let AppServerEvent::ServerRequest(request) = &event {
-            self.undispatched_server_request_ids.remove(request.id());
-        }
         if let Some(remaining) = &mut self.lagged_after {
             *remaining = remaining.saturating_sub(1);
         }
         Some(event)
     }
 
-    fn take_undispatched_server_request_ids(&mut self) -> Vec<RequestId> {
-        self.undispatched_server_request_ids.drain().collect()
+    fn has_unresolved_server_request(&self, request_id: &RequestId) -> bool {
+        self.unresolved_server_request_ids.contains(request_id)
+    }
+
+    fn complete_server_request(&mut self, request_id: &RequestId) {
+        self.unresolved_server_request_ids.remove(request_id);
+    }
+
+    fn take_unresolved_server_request_ids(&mut self) -> Vec<RequestId> {
+        self.unresolved_server_request_ids.drain().collect()
     }
 
     fn finalize(mut self, message: String) -> VecDeque<AppServerEvent> {
@@ -583,9 +612,13 @@ impl RemoteTerminal {
             ),
         );
         if let Some(request_id) = server_request_id {
-            terminal.reject_request_ids.push(request_id);
+            terminal.reject_server_request(request_id);
         }
         terminal
+    }
+
+    fn reject_server_request(&mut self, request_id: RequestId) {
+        self.reject_request_ids.push(request_id);
     }
 
     fn io_error(&self) -> IoError {
@@ -633,6 +666,7 @@ where
                             &mut stream,
                             &endpoint,
                             &mut pending_requests,
+                            &mut backlog,
                         )
                         .await
                     }
@@ -686,7 +720,7 @@ where
     fail_queued_commands(&mut command_rx, &terminal);
 
     let mut reject_request_ids = terminal.reject_request_ids;
-    reject_request_ids.extend(backlog.take_undispatched_server_request_ids());
+    reject_request_ids.extend(backlog.take_unresolved_server_request_ids());
     let terminal_events = backlog.finalize(terminal.message.clone());
 
     // Event publication is independent from socket cleanup. In particular, a
@@ -704,6 +738,7 @@ async fn handle_remote_command<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
     pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
+    backlog: &mut RemoteEventBacklog,
 ) -> Option<RemoteTerminal>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -764,10 +799,17 @@ where
             result,
             response_tx,
         } => {
+            if !backlog.has_unresolved_server_request(&request_id) {
+                let _ = response_tx.send(Err(IoError::new(
+                    ErrorKind::InvalidInput,
+                    format!("remote app-server server request id `{request_id}` is not pending"),
+                )));
+                return None;
+            }
             match write_jsonrpc_message(
                 stream,
                 JSONRPCMessage::Response(JSONRPCResponse {
-                    id: request_id,
+                    id: request_id.clone(),
                     result,
                 }),
                 endpoint,
@@ -775,6 +817,7 @@ where
             .await
             {
                 Ok(()) => {
+                    backlog.complete_server_request(&request_id);
                     let _ = response_tx.send(Ok(()));
                     None
                 }
@@ -790,17 +833,25 @@ where
             error,
             response_tx,
         } => {
+            if !backlog.has_unresolved_server_request(&request_id) {
+                let _ = response_tx.send(Err(IoError::new(
+                    ErrorKind::InvalidInput,
+                    format!("remote app-server server request id `{request_id}` is not pending"),
+                )));
+                return None;
+            }
             match write_jsonrpc_message(
                 stream,
                 JSONRPCMessage::Error(JSONRPCError {
                     error,
-                    id: request_id,
+                    id: request_id.clone(),
                 }),
                 endpoint,
             )
             .await
             {
                 Ok(()) => {
+                    backlog.complete_server_request(&request_id);
                     let _ = response_tx.send(Ok(()));
                     None
                 }
@@ -956,7 +1007,11 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     timeout(SHUTDOWN_TIMEOUT, async {
+        let mut rejected_request_ids = HashSet::new();
         for request_id in reject_request_ids {
+            if !rejected_request_ids.insert(request_id.clone()) {
+                continue;
+            }
             if let Err(err) = write_jsonrpc_message_unbounded(
                 stream,
                 JSONRPCMessage::Error(JSONRPCError {
@@ -1196,13 +1251,11 @@ where
                             let method = request.method.clone();
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
-                                    if terminal.is_none() {
-                                        terminal = enqueue_remote_event(
-                                            &mut backlog,
-                                            endpoint,
-                                            AppServerEvent::ServerRequest(request),
-                                        );
-                                    }
+                                    terminal = enqueue_remote_event(
+                                        &mut backlog,
+                                        endpoint,
+                                        AppServerEvent::ServerRequest(request),
+                                    );
                                 }
                                 Err(err) => {
                                     warn!(%err, method, "rejecting unknown remote app-server request during initialize");
@@ -1225,6 +1278,9 @@ where
                             }
                         }
                         JSONRPCMessage::Response(_) | JSONRPCMessage::Error(_) => {}
+                    }
+                    if terminal.is_some() {
+                        break Ok(());
                     }
                 }
                 Some(Ok(Message::Binary(_)))
@@ -1265,6 +1321,13 @@ where
             format!("timed out waiting for initialize response from `{endpoint}`"),
         )
     })??;
+
+    if let Some(terminal) = terminal.take() {
+        let mut reject_request_ids = terminal.reject_request_ids;
+        reject_request_ids.extend(backlog.take_unresolved_server_request_ids());
+        cleanup_terminal_socket(stream, endpoint, reject_request_ids).await?;
+        return Err(terminal.io_error());
+    }
 
     write_jsonrpc_message(
         stream,
@@ -1419,21 +1482,87 @@ mod tests {
         }
 
         assert_eq!(backlog.events.len(), 33);
-        assert_eq!(backlog.take_undispatched_server_request_ids().len(), 33);
+        assert_eq!(backlog.take_unresolved_server_request_ids().len(), 33);
     }
 
     #[test]
-    fn required_server_request_overflow_keeps_the_undispatched_id_for_rejection() {
+    fn required_server_request_overflow_keeps_all_unresolved_ids_for_rejection() {
         let mut backlog = RemoteEventBacklog::new(1);
         backlog
             .enqueue(server_request(1))
             .expect("first server request should fit");
-        let overflow = backlog
+        let public_request = backlog
+            .pop_next_for_public()
+            .expect("first server request should cross the public boundary");
+        assert!(matches!(
+            public_request,
+            AppServerEvent::ServerRequest(ref request) if request.id() == &RequestId::Integer(1)
+        ));
+        backlog
             .enqueue(server_request(2))
-            .expect_err("second required server request should overflow");
-        assert_eq!(overflow.server_request_id, Some(RequestId::Integer(2)));
+            .expect("second server request should occupy the private backlog");
+        let overflow = backlog
+            .enqueue(server_request(3))
+            .expect_err("third required server request should overflow");
+        assert_eq!(overflow.server_request_id, Some(RequestId::Integer(3)));
+
+        let mut unresolved = backlog.take_unresolved_server_request_ids();
+        unresolved.sort_by_key(|request_id| request_id.to_string());
         assert_eq!(
-            backlog.take_undispatched_server_request_ids(),
+            unresolved,
+            vec![RequestId::Integer(1), RequestId::Integer(2)]
+        );
+    }
+
+    #[test]
+    fn public_server_request_ownership_is_released_only_after_client_completion() {
+        let mut backlog = RemoteEventBacklog::new(1);
+        backlog
+            .enqueue(server_request(1))
+            .expect("server request should fit");
+        backlog
+            .pop_next_for_public()
+            .expect("server request should cross the public boundary");
+
+        assert!(backlog.has_unresolved_server_request(&RequestId::Integer(1)));
+        backlog.complete_server_request(&RequestId::Integer(1));
+        assert!(!backlog.has_unresolved_server_request(&RequestId::Integer(1)));
+    }
+
+    #[test]
+    fn unanswered_public_server_requests_remain_bounded_by_both_event_channels() {
+        let mut backlog = RemoteEventBacklog::new(1);
+        for id in [1, 2] {
+            backlog
+                .enqueue(server_request(id))
+                .expect("server request should fit while the combined C=1 queues have room");
+            backlog
+                .pop_next_for_public()
+                .expect("server request should cross the public boundary");
+        }
+
+        let overflow = backlog
+            .enqueue(server_request(3))
+            .expect_err("unanswered public requests must not create unbounded ownership");
+        assert_eq!(overflow.server_request_id, Some(RequestId::Integer(3)));
+    }
+
+    #[test]
+    fn duplicate_server_request_id_does_not_create_a_second_prompt_or_response() {
+        let mut backlog = RemoteEventBacklog::new(1);
+        backlog
+            .enqueue(server_request(1))
+            .expect("first server request should fit");
+        backlog
+            .pop_next_for_public()
+            .expect("first server request should cross the public boundary");
+        backlog
+            .enqueue(server_request(1))
+            .expect("duplicate server request should be ignored");
+
+        assert!(!backlog.has_pending_public_event());
+        assert_eq!(
+            backlog.take_unresolved_server_request_ids(),
             vec![RequestId::Integer(1)]
         );
     }
