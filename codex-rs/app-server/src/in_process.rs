@@ -110,11 +110,13 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
     // This runtime queue is upstream of the `codex-app-server-client` facade.
     // Treat new notification kinds as authoritative by default so protocol
     // growth cannot silently create another droppable terminal/control state.
-    // Command output is reconstructible from its completed item; lag reports
-    // any dropped progress before later writer traffic.
+    // Command output is reconstructible from its completed item, and fuzzy
+    // search updates are superseded by later full snapshots. Lag reports any
+    // dropped progress before later writer traffic.
     !matches!(
         notification,
         ServerNotification::CommandExecutionOutputDelta(_)
+            | ServerNotification::FuzzyFileSearchSessionUpdated(_)
     )
 }
 
@@ -1266,6 +1268,16 @@ mod tests {
         )
     }
 
+    fn fuzzy_file_search_session_updated_notification(query: &str) -> ServerNotification {
+        ServerNotification::FuzzyFileSearchSessionUpdated(
+            codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification {
+                session_id: "search".to_string(),
+                query: query.to_string(),
+                files: Vec::new(),
+            },
+        )
+    }
+
     fn item_completed_notification(text: &str) -> ServerNotification {
         ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
             thread_id: "thread".to_string(),
@@ -1382,6 +1394,12 @@ mod tests {
             )
             .await;
         outgoing
+            .send_server_notification_to_connection_and_wait(
+                IN_PROCESS_CONNECTION_ID,
+                fuzzy_file_search_session_updated_notification("coalescible snapshot"),
+            )
+            .await;
+        outgoing
             .send_server_notification(thread_goal_updated_notification("second"))
             .await;
 
@@ -1400,7 +1418,7 @@ mod tests {
             .await
             .expect("lag marker should arrive")
             .expect("event stream should remain open");
-        assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 1 }));
+        assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 2 }));
 
         let second = timeout(Duration::from_secs(1), client.next_event())
             .await
@@ -1494,6 +1512,9 @@ mod tests {
         );
         assert!(!server_notification_requires_delivery(
             &command_execution_output_delta_notification("best effort")
+        ));
+        assert!(!server_notification_requires_delivery(
+            &fuzzy_file_search_session_updated_notification("coalescible")
         ));
     }
 }
