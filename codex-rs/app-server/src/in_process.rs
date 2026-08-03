@@ -811,6 +811,10 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 "discarding pending in-process delivery state during shutdown or closed event stream"
             );
         }
+        // A retained write-completion sender can keep its producer waiting
+        // while that producer still owns an outgoing sender. Release it before
+        // draining dependent tasks so shutdown cannot form a custody cycle.
+        drop(pending_authoritative_notification.take());
         drop(writer_rx);
         drop(processor_tx);
         outgoing_message_sender
@@ -1469,6 +1473,59 @@ mod tests {
             .await
             .expect("a full required event queue must not delay shutdown acknowledgement")
             .expect("runtime should complete orderly shutdown without parent-task abort");
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_pending_required_write_completion_before_task_joins() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let outgoing = Arc::clone(
+            client
+                ._test_outgoing_message_sender
+                .as_ref()
+                .expect("test runtime should expose its outbound sender"),
+        );
+
+        outgoing
+            .send_server_notification_to_connection_and_wait(
+                IN_PROCESS_CONNECTION_ID,
+                thread_goal_updated_notification("queued"),
+            )
+            .await;
+        let pending_observed = client._test_pending_required_notification.notified();
+        let (producer_released_tx, mut producer_released_rx) = oneshot::channel();
+        let producer_handle = tokio::spawn(async move {
+            outgoing
+                .send_server_notification_to_connection_and_wait(
+                    IN_PROCESS_CONNECTION_ID,
+                    thread_goal_updated_notification("pending"),
+                )
+                .await;
+            let _ = producer_released_tx.send(());
+        });
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("second required notification should become pending");
+        assert_eq!(
+            producer_released_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty),
+            "the real write-completion producer should remain blocked while its payload is pending"
+        );
+
+        let shutdown_handle = tokio::spawn(client.shutdown());
+        timeout(Duration::from_secs(1), &mut producer_released_rx)
+            .await
+            .expect("shutdown should cancel the pending write-completion wait")
+            .expect("pending write-completion producer should report release");
+        timeout(Duration::from_secs(1), producer_handle)
+            .await
+            .expect("released producer should drop its outgoing sender promptly")
+            .expect("write-completion producer should not panic");
+        timeout(Duration::from_secs(1), shutdown_handle)
+            .await
+            .expect("shutdown should finish before its five-second task fallback")
+            .expect("shutdown task should not panic")
+            .expect("runtime should complete graceful shutdown with no stranded task sender");
     }
 
     #[tokio::test(start_paused = true)]
