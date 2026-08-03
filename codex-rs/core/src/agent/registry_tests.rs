@@ -84,10 +84,14 @@ fn thread_spawn_depth_increments_and_enforces_limit() {
 }
 
 #[test]
-fn spawn_publication_cas_allows_exactly_one_terminal_decision() {
+fn spawn_delivery_ownership_prevents_cancellation_from_claiming_abort() {
     let registry = Arc::new(AgentRegistry::default());
     let key = SpawnPublicationKey::new(ThreadId::new(), "spawn-call");
     registry.begin_spawn_publication(key.clone());
+    assert_eq!(
+        registry.claim_spawn_publication_delivery(&key),
+        SpawnPublicationDecision::DeliveryOwned
+    );
     let start = Arc::new(Barrier::new(3));
 
     let publish_registry = Arc::clone(&registry);
@@ -109,15 +113,15 @@ fn spawn_publication_cas_allows_exactly_one_terminal_decision() {
     start.wait();
     let publish_result = publisher.join().expect("publisher should join");
     let cancel_result = canceller.join().expect("canceller should join");
-    assert_eq!(publish_result, cancel_result);
+    assert_eq!(publish_result, SpawnPublicationDecision::Published);
     assert!(matches!(
-        publish_result,
-        SpawnPublicationDecision::Published | SpawnPublicationDecision::CancellationOwned
+        cancel_result,
+        SpawnPublicationDecision::DeliveryOwned | SpawnPublicationDecision::Published
     ));
     assert_eq!(
         registry.spawn_publication_decision(&key),
-        publish_result,
-        "the published decision must remain stable after both racing owners return"
+        SpawnPublicationDecision::Published,
+        "delivery ownership must allow only the spawn owner to reach publication"
     );
 }
 
@@ -131,6 +135,10 @@ fn spawn_cancellation_recorded_before_dispatch_rejects_late_publication() {
         SpawnPublicationDecision::CancellationOwned
     );
     registry.begin_spawn_publication(key.clone());
+    assert_eq!(
+        registry.claim_spawn_publication_delivery(&key),
+        SpawnPublicationDecision::CancellationOwned
+    );
     assert_eq!(
         registry.publish_spawn_publication(&key),
         SpawnPublicationDecision::CancellationOwned

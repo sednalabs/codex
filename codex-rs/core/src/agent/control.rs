@@ -326,6 +326,18 @@ impl AgentControl {
     }
 
     #[cfg(test)]
+    pub(crate) fn spawn_capacity_and_path_are_available_for_test(
+        &self,
+        max_threads: usize,
+        agent_path: &AgentPath,
+    ) -> bool {
+        let Ok(mut reservation) = self.state.reserve_spawn_slot(Some(max_threads)) else {
+            return false;
+        };
+        reservation.reserve_agent_path(agent_path).is_ok()
+    }
+
+    #[cfg(test)]
     pub(crate) fn pause_spawn_after_new_thread_for_test(
         &self,
     ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {

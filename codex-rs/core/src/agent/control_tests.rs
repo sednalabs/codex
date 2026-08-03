@@ -477,6 +477,89 @@ async fn cancellation_owned_tool_spawn_never_registers_a_child() {
         .finish_tool_spawn_publication(parent_thread_id, call_id);
 }
 
+#[tokio::test]
+async fn delivery_owned_initial_input_failure_reconciles_and_preserves_the_delivery_error() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let call_id = "delivery-failure";
+    let child_path = AgentPath::root()
+        .join("delivery-failure")
+        .expect("child path should be valid");
+    let mut created_threads = harness.manager.subscribe_thread_created();
+    harness
+        .control
+        .begin_tool_spawn_publication(parent_thread_id, call_id);
+    let (child_created, resume_spawn) = harness.control.pause_spawn_after_new_thread_for_test();
+
+    let spawn_control = harness.control.clone();
+    let spawn_config = harness.config.clone();
+    let spawn_path = child_path.clone();
+    let spawn = tokio::spawn(async move {
+        spawn_control
+            .spawn_agent_with_metadata(
+                spawn_config,
+                text_input("delivery must fail after ownership"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(spawn_path),
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    spawn_call_id: Some(call_id.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+
+    let child_thread_id = timeout(Duration::from_secs(5), child_created)
+        .await
+        .expect("spawn should create a private child")
+        .expect("post-NewThread hook should identify the child");
+    let removed_child = harness
+        .manager
+        .remove_thread(&child_thread_id)
+        .await
+        .expect("test should remove the private child before initial delivery");
+    resume_spawn.notify_one();
+
+    let error = timeout(Duration::from_secs(5), spawn)
+        .await
+        .expect("delivery failure should return")
+        .expect("delivery failure task should not panic")
+        .expect_err("a missing child must make initial delivery fail");
+    assert_matches!(
+        error.details(),
+        CodexErrorDetails::ThreadNotFound(thread_id) if *thread_id == child_thread_id
+    );
+    assert_eq!(
+        harness
+            .control
+            .tool_spawn_publication_decision_for_test(parent_thread_id, call_id),
+        SpawnPublicationDecision::DeliveryOwned,
+        "initial-delivery ownership must preserve the real delivery failure rather than turn it into cancellation"
+    );
+    assert!(
+        harness.control.get_agent_metadata(child_thread_id).is_none(),
+        "a failed delivery must not publish a child registry entry"
+    );
+    assert!(
+        created_threads.try_recv().is_err(),
+        "a failed delivery must not emit a parent-visible child notification"
+    );
+    assert!(
+        harness.manager.captured_ops().is_empty(),
+        "a missing child must fail before submitting an initial operation"
+    );
+    harness
+        .control
+        .finish_tool_spawn_publication(parent_thread_id, call_id);
+    drop(removed_child);
+}
+
 #[test]
 fn unpublished_spawn_reconciliation_preserves_terminal_taxonomy() {
     for status in [AgentStatus::PendingInit, AgentStatus::Running] {

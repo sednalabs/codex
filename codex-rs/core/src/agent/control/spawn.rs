@@ -660,6 +660,59 @@ impl AgentControl {
             }
             return Err(CodexErr::TurnAborted);
         }
+        // Claim initial delivery immediately before the first child submission. Cancellation may
+        // still win while the child is only provisioned, but once this claim succeeds it must
+        // await our real delivery result; an initial prompt can begin a child turn before the
+        // child is parent-visible.
+        let delivery_decision = publication_key.as_ref().map_or(
+            SpawnPublicationDecision::Untracked,
+            |key| self.state.claim_spawn_publication_delivery(key),
+        );
+        if delivery_decision == SpawnPublicationDecision::CancellationOwned {
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile cancellation-owned unpublished child"
+                );
+            }
+            return Err(CodexErr::TurnAborted);
+        }
+        if !matches!(
+            delivery_decision,
+            SpawnPublicationDecision::Untracked | SpawnPublicationDecision::DeliveryOwned
+        ) {
+            let error = CodexErr::Fatal(format!(
+                "spawn publication entered invalid initial-delivery state: {delivery_decision:?}"
+            ));
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile unpublished child after invalid delivery state"
+                );
+            }
+            return Err(error);
+        }
+
         let initial_input_result = match initial_input {
             SpawnInitialInput::UserInput(input) => {
                 self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
@@ -670,14 +723,19 @@ impl AgentControl {
                 if multi_agent_version == MultiAgentVersion::V2 {
                     let mut provisional_metadata = agent_metadata.clone();
                     provisional_metadata.agent_id = Some(new_thread.thread_id);
-                    self.prepare_provisional_v2_agent_delivery(
-                        new_thread.thread_id,
-                        provisional_metadata,
-                    )
-                    .await?
-                    .send_after_capacity_check(communication, context, /*interrupt*/ false)
-                    .await
-                    .map(drop)
+                    match self
+                        .prepare_provisional_v2_agent_delivery(
+                            new_thread.thread_id,
+                            provisional_metadata,
+                        )
+                        .await
+                    {
+                        Ok(delivery) => delivery
+                            .send_after_capacity_check(communication, context, /*interrupt*/ false)
+                            .await
+                            .map(drop),
+                        Err(error) => Err(error),
+                    }
                 } else {
                     self.send_inter_agent_communication_after_capacity_check(
                         new_thread.thread_id,
@@ -715,10 +773,9 @@ impl AgentControl {
         self.await_after_initial_delivery_test_hook(new_thread.thread_id)
             .await;
 
-        // This compare-and-swap is the parent-visible publication boundary. Once it wins, the
-        // runtime cancellation owner observes `Published` and must return the successful tool
-        // result. When cancellation wins first, it owns reconciliation below before the parent
-        // receives its aborted result.
+        // This compare-and-swap is the parent-visible publication boundary. Initial delivery
+        // already owns cancellation at this point, so the only tracked terminal transition here
+        // is `DeliveryOwned -> Published`; cancellation can still only win before delivery.
         let publication_decision = publication_key.as_ref().map_or(
             SpawnPublicationDecision::Untracked,
             |key| self.state.publish_spawn_publication(key),
@@ -741,6 +798,31 @@ impl AgentControl {
                 );
             }
             return Err(CodexErr::TurnAborted);
+        }
+        if !matches!(
+            publication_decision,
+            SpawnPublicationDecision::Untracked | SpawnPublicationDecision::Published
+        ) {
+            let error = CodexErr::Fatal(format!(
+                "spawn publication entered invalid parent-visible state: {publication_decision:?}"
+            ));
+            if let Err(cleanup_error) = self
+                .reconcile_unpublished_spawn(
+                    &state,
+                    new_thread.thread_id,
+                    &new_thread.thread,
+                    &mut reservation,
+                    &mut residency_slot,
+                )
+                .await
+            {
+                tracing::error!(
+                    child_thread_id = %new_thread.thread_id,
+                    %cleanup_error,
+                    "failed to reconcile unpublished child after invalid publication state"
+                );
+            }
+            return Err(error);
         }
 
         // Capacity and residency reservations remain private until the publication CAS above

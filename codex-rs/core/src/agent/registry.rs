@@ -69,15 +69,21 @@ pub(crate) enum SpawnPublicationDecision {
     Untracked,
     /// The runtime registered the call, but neither owner has reached its terminal decision.
     Pending,
-    /// The spawn owner won and later cancellation must preserve the successful tool result.
+    /// The spawn owner has claimed initial delivery. Cancellation must wait for the handler's
+    /// actual delivery result rather than returning an aborted parent while that delivery can
+    /// start a private child turn.
+    DeliveryOwned,
+    /// Initial delivery and the parent-visible publication both succeeded. Later cancellation
+    /// must preserve the successful tool result.
     Published,
     /// Cancellation won and owns reconciliation of the provisional child.
     CancellationOwned,
 }
 
 const SPAWN_PUBLICATION_PENDING: u8 = 0;
-const SPAWN_PUBLICATION_PUBLISHED: u8 = 1;
-const SPAWN_PUBLICATION_CANCELLED: u8 = 2;
+const SPAWN_PUBLICATION_DELIVERY_OWNED: u8 = 1;
+const SPAWN_PUBLICATION_PUBLISHED: u8 = 2;
+const SPAWN_PUBLICATION_CANCELLED: u8 = 3;
 
 struct SpawnPublication {
     state: AtomicU8,
@@ -92,14 +98,38 @@ impl Default for SpawnPublication {
 }
 
 impl SpawnPublication {
-    fn publish(&self) -> SpawnPublicationDecision {
+    /// Claim the right to submit the child's initial input.
+    ///
+    /// This is deliberately separate from parent-visible publication. Once delivery owns this
+    /// transition, cancellation may no longer claim an aborted parent result because submitting
+    /// the input can begin a private child turn. The runtime instead waits for this handler to
+    /// publish or return its true delivery failure.
+    fn claim_delivery(&self) -> SpawnPublicationDecision {
         match self.state.compare_exchange(
             SPAWN_PUBLICATION_PENDING,
+            SPAWN_PUBLICATION_DELIVERY_OWNED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => {
+                SpawnPublicationDecision::DeliveryOwned
+            }
+            Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
+            Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
+            Err(state) => unreachable!("invalid spawn publication state: {state}"),
+        }
+    }
+
+    fn publish(&self) -> SpawnPublicationDecision {
+        match self.state.compare_exchange(
+            SPAWN_PUBLICATION_DELIVERY_OWNED,
             SPAWN_PUBLICATION_PUBLISHED,
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
             Ok(_) | Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
+            Err(SPAWN_PUBLICATION_PENDING) => SpawnPublicationDecision::Pending,
+            Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
             Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
             Err(state) => unreachable!("invalid spawn publication state: {state}"),
         }
@@ -115,6 +145,7 @@ impl SpawnPublication {
             Ok(_) | Err(SPAWN_PUBLICATION_CANCELLED) => {
                 SpawnPublicationDecision::CancellationOwned
             }
+            Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
             Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
             Err(state) => unreachable!("invalid spawn publication state: {state}"),
         }
@@ -123,6 +154,7 @@ impl SpawnPublication {
     fn decision(&self) -> SpawnPublicationDecision {
         match self.state.load(Ordering::Acquire) {
             SPAWN_PUBLICATION_PENDING => SpawnPublicationDecision::Pending,
+            SPAWN_PUBLICATION_DELIVERY_OWNED => SpawnPublicationDecision::DeliveryOwned,
             SPAWN_PUBLICATION_PUBLISHED => SpawnPublicationDecision::Published,
             SPAWN_PUBLICATION_CANCELLED => SpawnPublicationDecision::CancellationOwned,
             state => unreachable!("invalid spawn publication state: {state}"),
@@ -274,6 +306,22 @@ impl AgentRegistry {
             .cloned();
         publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
             publication.publish()
+        })
+    }
+
+    pub(crate) fn claim_spawn_publication_delivery(
+        &self,
+        key: &SpawnPublicationKey,
+    ) -> SpawnPublicationDecision {
+        let publication = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn_publications
+            .get(key)
+            .cloned();
+        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
+            publication.claim_delivery()
         })
     }
 
