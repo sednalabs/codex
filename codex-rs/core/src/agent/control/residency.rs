@@ -95,7 +95,7 @@ impl AgentControl {
 
         let control = self.clone();
         tokio::spawn(async move {
-            let thread_id = thread.thread_id;
+            let thread_id = thread.session.thread_id();
             let mut status_rx = thread.subscribe_status();
             loop {
                 let status = status_rx.borrow().clone();
@@ -255,12 +255,12 @@ impl V2Residency {
     ) -> bool {
         let _reload = metadata.lifecycle.lock_reload().await;
         let mut lifecycle = metadata.lifecycle.lock().await;
-        if !registry.metadata_is_current(expected_thread.thread_id, metadata)
+        if !registry.metadata_is_current(expected_thread.session.thread_id(), metadata)
             || !lifecycle.terminal_idle_unload_is_current(timer_generation)
         {
             return false;
         }
-        let Ok(thread) = manager.get_thread(expected_thread.thread_id).await else {
+        let Ok(thread) = manager.get_thread(expected_thread.session.thread_id()).await else {
             return false;
         };
         if !Arc::ptr_eq(&thread, expected_thread) || !is_resident_candidate(thread.as_ref()) {
@@ -297,7 +297,7 @@ impl V2Residency {
         mut lifecycle: Option<&mut crate::agent::lifecycle::AgentLifecycleState>,
         candidate_thread: Arc<CodexThread>,
     ) -> bool {
-        let candidate_thread_id = candidate_thread.thread_id;
+        let candidate_thread_id = candidate_thread.session.thread_id();
         // Cold identities are reloadable only when the session has durable history.
         if candidate_thread.session.live_thread().is_none() {
             return false;
