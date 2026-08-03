@@ -6,11 +6,12 @@ use crate::metrics::tags::SESSION_SOURCE_TAG;
 use crate::sanitize_metric_tag_value;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
+use codex_utils_version::RELEASE_VERSION;
 use pretty_assertions::assert_eq;
 
 #[test]
-fn session_metric_tags_sanitize_only_app_version_metric_value() {
-    let mut telemetry = SessionTelemetry::new(
+fn session_constructor_sanitizes_only_the_metric_app_version() {
+    let release_telemetry = SessionTelemetry::new(
         ThreadId::new(),
         "model",
         "slug",
@@ -23,14 +24,32 @@ fn session_metric_tags_sanitize_only_app_version_metric_value() {
         SessionSource::Cli,
     );
     let exact_app_version = "0.136.0-alpha.1+frodex.1";
-    telemetry.metadata.app_version = exact_app_version;
-    telemetry.metric_app_version = sanitize_metric_tag_value(exact_app_version);
+    let telemetry = SessionTelemetry::new_with_app_version(
+        ThreadId::new(),
+        "model",
+        "slug",
+        /*account_id*/ None,
+        /*account_email*/ None,
+        /*auth_mode*/ None,
+        "codex_desktop".to_string(),
+        /*log_user_prompts*/ false,
+        "unknown".to_string(),
+        SessionSource::Cli,
+        exact_app_version,
+    );
 
     let metric_tags = telemetry.metadata_tag_refs().expect("metric tags");
 
     assert_eq!(
-        (telemetry.metadata.app_version, metric_tags),
         (
+            release_telemetry.metadata.app_version,
+            release_telemetry.metric_app_version,
+            telemetry.metadata.app_version,
+            metric_tags,
+        ),
+        (
+            RELEASE_VERSION,
+            sanitize_metric_tag_value(RELEASE_VERSION),
             exact_app_version,
             vec![
                 (SESSION_SOURCE_TAG, "cli"),

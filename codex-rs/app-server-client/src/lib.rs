@@ -129,11 +129,11 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 
 /// Returns `true` for notifications that must survive backpressure.
 ///
-/// Transcript events (`AgentMessageDelta`, `PlanDelta`, reasoning deltas) and
-/// the authoritative `ItemCompleted` / `TurnCompleted` form the lossless tier
-/// of the event stream. Dropping any of these corrupts the visible assistant
-/// output or leaves surfaces waiting for a completion signal that already
-/// fired. Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
+/// Transcript events, authoritative item/turn completions, and thread
+/// lifecycle, goal, usage, name, settings, and request-resolution state form
+/// the lossless tier of the event stream. Dropping any of these corrupts the
+/// visible assistant output or leaves clients with stale authoritative state.
+/// Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
 /// best-effort and may be dropped with only cosmetic impact.
 ///
 /// Both the in-process and remote transports delegate to this function so the
@@ -141,7 +141,18 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
     matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
+        ServerNotification::ThreadStarted(_)
+            | ServerNotification::ThreadClosed(_)
+            | ServerNotification::ThreadDeleted(_)
+            | ServerNotification::ThreadArchived(_)
+            | ServerNotification::ThreadUnarchived(_)
+            | ServerNotification::ThreadStatusChanged(_)
+            | ServerNotification::ThreadGoalUpdated(_)
+            | ServerNotification::ThreadGoalCleared(_)
+            | ServerNotification::ThreadTokenUsageUpdated(_)
+            | ServerNotification::ThreadNameUpdated(_)
+            | ServerNotification::ServerRequestResolved(_)
+            | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
@@ -1159,6 +1170,189 @@ mod tests {
         )
     }
 
+    fn required_server_notifications() -> Vec<ServerNotification> {
+        let thread_id = || "thread".to_string();
+        let turn_id = || "turn".to_string();
+        let item_id = || "item".to_string();
+        let token_usage = || {
+            let usage = codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 25,
+                input_tokens: 20,
+                cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+            };
+            codex_app_server_protocol::ThreadTokenUsage {
+                total: usage.clone(),
+                last: usage,
+                model_context_window: Some(100),
+            }
+        };
+
+        vec![
+            ServerNotification::ThreadStarted(
+                codex_app_server_protocol::ThreadStartedNotification {
+                    thread: codex_app_server_protocol::Thread {
+                        id: thread_id(),
+                        extra: None,
+                        session_id: thread_id(),
+                        forked_from_id: None,
+                        parent_thread_id: Some("parent".to_string()),
+                        preview: "child".to_string(),
+                        ephemeral: false,
+                        is_pinned: false,
+                        history_mode: Default::default(),
+                        model_provider: "openai".to_string(),
+                        model: Some("gpt-test".to_string()),
+                        reasoning_effort: None,
+                        created_at: 0,
+                        updated_at: 0,
+                        recency_at: None,
+                        status: codex_app_server_protocol::ThreadStatus::Idle,
+                        path: None,
+                        cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("test cwd should be absolute"),
+                        cli_version: "test".to_string(),
+                        source: ApiSessionSource::Unknown,
+                        can_accept_direct_input: None,
+                        thread_source: None,
+                        agent_nickname: Some("Child".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        git_info: None,
+                        name: None,
+                        turns: Vec::new(),
+                    },
+                },
+            ),
+            ServerNotification::ThreadClosed(codex_app_server_protocol::ThreadClosedNotification {
+                thread_id: thread_id(),
+            }),
+            ServerNotification::ThreadDeleted(
+                codex_app_server_protocol::ThreadDeletedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadUnarchived(
+                codex_app_server_protocol::ThreadUnarchivedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: thread_id(),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                },
+            ),
+            ServerNotification::ThreadGoalUpdated(
+                codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                    thread_id: thread_id(),
+                    turn_id: Some(turn_id()),
+                    goal: codex_app_server_protocol::ThreadGoal {
+                        thread_id: thread_id(),
+                        objective: "goal".to_string(),
+                        status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                        token_budget: Some(100),
+                        tokens_used: 25,
+                        time_used_seconds: 1,
+                        created_at: 0,
+                        updated_at: 0,
+                    },
+                },
+            ),
+            ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: thread_id(),
+                },
+            ),
+            ServerNotification::ThreadTokenUsageUpdated(
+                codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    token_usage: token_usage(),
+                },
+            ),
+            ServerNotification::ThreadNameUpdated(
+                codex_app_server_protocol::ThreadNameUpdatedNotification {
+                    thread_id: thread_id(),
+                    thread_name: Some("renamed".to_string()),
+                },
+            ),
+            ServerNotification::ServerRequestResolved(
+                codex_app_server_protocol::ServerRequestResolvedNotification {
+                    thread_id: thread_id(),
+                    request_id: RequestId::Integer(7),
+                },
+            ),
+            turn_completed_notification(),
+            ServerNotification::ThreadSettingsUpdated(
+                codex_app_server_protocol::ThreadSettingsUpdatedNotification {
+                    thread_id: thread_id(),
+                    thread_settings: codex_app_server_protocol::ThreadSettings {
+                        cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("test cwd should be absolute"),
+                        approval_policy: codex_app_server_protocol::AskForApproval::Never,
+                        approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::User,
+                        sandbox_policy: codex_app_server_protocol::SandboxPolicy::DangerFullAccess,
+                        active_permission_profile: None,
+                        model: "gpt-test".to_string(),
+                        model_provider: "openai".to_string(),
+                        service_tier: None,
+                        effort: None,
+                        summary: None,
+                        collaboration_mode: codex_protocol::config_types::CollaborationMode {
+                            mode: codex_protocol::config_types::ModeKind::Default,
+                            settings: codex_protocol::config_types::Settings {
+                                model: "gpt-test".to_string(),
+                                reasoning_effort: None,
+                                developer_instructions: None,
+                            },
+                        },
+                        multi_agent_mode: Default::default(),
+                        personality: None,
+                    },
+                },
+            ),
+            item_completed_notification("complete transcript"),
+            ServerNotification::ExternalAgentConfigImportCompleted(
+                codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
+                    import_id: "import".to_string(),
+                    item_type_results: Vec::new(),
+                },
+            ),
+            agent_message_delta_notification("assistant"),
+            ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+                thread_id: thread_id(),
+                turn_id: turn_id(),
+                item_id: item_id(),
+                delta: "plan".to_string(),
+            }),
+            ServerNotification::ReasoningSummaryTextDelta(
+                codex_app_server_protocol::ReasoningSummaryTextDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "summary".to_string(),
+                    summary_index: 0,
+                },
+            ),
+            ServerNotification::ReasoningTextDelta(
+                codex_app_server_protocol::ReasoningTextDeltaNotification {
+                    thread_id: thread_id(),
+                    turn_id: turn_id(),
+                    item_id: item_id(),
+                    delta: "reasoning".to_string(),
+                    content_index: 0,
+                },
+            ),
+        ]
+    }
+
     fn agent_message_delta_notification(delta: &str) -> ServerNotification {
         ServerNotification::AgentMessageDelta(
             codex_app_server_protocol::AgentMessageDeltaNotification {
@@ -1416,6 +1610,47 @@ mod tests {
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
         ));
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_preserves_every_required_notification_under_backpressure() {
+        let notifications = required_server_notifications();
+        assert_eq!(notifications.len(), 19);
+
+        for notification in notifications {
+            let expected = std::mem::discriminant(&notification);
+            let (event_tx, mut event_rx) = mpsc::channel(1);
+            event_tx
+                .send(InProcessServerEvent::Lagged { skipped: 1 })
+                .await
+                .expect("initial event should enqueue");
+            let mut skipped_events = 0usize;
+            let delivery = forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(notification),
+                |_| {},
+            );
+            tokio::pin!(delivery);
+
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "required notification must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(InProcessServerEvent::Lagged { skipped: 1 })
+            ));
+            assert_eq!(delivery.await, ForwardEventResult::Continue);
+            assert_eq!(skipped_events, 0);
+            let delivered = event_rx.recv().await.expect("required event should arrive");
+            let InProcessServerEvent::ServerNotification(delivered) = delivered else {
+                panic!("expected server notification");
+            };
+            assert_eq!(std::mem::discriminant(&delivered), expected);
+        }
     }
 
     #[tokio::test]
