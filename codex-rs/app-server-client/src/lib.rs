@@ -2065,7 +2065,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_required_server_request_overflow_is_rejected() {
+    async fn remote_terminal_rejects_public_private_and_overflowed_server_requests_once() {
         let (rejected_tx, rejected_rx) = tokio::sync::oneshot::channel();
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
@@ -2075,30 +2075,82 @@ mod tests {
                     JSONRPCMessage::Request(remote_request_user_input(RequestId::Integer(id))),
                 )
                 .await;
+                // Let the worker move the first request into its public
+                // C=1 channel before the next one arrives. The second then
+                // occupies the private C=1 backlog and the third closes
+                // required-event admission.
+                if id < 2 {
+                    for _ in 0..8 {
+                        tokio::task::yield_now().await;
+                    }
+                }
             }
-            let JSONRPCMessage::Error(error) = read_websocket_message(&mut websocket).await else {
-                panic!("overflowed server request should be rejected");
-            };
+            let mut rejected = Vec::new();
+            while rejected.len() < 3 {
+                let JSONRPCMessage::Error(error) = timeout(
+                    Duration::from_secs(2),
+                    read_websocket_message(&mut websocket),
+                )
+                .await
+                .expect("every unresolved server request should be rejected")
+                else {
+                    panic!("terminal cleanup should only send JSON-RPC errors");
+                };
+                rejected.push((error.id, error.error.code));
+            }
+            rejected.sort_by_key(|(request_id, _)| request_id.to_string());
             rejected_tx
-                .send((error.id, error.error.code))
-                .expect("rejection should be observed");
+                .send(rejected)
+                .expect("all terminal rejections should be observed");
+
+            match websocket.next().await {
+                Some(Ok(Message::Close(_))) | None => {}
+                frame => panic!("expected terminal websocket close, got {frame:?}"),
+            }
         })
         .await;
-        let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
             channel_capacity: 1,
             ..test_remote_connect_args(websocket_url)
         })
         .await
         .expect("remote client should connect");
 
-        let (request_id, code) = timeout(Duration::from_secs(2), rejected_rx)
+        let rejected = timeout(Duration::from_secs(2), rejected_rx)
             .await
-            .expect("server should observe an overflow rejection")
-            .expect("server rejection result should arrive");
-        assert_eq!(request_id, RequestId::Integer(2));
-        assert_eq!(code, -32001);
+            .expect("server should observe terminal rejections")
+            .expect("server rejection results should arrive");
+        assert_eq!(
+            rejected,
+            vec![
+                (RequestId::Integer(0), -32001),
+                (RequestId::Integer(1), -32001),
+                (RequestId::Integer(2), -32001),
+            ]
+        );
 
-        drop(client);
+        for request_id in [RequestId::Integer(0), RequestId::Integer(1)] {
+            let AppServerEvent::ServerRequest(request) = timeout(
+                Duration::from_secs(2),
+                client.next_event(),
+            )
+            .await
+            .expect("retained public request should arrive before terminal")
+            .expect("event stream should stay open until disconnect")
+            else {
+                panic!("expected retained server request before disconnect");
+            };
+            assert_eq!(request.id(), &request_id);
+        }
+        assert!(matches!(
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("disconnect event should arrive before timeout"),
+            Some(AppServerEvent::Disconnected { .. })
+        ));
+        assert!(client.next_event().await.is_none());
+
+        client.shutdown().await.expect("terminal shutdown should complete");
     }
 
     #[tokio::test]
@@ -2234,6 +2286,13 @@ mod tests {
                 panic!("expected server request response");
             };
             assert_eq!(response.id, request_id);
+
+            match websocket.next().await {
+                Some(Ok(Message::Close(_))) | None => {}
+                frame => panic!(
+                    "resolved server request must not receive a second response: {frame:?}"
+                ),
+            }
         })
         .await;
         let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
@@ -2251,6 +2310,11 @@ mod tests {
             .resolve_server_request(request.id().clone(), serde_json::json!({}))
             .await
             .expect("server request should resolve");
+        let duplicate_error = client
+            .resolve_server_request(request.id().clone(), serde_json::json!({}))
+            .await
+            .expect_err("resolved server request must not send a second response");
+        assert_eq!(duplicate_error.kind(), ErrorKind::InvalidInput);
 
         client.shutdown().await.expect("shutdown should complete");
     }
