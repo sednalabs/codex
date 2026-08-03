@@ -172,6 +172,13 @@ enum ForwardEventResult {
     DisableStream,
 }
 
+fn skipped_event_count(event: &InProcessServerEvent) -> usize {
+    match event {
+        InProcessServerEvent::Lagged { skipped } => *skipped,
+        _ => 1,
+    }
+}
+
 /// Forwards a single in-process event to the consumer, respecting the
 /// lossless/best-effort split.
 ///
@@ -213,7 +220,7 @@ where
                     *skipped_events = 0;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    *skipped_events = skipped_events.saturating_add(1);
+                    *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
                     warn!("dropping in-process app-server event because consumer queue is full");
                     if let InProcessServerEvent::ServerRequest(request) = event {
                         reject_server_request(request);
@@ -239,7 +246,7 @@ where
     match event_tx.try_send(event) {
         Ok(()) => ForwardEventResult::Continue,
         Err(mpsc::error::TrySendError::Full(event)) => {
-            *skipped_events = skipped_events.saturating_add(1);
+            *skipped_events = skipped_events.saturating_add(skipped_event_count(&event));
             warn!("dropping in-process app-server event because consumer queue is full");
             if let InProcessServerEvent::ServerRequest(request) = event {
                 reject_server_request(request);
@@ -1609,6 +1616,63 @@ mod tests {
             InProcessServerEvent::ServerNotification(ServerNotification::TurnCompleted(
                 notification
             )) if notification.turn.status == codex_app_server_protocol::TurnStatus::Completed
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_process_facade_aggregates_a_dropped_lower_lag_marker() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::ServerNotification(
+                command_execution_output_delta_notification("queued"),
+            ))
+            .await
+            .expect("initial event should enqueue");
+        let mut skipped_events = 0usize;
+
+        assert_eq!(
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::Lagged { skipped: 7 },
+                |_| {},
+            )
+            .await,
+            ForwardEventResult::Continue
+        );
+        assert_eq!(skipped_events, 7);
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(
+                ServerNotification::CommandExecutionOutputDelta(_)
+            ))
+        ));
+
+        let receive_task = tokio::spawn(async move {
+            let lag = event_rx.recv().await.expect("lag marker should arrive");
+            let required = event_rx.recv().await.expect("required event should arrive");
+            (lag, required)
+        });
+        assert_eq!(
+            forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(agent_message_delta_notification(
+                    "required",
+                )),
+                |_| {},
+            )
+            .await,
+            ForwardEventResult::Continue
+        );
+        assert_eq!(skipped_events, 0);
+        let (lag, required) = receive_task.await.expect("receiver should join");
+        assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 7 }));
+        assert!(matches!(
+            required,
+            InProcessServerEvent::ServerNotification(ServerNotification::AgentMessageDelta(
+                notification
+            )) if notification.delta == "required"
         ));
     }
 

@@ -345,6 +345,8 @@ pub struct InProcessClientHandle {
     _test_codex_home: Option<tempfile::TempDir>,
     #[cfg(test)]
     _test_outgoing_message_sender: Option<Arc<OutgoingMessageSender>>,
+    #[cfg(test)]
+    _test_pending_required_notification: Arc<tokio::sync::Notify>,
 }
 
 impl InProcessClientHandle {
@@ -476,6 +478,11 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
     #[cfg(test)]
     let (test_outgoing_message_tx, test_outgoing_message_rx) = oneshot::channel();
+    #[cfg(test)]
+    let test_pending_required_notification = Arc::new(tokio::sync::Notify::new());
+    #[cfg(test)]
+    let runtime_test_pending_required_notification =
+        Arc::clone(&test_pending_required_notification);
 
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
@@ -797,6 +804,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                             event,
                                             write_complete_tx,
                                         });
+                                    #[cfg(test)]
+                                    runtime_test_pending_required_notification.notify_one();
                                     continue;
                                 }
                                 InProcessNotificationForward::Closed => break,
@@ -865,6 +874,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         _test_codex_home: None,
         #[cfg(test)]
         _test_outgoing_message_sender: Some(test_outgoing_message_sender),
+        #[cfg(test)]
+        _test_pending_required_notification: test_pending_required_notification,
     })
 }
 
@@ -882,6 +893,7 @@ mod tests {
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1335,12 +1347,13 @@ mod tests {
                 thread_goal_updated_notification("queued"),
             )
             .await;
+        let pending_observed = client._test_pending_required_notification.notified();
         outgoing
             .send_server_notification(thread_goal_updated_notification("pending"))
             .await;
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("second required notification should become pending");
         drop(outgoing);
 
         timeout(Duration::from_secs(1), client.shutdown())
@@ -1370,6 +1383,7 @@ mod tests {
             runtime_handle,
             _test_codex_home: None,
             _test_outgoing_message_sender: None,
+            _test_pending_required_notification: Arc::new(tokio::sync::Notify::new()),
         };
 
         client
