@@ -13,6 +13,7 @@ pub(super) struct AgentLifecycle {
 #[derive(Debug, Default)]
 pub(super) struct AgentLifecycleState {
     cold_mailbox: VecDeque<ColdMailboxItem>,
+    terminal_idle_unload_generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +33,21 @@ impl AgentLifecycle {
 }
 
 impl AgentLifecycleState {
+    pub(super) fn arm_terminal_idle_unload(&mut self) -> u64 {
+        self.terminal_idle_unload_generation =
+            self.terminal_idle_unload_generation.wrapping_add(1);
+        self.terminal_idle_unload_generation
+    }
+
+    pub(super) fn invalidate_terminal_idle_unload(&mut self) {
+        self.terminal_idle_unload_generation =
+            self.terminal_idle_unload_generation.wrapping_add(1);
+    }
+
+    pub(super) fn terminal_idle_unload_is_current(&self, generation: u64) -> bool {
+        self.terminal_idle_unload_generation == generation
+    }
+
     pub(super) fn push_cold_mail(&mut self, item: ColdMailboxItem) {
         self.cold_mailbox.push_back(item);
     }

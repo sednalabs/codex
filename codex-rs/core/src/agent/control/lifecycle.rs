@@ -60,7 +60,8 @@ impl AgentControl {
             .state
             .agent_metadata_for_thread(agent_id)
             .ok_or(CodexErr::ThreadNotFound(agent_id))?;
-        // Eviction never acquires this gate, so residency work cannot invert lifecycle locks.
+        // Capacity eviction never acquires this gate. Timed idle eviction follows this same
+        // reload-then-lifecycle order, so residency work cannot invert lifecycle locks.
         let _reload = metadata.lifecycle.lock_reload().await;
         let mut lifecycle = metadata.lifecycle.lock().await;
         if !self.state.metadata_is_current(agent_id, &metadata) {
@@ -194,7 +195,15 @@ impl PreparedV2AgentDelivery {
             {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
+            if interrupt || communication.trigger_turn {
+                self.lifecycle.invalidate_terminal_idle_unload();
+            }
             if let Ok(thread) = self.state.get_thread(self.agent_id).await {
+                let _residency_transition = thread
+                    .session
+                    .input_queue
+                    .begin_residency_activity()
+                    .await;
                 if interrupt {
                     self.state
                         .record_submitted_op(self.agent_id, &Op::Interrupt);
