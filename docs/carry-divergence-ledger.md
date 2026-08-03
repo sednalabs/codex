@@ -1028,8 +1028,9 @@ decisions.
 
 ### Bounded In-Process Delivery And Metric Version Tags
 
-- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, and `fab1000903`
-  manually carry bounded lower-queue delivery and facade-classification parity
+- Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`, and
+  `6f3fe98f88` manually carry bounded lower-queue delivery and
+  facade-classification parity
   semantics from app-server ancestry `7bd0a55155` without importing its wider
   programme stack. The capacity remains finite; one authoritative notification
   may wait for a permit while the runtime continues polling client control and
@@ -1037,8 +1038,9 @@ decisions.
   marker is emitted before later writer traffic so a consumer can detect the
   gap; if that lower marker meets a saturated facade, its skipped count is
   aggregated rather than collapsed to one. Both bounded tiers preserve the
-  same nineteen transcript, completion, lifecycle, goal, usage, name,
-  settings, and request-resolution variants. The
+  same twenty-two transcript, item and turn start/completion, lifecycle, goal,
+  usage, name, settings, request-resolution, and account-rate-limit variants.
+  The
   deterministic capacity-one regressions cover FIFO delivery, visible lag,
   facade saturation, stacked lag accounting, and shutdown after a test signal
   proves a required notification is pending;
