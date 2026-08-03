@@ -23,7 +23,7 @@ fn session_constructor_sanitizes_only_the_metric_app_version() {
         "unknown".to_string(),
         SessionSource::Cli,
     );
-    let exact_app_version = "0.136.0-alpha.1+frodex.1";
+    let exact_app_version = "0.136.0-alpha.1+downstream.1";
     let telemetry = SessionTelemetry::new_with_app_version(
         ThreadId::new(),
         "model",
@@ -55,7 +55,7 @@ fn session_constructor_sanitizes_only_the_metric_app_version() {
                 (SESSION_SOURCE_TAG, "cli"),
                 (ORIGINATOR_TAG, "codex_desktop"),
                 (MODEL_TAG, "model"),
-                (APP_VERSION_TAG, "0.136.0-alpha.1_frodex.1"),
+                (APP_VERSION_TAG, "0.136.0-alpha.1_downstream.1"),
             ],
         )
     );

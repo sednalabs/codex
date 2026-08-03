@@ -152,8 +152,11 @@ pub(crate) fn server_notification_requires_delivery(notification: &ServerNotific
             | ServerNotification::ThreadTokenUsageUpdated(_)
             | ServerNotification::ThreadNameUpdated(_)
             | ServerNotification::ServerRequestResolved(_)
+            | ServerNotification::AccountRateLimitsUpdated(_)
+            | ServerNotification::TurnStarted(_)
             | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
+            | ServerNotification::ItemStarted(_)
             | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
             | ServerNotification::AgentMessageDelta(_)
@@ -1318,6 +1321,34 @@ mod tests {
                     request_id: RequestId::Integer(7),
                 },
             ),
+            ServerNotification::AccountRateLimitsUpdated(
+                codex_app_server_protocol::AccountRateLimitsUpdatedNotification {
+                    rate_limits: codex_app_server_protocol::RateLimitSnapshot {
+                        limit_id: Some("codex".to_string()),
+                        limit_name: None,
+                        primary: None,
+                        secondary: None,
+                        credits: None,
+                        individual_limit: None,
+                        spend_control_reached: Some(true),
+                        plan_type: None,
+                        rate_limit_reached_type: None,
+                    },
+                },
+            ),
+            ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
+                thread_id: thread_id(),
+                turn: codex_app_server_protocol::Turn {
+                    id: turn_id(),
+                    items: Vec::new(),
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
+                    status: codex_app_server_protocol::TurnStatus::InProgress,
+                    error: None,
+                    started_at: Some(0),
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            }),
             turn_completed_notification(),
             ServerNotification::ThreadSettingsUpdated(
                 codex_app_server_protocol::ThreadSettingsUpdatedNotification {
@@ -1347,6 +1378,17 @@ mod tests {
                     },
                 },
             ),
+            ServerNotification::ItemStarted(codex_app_server_protocol::ItemStartedNotification {
+                thread_id: thread_id(),
+                turn_id: turn_id(),
+                started_at_ms: 0,
+                item: codex_app_server_protocol::ThreadItem::AgentMessage {
+                    id: item_id(),
+                    text: "assistant".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            }),
             item_completed_notification("complete transcript"),
             ServerNotification::ExternalAgentConfigImportCompleted(
                 codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
@@ -1701,7 +1743,7 @@ mod tests {
     #[tokio::test]
     async fn in_process_facade_preserves_every_required_notification_under_backpressure() {
         let notifications = required_server_notifications();
-        assert_eq!(notifications.len(), 19);
+        assert_eq!(notifications.len(), 22);
 
         for notification in notifications {
             let expected = std::mem::discriminant(&notification);
