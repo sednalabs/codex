@@ -1052,9 +1052,10 @@ decisions.
   carry and is handled by a separately tracked core session source-boundary
   follow-up. The exact
   `forwarder_serializes_replace_latest_completion_and_cancellation_under_backpressure`
-  regression drives the real reporter, serialized forwarder, and capacity-one
-  outgoing sender through replacement, completion ordering, and cancellation
-  cleanup without filesystem timing. Thirty-two reviewed
+  regression in `codex-rs/app-server/src/fuzzy_file_search_tests.rs` drives the
+  real reporter, serialized forwarder, and capacity-one outgoing sender through
+  replacement, completion ordering, and cancellation cleanup without
+  filesystem timing. Thirty-two reviewed
   consumer-state fixtures cover
   account, process, search, sandbox, realtime, transcript, item, turn, thread,
   goal, usage, settings, and request-resolution surfaces. The deterministic
