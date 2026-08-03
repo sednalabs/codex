@@ -1030,7 +1030,7 @@ decisions.
 
 - Commits `4c13d4d948`, `93a224621b`, `3087953141`, `53529c220c`,
   `a3520d0dcb`, `1b77a6a9cd`, `cae2710084`, `cefa12a82d`, `7fd969cb5c`,
-  `1a04d09d2b`, and `d26566801a`
+  `1a04d09d2b`, `d26566801a`, and `3f6c645277`
   manually carry bounded
   lower-runtime, facade, remote-client, and fuzzy-forwarder delivery
   semantics from app-server ancestry `7bd0a55155` without importing its wider
@@ -1045,10 +1045,10 @@ decisions.
   terminal metadata separately from its retained authoritative payload, fails
   pending request waiters immediately, and materializes exactly one disconnected
   event only after outstanding lag and the retained payload. A closed remote
-  event consumer clears lag, payload, and terminal-event custody and disables
-  WebSocket input, but leaves the command-only terminal state selectable so
-  later commands receive the terminal error and shutdown promptly sends a close
-  frame and acknowledgement. All three transport tiers treat every
+  event consumer clears delivery custody, fails pending request waiters,
+  performs a close handshake bounded by the shutdown timeout, and exits so an
+  independently cloned request handle cannot retain the worker or WebSocket.
+  All three transport tiers treat every
   server notification as authoritative by default, including future protocol
   additions. Reconstructible command-execution output deltas and coalescible
   fuzzy-search snapshot updates are the two explicit best-effort exceptions;
@@ -1087,7 +1087,11 @@ decisions.
   Exact remote regressions additionally prove required-payload-before-disconnect
   and lag-before-disconnect ordering after a failed request write, terminal
   failure of the pending request waiter, and prompt close-observed shutdown when
-  an authoritative payload remains undrained.
+  an authoritative payload remains undrained. The exact
+  `remote_consumer_closure_terminates_in_flight_server_request_custody`
+  regression holds an independent request handle and a delivered server
+  request in flight, then proves consumer closure fails the pending request and
+  closes the peer transport without retaining a command-only worker.
 - Commit `8f6777cd91` follows upstream metric-tag sanitizer commits
   `bd861ff550` and `d9559390ec` while keeping the ordinary release version
   exact. Only the `app.version` value supplied to metrics replaces unsupported
@@ -2109,7 +2113,13 @@ decisions.
   `features.multi_agent_v2.terminal_idle_unload_timeout_ms` defaults to
   `300000`; `0` disables this timed path. Freshly spawned and rehydrated
   runtimes install watchers, so a child can unload again after a later
-  terminal-idle interval.
+  terminal-idle interval. Commit `f04ee10b1a` also routes explicit persisted V2
+  SubAgent resume through the same residency authority: it reserves the child
+  slot before reopening, bypasses the legacy registry cap, commits registry and
+  residency state only after success, installs the idle watcher, and releases
+  uncommitted reservations on failure. The exact
+  `explicit_v2_resume_reserves_the_only_child_residency_slot` regression proves
+  that the reopened child consumes the sole configured child slot.
 - The idle timer begins only after a terminal status is genuinely quiescent.
   Expiry rechecks the exact registry generation and `Arc<CodexThread>`, timer
   and runtime-activity generations, terminal status, active-turn state, live
@@ -2665,7 +2675,8 @@ decisions.
   after exact generation, runtime, activity, active-turn, background-terminal,
   finalizer, completion, accepted-submission, trigger-mail, and durable-history
   checks. Rehydrated runtimes reinstall the watcher and can release a later MCP
-  fleet after their next terminal-idle interval.
+  fleet after their next terminal-idle interval. Explicitly resumed persisted
+  V2 children now join the same bounded residency and watcher lifecycle.
 - The Streamable HTTP regression performs deferred `tool_search` for a tool
   supplied only on page two, invokes that tool, and verifies its output.
 - The 2026-07-23 sync adopts upstream `e497325a6a` as the sole owner of

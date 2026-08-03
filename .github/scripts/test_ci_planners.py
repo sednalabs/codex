@@ -717,6 +717,8 @@ class RouteSelectionTests(unittest.TestCase):
             "agent::control::residency::tests::"
             "terminal_idle_unload_waits_for_accepted_submission_acknowledgement",
             "agent::control::residency::tests::"
+            "explicit_v2_resume_reserves_the_only_child_residency_slot",
+            "agent::control::residency::tests::"
             "residency_slot_reservation_unloads_oldest_idle_v2_agent",
             "agent::control::residency::tests::"
             "interrupted_v2_agent_remains_known_and_reloads_after_residency_eviction",
@@ -770,13 +772,13 @@ class RouteSelectionTests(unittest.TestCase):
             "delivery_classifier_preserves_reviewed_consumer_state_notifications",
             "fuzzy_file_search::tests::",
             "in_process_facade_",
-            "shutdown_unblocks_a_required_event_waiting_on_the_facade_queue",
             "in_process_pending_required_event_still_allows_",
             "shutdown_releases_a_pending_required_facade_event",
             "remote_pending_required_event_keeps_control_commands_responsive",
             "remote_write_failure_preserves_pending_required_before_disconnect",
             "remote_write_failure_delivers_lag_before_disconnect",
             "remote_shutdown_closes_promptly_with_pending_required_event",
+            "remote_consumer_closure_terminates_in_flight_server_request_custody",
             "session_constructor_sanitizes_only_the_metric_app_version",
             "multi_agent_v2_feature_config_deserializes_table",
             "multi_agent_v2_config_from_feature_table",
