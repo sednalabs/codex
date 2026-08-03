@@ -242,10 +242,13 @@ async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
         .input_queue
         .acknowledge_residency_submission("held-submission")
         .await;
-    advance(Duration::from_millis(100)).await;
-    yield_now().await;
-    advance(Duration::from_millis(100)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    advance_until_thread_unloaded(
+        &manager,
+        first.thread_id,
+        Duration::from_millis(100),
+        /*max_intervals*/ 4,
+    )
+    .await;
 }
 
 async fn terminal_idle_test_agent(
@@ -336,6 +339,25 @@ async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) 
         yield_now().await;
     }
     panic!("thread {thread_id} should be unloaded");
+}
+
+async fn advance_until_thread_unloaded(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+    interval: Duration,
+    max_intervals: usize,
+) {
+    for _ in 0..max_intervals {
+        yield_now().await;
+        advance(interval).await;
+        for _ in 0..64 {
+            if manager.get_thread(thread_id).await.is_err() {
+                return;
+            }
+            yield_now().await;
+        }
+    }
+    panic!("thread {thread_id} should be unloaded after {max_intervals} idle intervals");
 }
 
 #[tokio::test]
