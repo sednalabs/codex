@@ -20,6 +20,7 @@ use crate::protocol::v2::McpToolCallError;
 use crate::protocol::v2::McpToolCallResult;
 use crate::protocol::v2::McpToolCallStatus;
 use crate::protocol::v2::ThreadItem;
+use crate::protocol::v2::normalize_legacy_collab_agent_states;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnError as V2TurnError;
 use crate::protocol::v2::TurnError;
@@ -1061,6 +1062,16 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabWaitingBeginEvent,
     ) {
+        let agents_states = normalize_legacy_collab_agent_states(
+            HashMap::new(),
+            payload.receiver_agents.iter().map(|agent| {
+                (
+                    agent.thread_id.to_string(),
+                    agent.agent_nickname.clone(),
+                    agent.agent_role.clone(),
+                )
+            }),
+        );
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::Wait,
@@ -1076,7 +1087,7 @@ impl ThreadHistoryBuilder {
             reasoning_effort: None,
             requested_model: None,
             requested_reasoning_effort: None,
-            agents_states: HashMap::new(),
+            agents_states,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1163,7 +1174,10 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let agents_states = [(
             receiver_id.clone(),
-            CollabAgentState::from(payload.status.clone()),
+            CollabAgentState::from(payload.status.clone()).with_agent_identity(
+                payload.receiver_agent_nickname.clone(),
+                payload.receiver_agent_role.clone(),
+            ),
         )]
         .into_iter()
         .collect();
@@ -1186,18 +1200,27 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabResumeBeginEvent,
     ) {
+        let receiver_id = payload.receiver_thread_id.to_string();
+        let agents_states = normalize_legacy_collab_agent_states(
+            HashMap::new(),
+            [(
+                receiver_id.clone(),
+                payload.receiver_agent_nickname.clone(),
+                payload.receiver_agent_role.clone(),
+            )],
+        );
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
-            receiver_thread_ids: vec![payload.receiver_thread_id.to_string()],
+            receiver_thread_ids: vec![receiver_id],
             prompt: None,
             model: None,
             reasoning_effort: None,
             requested_model: None,
             requested_reasoning_effort: None,
-            agents_states: HashMap::new(),
+            agents_states,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1213,7 +1236,10 @@ impl ThreadHistoryBuilder {
         let receiver_id = payload.receiver_thread_id.to_string();
         let agents_states = [(
             receiver_id.clone(),
-            CollabAgentState::from(payload.status.clone()),
+            CollabAgentState::from(payload.status.clone()).with_agent_identity(
+                payload.receiver_agent_nickname.clone(),
+                payload.receiver_agent_role.clone(),
+            ),
         )]
         .into_iter()
         .collect();
@@ -1709,6 +1735,8 @@ impl From<&PendingTurn> for Turn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::common::ServerNotification;
+    use crate::protocol::event_mapping::item_event_to_server_notification;
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
@@ -4982,6 +5010,111 @@ mod tests {
                 .collect(),
             }
         );
+    }
+
+    #[test]
+    fn raw_legacy_lifecycle_identity_has_live_and_history_parity() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let receiver_id = receiver.to_string();
+        let cases = vec![
+            (
+                "waiting begin",
+                EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
+                    started_at_ms: 100,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![receiver],
+                    receiver_agents: vec![codex_protocol::protocol::CollabAgentRef {
+                        thread_id: receiver,
+                        agent_nickname: Some("Euclid".into()),
+                        agent_role: Some("reviewer".into()),
+                    }],
+                    call_id: "wait-v1-identity".into(),
+                }),
+                CollabAgentState::from(AgentStatus::PendingInit)
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            ),
+            (
+                "resume begin",
+                EventMsg::CollabResumeBegin(codex_protocol::protocol::CollabResumeBeginEvent {
+                    call_id: "resume-v1-identity".into(),
+                    started_at_ms: 200,
+                    sender_thread_id: sender,
+                    receiver_thread_id: receiver,
+                    receiver_agent_nickname: Some("Euclid".into()),
+                    receiver_agent_role: Some("reviewer".into()),
+                }),
+                CollabAgentState::from(AgentStatus::PendingInit)
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            ),
+            (
+                "close end",
+                EventMsg::CollabCloseEnd(codex_protocol::protocol::CollabCloseEndEvent {
+                    call_id: "close-v1-identity".into(),
+                    completed_at_ms: 300,
+                    sender_thread_id: sender,
+                    receiver_thread_id: receiver,
+                    receiver_agent_nickname: Some("Euclid".into()),
+                    receiver_agent_role: Some("reviewer".into()),
+                    status: AgentStatus::Completed(Some("closed".into())),
+                }),
+                CollabAgentState::from(AgentStatus::Completed(Some("closed".into())))
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            ),
+            (
+                "resume end",
+                EventMsg::CollabResumeEnd(codex_protocol::protocol::CollabResumeEndEvent {
+                    call_id: "resume-v1-error".into(),
+                    completed_at_ms: 400,
+                    sender_thread_id: sender,
+                    receiver_thread_id: receiver,
+                    receiver_agent_nickname: Some("Euclid".into()),
+                    receiver_agent_role: Some("reviewer".into()),
+                    status: AgentStatus::Errored("connection lost".into()),
+                }),
+                CollabAgentState::from(AgentStatus::Errored("connection lost".into()))
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            ),
+        ];
+
+        for (case, event, expected_state) in cases {
+            let live_item = match item_event_to_server_notification(
+                event.clone(),
+                "thread-1",
+                "turn-1",
+            )
+            .expect("supported lifecycle event")
+            {
+                ServerNotification::ItemStarted(notification) => notification.item,
+                ServerNotification::ItemCompleted(notification) => notification.item,
+                notification => {
+                    panic!("expected item lifecycle notification for {case}, got {notification:?}")
+                }
+            };
+            let history = build_turns_from_rollout_items(&[
+                RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                    client_id: None,
+                    message: "inspect legacy lifecycle".into(),
+                    images: None,
+                    text_elements: Vec::new(),
+                    local_images: Vec::new(),
+                    ..Default::default()
+                })),
+                RolloutItem::EventMsg(event),
+            ]);
+            let history_item = history
+                .first()
+                .and_then(|turn| turn.items.last())
+                .expect("history should contain the lifecycle item");
+
+            assert_eq!(history_item, &live_item, "{case}");
+            let ThreadItem::CollabAgentToolCall { agents_states, .. } = history_item else {
+                panic!("expected collab lifecycle item for {case}");
+            };
+            assert_eq!(agents_states.get(&receiver_id), Some(&expected_state), "{case}");
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::protocol::v2::DynamicToolCallStatus;
 use crate::protocol::v2::FileChangePatchUpdatedNotification;
 use crate::protocol::v2::ItemCompletedNotification;
 use crate::protocol::v2::ItemStartedNotification;
+use crate::protocol::v2::normalize_legacy_collab_agent_states;
 use crate::protocol::v2::PlanDeltaNotification;
 use crate::protocol::v2::ReasoningSummaryPartAddedNotification;
 use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
@@ -235,6 +236,16 @@ pub fn item_event_to_server_notification(
                 .iter()
                 .map(ToString::to_string)
                 .collect();
+            let agents_states = normalize_legacy_collab_agent_states(
+                HashMap::new(),
+                begin_event.receiver_agents.into_iter().map(|agent| {
+                    (
+                        agent.thread_id.to_string(),
+                        agent.agent_nickname,
+                        agent.agent_role,
+                    )
+                }),
+            );
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::Wait,
@@ -246,7 +257,7 @@ pub fn item_event_to_server_notification(
                 reasoning_effort: None,
                 requested_model: None,
                 requested_reasoning_effort: None,
-                agents_states: HashMap::new(),
+                agents_states,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -345,7 +356,10 @@ pub fn item_event_to_server_notification(
             let receiver_id = end_event.receiver_thread_id.to_string();
             let agents_states = [(
                 receiver_id.clone(),
-                CollabAgentState::from(end_event.status),
+                CollabAgentState::from(end_event.status).with_agent_identity(
+                    end_event.receiver_agent_nickname,
+                    end_event.receiver_agent_role,
+                ),
             )]
             .into_iter()
             .collect();
@@ -370,18 +384,27 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::CollabResumeBegin(begin_event) => {
+            let receiver_id = begin_event.receiver_thread_id.to_string();
+            let agents_states = normalize_legacy_collab_agent_states(
+                HashMap::new(),
+                [(
+                    receiver_id.clone(),
+                    begin_event.receiver_agent_nickname,
+                    begin_event.receiver_agent_role,
+                )],
+            );
             let item = ThreadItem::CollabAgentToolCall {
                 id: begin_event.call_id,
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
-                receiver_thread_ids: vec![begin_event.receiver_thread_id.to_string()],
+                receiver_thread_ids: vec![receiver_id],
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
                 requested_model: None,
                 requested_reasoning_effort: None,
-                agents_states: HashMap::new(),
+                agents_states,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -401,7 +424,10 @@ pub fn item_event_to_server_notification(
             let receiver_id = end_event.receiver_thread_id.to_string();
             let agents_states = [(
                 receiver_id.clone(),
-                CollabAgentState::from(end_event.status),
+                CollabAgentState::from(end_event.status).with_agent_identity(
+                    end_event.receiver_agent_nickname,
+                    end_event.receiver_agent_role,
+                ),
             )]
             .into_iter()
             .collect();

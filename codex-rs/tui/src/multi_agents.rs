@@ -483,6 +483,17 @@ pub(crate) fn tool_call_history_cell(
         .first()
         .and_then(|id| parse_thread_id(id));
     let prompt = prompt.as_deref().unwrap_or_default();
+    let mut agent_metadata_with_lifecycle_identity = |thread_id| {
+        let mut metadata = agent_metadata(thread_id);
+        if let Some(state) = agents_states.get(&thread_id.to_string()) {
+            metadata.agent_nickname = state
+                .agent_nickname
+                .clone()
+                .or(metadata.agent_nickname);
+            metadata.agent_role = state.agent_role.clone().or(metadata.agent_role);
+        }
+        metadata
+    };
 
     match tool {
         CollabAgentTool::SpawnAgent => {
@@ -500,7 +511,7 @@ pub(crate) fn tool_call_history_cell(
                 spawn_request,
                 model.as_deref(),
                 reasoning_effort.as_ref(),
-                &mut agent_metadata,
+                &mut agent_metadata_with_lifecycle_identity,
             ))
         }
         CollabAgentTool::SendInput => {
@@ -508,30 +519,40 @@ pub(crate) fn tool_call_history_cell(
                 return None;
             }
             first_receiver.map(|receiver_thread_id| {
-                interaction_end(receiver_thread_id, prompt, &mut agent_metadata)
+                interaction_end(
+                    receiver_thread_id,
+                    prompt,
+                    &mut agent_metadata_with_lifecycle_identity,
+                )
             })
         }
         CollabAgentTool::ResumeAgent => first_receiver.map(|receiver_thread_id| {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                resume_begin(receiver_thread_id, &mut agent_metadata)
+                resume_begin(
+                    receiver_thread_id,
+                    &mut agent_metadata_with_lifecycle_identity,
+                )
             } else {
                 let state = first_agent_state(receiver_thread_ids, agents_states);
                 resume_end(
                     receiver_thread_id,
                     state,
                     "Agent resume failed",
-                    &mut agent_metadata,
+                    &mut agent_metadata_with_lifecycle_identity,
                 )
             }
         }),
         CollabAgentTool::Wait => {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                Some(waiting_begin(receiver_thread_ids, &mut agent_metadata))
+                Some(waiting_begin(
+                    receiver_thread_ids,
+                    &mut agent_metadata_with_lifecycle_identity,
+                ))
             } else {
                 Some(waiting_end(
                     receiver_thread_ids,
                     agents_states,
-                    &mut agent_metadata,
+                    &mut agent_metadata_with_lifecycle_identity,
                 ))
             }
         }
@@ -540,7 +561,12 @@ pub(crate) fn tool_call_history_cell(
                 return None;
             }
             first_receiver
-                .map(|receiver_thread_id| close_end(receiver_thread_id, &mut agent_metadata))
+                .map(|receiver_thread_id| {
+                    close_end(
+                        receiver_thread_id,
+                        &mut agent_metadata_with_lifecycle_identity,
+                    )
+                })
         }
     }
 }
@@ -1927,6 +1953,46 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_wait_mailbox", snapshot);
+    }
+
+    #[test]
+    fn collab_lifecycle_identity_without_cached_metadata_snapshot() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+                .expect("valid receiver thread id");
+        let cell = tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "wait-v1-identity".to_string(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::PendingInit,
+                        message: None,
+                        agent_nickname: Some("Euclid".to_string()),
+                        agent_role: Some("reviewer".to_string()),
+                    },
+                )]),
+            },
+            /*cached_spawn_request*/ None,
+            |_| AgentMetadata::default(),
+        )
+        .expect("wait item renders");
+
+        assert_snapshot!(
+            "collab_lifecycle_identity_without_cached_metadata",
+            cell_to_text(&cell)
+        );
     }
 
     #[test]
