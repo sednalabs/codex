@@ -1654,17 +1654,73 @@ fn convert_dynamic_tool_content_items(
         .collect()
 }
 
-fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) -> &ThreadItem {
+fn upsert_turn_item(items: &mut Vec<ThreadItem>, mut item: ThreadItem) -> &ThreadItem {
     if let Some(existing_item_index) = items
         .iter()
         .position(|existing_item| existing_item.id() == item.id())
     {
+        merge_legacy_terminal_collab_identity(&mut item, &items[existing_item_index]);
         items[existing_item_index] = item;
         return &items[existing_item_index];
     }
     let inserted_item_index = items.len();
     items.push(item);
     &items[inserted_item_index]
+}
+
+/// Preserves legacy receiver identity when a wait or resume completion only persists status.
+///
+/// The terminal snapshot remains authoritative for status, message, and its explicit identity.
+/// This is deliberately limited to a matching in-progress wait or resume item: other lifecycle
+/// families can legitimately replace their previous snapshot wholesale, and a terminal map must
+/// never gain receivers that its own event did not report.
+fn merge_legacy_terminal_collab_identity(item: &mut ThreadItem, previous: &ThreadItem) {
+    let ThreadItem::CollabAgentToolCall {
+        tool: incoming_tool,
+        status: incoming_status,
+        agents_states: incoming_agents_states,
+        ..
+    } = item
+    else {
+        return;
+    };
+    if !matches!(incoming_tool, CollabAgentTool::Wait | CollabAgentTool::ResumeAgent)
+        || !matches!(
+            incoming_status,
+            CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+        )
+    {
+        return;
+    }
+
+    let ThreadItem::CollabAgentToolCall {
+        tool: previous_tool,
+        status: previous_status,
+        agents_states: previous_agents_states,
+        ..
+    } = previous
+    else {
+        return;
+    };
+    if previous_tool != &*incoming_tool
+        || !matches!(previous_status, CollabAgentToolCallStatus::InProgress)
+    {
+        return;
+    }
+
+    for (receiver_id, terminal_state) in incoming_agents_states {
+        let Some(previous_state) = previous_agents_states.get(receiver_id) else {
+            continue;
+        };
+        if terminal_state.agent_nickname.is_none() {
+            terminal_state
+                .agent_nickname
+                .clone_from(&previous_state.agent_nickname);
+        }
+        if terminal_state.agent_role.is_none() {
+            terminal_state.agent_role.clone_from(&previous_state.agent_role);
+        }
+    }
 }
 
 struct PendingTurn {
@@ -1764,6 +1820,7 @@ mod tests {
     use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::CompactedItem;
+    use codex_protocol::protocol::CollabAgentRef;
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::EnteredReviewModeEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
@@ -1832,6 +1889,31 @@ mod tests {
         spawn.requested_model = None;
         spawn.requested_reasoning_effort = None;
         item
+    }
+
+    fn canonical_collab_agent_item(
+        id: &str,
+        tool: CoreCollabAgentTool,
+        status: CoreCollabAgentToolCallStatus,
+        sender_thread_id: ThreadId,
+        receiver_thread_ids: Vec<ThreadId>,
+        receiver_agents: Vec<CollabAgentRef>,
+        agents_states: HashMap<ThreadId, AgentStatus>,
+    ) -> CoreTurnItem {
+        CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
+            id: id.to_string(),
+            tool,
+            status,
+            sender_thread_id,
+            receiver_thread_ids,
+            receiver_agents,
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            agents_states,
+        })
     }
 
     #[test]
@@ -5009,6 +5091,325 @@ mod tests {
                 .into_iter()
                 .collect(),
             }
+        );
+    }
+
+    #[test]
+    fn replays_wait_terminal_statuses_only_with_prior_receiver_identity() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let terminal_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+                .expect("valid terminal receiver thread id");
+        let absent_terminal_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000003")
+                .expect("valid absent terminal receiver thread id");
+        let terminal_receiver_id = terminal_receiver.to_string();
+        let absent_terminal_receiver_id = absent_terminal_receiver.to_string();
+        let events = vec![
+            EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
+                started_at_ms: 100,
+                sender_thread_id: sender,
+                receiver_thread_ids: vec![terminal_receiver, absent_terminal_receiver],
+                receiver_agents: vec![
+                    codex_protocol::protocol::CollabAgentRef {
+                        thread_id: terminal_receiver,
+                        agent_nickname: Some("Euclid".into()),
+                        agent_role: Some("reviewer".into()),
+                    },
+                    codex_protocol::protocol::CollabAgentRef {
+                        thread_id: absent_terminal_receiver,
+                        agent_nickname: Some("Noether".into()),
+                        agent_role: Some("worker".into()),
+                    },
+                ],
+                call_id: "wait-statuses-only".into(),
+            }),
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id: sender,
+                call_id: "wait-statuses-only".into(),
+                completed_at_ms: 200,
+                agent_statuses: Vec::new(),
+                statuses: HashMap::from([(
+                    terminal_receiver,
+                    AgentStatus::Completed(Some("reviewed".into())),
+                )]),
+            }),
+        ];
+
+        let turns = build_turns_from_rollout_items(
+            &events.into_iter().map(RolloutItem::EventMsg).collect::<Vec<_>>(),
+        );
+        let [ThreadItem::CollabAgentToolCall {
+            status,
+            receiver_thread_ids,
+            agents_states,
+            ..
+        }] = turns[0].items.as_slice()
+        else {
+            panic!("expected a completed wait item");
+        };
+        assert_eq!(status, &CollabAgentToolCallStatus::Completed);
+        assert_eq!(receiver_thread_ids, &vec![terminal_receiver_id.clone()]);
+        assert_eq!(
+            agents_states,
+            &HashMap::from([(
+                terminal_receiver_id,
+                CollabAgentState::from(AgentStatus::Completed(Some("reviewed".into())))
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            )])
+        );
+        assert!(!agents_states.contains_key(&absent_terminal_receiver_id));
+    }
+
+    #[test]
+    fn replays_resume_terminal_identityless_with_prior_receiver_identity() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let receiver_id = receiver.to_string();
+        let events = vec![
+            EventMsg::CollabResumeBegin(codex_protocol::protocol::CollabResumeBeginEvent {
+                call_id: "resume-identityless".into(),
+                started_at_ms: 100,
+                sender_thread_id: sender,
+                receiver_thread_id: receiver,
+                receiver_agent_nickname: Some("Euclid".into()),
+                receiver_agent_role: Some("reviewer".into()),
+            }),
+            EventMsg::CollabResumeEnd(codex_protocol::protocol::CollabResumeEndEvent {
+                call_id: "resume-identityless".into(),
+                completed_at_ms: 200,
+                sender_thread_id: sender,
+                receiver_thread_id: receiver,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
+                status: AgentStatus::Completed(Some("resumed".into())),
+            }),
+        ];
+
+        let turns = build_turns_from_rollout_items(
+            &events.into_iter().map(RolloutItem::EventMsg).collect::<Vec<_>>(),
+        );
+        let [ThreadItem::CollabAgentToolCall {
+            status,
+            agents_states,
+            ..
+        }] = turns[0].items.as_slice()
+        else {
+            panic!("expected a completed resume item");
+        };
+        assert_eq!(status, &CollabAgentToolCallStatus::Completed);
+        assert_eq!(
+            agents_states,
+            &HashMap::from([(
+                receiver_id,
+                CollabAgentState::from(AgentStatus::Completed(Some("resumed".into())))
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            )])
+        );
+    }
+
+    #[test]
+    fn replays_resume_terminal_partial_identity_without_overwriting_it() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let receiver_id = receiver.to_string();
+        let events = vec![
+            EventMsg::CollabResumeBegin(codex_protocol::protocol::CollabResumeBeginEvent {
+                call_id: "resume-partial-identity".into(),
+                started_at_ms: 100,
+                sender_thread_id: sender,
+                receiver_thread_id: receiver,
+                receiver_agent_nickname: Some("Euclid".into()),
+                receiver_agent_role: Some("reviewer".into()),
+            }),
+            EventMsg::CollabResumeEnd(codex_protocol::protocol::CollabResumeEndEvent {
+                call_id: "resume-partial-identity".into(),
+                completed_at_ms: 200,
+                sender_thread_id: sender,
+                receiver_thread_id: receiver,
+                receiver_agent_nickname: Some("Ada".into()),
+                receiver_agent_role: None,
+                status: AgentStatus::Completed(Some("resumed".into())),
+            }),
+        ];
+
+        let turns = build_turns_from_rollout_items(
+            &events.into_iter().map(RolloutItem::EventMsg).collect::<Vec<_>>(),
+        );
+        let [ThreadItem::CollabAgentToolCall { agents_states, .. }] = turns[0].items.as_slice()
+        else {
+            panic!("expected a completed resume item");
+        };
+        assert_eq!(
+            agents_states,
+            &HashMap::from([(
+                receiver_id,
+                CollabAgentState::from(AgentStatus::Completed(Some("resumed".into())))
+                    .with_agent_identity(Some("Ada".into()), Some("reviewer".into())),
+            )])
+        );
+    }
+
+    #[test]
+    fn canonical_lifecycle_merges_wait_and_resume_terminal_identity_from_start() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let wait_terminal_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+                .expect("valid wait terminal receiver thread id");
+        let wait_absent_terminal_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000003")
+                .expect("valid absent wait terminal receiver thread id");
+        let resume_receiver =
+            ThreadId::try_from("00000000-0000-0000-0000-000000000004")
+                .expect("valid resume receiver thread id");
+        let turn_id = "turn-canonical-legacy-identity";
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.into(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+
+        let wait_start = ItemStartedEvent {
+            thread_id: sender,
+            turn_id: turn_id.into(),
+            item: canonical_collab_agent_item(
+                "wait-canonical-identity",
+                CoreCollabAgentTool::Wait,
+                CoreCollabAgentToolCallStatus::InProgress,
+                sender,
+                vec![wait_terminal_receiver, wait_absent_terminal_receiver],
+                vec![
+                    CollabAgentRef {
+                        thread_id: wait_terminal_receiver,
+                        agent_nickname: Some("Euclid".into()),
+                        agent_role: Some("reviewer".into()),
+                    },
+                    CollabAgentRef {
+                        thread_id: wait_absent_terminal_receiver,
+                        agent_nickname: Some("Noether".into()),
+                        agent_role: Some("worker".into()),
+                    },
+                ],
+                HashMap::new(),
+            ),
+            started_at_ms: 100,
+        };
+        let wait_start_changes = builder.handle_event_with_changes(&EventMsg::ItemStarted(wait_start));
+        assert_eq!(wait_start_changes.changed_items.len(), 1);
+
+        let wait_completion_changes =
+            builder.handle_event_with_changes(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: sender,
+                turn_id: turn_id.into(),
+                item: canonical_collab_agent_item(
+                    "wait-canonical-identity",
+                    CoreCollabAgentTool::Wait,
+                    CoreCollabAgentToolCallStatus::Completed,
+                    sender,
+                    vec![wait_terminal_receiver],
+                    Vec::new(),
+                    HashMap::from([(
+                        wait_terminal_receiver,
+                        AgentStatus::Completed(Some("reviewed".into())),
+                    )]),
+                ),
+                completed_at_ms: 200,
+            }));
+        let [ThreadHistoryItemChange {
+            item:
+                ThreadItem::CollabAgentToolCall {
+                    status,
+                    receiver_thread_ids,
+                    agents_states,
+                    ..
+                },
+            ..
+        }] = wait_completion_changes.changed_items.as_slice()
+        else {
+            panic!("expected one canonical wait completion snapshot");
+        };
+        assert_eq!(status, &CollabAgentToolCallStatus::Completed);
+        assert_eq!(
+            receiver_thread_ids,
+            &vec![wait_terminal_receiver.to_string()]
+        );
+        assert_eq!(
+            agents_states,
+            &HashMap::from([(
+                wait_terminal_receiver.to_string(),
+                CollabAgentState::from(AgentStatus::Completed(Some("reviewed".into())))
+                    .with_agent_identity(Some("Euclid".into()), Some("reviewer".into())),
+            )])
+        );
+        assert!(!agents_states.contains_key(&wait_absent_terminal_receiver.to_string()));
+
+        let resume_start = ItemStartedEvent {
+            thread_id: sender,
+            turn_id: turn_id.into(),
+            item: canonical_collab_agent_item(
+                "resume-canonical-identity",
+                CoreCollabAgentTool::ResumeAgent,
+                CoreCollabAgentToolCallStatus::InProgress,
+                sender,
+                vec![resume_receiver],
+                vec![CollabAgentRef {
+                    thread_id: resume_receiver,
+                    agent_nickname: Some("Euclid".into()),
+                    agent_role: Some("reviewer".into()),
+                }],
+                HashMap::new(),
+            ),
+            started_at_ms: 300,
+        };
+        let resume_start_changes =
+            builder.handle_event_with_changes(&EventMsg::ItemStarted(resume_start));
+        assert_eq!(resume_start_changes.changed_items.len(), 1);
+
+        let resume_completion_changes =
+            builder.handle_event_with_changes(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id: sender,
+                turn_id: turn_id.into(),
+                item: canonical_collab_agent_item(
+                    "resume-canonical-identity",
+                    CoreCollabAgentTool::ResumeAgent,
+                    CoreCollabAgentToolCallStatus::Completed,
+                    sender,
+                    vec![resume_receiver],
+                    vec![CollabAgentRef {
+                        thread_id: resume_receiver,
+                        agent_nickname: Some("Ada".into()),
+                        agent_role: None,
+                    }],
+                    HashMap::from([(
+                        resume_receiver,
+                        AgentStatus::Completed(Some("resumed".into())),
+                    )]),
+                ),
+                completed_at_ms: 400,
+            }));
+        let [ThreadHistoryItemChange {
+            item: ThreadItem::CollabAgentToolCall { agents_states, .. },
+            ..
+        }] = resume_completion_changes.changed_items.as_slice()
+        else {
+            panic!("expected one canonical resume completion snapshot");
+        };
+        assert_eq!(
+            agents_states,
+            &HashMap::from([(
+                resume_receiver.to_string(),
+                CollabAgentState::from(AgentStatus::Completed(Some("resumed".into())))
+                    .with_agent_identity(Some("Ada".into()), Some("reviewer".into())),
+            )])
         );
     }
 
