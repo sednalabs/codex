@@ -56,7 +56,7 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     assert!(manager.get_thread(first.thread_id).await.is_ok());
 
     advance(Duration::from_millis(1)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    resume_time_and_wait_for_thread_unloaded(&manager, first.thread_id).await;
     assert_eq!(
         control.get_status(first.thread_id).await,
         AgentStatus::Completed(Some("done".to_string()))
@@ -67,6 +67,7 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         .ensure_v2_agent_loaded(config, first.thread_id)
         .await
         .expect("cold agent should reload");
+    tokio::time::pause();
     let reloaded = manager
         .get_thread(first.thread_id)
         .await
@@ -92,7 +93,7 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     .await;
     wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
     advance(Duration::from_millis(1_000)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    resume_time_and_wait_for_thread_unloaded(&manager, first.thread_id).await;
     assert_eq!(
         control.get_status(first.thread_id).await,
         AgentStatus::Completed(Some("reloaded turn complete".to_string()))
@@ -221,7 +222,7 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
     advance(Duration::from_millis(100)).await;
     wait_for_terminal_idle_generation_after(&metadata, generation).await;
     advance(Duration::from_millis(100)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    resume_time_and_wait_for_thread_unloaded(&manager, first.thread_id).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -250,7 +251,7 @@ async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
         .acknowledge_residency_submission("held-submission")
         .await;
     advance(Duration::from_millis(100)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    resume_time_and_wait_for_thread_unloaded(&manager, first.thread_id).await;
 }
 
 async fn terminal_idle_test_agent(
@@ -333,14 +334,21 @@ fn test_communication(text: &str, trigger_turn: bool) -> InterAgentCommunication
     )
 }
 
-async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) {
-    for _ in 0..64 {
-        if manager.get_thread(thread_id).await.is_err() {
-            return;
+async fn resume_time_and_wait_for_thread_unloaded(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+) {
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if manager.get_thread(thread_id).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        yield_now().await;
-    }
-    panic!("thread {thread_id} should be unloaded");
+    })
+    .await
+    .unwrap_or_else(|_| panic!("thread {thread_id} should be unloaded"));
 }
 
 async fn terminal_idle_unload_generation(metadata: &AgentMetadata) -> u64 {
