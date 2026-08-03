@@ -91,8 +91,8 @@ pub(crate) const CODEX_APPS_REFRESH_DURATION_METRIC: &str = "codex.apps.refresh.
 pub(crate) const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub(crate) const CODEX_APPS_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-const CODEX_APPS_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+pub(crate) const MCP_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MCP_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 const UNTRUSTED_CONNECTOR_META_KEYS: &[&str] = &[
     "connector_id",
@@ -263,7 +263,7 @@ pub(crate) type ManagedClientFuture =
     Shared<BoxFuture<'static, Result<ManagedClient, StartupOutcomeError>>>;
 
 #[derive(Default)]
-struct CodexAppsStartupReconnectState {
+struct McpStartupReconnectState {
     current_client: Option<ManagedClient>,
     reconnect_in_flight: bool,
     consecutive_failures: u32,
@@ -271,23 +271,23 @@ struct CodexAppsStartupReconnectState {
 }
 
 #[derive(Clone)]
-struct CodexAppsStartupStatusContext {
+struct McpStartupStatusContext {
     submit_id: String,
     server_name: String,
     tx_event: Sender<Event>,
 }
 
-pub(crate) struct CodexAppsStartupReconnect {
+pub(crate) struct McpStartupReconnect {
     factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
-    state: StdMutex<CodexAppsStartupReconnectState>,
-    startup_status_context: Option<CodexAppsStartupStatusContext>,
+    state: StdMutex<McpStartupReconnectState>,
+    startup_status_context: Option<McpStartupStatusContext>,
 }
 
-impl CodexAppsStartupReconnect {
+impl McpStartupReconnect {
     pub(crate) fn new(factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>) -> Self {
         Self {
             factory,
-            state: StdMutex::new(CodexAppsStartupReconnectState::default()),
+            state: StdMutex::new(McpStartupReconnectState::default()),
             startup_status_context: None,
         }
     }
@@ -298,7 +298,7 @@ impl CodexAppsStartupReconnect {
         server_name: String,
         tx_event: Option<Sender<Event>>,
     ) -> Self {
-        self.startup_status_context = tx_event.map(|tx_event| CodexAppsStartupStatusContext {
+        self.startup_status_context = tx_event.map(|tx_event| McpStartupStatusContext {
             submit_id,
             server_name,
             tx_event,
@@ -351,12 +351,12 @@ impl CodexAppsStartupReconnect {
                     }
                     Err(error) => {
                         state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-                        let retry_after = codex_apps_reconnect_backoff(state.consecutive_failures);
+                        let retry_after = mcp_reconnect_backoff(state.consecutive_failures);
                         state.retry_not_before = Some(TokioInstant::now() + retry_after);
                         warn!(
                             error = %error,
                             retry_after_ms = retry_after.as_millis(),
-                            "Apps MCP startup reconnect failed; continuing with cached tools"
+                            "MCP startup reconnect failed"
                         );
                         false
                     }
@@ -379,11 +379,11 @@ impl CodexAppsStartupReconnect {
     }
 }
 
-fn codex_apps_reconnect_backoff(consecutive_failures: u32) -> Duration {
+fn mcp_reconnect_backoff(consecutive_failures: u32) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(5);
-    CODEX_APPS_RECONNECT_INITIAL_BACKOFF
+    MCP_RECONNECT_INITIAL_BACKOFF
         .saturating_mul(1 << exponent)
-        .min(CODEX_APPS_RECONNECT_MAX_BACKOFF)
+        .min(MCP_RECONNECT_MAX_BACKOFF)
 }
 
 #[derive(Clone)]
@@ -511,7 +511,7 @@ pub(crate) struct AsyncManagedClient {
     pub(crate) codex_apps_tools_cache_context: Option<ConnectorRuntimeContext<ToolInfo>>,
     pub(crate) tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
     pub(crate) startup_complete: Arc<AtomicBool>,
-    pub(crate) startup_reconnect: Option<Arc<CodexAppsStartupReconnect>>,
+    pub(crate) startup_reconnect: Option<Arc<McpStartupReconnect>>,
     pub(crate) cancel_token: CancellationToken,
 }
 
@@ -566,10 +566,10 @@ impl AsyncManagedClient {
             startup_complete: Arc::clone(&startup_complete),
         });
         let client = startup.start();
-        let startup_reconnect = is_codex_apps_mcp_server.then(|| {
+        let startup_reconnect = Some({
             let startup = Arc::clone(&startup);
             Arc::new(
-                CodexAppsStartupReconnect::new(Arc::new(move || startup.start()))
+                McpStartupReconnect::new(Arc::new(move || startup.start()))
                     .with_startup_status_context(
                         startup_submit_id,
                         reconnect_server_name,
@@ -654,6 +654,7 @@ impl AsyncManagedClient {
     pub(crate) async fn listed_tools(&self) -> Option<Vec<ToolInfo>> {
         // Plugin provenance is resolved per-session rather than stored in shared cache payloads.
         if !self.startup_complete.load(Ordering::Acquire)
+            && self.is_codex_apps_mcp_server
             && let Some(startup_tools) = self.cached_tools()
         {
             Some(startup_tools)

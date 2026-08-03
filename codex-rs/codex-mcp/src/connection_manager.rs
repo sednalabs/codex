@@ -458,7 +458,9 @@ impl McpConnectionSet {
                     outcome = Err(StartupOutcomeError::Cancelled);
                 }
 
-                if matches!(&outcome, Err(StartupOutcomeError::Failed { .. })) {
+                if async_managed_client.is_codex_apps_mcp_server
+                    && matches!(&outcome, Err(StartupOutcomeError::Failed { .. }))
+                {
                     async_managed_client.reconnect_failed_startup().await;
                 }
 
