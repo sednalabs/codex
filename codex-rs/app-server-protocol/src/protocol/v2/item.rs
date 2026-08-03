@@ -1071,26 +1071,46 @@ impl From<CoreTurnItem> for ThreadItem {
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
             },
-            CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
-                id: call.id,
-                tool: call.tool.into(),
-                status: call.status.into(),
-                sender_thread_id: call.sender_thread_id.to_string(),
-                receiver_thread_ids: call
-                    .receiver_thread_ids
+            CoreTurnItem::CollabAgentToolCall(call) => {
+                let receiver_agents = call
+                    .receiver_agents
                     .into_iter()
-                    .map(String::from)
-                    .collect(),
-                prompt: call.prompt,
-                model: call.model,
-                reasoning_effort: call.reasoning_effort,
-                requested_model: call.requested_model,
-                requested_reasoning_effort: call.requested_reasoning_effort,
-                agents_states: call
-                    .agents_states
-                    .into_iter()
-                    .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
-                    .collect(),
+                    .map(|agent| {
+                        (
+                            agent.thread_id,
+                            (agent.agent_nickname, agent.agent_role),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>();
+                ThreadItem::CollabAgentToolCall {
+                    id: call.id,
+                    tool: call.tool.into(),
+                    status: call.status.into(),
+                    sender_thread_id: call.sender_thread_id.to_string(),
+                    receiver_thread_ids: call
+                        .receiver_thread_ids
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    prompt: call.prompt,
+                    model: call.model,
+                    reasoning_effort: call.reasoning_effort,
+                    requested_model: call.requested_model,
+                    requested_reasoning_effort: call.requested_reasoning_effort,
+                    agents_states: call
+                        .agents_states
+                        .into_iter()
+                        .map(|(thread_id, status)| {
+                            let (agent_nickname, agent_role) =
+                                receiver_agents.get(&thread_id).cloned().unwrap_or_default();
+                            (
+                                thread_id.to_string(),
+                                CollabAgentState::from(status)
+                                    .with_agent_identity(agent_nickname, agent_role),
+                            )
+                        })
+                        .collect(),
+                }
             },
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 id: activity.id,
@@ -1420,39 +1440,42 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+    /// V1 lifecycle events identify agents by nickname and role before the child thread starts.
+    /// V2 agent paths remain available through `SubAgentActivity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_nickname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<String>,
+}
+
+impl CollabAgentState {
+    pub(crate) fn with_agent_identity(
+        mut self,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) -> Self {
+        self.agent_nickname = agent_nickname;
+        self.agent_role = agent_role;
+        self
+    }
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
     fn from(value: CoreAgentStatus) -> Self {
-        match value {
-            CoreAgentStatus::PendingInit => Self {
-                status: CollabAgentStatus::PendingInit,
-                message: None,
-            },
-            CoreAgentStatus::Running => Self {
-                status: CollabAgentStatus::Running,
-                message: None,
-            },
-            CoreAgentStatus::Interrupted => Self {
-                status: CollabAgentStatus::Interrupted,
-                message: None,
-            },
-            CoreAgentStatus::Completed(message) => Self {
-                status: CollabAgentStatus::Completed,
-                message,
-            },
-            CoreAgentStatus::Errored(message) => Self {
-                status: CollabAgentStatus::Errored,
-                message: Some(message),
-            },
-            CoreAgentStatus::Shutdown => Self {
-                status: CollabAgentStatus::Shutdown,
-                message: None,
-            },
-            CoreAgentStatus::NotFound => Self {
-                status: CollabAgentStatus::NotFound,
-                message: None,
-            },
+        let (status, message) = match value {
+            CoreAgentStatus::PendingInit => (CollabAgentStatus::PendingInit, None),
+            CoreAgentStatus::Running => (CollabAgentStatus::Running, None),
+            CoreAgentStatus::Interrupted => (CollabAgentStatus::Interrupted, None),
+            CoreAgentStatus::Completed(message) => (CollabAgentStatus::Completed, message),
+            CoreAgentStatus::Errored(message) => (CollabAgentStatus::Errored, Some(message)),
+            CoreAgentStatus::Shutdown => (CollabAgentStatus::Shutdown, None),
+            CoreAgentStatus::NotFound => (CollabAgentStatus::NotFound, None),
+        };
+        Self {
+            status,
+            message,
+            agent_nickname: None,
+            agent_role: None,
         }
     }
 }

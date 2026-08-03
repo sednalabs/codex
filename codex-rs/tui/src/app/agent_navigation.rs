@@ -485,6 +485,16 @@ impl AgentNavigationState {
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
+                agent_nickname: entry.agent_nickname.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.agent_nickname.clone())
+                }),
+                agent_role: entry.agent_role.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.agent_role.clone())
+                }),
                 agent_path: entry
                     .agent_path
                     .or_else(|| existing.as_ref().and_then(|entry| entry.agent_path.clone())),

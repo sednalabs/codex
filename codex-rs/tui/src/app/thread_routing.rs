@@ -1403,7 +1403,8 @@ impl App {
     /// This intentionally avoids app-server reads on the active-thread rendering path. During large
     /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
     /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
-    /// names and roles later; until then, rendering falls back to the thread id.
+    /// names and roles later; V1 terminal spawn metadata is also enough to populate the cache
+    /// before the child's `ThreadStarted` notification arrives.
     pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
         notification: &ServerNotification,
@@ -1435,14 +1436,24 @@ impl App {
                 continue;
             };
 
-            if self.agent_navigation.get(&thread_id).is_some() {
-                continue;
-            }
+            let (agent_nickname, agent_role, model, reasoning_effort) =
+                collab_receiver_identity(notification, receiver_thread_id);
 
             self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                thread_id,
+                agent_nickname,
+                agent_role,
                 /*is_closed*/ false,
             );
+            self.agent_navigation.update_identity(
+                thread_id,
+                model,
+                reasoning_effort,
+                /*model_provider*/ None,
+                /*task_name*/ None,
+            );
+            self.sync_agent_picker_identity(thread_id);
+            self.sync_active_agent_label();
         }
     }
 

@@ -989,6 +989,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     ApiCollabAgentState {
                         status: ApiCollabAgentStatus::Running,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]),
             },
