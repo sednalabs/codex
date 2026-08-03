@@ -8,9 +8,11 @@ export type ThreadLoadedListParams = {
  */
 cursor?: string | null,
 /**
- * Optional page size. When omitted, the server returns its bounded default of 100 sessions.
- * Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to
- * continue when more loaded sessions remain.
+ * Optional page size. The legacy unfiltered form preserves its original semantics: omitted
+ * `limit` returns every loaded thread and supplied values retain their legacy page-size
+ * behavior, including treating zero as one, without a server maximum. With
+ * `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow
+ * `nextCursor` until it is null to continue a filtered result.
  */
 limit?: number | null,
 /**

@@ -1357,9 +1357,11 @@ pub struct ThreadLoadedListParams {
     /// Opaque pagination cursor returned as `nextCursor` by a previous call.
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
-    /// Optional page size. When omitted, the server returns its bounded default of 100 sessions.
-    /// Provided values are clamped to the inclusive range 1..=100. Follow `nextCursor` to
-    /// continue when more loaded sessions remain.
+    /// Optional page size. The legacy unfiltered form preserves its original semantics: omitted
+    /// `limit` returns every loaded thread and supplied values retain their legacy page-size
+    /// behavior, including treating zero as one, without a server maximum. With
+    /// `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow
+    /// `nextCursor` until it is null to continue a filtered result.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
     /// Optional loaded thread-spawn ancestor. When set, returns only currently loaded
@@ -1380,9 +1382,10 @@ pub struct ThreadLoadedListResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional)]
     pub ancestor_filter_applied: bool,
-    /// Opaque cursor to pass as `cursor` on the next call. It resumes after the bounded candidate
-    /// window inspected by the server, which can include loaded sessions that did not match an
-    /// ancestor filter. If None, there are no more items to return.
+    /// Opaque cursor to pass as `cursor` on the next call. For legacy unfiltered calls, it
+    /// resumes after the last returned loaded thread. For ancestor-filtered calls, it resumes
+    /// after the bounded candidate window inspected by the server. If it is null, there are no
+    /// more items to return.
     pub next_cursor: Option<String>,
 }
 
