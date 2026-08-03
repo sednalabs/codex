@@ -15,8 +15,8 @@ use codex_protocol::protocol::ThreadHistoryMode;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
-const THREAD_LOADED_LIST_DEFAULT_LIMIT: usize = 100;
-const THREAD_LOADED_LIST_MAX_LIMIT: usize = 100;
+const THREAD_LOADED_LIST_FILTERED_DEFAULT_LIMIT: usize = 100;
+const THREAD_LOADED_LIST_FILTERED_MAX_LIMIT: usize = 100;
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
@@ -2520,20 +2520,25 @@ impl ThreadRequestProcessor {
         let cursor = cursor
             .map(|cursor| {
                 ThreadId::from_string(&cursor)
+                    .map(|thread_id| thread_id.to_string())
                     .map_err(|_| invalid_request(format!("invalid cursor: {cursor}")))
             })
             .transpose()?;
-        // Keep the protocol surface bounded even when an older client sends `u32::MAX` or omits
-        // the optional limit. The manager repeats this guard for direct callers.
-        let page_size = limit
-            .unwrap_or(THREAD_LOADED_LIST_DEFAULT_LIMIT as u32)
-            .clamp(1, THREAD_LOADED_LIST_MAX_LIMIT as u32) as usize;
 
-        // Resolve ancestry only for a finite candidate window. This avoids materializing a
-        // persisted subtree for the no-limit compatibility form as well as for explicit pages.
+        // The ancestor filter is new protocol surface, so its result can use a finite candidate
+        // window. The pre-existing global form intentionally preserves its unbounded omitted
+        // limit and caller-provided page size for clients that do not consume continuations.
         if let Some(ancestor_thread_id) = ancestor_thread_id.as_deref() {
             let ancestor_thread_id = ThreadId::from_string(ancestor_thread_id)
                 .map_err(|err| invalid_request(format!("invalid ancestor thread id: {err}")))?;
+            let cursor = cursor
+                .as_deref()
+                .map(ThreadId::from_string)
+                .transpose()
+                .map_err(|err| invalid_request(format!("invalid cursor: {err}")))?;
+            let page_size = limit
+                .unwrap_or(THREAD_LOADED_LIST_FILTERED_DEFAULT_LIMIT as u32)
+                .clamp(1, THREAD_LOADED_LIST_FILTERED_MAX_LIMIT as u32) as usize;
             let (data, next_cursor) = self
                 .thread_manager
                 .list_live_thread_spawn_descendants_page(
@@ -2557,19 +2562,38 @@ impl ThreadRequestProcessor {
             });
         }
 
-        let (loaded_thread_ids, next_cursor) = self
-            .thread_manager
-            .list_thread_ids_page(cursor, page_size)
-            .await;
-        let data: Vec<String> = loaded_thread_ids
+        let loaded_thread_ids = self.thread_manager.list_thread_ids().await;
+        let mut data: Vec<String> = loaded_thread_ids
             .into_iter()
             .map(|thread_id| thread_id.to_string())
             .collect();
 
+        if data.is_empty() {
+            return Ok(ThreadLoadedListResponse {
+                data,
+                ancestor_filter_applied,
+                next_cursor: None,
+            });
+        }
+
+        data.sort();
+        let total = data.len();
+        let start = match cursor {
+            Some(cursor) => match data.binary_search(&cursor) {
+                Ok(idx) => idx + 1,
+                Err(idx) => idx,
+            },
+            None => 0,
+        };
+        let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
+        let end = start.saturating_add(effective_limit).min(total);
+        let data = data[start..end].to_vec();
+        let next_cursor = data.last().filter(|_| end < total).cloned();
+
         Ok(ThreadLoadedListResponse {
             data,
             ancestor_filter_applied,
-            next_cursor: next_cursor.map(|thread_id| thread_id.to_string()),
+            next_cursor,
         })
     }
 
