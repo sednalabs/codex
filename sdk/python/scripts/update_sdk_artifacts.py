@@ -769,14 +769,14 @@ def _preserve_subagent_activity_protocol_contract(out_path: Path) -> None:
     if class_end == -1:
         class_end = len(source)
 
-    activity_kind = """class SubAgentActivityKind(Enum):
+    activity_kind = '''class SubAgentActivityKind(Enum):
     started = "started"
     interacted = "interacted"
-    interrupted = "interrupted"""
+    interrupted = "interrupted"'''
     source = source[:class_start] + activity_kind + source[class_end:]
 
-    terminal_class = """class SubAgentActivityTerminalState(Enum):
-    errored = "errored"""
+    terminal_class = '''class SubAgentActivityTerminalState(Enum):
+    errored = "errored"'''
     terminal_start = source.find("class SubAgentActivityTerminalState(Enum):")
     if terminal_start == -1:
         kind_end = source.find("\n\nclass ", class_start)
