@@ -226,7 +226,7 @@ async fn handle_spawn_agent(
         }
     };
 
-    let spawned_agent = match Box::pin(
+    let (spawned_agent, terminal_before_cancellation) = match Box::pin(
         session
             .services
             .agent_control
@@ -245,7 +245,8 @@ async fn handle_spawn_agent(
     )
     .await
     {
-        Ok(SpawnAgentOutcome::Spawned(spawned_agent)) => spawned_agent,
+        Ok(SpawnAgentOutcome::Spawned(spawned_agent)) => (spawned_agent, false),
+        Ok(SpawnAgentOutcome::TerminalBeforeCancellation { agent }) => (agent, true),
         Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }) => {
             emit_failed_spawn_agent_lifecycle_with_created_child(
                 session.as_ref(),
@@ -354,7 +355,12 @@ async fn handle_spawn_agent(
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id,
                 tool: CollabAgentTool::SpawnAgent,
-                status: collab_tool_call_status(&status, new_thread_id),
+                // The child status is retained in `agents_states`. A child that completed or
+                // errored naturally after cancellation was observed was not cancelled by this
+                // spawn call, so its successful spawn lifecycle must not be reported as Failed.
+                status: terminal_before_cancellation
+                    .then_some(CollabAgentToolCallStatus::Completed)
+                    .unwrap_or_else(|| collab_tool_call_status(&status, new_thread_id)),
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids,
                 receiver_agents,

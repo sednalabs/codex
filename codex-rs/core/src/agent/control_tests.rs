@@ -314,7 +314,7 @@ async fn spawn_agent_outcome_reconciles_a_child_that_dies_during_initial_input()
     let (parent_thread_id, _) = harness.start_thread().await;
     harness
         .control
-        .kill_next_spawn_initial_input_child()
+        .remove_next_spawn_initial_input_child()
         .await;
 
     let outcome = harness
@@ -340,7 +340,7 @@ async fn spawn_agent_outcome_reconciles_a_child_that_dies_during_initial_input()
     let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
         panic!("a removed child must not be represented as a live delivery failure");
     };
-    assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+    assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
     assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
     assert!(
         harness
@@ -403,7 +403,7 @@ async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
         harness.control.pause_next_spawn_initial_input().await;
     harness
         .control
-        .kill_next_spawn_cancellation_interrupt_child()
+        .remove_next_spawn_cancellation_interrupt_child()
         .await;
     let cancellation_token = CancellationToken::new();
     let control = harness.control.clone();
@@ -445,7 +445,7 @@ async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
     let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
         panic!("a dead child during cancellation must not be reported as cancelled and live");
     };
-    assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+    assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
     assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
 
     let open_children = harness
@@ -479,6 +479,88 @@ async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
             .await
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_preserves_naturally_completed_and_errored_child_statuses() {
+    for expected_status in [
+        AgentStatus::Completed(Some("child finished first".to_string())),
+        AgentStatus::Errored("child failed first".to_string()),
+    ] {
+        let (home, config) = test_config().await;
+        let harness = AgentControlHarness::new_with_config(home, config).await;
+        let (parent_thread_id, _) = harness.start_thread().await;
+        let (initial_input_started, allow_initial_input) =
+            harness.control.pause_next_spawn_initial_input().await;
+        harness
+            .control
+            .finish_next_spawn_cancellation_before_interrupt(expected_status.clone())
+            .await;
+        let cancellation_token = CancellationToken::new();
+        let control = harness.control.clone();
+        let child_config = harness.config.clone();
+        let child_cancellation_token = cancellation_token.clone();
+        let spawn_task = tokio::spawn(async move {
+            control
+                .spawn_agent_with_metadata_outcome(
+                    child_config,
+                    text_input("child task"),
+                    Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 1,
+                        agent_path: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                    })),
+                    SpawnAgentOptions {
+                        parent_thread_id: Some(parent_thread_id),
+                        cancellation_token: Some(child_cancellation_token),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+
+        initial_input_started
+            .await
+            .expect("initial delivery should pause after the child is committed");
+        cancellation_token.cancel();
+        allow_initial_input
+            .send(())
+            .expect("initial delivery pause should still be waiting");
+
+        let outcome = spawn_task
+            .await
+            .expect("spawn task should join")
+            .expect("a naturally terminal child should have a successful spawn outcome");
+        let SpawnAgentOutcome::TerminalBeforeCancellation { agent } = outcome else {
+            panic!("a child that naturally finished before the interrupt must not be cancelled");
+        };
+        assert_eq!(agent.status, expected_status);
+        assert_eq!(harness.control.get_status(agent.thread_id).await, expected_status);
+        assert!(
+            harness
+                .manager
+                .list_live_thread_spawn_edges()
+                .await
+                .contains(&(parent_thread_id, agent.thread_id)),
+            "a naturally terminal child remains a durable, live spawn target"
+        );
+        let child_ops = harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .filter_map(|(thread_id, op)| (thread_id == agent.thread_id).then_some(op))
+            .collect::<Vec<_>>();
+        assert!(
+            child_ops.iter().any(|op| matches!(op, Op::UserInput { .. })),
+            "the regression requires successful initial input delivery"
+        );
+        assert!(
+            !child_ops.iter().any(|op| matches!(op, Op::Interrupt)),
+            "a naturally terminal child must not receive a synthetic cancellation interrupt"
+        );
+    }
 }
 
 async fn persisted_originator(thread: &CodexThread) -> String {
