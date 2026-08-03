@@ -1030,7 +1030,7 @@ decisions.
 
 - Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`,
   `6f3fe98f88`, `c259bc1fef`, `9c7bfc8663`, `ef453a9666`, `fd47e85335`,
-  and `433d86c900`
+  `433d86c900`, and `b2a1dd98b5`
   manually carry bounded
   lower-runtime, facade, remote-client, and fuzzy-forwarder delivery
   semantics from app-server ancestry `7bd0a55155` without importing its wider
@@ -1075,8 +1075,13 @@ decisions.
   request/notify/resolve/reject frames, and shutdown after a test signal proves
   an authoritative notification is in finite pending custody;
   test-only sender custody is released before the runtime joins its outbound
-  router so shutdown has production-equivalent last-sender semantics. A
-  facade-level capacity-one regression also proves that shutdown drops its
+  router so shutdown has production-equivalent last-sender semantics. The
+  lower runtime also takes and drops any retained authoritative notification
+  before joining dependent processor and outbound tasks, releasing its real
+  `_and_wait` completion waiter; the exact
+  `shutdown_releases_pending_required_write_completion_before_task_joins`
+  regression proves that shutdown completes without the five-second fallback.
+  A facade-level capacity-one regression also proves that shutdown drops its
   receiver, releases pending custody, and then completes the embedded runtime
   shutdown. Remote response routing resumes after retained event delivery.
   Exact remote regressions additionally prove required-payload-before-disconnect
