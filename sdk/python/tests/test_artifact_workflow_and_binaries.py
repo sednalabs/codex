@@ -481,10 +481,22 @@ class ThreadStatusChangedNotification(BaseModel):
 
 class ThreadLoadedListParams(BaseModel):
     cursor: Annotated[
+        str | None, Field(description="Opaque pagination cursor returned by a previous call.")
+    ] = None
+    limit: Annotated[
+        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)
+    ] = None
 
 
 class ThreadLoadedListResponse(BaseModel):
-    data: Annotated[
+    data: Annotated[list[str], Field(description="Thread ids for sessions currently loaded in memory.")]
+    next_cursor: Annotated[
+        str | None,
+        Field(
+            alias="nextCursor",
+            description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+        ),
+    ] = None
 
 
 class ThreadListResponse(BaseModel):
@@ -524,6 +536,11 @@ class ThreadResumeResponse(BaseModel):
     assert "ge=0" in once
     assert once.count('alias="ancestorFilterApplied"') == 2
     assert once.count('alias="threadSubscriptionId"') == 3
+    assert "omitted `limit` returns every loaded thread" in once
+    assert "without a server maximum" in once
+    assert "With `ancestorThreadId`, the server applies a bounded default and maximum of 100" in once
+    assert "For legacy unfiltered calls, it resumes after the last returned loaded thread" in once
+    assert "For ancestor-filtered calls, it resumes after the bounded candidate window" in once
     assert "Effective model selected for the spawned agent" in once
     assert "Effective reasoning effort selected for the spawned agent" in once
 
