@@ -129,40 +129,16 @@ fn event_requires_delivery(event: &InProcessServerEvent) -> bool {
 
 /// Returns `true` for notifications that must survive backpressure.
 ///
-/// Transcript events, authoritative item/turn completions, and thread
-/// lifecycle, goal, usage, name, settings, and request-resolution state form
-/// the lossless tier of the event stream. Dropping any of these corrupts the
-/// visible assistant output or leaves clients with stale authoritative state.
-/// Everything else (`CommandExecutionOutputDelta`, progress, etc.) is
-/// best-effort and may be dropped with only cosmetic impact.
+/// Server notifications are authoritative by default, including future
+/// protocol additions. Only command-output progress is explicitly
+/// reconstructible from its completed item and therefore best-effort.
 ///
 /// Both the in-process and remote transports delegate to this function so the
 /// classification stays in sync.
 pub(crate) fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
-    matches!(
+    !matches!(
         notification,
-        ServerNotification::ThreadStarted(_)
-            | ServerNotification::ThreadClosed(_)
-            | ServerNotification::ThreadDeleted(_)
-            | ServerNotification::ThreadArchived(_)
-            | ServerNotification::ThreadUnarchived(_)
-            | ServerNotification::ThreadStatusChanged(_)
-            | ServerNotification::ThreadGoalUpdated(_)
-            | ServerNotification::ThreadGoalCleared(_)
-            | ServerNotification::ThreadTokenUsageUpdated(_)
-            | ServerNotification::ThreadNameUpdated(_)
-            | ServerNotification::ServerRequestResolved(_)
-            | ServerNotification::AccountRateLimitsUpdated(_)
-            | ServerNotification::TurnStarted(_)
-            | ServerNotification::TurnCompleted(_)
-            | ServerNotification::ThreadSettingsUpdated(_)
-            | ServerNotification::ItemStarted(_)
-            | ServerNotification::ItemCompleted(_)
-            | ServerNotification::ExternalAgentConfigImportCompleted(_)
-            | ServerNotification::AgentMessageDelta(_)
-            | ServerNotification::PlanDelta(_)
-            | ServerNotification::ReasoningSummaryTextDelta(_)
-            | ServerNotification::ReasoningTextDelta(_)
+        ServerNotification::CommandExecutionOutputDelta(_)
     )
 }
 
@@ -1202,7 +1178,7 @@ mod tests {
         )
     }
 
-    fn required_server_notifications() -> Vec<ServerNotification> {
+    fn reviewed_consumer_state_notifications() -> Vec<ServerNotification> {
         let thread_id = || "thread".to_string();
         let turn_id = || "turn".to_string();
         let item_id = || "item".to_string();
@@ -1336,6 +1312,49 @@ mod tests {
                     },
                 },
             ),
+            ServerNotification::AccountLoginCompleted(
+                codex_app_server_protocol::AccountLoginCompletedNotification {
+                    login_id: Some("login".to_string()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::AccountUpdated(
+                codex_app_server_protocol::AccountUpdatedNotification {
+                    auth_mode: None,
+                    plan_type: None,
+                },
+            ),
+            ServerNotification::McpServerOauthLoginCompleted(
+                codex_app_server_protocol::McpServerOauthLoginCompletedNotification {
+                    name: "server".to_string(),
+                    thread_id: Some(thread_id()),
+                    success: true,
+                    error: None,
+                },
+            ),
+            ServerNotification::ProcessExited(
+                codex_app_server_protocol::ProcessExitedNotification {
+                    process_handle: "process".to_string(),
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stdout_cap_reached: false,
+                    stderr: String::new(),
+                    stderr_cap_reached: false,
+                },
+            ),
+            ServerNotification::FuzzyFileSearchSessionCompleted(
+                codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification {
+                    session_id: "search".to_string(),
+                },
+            ),
+            ServerNotification::WindowsSandboxSetupCompleted(
+                codex_app_server_protocol::WindowsSandboxSetupCompletedNotification {
+                    mode: codex_app_server_protocol::WindowsSandboxSetupMode::Unelevated,
+                    success: true,
+                    error: None,
+                },
+            ),
             ServerNotification::TurnStarted(codex_app_server_protocol::TurnStartedNotification {
                 thread_id: thread_id(),
                 turn: codex_app_server_protocol::Turn {
@@ -1419,6 +1438,31 @@ mod tests {
                     item_id: item_id(),
                     delta: "reasoning".to_string(),
                     content_index: 0,
+                },
+            ),
+            ServerNotification::ThreadRealtimeStarted(
+                codex_app_server_protocol::ThreadRealtimeStartedNotification {
+                    thread_id: thread_id(),
+                    realtime_session_id: Some("realtime".to_string()),
+                    version: codex_protocol::protocol::RealtimeConversationVersion::V1,
+                },
+            ),
+            ServerNotification::ThreadRealtimeSdp(
+                codex_app_server_protocol::ThreadRealtimeSdpNotification {
+                    thread_id: thread_id(),
+                    sdp: "answer".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeError(
+                codex_app_server_protocol::ThreadRealtimeErrorNotification {
+                    thread_id: thread_id(),
+                    message: "error".to_string(),
+                },
+            ),
+            ServerNotification::ThreadRealtimeClosed(
+                codex_app_server_protocol::ThreadRealtimeClosedNotification {
+                    thread_id: thread_id(),
+                    reason: Some("done".to_string()),
                 },
             ),
         ]
@@ -1741,9 +1785,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn in_process_facade_preserves_every_required_notification_under_backpressure() {
-        let notifications = required_server_notifications();
-        assert_eq!(notifications.len(), 22);
+    async fn in_process_facade_preserves_reviewed_consumer_state_under_backpressure() {
+        let notifications = reviewed_consumer_state_notifications();
+        assert_eq!(notifications.len(), 32);
 
         for notification in notifications {
             let expected = std::mem::discriminant(&notification);
