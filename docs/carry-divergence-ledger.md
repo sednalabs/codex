@@ -1029,7 +1029,8 @@ decisions.
 ### Bounded App-Server Delivery And Metric Version Tags
 
 - Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`,
-  `6f3fe98f88`, `c259bc1fef`, `9c7bfc8663`, `ef453a9666`, and `fd47e85335`
+  `6f3fe98f88`, `c259bc1fef`, `9c7bfc8663`, `ef453a9666`, `fd47e85335`,
+  and `433d86c900`
   manually carry bounded
   lower-runtime, facade, remote-client, and fuzzy-forwarder delivery
   semantics from app-server ancestry `7bd0a55155` without importing its wider
@@ -1040,7 +1041,14 @@ decisions.
   selectable as the architecture permits. Permit readiness emits counted lag
   before the retained payload and re-enables source polling without a busy
   loop; if a lower lag marker meets a saturated facade, its skipped count is
-  aggregated rather than collapsed to one. All three transport tiers treat every
+  aggregated rather than collapsed to one. The remote worker stores bounded
+  terminal metadata separately from its retained authoritative payload, fails
+  pending request waiters immediately, and materializes exactly one disconnected
+  event only after outstanding lag and the retained payload. A closed remote
+  event consumer clears lag, payload, and terminal-event custody and disables
+  WebSocket input, but leaves the command-only terminal state selectable so
+  later commands receive the terminal error and shutdown promptly sends a close
+  frame and acknowledgement. All three transport tiers treat every
   server notification as authoritative by default, including future protocol
   additions. Reconstructible command-execution output deltas and coalescible
   fuzzy-search snapshot updates are the two explicit best-effort exceptions;
@@ -1071,6 +1079,10 @@ decisions.
   facade-level capacity-one regression also proves that shutdown drops its
   receiver, releases pending custody, and then completes the embedded runtime
   shutdown. Remote response routing resumes after retained event delivery.
+  Exact remote regressions additionally prove required-payload-before-disconnect
+  and lag-before-disconnect ordering after a failed request write, terminal
+  failure of the pending request waiter, and prompt close-observed shutdown when
+  an authoritative payload remains undrained.
 - Commit `b52b676538` follows upstream metric-tag sanitizer commits
   `bd861ff550` and `d9559390ec` while keeping the ordinary release version
   exact. Only the `app.version` value supplied to metrics replaces unsupported
