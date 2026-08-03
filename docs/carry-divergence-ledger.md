@@ -1029,7 +1029,7 @@ decisions.
 ### Bounded In-Process Delivery And Metric Version Tags
 
 - Commits `faa62f2d6d`, `7f95ea88fe`, `05f79d293b`, `fab1000903`,
-  `6f3fe98f88`, `c259bc1fef`, and `9c7bfc8663` manually carry bounded
+  `6f3fe98f88`, `c259bc1fef`, `9c7bfc8663`, and `ef453a9666` manually carry bounded
   lower-queue delivery and
   facade-classification parity
   semantics from app-server ancestry `7bd0a55155` without importing its wider
