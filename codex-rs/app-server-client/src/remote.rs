@@ -16,6 +16,9 @@ use std::collections::VecDeque;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::AppServerEvent;
@@ -51,7 +54,10 @@ use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::time::Instant;
+use tokio::time::sleep_until;
 use tokio::time::timeout;
+use tokio::time::timeout_at;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::client_async_with_config;
@@ -162,6 +168,7 @@ enum RemoteClientCommand {
 
 pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
+    command_admission_open: Arc<AtomicBool>,
     event_rx: mpsc::Receiver<TaggedAppServerEvent>,
     pending_events: VecDeque<TaggedAppServerEvent>,
     server_version: Option<String>,
@@ -172,6 +179,7 @@ pub struct RemoteAppServerClient {
 #[derive(Clone)]
 pub struct RemoteAppServerRequestHandle {
     command_tx: mpsc::Sender<RemoteClientCommand>,
+    command_admission_open: Arc<AtomicBool>,
 }
 
 impl RemoteAppServerClient {
@@ -225,6 +233,8 @@ impl RemoteAppServerClient {
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<TaggedAppServerEvent>(channel_capacity);
+        let command_admission_open = Arc::new(AtomicBool::new(true));
+        let worker_command_admission_open = Arc::clone(&command_admission_open);
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
@@ -240,15 +250,21 @@ impl RemoteAppServerClient {
             let mut skipped_events = skipped_events;
             let mut exit_after_pending_events = false;
             let mut event_consumer_closed = false;
+            let mut terminal_drain_deadline = None;
+            let mut stream = Some(stream);
             loop {
                 if !event_consumer_closed && event_tx.is_closed() {
-                    handle_event_consumer_closed(
-                        &mut stream,
-                        &endpoint,
-                        &mut pending_server_request_ids,
-                        &mut pending_remote_events,
-                    )
-                    .await;
+                    if !exit_after_pending_events {
+                        handle_event_consumer_closed(
+                            stream
+                                .as_mut()
+                                .expect("live remote worker should retain its websocket"),
+                            &endpoint,
+                            &mut pending_server_request_ids,
+                            &mut pending_remote_events,
+                        )
+                        .await;
+                    }
                     // `RemoteAppServerClient::shutdown` drops its receiver before sending
                     // `Shutdown`. Keep the worker alive long enough to close the transport and
                     // acknowledge that command instead of waiting for its timeout.
@@ -263,6 +279,9 @@ impl RemoteAppServerClient {
                         &err_message,
                     );
                 }
+                if terminal_drain_deadline_expired(terminal_drain_deadline) {
+                    break;
+                }
                 if remote_worker_should_exit(
                     exit_after_pending_events,
                     &pending_remote_events,
@@ -272,6 +291,13 @@ impl RemoteAppServerClient {
                     break;
                 }
                 tokio::select! {
+                    _ = async {
+                        if let Some(deadline) = terminal_drain_deadline {
+                            sleep_until(deadline).await;
+                        }
+                    }, if terminal_drain_deadline.is_some() => {
+                        break;
+                    }
                     permit = event_tx.reserve(),
                     if !event_consumer_closed
                         && (!pending_remote_events.is_empty() || skipped_events > 0) => {
@@ -287,20 +313,24 @@ impl RemoteAppServerClient {
                                 permit.send(event);
                             }
                             Err(_) => {
-                                handle_event_consumer_closed(
-                                    &mut stream,
-                                    &endpoint,
-                                    &mut pending_server_request_ids,
-                                    &mut pending_remote_events,
-                                )
-                                .await;
+                                if !exit_after_pending_events {
+                                    handle_event_consumer_closed(
+                                        stream
+                                            .as_mut()
+                                            .expect("live remote worker should retain its websocket"),
+                                        &endpoint,
+                                        &mut pending_server_request_ids,
+                                        &mut pending_remote_events,
+                                    )
+                                    .await;
+                                }
                                 event_consumer_closed = true;
                             }
                         }
                     }
                     command = command_rx.recv() => {
                         let Some(command) = command else {
-                            let _ = stream.close(None).await;
+                            let _ = stream.take();
                             break;
                         };
                         match command {
@@ -324,7 +354,9 @@ impl RemoteAppServerClient {
                                 }
                                 pending_requests.insert(request_id.clone(), response_tx);
                                 if let Err(err) = write_jsonrpc_message(
-                                    &mut stream,
+                                    stream
+                                        .as_mut()
+                                        .expect("live remote worker should retain its websocket"),
                                     JSONRPCMessage::Request(*request),
                                     &endpoint,
                                 )
@@ -367,7 +399,9 @@ impl RemoteAppServerClient {
                             }
                             RemoteClientCommand::Notify { notification, response_tx } => {
                                 let result = write_jsonrpc_message(
-                                    &mut stream,
+                                    stream
+                                        .as_mut()
+                                        .expect("live remote worker should retain its websocket"),
                                     JSONRPCMessage::Notification(
                                         jsonrpc_notification_from_client_notification(notification),
                                     ),
@@ -383,7 +417,9 @@ impl RemoteAppServerClient {
                             } => {
                                 let resolved_request_id = request_id.clone();
                                 let result = write_jsonrpc_message(
-                                    &mut stream,
+                                    stream
+                                        .as_mut()
+                                        .expect("live remote worker should retain its websocket"),
                                     JSONRPCMessage::Response(JSONRPCResponse {
                                         id: request_id,
                                         result,
@@ -403,7 +439,9 @@ impl RemoteAppServerClient {
                             } => {
                                 let rejected_request_id = request_id.clone();
                                 let result = write_jsonrpc_message(
-                                    &mut stream,
+                                    stream
+                                        .as_mut()
+                                        .expect("live remote worker should retain its websocket"),
                                     JSONRPCMessage::Error(JSONRPCError {
                                         error,
                                         id: request_id,
@@ -417,24 +455,36 @@ impl RemoteAppServerClient {
                                 let _ = response_tx.send(result);
                             }
                             RemoteClientCommand::Shutdown { response_tx } => {
-                                let close_result = stream.close(None).await.or_else(|err| {
-                                    if websocket_close_error_is_already_closed(&err) {
-                                        Ok(())
-                                    } else {
-                                        Err(IoError::other(format!(
-                                            "failed to close websocket app server `{endpoint}`: {err}"
-                                        )))
-                                    }
-                                });
+                                let close_result = if let Some(mut stream) = stream.take() {
+                                    stream.close(None).await.or_else(|err| {
+                                        if websocket_close_error_is_already_closed(&err) {
+                                            Ok(())
+                                        } else {
+                                            Err(IoError::other(format!(
+                                                "failed to close websocket app server `{endpoint}`: {err}"
+                                            )))
+                                        }
+                                    })
+                                } else {
+                                    Ok(())
+                                };
                                 let _ = response_tx.send(close_result);
                                 break;
                             }
                         }
                     }
-                    message = stream.next(), if !exit_after_pending_events => {
+                    message = async {
+                        stream
+                            .as_mut()
+                            .expect("live remote worker should retain its websocket")
+                            .next()
+                            .await
+                    }, if !exit_after_pending_events && stream.is_some() => {
                         if !event_consumer_closed && event_tx.is_closed() {
                             handle_event_consumer_closed(
-                                &mut stream,
+                                stream
+                                    .as_mut()
+                                    .expect("live remote worker should retain its websocket"),
                                 &endpoint,
                                 &mut pending_server_request_ids,
                                 &mut pending_remote_events,
@@ -476,16 +526,18 @@ impl RemoteAppServerClient {
                                                 Ok(
                                                     QueueOutcome::RequiredEventOverflow,
                                                 ) => {
-                                                    let (_, message) =
-                                                        terminal_remote_transport_error(
-                                                            &worker_exit_error,
-                                                        );
-                                                    reject_pending_remote_server_requests(
+                                                    enter_required_event_overflow_terminal_state(
                                                         &mut stream,
+                                                        &worker_command_admission_open,
                                                         &endpoint,
+                                                        &mut pending_requests,
                                                         &mut pending_server_request_ids,
                                                         &mut pending_remote_events,
-                                                        &message,
+                                                        &mut skipped_events,
+                                                        &mut worker_exit_error,
+                                                        &mut exit_after_pending_events,
+                                                        &mut terminal_drain_deadline,
+                                                        None,
                                                     )
                                                     .await;
                                                 }
@@ -496,7 +548,9 @@ impl RemoteAppServerClient {
                                                         "event consumer closed while delivering a remote event"
                                                     );
                                                     handle_event_consumer_closed(
-                                                        &mut stream,
+                                                        stream
+                                                            .as_mut()
+                                                            .expect("live remote worker should retain its websocket"),
                                                         &endpoint,
                                                         &mut pending_server_request_ids,
                                                         &mut pending_remote_events,
@@ -514,7 +568,9 @@ impl RemoteAppServerClient {
                                             Ok(request) => {
                                                 if event_consumer_closed {
                                                     if let Err(reject_err) = write_jsonrpc_message(
-                                                        &mut stream,
+                                                        stream
+                                                            .as_mut()
+                                                            .expect("live remote worker should retain its websocket"),
                                                         JSONRPCMessage::Error(JSONRPCError {
                                                             error: JSONRPCErrorError {
                                                                 code: -32000,
@@ -546,43 +602,7 @@ impl RemoteAppServerClient {
                                                         TaggedAppServerEvent::ServerRequest(request)
                                                     }
                                                 };
-                                                // A terminal overload replaces this request with a
-                                                // disconnect event, so answer it before starting drain.
-                                                let required_event_count =
-                                                    if skipped_events > 0 { 2 } else { 1 };
-                                                if !pending_remote_events.is_empty()
-                                                    && pending_remote_events.len()
-                                                        + required_event_count
-                                                        > REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY
-                                                {
-                                                    let message =
-                                                        remote_event_backlog_overflow_message(
-                                                            &endpoint,
-                                                            skipped_events,
-                                                        );
-                                                    if let Err(reject_err) = write_jsonrpc_message(
-                                                        &mut stream,
-                                                        JSONRPCMessage::Error(JSONRPCError {
-                                                            error: JSONRPCErrorError {
-                                                                code: -32000,
-                                                                message,
-                                                                data: None,
-                                                            },
-                                                            id: request_id,
-                                                        }),
-                                                        &endpoint,
-                                                    )
-                                                    .await
-                                                    {
-                                                        warn!(
-                                                            %reject_err,
-                                                            "failed to reject remote app-server server request after event backlog overflow"
-                                                        );
-                                                    }
-                                                } else {
-                                                    pending_server_request_ids
-                                                        .insert(request_id.clone());
-                                                }
+                                                pending_server_request_ids.insert(request_id.clone());
                                                 match queue_remote_event(
                                                     &event_tx,
                                                     &mut skipped_events,
@@ -593,19 +613,21 @@ impl RemoteAppServerClient {
                                                     &mut worker_exit_error,
                                                     &mut exit_after_pending_events,
                                                 ) {
-                                                    Ok(
-                                                        QueueOutcome::RequiredEventOverflow,
-                                                    ) => {
-                                                        let (_, message) =
-                                                            terminal_remote_transport_error(
-                                                                &worker_exit_error,
-                                                            );
-                                                        reject_pending_remote_server_requests(
+                                                Ok(
+                                                    QueueOutcome::RequiredEventOverflow,
+                                                ) => {
+                                                        enter_required_event_overflow_terminal_state(
                                                             &mut stream,
+                                                            &worker_command_admission_open,
                                                             &endpoint,
+                                                            &mut pending_requests,
                                                             &mut pending_server_request_ids,
                                                             &mut pending_remote_events,
-                                                            &message,
+                                                            &mut skipped_events,
+                                                            &mut worker_exit_error,
+                                                            &mut exit_after_pending_events,
+                                                            &mut terminal_drain_deadline,
+                                                            Some(request_id),
                                                         )
                                                         .await;
                                                     }
@@ -616,7 +638,9 @@ impl RemoteAppServerClient {
                                                             "event consumer closed while delivering a remote server request"
                                                         );
                                                         handle_event_consumer_closed(
-                                                            &mut stream,
+                                                            stream
+                                                                .as_mut()
+                                                                .expect("live remote worker should retain its websocket"),
                                                             &endpoint,
                                                             &mut pending_server_request_ids,
                                                             &mut pending_remote_events,
@@ -629,7 +653,9 @@ impl RemoteAppServerClient {
                                             Err(err) => {
                                                 warn!(%err, method, "rejecting unknown remote app-server request");
                                                 if let Err(reject_err) = write_jsonrpc_message(
-                                                    &mut stream,
+                                                    stream
+                                                        .as_mut()
+                                                        .expect("live remote worker should retain its websocket"),
                                                     JSONRPCMessage::Error(JSONRPCError {
                                                         error: JSONRPCErrorError {
                                                             code: -32601,
@@ -791,10 +817,12 @@ impl RemoteAppServerClient {
                 )
             });
             fail_pending_remote_requests(&mut pending_requests, err_kind, &err_message);
+            worker_command_admission_open.store(false, Ordering::Release);
         });
 
         Ok(Self {
             command_tx,
+            command_admission_open,
             event_rx,
             pending_events: VecDeque::new(),
             server_version,
@@ -806,6 +834,7 @@ impl RemoteAppServerClient {
     pub fn request_handle(&self) -> RemoteAppServerRequestHandle {
         RemoteAppServerRequestHandle {
             command_tx: self.command_tx.clone(),
+            command_admission_open: Arc::clone(&self.command_admission_open),
         }
     }
 
@@ -836,6 +865,7 @@ impl RemoteAppServerClient {
     }
 
     pub async fn notify(&self, notification: ClientNotification) -> IoResult<()> {
+        ensure_remote_command_admission(&self.command_admission_open)?;
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(RemoteClientCommand::Notify {
@@ -862,6 +892,7 @@ impl RemoteAppServerClient {
         request_id: RequestId,
         result: JsonRpcResult,
     ) -> IoResult<()> {
+        ensure_remote_command_admission(&self.command_admission_open)?;
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(RemoteClientCommand::ResolveServerRequest {
@@ -889,6 +920,7 @@ impl RemoteAppServerClient {
         request_id: RequestId,
         error: JSONRPCErrorError,
     ) -> IoResult<()> {
+        ensure_remote_command_admission(&self.command_admission_open)?;
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(RemoteClientCommand::RejectServerRequest {
@@ -928,6 +960,7 @@ impl RemoteAppServerClient {
     pub async fn shutdown(self) -> IoResult<()> {
         let Self {
             command_tx,
+            command_admission_open: _command_admission_open,
             event_rx,
             pending_events: _pending_events,
             server_version: _server_version,
@@ -937,10 +970,14 @@ impl RemoteAppServerClient {
         let mut worker_handle = worker_handle;
         drop(event_rx);
         let (response_tx, response_rx) = oneshot::channel();
-        if command_tx
-            .send(RemoteClientCommand::Shutdown { response_tx })
-            .await
-            .is_ok()
+        if matches!(
+            timeout(
+                SHUTDOWN_TIMEOUT,
+                command_tx.send(RemoteClientCommand::Shutdown { response_tx }),
+            )
+            .await,
+            Ok(Ok(()))
+        )
             && let Ok(Ok(close_result)) = timeout(SHUTDOWN_TIMEOUT, response_rx).await
         {
             close_result?;
@@ -961,6 +998,7 @@ impl RemoteAppServerRequestHandle {
     }
 
     pub async fn request_json_rpc(&self, request: JSONRPCRequest) -> IoResult<RequestResult> {
+        ensure_remote_command_admission(&self.command_admission_open)?;
         let (response_tx, response_rx) = oneshot::channel();
         self.command_tx
             .send(RemoteClientCommand::Request {
@@ -1487,6 +1525,10 @@ fn remote_worker_should_exit(
         && (event_consumer_closed || (pending_remote_events.is_empty() && skipped_events == 0))
 }
 
+fn terminal_drain_deadline_expired(terminal_drain_deadline: Option<Instant>) -> bool {
+    terminal_drain_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
 enum RemoteEventDelivery {
     Forwarded,
     Pending(VecDeque<TaggedAppServerEvent>),
@@ -1784,6 +1826,105 @@ fn terminal_remote_transport_error(
         },
         |(kind, message)| (*kind, message.clone()),
     )
+}
+
+fn ensure_remote_command_admission(command_admission_open: &AtomicBool) -> IoResult<()> {
+    if command_admission_open.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    Err(IoError::new(
+        ErrorKind::BrokenPipe,
+        "remote app-server transport is closing after required event overflow",
+    ))
+}
+
+/// Completes the required-event-overflow transition before the client starts exposing its retained
+/// terminal FIFO. The socket is deliberately dropped before local draining begins: a stalled peer
+/// cannot retain the worker after it has lost the ability to deliver required state safely.
+async fn enter_required_event_overflow_terminal_state<S>(
+    stream: &mut Option<WebSocketStream<S>>,
+    command_admission_open: &AtomicBool,
+    endpoint: &str,
+    pending_requests: &mut HashMap<RequestId, oneshot::Sender<IoResult<RequestResult>>>,
+    pending_server_request_ids: &mut HashSet<RequestId>,
+    pending_remote_events: &mut VecDeque<TaggedAppServerEvent>,
+    skipped_events: &mut usize,
+    worker_exit_error: &mut Option<(ErrorKind, String)>,
+    exit_after_pending_events: &mut bool,
+    terminal_drain_deadline: &mut Option<Instant>,
+    current_overflow_request_id: Option<RequestId>,
+)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    command_admission_open.store(false, Ordering::Release);
+    *exit_after_pending_events = true;
+    let deadline = *terminal_drain_deadline
+        .get_or_insert_with(|| Instant::now() + SHUTDOWN_TIMEOUT);
+    let (error_kind, message) = terminal_remote_transport_error(worker_exit_error);
+    fail_pending_remote_requests(pending_requests, error_kind, &message);
+
+    if let Some(request_id) = current_overflow_request_id {
+        pending_server_request_ids.insert(request_id);
+    }
+    // The queue helper has already recorded the terminal condition. Remove every request that
+    // cannot be presented safely, preserve non-request FIFO order, and materialize exactly one
+    // disconnect after that retained prefix.
+    pending_remote_events.retain(|event| {
+        !matches!(
+            event,
+            TaggedAppServerEvent::ServerRequest(_)
+                | TaggedAppServerEvent::ThreadServerRequest { .. }
+                | TaggedAppServerEvent::Disconnected { .. }
+        )
+    });
+    pending_remote_events.push_back(TaggedAppServerEvent::Disconnected {
+        message: message.clone(),
+    });
+    *skipped_events = 0;
+
+    let pending_server_request_ids = std::mem::take(pending_server_request_ids);
+    if let Some(stream) = stream.as_mut() {
+        for request_id in pending_server_request_ids {
+            let rejection = write_jsonrpc_message(
+                stream,
+                JSONRPCMessage::Error(JSONRPCError {
+                    error: JSONRPCErrorError {
+                        code: -32000,
+                        message: message.clone(),
+                        data: None,
+                    },
+                    id: request_id,
+                }),
+                endpoint,
+            );
+            match timeout_at(deadline, rejection).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    warn!(
+                        %err,
+                        "failed to reject terminal-overflow remote app-server server request"
+                    );
+                }
+                Err(_) => {
+                    warn!("timed out rejecting terminal-overflow remote app-server server requests");
+                    break;
+                }
+            }
+        }
+
+        match timeout_at(deadline, stream.close(None)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) if websocket_close_error_is_already_closed(&err) => {}
+            Ok(Err(err)) => {
+                warn!(%err, "failed to close terminal-overflow remote app-server transport");
+            }
+            Err(_) => {
+                warn!("timed out closing terminal-overflow remote app-server transport");
+            }
+        }
+    }
+    let _ = stream.take();
 }
 
 fn event_consumer_closed() -> IoError {
@@ -2646,6 +2787,7 @@ mod tests {
         let detached_request_handle = client.request_handle();
         let RemoteAppServerClient {
             command_tx,
+            command_admission_open: _,
             event_rx,
             pending_events: _,
             server_version: _,
@@ -2752,6 +2894,145 @@ mod tests {
                 .is_err(),
             "draining the ledger must prevent a duplicate server request rejection"
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_overflow_rejects_the_current_request_once_then_closes() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let request_id = RequestId::Integer(96);
+        let mut stream = Some(client_stream);
+        let command_admission_open = AtomicBool::new(true);
+        let mut pending_requests = HashMap::new();
+        let mut pending_server_request_ids = HashSet::from([request_id.clone()]);
+        let mut pending_remote_events = VecDeque::from([TaggedAppServerEvent::ServerRequest(
+            ServerRequest::ToolRequestUserInput {
+                request_id: request_id.clone(),
+                params: ToolRequestUserInputParams {
+                    thread_id: "thread".to_string(),
+                    turn_id: "turn".to_string(),
+                    item_id: "item".to_string(),
+                    questions: Vec::new(),
+                    auto_resolution_ms: None,
+                },
+            },
+        )]);
+        let mut skipped_events = 0;
+        let mut worker_exit_error = Some((
+            ErrorKind::WouldBlock,
+            "remote app server at `test transport` exceeded the bounded remote event backlog"
+                .to_string(),
+        ));
+        let mut exit_after_pending_events = true;
+        let mut terminal_drain_deadline = None;
+
+        enter_required_event_overflow_terminal_state(
+            &mut stream,
+            &command_admission_open,
+            "test transport",
+            &mut pending_requests,
+            &mut pending_server_request_ids,
+            &mut pending_remote_events,
+            &mut skipped_events,
+            &mut worker_exit_error,
+            &mut exit_after_pending_events,
+            &mut terminal_drain_deadline,
+            Some(request_id.clone()),
+        )
+        .await;
+
+        let rejection = timeout(Duration::from_secs(1), server_stream.next())
+            .await
+            .expect("terminal transition should reject the current request")
+            .expect("terminal transition should send the current request rejection")
+            .expect("terminal transition rejection frame should succeed");
+        let Message::Text(text) = rejection else {
+            panic!("expected terminal-overflow server request error text frame");
+        };
+        let JSONRPCMessage::Error(rejection) =
+            serde_json::from_str(&text).expect("terminal-overflow rejection should contain JSON-RPC")
+        else {
+            panic!("expected terminal-overflow server request rejection");
+        };
+        assert_eq!(rejection.id, request_id);
+        assert_eq!(rejection.error.code, -32000);
+
+        let close = timeout(Duration::from_secs(1), server_stream.next())
+            .await
+            .expect("terminal transition should close after rejecting the current request")
+            .expect("terminal transition should send a close frame")
+            .expect("terminal transition close frame should succeed");
+        assert!(matches!(close, Message::Close(_)));
+        assert!(stream.is_none());
+        assert!(!command_admission_open.load(Ordering::Acquire));
+        assert!(pending_server_request_ids.is_empty());
+        assert!(matches!(
+            pending_remote_events.pop_front(),
+            Some(TaggedAppServerEvent::Disconnected { message })
+                if message.contains("exceeded the bounded remote event backlog")
+        ));
+        assert!(pending_remote_events.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_overflow_drops_a_stalled_peer_at_the_shared_drain_deadline() {
+        let (client_io, _server_io) = duplex(1);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let (result_tx, result_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let request_id = RequestId::Integer(95);
+            let mut stream = Some(client_stream);
+            let command_admission_open = AtomicBool::new(true);
+            let mut pending_requests = HashMap::new();
+            let mut pending_server_request_ids = HashSet::from([request_id.clone()]);
+            let mut pending_remote_events = VecDeque::new();
+            let mut skipped_events = 0;
+            let mut worker_exit_error = Some((
+                ErrorKind::WouldBlock,
+                "remote app server at `stalled peer` exceeded the bounded remote event backlog"
+                    .to_string(),
+            ));
+            let mut exit_after_pending_events = true;
+            let mut terminal_drain_deadline = None;
+            enter_required_event_overflow_terminal_state(
+                &mut stream,
+                &command_admission_open,
+                "stalled peer",
+                &mut pending_requests,
+                &mut pending_server_request_ids,
+                &mut pending_remote_events,
+                &mut skipped_events,
+                &mut worker_exit_error,
+                &mut exit_after_pending_events,
+                &mut terminal_drain_deadline,
+                Some(request_id),
+            )
+            .await;
+            let _ = result_tx.send((
+                stream.is_none(),
+                !command_admission_open.load(Ordering::Acquire),
+                pending_server_request_ids.is_empty(),
+            ));
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(SHUTDOWN_TIMEOUT + Duration::from_millis(1)).await;
+        assert_eq!(
+            result_rx
+                .await
+                .expect("terminal transition should finish after the shared deadline"),
+            (true, true, true)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn terminal_overflow_stalled_consumer_exits_when_the_drain_deadline_expires() {
+        let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
+        assert!(!terminal_drain_deadline_expired(Some(deadline)));
+        tokio::time::advance(SHUTDOWN_TIMEOUT + Duration::from_millis(1)).await;
+        assert!(terminal_drain_deadline_expired(Some(deadline)));
     }
 
     #[tokio::test]
@@ -2901,6 +3182,12 @@ mod tests {
                     "request {request_id} should be rejected before terminal drain"
                 );
             }
+            let close = timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("terminal overload should close the transport before local event drain")
+                .expect("terminal overload should send a close frame")
+                .expect("terminal overload close frame should succeed");
+            assert!(matches!(close, Message::Close(_)));
             rejection_observed_tx
                 .send(())
                 .expect("test client should wait for the server-request rejection");
@@ -4084,6 +4371,7 @@ mod tests {
 
         let RemoteAppServerClient {
             command_tx,
+            command_admission_open: _,
             event_rx,
             pending_events: _,
             server_version: _,
@@ -4119,6 +4407,7 @@ mod tests {
         });
         let client = RemoteAppServerClient {
             command_tx,
+            command_admission_open: Arc::new(AtomicBool::new(true)),
             event_rx,
             pending_events: VecDeque::new(),
             server_version: None,
@@ -4130,5 +4419,42 @@ mod tests {
             .shutdown()
             .await
             .expect("shutdown should complete when worker exits first");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_bounds_command_enqueue_when_the_command_channel_is_saturated() {
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (pending_response_tx, _pending_response_rx) = oneshot::channel();
+        command_tx
+            .try_send(RemoteClientCommand::Shutdown {
+                response_tx: pending_response_tx,
+            })
+            .expect("test should saturate the remote worker command channel");
+        let (_event_tx, event_rx) = mpsc::channel::<TaggedAppServerEvent>(1);
+        let worker_handle = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let client = RemoteAppServerClient {
+            command_tx,
+            command_admission_open: Arc::new(AtomicBool::new(true)),
+            event_rx,
+            pending_events: VecDeque::new(),
+            server_version: None,
+            codex_home: None,
+            worker_handle,
+        };
+
+        let shutdown = tokio::spawn(client.shutdown());
+        tokio::task::yield_now().await;
+        tokio::time::advance(SHUTDOWN_TIMEOUT + Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(SHUTDOWN_TIMEOUT + Duration::from_millis(1)).await;
+        assert!(
+            shutdown
+                .await
+                .expect("shutdown task should not panic")
+                .is_ok(),
+            "shutdown should bound both command enqueue and worker join"
+        );
     }
 }
