@@ -11,6 +11,7 @@ lifecycle identity.
 */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
@@ -74,6 +75,8 @@ const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
 // indefinitely.
 const REMOTE_PENDING_EVENT_CAPACITY: usize = 3;
 const REMOTE_PENDING_NON_TERMINAL_EVENT_CAPACITY: usize = REMOTE_PENDING_EVENT_CAPACITY - 1;
+const REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE: &str =
+    "remote app-server event consumer channel is closed";
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
 // the bytes travel over the Unix socket, not TCP.
 const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
@@ -224,17 +227,31 @@ impl RemoteAppServerClient {
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
+            // Keep the bounded pre-initialize FIFO inside the worker so a later terminal
+            // transition can reject its server requests before they become stale prompts.
+            let mut pending_remote_events = pending_events;
+            let mut pending_server_request_ids = pending_remote_events
+                .iter()
+                .filter_map(tagged_server_request_id)
+                .cloned()
+                .collect::<HashSet<_>>();
             let mut worker_exit_error: Option<(ErrorKind, String)> = None;
             let mut skipped_events = 0usize;
-            let mut pending_remote_events = VecDeque::with_capacity(REMOTE_PENDING_EVENT_CAPACITY);
             let mut exit_after_pending_events = false;
             let mut event_consumer_closed = false;
             loop {
                 if !event_consumer_closed && event_tx.is_closed() {
                     if !pending_remote_events.is_empty() {
                         warn!("remote app-server event consumer closed while required event was pending");
-                        pending_remote_events.clear();
                     }
+                    reject_pending_remote_server_requests(
+                        &mut stream,
+                        &endpoint,
+                        &mut pending_server_request_ids,
+                        &mut pending_remote_events,
+                        REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
+                    )
+                    .await;
                     // `RemoteAppServerClient::shutdown` drops its receiver before sending
                     // `Shutdown`. Keep the worker alive long enough to close the transport and
                     // acknowledge that command instead of waiting for its timeout.
@@ -267,7 +284,14 @@ impl RemoteAppServerClient {
                             }
                             Err(_) => {
                                 warn!("remote app-server event consumer closed while required event was pending");
-                                pending_remote_events.clear();
+                                reject_pending_remote_server_requests(
+                                    &mut stream,
+                                    &endpoint,
+                                    &mut pending_server_request_ids,
+                                    &mut pending_remote_events,
+                                    REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
+                                )
+                                .await;
                                 event_consumer_closed = true;
                             }
                         }
@@ -355,6 +379,7 @@ impl RemoteAppServerClient {
                                 result,
                                 response_tx,
                             } => {
+                                let resolved_request_id = request_id.clone();
                                 let result = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Response(JSONRPCResponse {
@@ -364,6 +389,9 @@ impl RemoteAppServerClient {
                                     &endpoint,
                                 )
                                 .await;
+                                if result.is_ok() {
+                                    pending_server_request_ids.remove(&resolved_request_id);
+                                }
                                 let _ = response_tx.send(result);
                             }
                             RemoteClientCommand::RejectServerRequest {
@@ -371,6 +399,7 @@ impl RemoteAppServerClient {
                                 error,
                                 response_tx,
                             } => {
+                                let rejected_request_id = request_id.clone();
                                 let result = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Error(JSONRPCError {
@@ -380,6 +409,9 @@ impl RemoteAppServerClient {
                                     &endpoint,
                                 )
                                 .await;
+                                if result.is_ok() {
+                                    pending_server_request_ids.remove(&rejected_request_id);
+                                }
                                 let _ = response_tx.send(result);
                             }
                             RemoteClientCommand::Shutdown { response_tx } => {
@@ -397,7 +429,21 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
-                    message = stream.next(), if !exit_after_pending_events && !event_consumer_closed => {
+                    message = stream.next(), if !exit_after_pending_events => {
+                        if !event_consumer_closed && event_tx.is_closed() {
+                            if !pending_remote_events.is_empty() {
+                                warn!("remote app-server event consumer closed while required event was pending");
+                            }
+                            reject_pending_remote_server_requests(
+                                &mut stream,
+                                &endpoint,
+                                &mut pending_server_request_ids,
+                                &mut pending_remote_events,
+                                REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE,
+                            )
+                            .await;
+                            event_consumer_closed = true;
+                        }
                         match message {
                             Some(Ok(Message::Text(text))) => {
                                 match server_message_and_subscription_id(&text) {
@@ -413,12 +459,13 @@ impl RemoteAppServerClient {
                                         }
                                     }
                                     JSONRPCMessage::Notification(notification) => {
-                                        if let Some(event) = app_server_event_from_notification(
-                                            notification,
-                                            thread_subscription_id,
-                                        )
+                                        if !event_consumer_closed
+                                            && let Some(event) = app_server_event_from_notification(
+                                                notification,
+                                                thread_subscription_id,
+                                            )
                                         {
-                                            if let Err(err) = queue_remote_event(
+                                            match queue_remote_event(
                                                 &event_tx,
                                                 &mut skipped_events,
                                                 &mut pending_remote_events,
@@ -428,8 +475,30 @@ impl RemoteAppServerClient {
                                                 &mut worker_exit_error,
                                                 &mut exit_after_pending_events,
                                             ) {
-                                                warn!(%err, "failed to deliver remote app-server event");
-                                                break;
+                                                Ok(
+                                                    QueueOutcome::RequiredEventOverflow,
+                                                ) => {
+                                                    let (_, message) =
+                                                        terminal_remote_transport_error(
+                                                            &worker_exit_error,
+                                                        );
+                                                    reject_pending_remote_server_requests(
+                                                        &mut stream,
+                                                        &endpoint,
+                                                        &mut pending_server_request_ids,
+                                                        &mut pending_remote_events,
+                                                        &message,
+                                                    )
+                                                    .await;
+                                                }
+                                                Ok(QueueOutcome::Queued) => {}
+                                                Err(err) => {
+                                                    warn!(
+                                                        %err,
+                                                        "failed to deliver remote app-server event"
+                                                    );
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
@@ -438,6 +507,29 @@ impl RemoteAppServerClient {
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
+                                                if event_consumer_closed {
+                                                    if let Err(reject_err) = write_jsonrpc_message(
+                                                        &mut stream,
+                                                        JSONRPCMessage::Error(JSONRPCError {
+                                                            error: JSONRPCErrorError {
+                                                                code: -32000,
+                                                                message: REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE
+                                                                    .to_string(),
+                                                                data: None,
+                                                            },
+                                                            id: request_id,
+                                                        }),
+                                                        &endpoint,
+                                                    )
+                                                    .await
+                                                    {
+                                                        warn!(
+                                                            %reject_err,
+                                                            "failed to reject remote app-server request after event consumer closure",
+                                                        );
+                                                    }
+                                                    continue;
+                                                }
                                                 let event = match thread_subscription_id {
                                                     Some(thread_subscription_id) => {
                                                         TaggedAppServerEvent::ThreadServerRequest {
@@ -482,8 +574,11 @@ impl RemoteAppServerClient {
                                                             "failed to reject remote app-server server request after event backlog overflow"
                                                         );
                                                     }
+                                                } else {
+                                                    pending_server_request_ids
+                                                        .insert(request_id.clone());
                                                 }
-                                                if let Err(err) = queue_remote_event(
+                                                match queue_remote_event(
                                                     &event_tx,
                                                     &mut skipped_events,
                                                     &mut pending_remote_events,
@@ -493,8 +588,30 @@ impl RemoteAppServerClient {
                                                     &mut worker_exit_error,
                                                     &mut exit_after_pending_events,
                                                 ) {
-                                                    warn!(%err, "failed to deliver remote app-server server request");
-                                                    break;
+                                                    Ok(
+                                                        QueueOutcome::RequiredEventOverflow,
+                                                    ) => {
+                                                        let (_, message) =
+                                                            terminal_remote_transport_error(
+                                                                &worker_exit_error,
+                                                            );
+                                                        reject_pending_remote_server_requests(
+                                                            &mut stream,
+                                                            &endpoint,
+                                                            &mut pending_server_request_ids,
+                                                            &mut pending_remote_events,
+                                                            &message,
+                                                        )
+                                                        .await;
+                                                    }
+                                                    Ok(QueueOutcome::Queued) => {}
+                                                    Err(err) => {
+                                                        warn!(
+                                                            %err,
+                                                            "failed to deliver remote app-server server request"
+                                                        );
+                                                        break;
+                                                    }
                                                 }
                                             }
                                             Err(err) => {
@@ -667,7 +784,7 @@ impl RemoteAppServerClient {
         Ok(Self {
             command_tx,
             event_rx,
-            pending_events,
+            pending_events: VecDeque::new(),
             server_version,
             codex_home,
             worker_handle,
@@ -1326,6 +1443,15 @@ enum RemoteEventDelivery {
     Pending(VecDeque<TaggedAppServerEvent>),
 }
 
+/// Outcome of queueing a remote event. The overload outcome is distinct from an ordinary
+/// transport disconnect because the connection remains writable long enough to reject server
+/// requests that were retained before the terminal event begins draining.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueOutcome {
+    Queued,
+    RequiredEventOverflow,
+}
+
 fn remote_event_backlog_overflow_message(endpoint: &str, skipped_events: usize) -> String {
     let mut message =
         format!("remote app server at `{endpoint}` exceeded the bounded remote event backlog");
@@ -1352,7 +1478,7 @@ fn queue_remote_event(
     endpoint: &str,
     worker_exit_error: &mut Option<(ErrorKind, String)>,
     exit_after_pending_events: &mut bool,
-) -> IoResult<()> {
+) -> IoResult<QueueOutcome> {
     if !pending_remote_events.is_empty() {
         if exit_after_delivery {
             if *skipped_events > 0
@@ -1381,11 +1507,11 @@ fn queue_remote_event(
                 );
                 *worker_exit_error = Some((ErrorKind::WouldBlock, message));
                 *exit_after_pending_events = true;
-                return Ok(());
+                return Ok(QueueOutcome::Queued);
             }
             pending_remote_events.push_back(event);
             *exit_after_pending_events = true;
-            return Ok(());
+            return Ok(QueueOutcome::Queued);
         }
 
         let queued_event_count = if *skipped_events > 0 { 2 } else { 1 };
@@ -1399,13 +1525,13 @@ fn queue_remote_event(
                 *skipped_events = 0;
             }
             pending_remote_events.push_back(event);
-            return Ok(());
+            return Ok(QueueOutcome::Queued);
         }
 
         if !remote_event_requires_delivery(&event) {
             *skipped_events = skipped_events.saturating_add(1);
             warn!("dropping remote app-server event because the pending FIFO is full");
-            return Ok(());
+            return Ok(QueueOutcome::Queued);
         }
 
         let message = remote_event_backlog_overflow_message(endpoint, *skipped_events);
@@ -1420,7 +1546,7 @@ fn queue_remote_event(
         *worker_exit_error = Some((ErrorKind::WouldBlock, message));
         *skipped_events = 0;
         *exit_after_pending_events = true;
-        return Ok(());
+        return Ok(QueueOutcome::RequiredEventOverflow);
     }
 
     match try_deliver_event(event_tx, skipped_events, event)? {
@@ -1433,7 +1559,7 @@ fn queue_remote_event(
     if exit_after_delivery {
         *exit_after_pending_events = true;
     }
-    Ok(())
+    Ok(QueueOutcome::Queued)
 }
 
 /// Makes one bounded, non-blocking forwarding attempt. Required events remain in the returned
@@ -1507,6 +1633,17 @@ fn remote_event_requires_delivery(event: &TaggedAppServerEvent) -> bool {
     }
 }
 
+fn tagged_server_request_id(event: &TaggedAppServerEvent) -> Option<&RequestId> {
+    match event {
+        TaggedAppServerEvent::ServerRequest(request)
+        | TaggedAppServerEvent::ThreadServerRequest { request, .. } => Some(request.id()),
+        TaggedAppServerEvent::Lagged { .. }
+        | TaggedAppServerEvent::ServerNotification(_)
+        | TaggedAppServerEvent::ThreadServerNotification { .. }
+        | TaggedAppServerEvent::Disconnected { .. } => None,
+    }
+}
+
 /// Fails every outstanding outbound RPC as soon as the transport has a terminal state. Taking
 /// the map makes the cleanup exactly-once while retained events continue draining independently.
 fn fail_pending_remote_requests(
@@ -1516,6 +1653,49 @@ fn fail_pending_remote_requests(
 ) {
     for (_, response_tx) in std::mem::take(pending_requests) {
         let _ = response_tx.send(Err(IoError::new(err_kind, err_message.to_string())));
+    }
+}
+
+/// Rejects every server request that has been accepted from the remote peer but can no longer
+/// be answered by this client. Retained request events are removed so callers do not receive a
+/// stale prompt after the peer has already received its terminal error.
+async fn reject_pending_remote_server_requests<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    pending_server_request_ids: &mut HashSet<RequestId>,
+    pending_remote_events: &mut VecDeque<TaggedAppServerEvent>,
+    message: &str,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    pending_remote_events.retain(|event| {
+        !matches!(
+            event,
+            TaggedAppServerEvent::ServerRequest(_)
+                | TaggedAppServerEvent::ThreadServerRequest { .. }
+        )
+    });
+    let pending_server_request_ids = std::mem::take(pending_server_request_ids);
+    for request_id in pending_server_request_ids {
+        if let Err(err) = write_jsonrpc_message(
+            stream,
+            JSONRPCMessage::Error(JSONRPCError {
+                error: JSONRPCErrorError {
+                    code: -32000,
+                    message: message.to_string(),
+                    data: None,
+                },
+                id: request_id,
+            }),
+            endpoint,
+        )
+        .await
+        {
+            warn!(
+                %err,
+                "failed to reject retained remote app-server server request"
+            );
+        }
     }
 }
 
@@ -1534,10 +1714,7 @@ fn terminal_remote_transport_error(
 }
 
 fn event_consumer_closed() -> IoError {
-    IoError::new(
-        ErrorKind::BrokenPipe,
-        "remote app-server event consumer channel is closed",
-    )
+    IoError::new(ErrorKind::BrokenPipe, REMOTE_EVENT_CONSUMER_CLOSED_MESSAGE)
 }
 
 fn jsonrpc_request_from_client_request(request: ClientRequest) -> JSONRPCRequest {
@@ -2242,7 +2419,203 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postinitialize_server_request_overflow_is_rejected_before_terminal_drain() {
+    async fn event_receiver_closure_keeps_request_handles_response_live() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
+        let mut server_stream =
+            WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+        let (send_server_request_tx, send_server_request_rx) = oneshot::channel();
+        let (server_request_rejected_tx, server_request_rejected_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let initialize = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed");
+            let Message::Text(text) = initialize else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) =
+                serde_json::from_str(&text).expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            let initialize_response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({"userAgent": "test-server/1.0"}),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&initialize_response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            let Message::Text(text) = initialized else {
+                panic!("expected initialized text frame");
+            };
+            let JSONRPCMessage::Notification(initialized) =
+                serde_json::from_str(&text).expect("initialized frame should contain JSON-RPC")
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(initialized.method, "initialized");
+
+            send_server_request_rx
+                .await
+                .expect("test should close the event receiver before the server request");
+            let server_request = thread_scoped_server_message(
+                ServerRequest::ToolRequestUserInput {
+                    request_id: RequestId::Integer(71),
+                    params: ToolRequestUserInputParams {
+                        thread_id: "thread".to_string(),
+                        turn_id: "turn".to_string(),
+                        item_id: "item".to_string(),
+                        questions: Vec::new(),
+                        auto_resolution_ms: None,
+                    },
+                },
+                "closed-event-subscription",
+            );
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&server_request)
+                        .expect("server request should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should send the unobservable server request");
+
+            let rejection = timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("client should reject a server request after event receiver closure")
+                .expect("client should send an event-closure server request rejection")
+                .expect("event-closure rejection frame should succeed");
+            let Message::Text(text) = rejection else {
+                panic!("expected event-closure server request error text frame");
+            };
+            let JSONRPCMessage::Error(rejection) = serde_json::from_str(&text)
+                .expect("event-closure rejection should contain JSON-RPC")
+            else {
+                panic!("expected event-closure server request rejection");
+            };
+            assert_eq!(rejection.id, RequestId::Integer(71));
+            assert_eq!(rejection.error.code, -32000);
+            assert!(
+                rejection
+                    .error
+                    .message
+                    .contains("event consumer channel is closed")
+            );
+            server_request_rejected_tx
+                .send(())
+                .expect("test should issue a request after automatic server-request rejection");
+
+            let request = timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("a detached request handle should still send requests")
+                .expect("detached request handle should keep the client transport open")
+                .expect("detached request frame should succeed");
+            let Message::Text(text) = request else {
+                panic!("expected detached request text frame");
+            };
+            let JSONRPCMessage::Request(request) =
+                serde_json::from_str(&text).expect("detached request should contain JSON-RPC")
+            else {
+                panic!("expected detached request");
+            };
+            assert_eq!(request.id, RequestId::Integer(72));
+            assert_eq!(request.method, "test/event-receiver-closed");
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: request.id,
+                        result: serde_json::json!({"still": "live"}),
+                    }))
+                    .expect("detached request response should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("server should respond to the detached request");
+
+            match timeout(Duration::from_secs(1), server_stream.next())
+                .await
+                .expect("worker should close after every client command sender is dropped")
+            {
+                Some(Ok(Message::Close(_))) | None => {}
+                Some(Ok(message)) => panic!("expected client close, got {message:?}"),
+                Some(Err(err)) => panic!("test transport should not fail: {err}"),
+            }
+        });
+
+        let client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory event receiver closure transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize over the in-memory transport");
+        let detached_request_handle = client.request_handle();
+        let RemoteAppServerClient {
+            command_tx,
+            event_rx,
+            pending_events: _,
+            server_version: _,
+            codex_home: _,
+            worker_handle,
+        } = client;
+        drop(event_rx);
+        send_server_request_tx
+            .send(())
+            .expect("test server should still accept the event-closure signal");
+        timeout(Duration::from_secs(1), server_request_rejected_rx)
+            .await
+            .expect("event receiver closure should reject the unobservable server request")
+            .expect("server should observe the event-closure rejection");
+
+        let result = timeout(
+            Duration::from_secs(1),
+            detached_request_handle.request_json_rpc(JSONRPCRequest {
+                id: RequestId::Integer(72),
+                method: "test/event-receiver-closed".to_string(),
+                params: None,
+                trace: None,
+            }),
+        )
+        .await
+        .expect("event receiver closure must not stop response routing")
+        .expect("detached request handle should receive the remote response")
+        .expect("server should return a successful detached request response");
+        assert_eq!(result, serde_json::json!({"still": "live"}));
+
+        drop(detached_request_handle);
+        drop(command_tx);
+        timeout(Duration::from_secs(1), worker_handle)
+            .await
+            .expect("worker should exit when the detached request handle is dropped")
+            .expect("worker should not panic after event receiver closure");
+        server_task
+            .await
+            .expect("test server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn terminal_overload_rejects_every_retained_server_request_before_drain() {
         let (client_io, server_io) = duplex(64 * 1024);
         let client_stream = WebSocketStream::from_raw_socket(client_io, Role::Client, None).await;
         let mut server_stream =
@@ -2311,19 +2684,28 @@ mod tests {
                 .await
                 .expect("test client should hold the first required event in its full queue");
 
-            for status_revision in [2, 3] {
-                let event = thread_scoped_server_message(
-                    thread_status_changed_notification(status_revision),
+            for request_id in [97, 98] {
+                let request = thread_scoped_server_message(
+                    ServerRequest::ToolRequestUserInput {
+                        request_id: RequestId::Integer(request_id),
+                        params: ToolRequestUserInputParams {
+                            thread_id: "thread".to_string(),
+                            turn_id: "turn".to_string(),
+                            item_id: "item".to_string(),
+                            questions: Vec::new(),
+                            auto_resolution_ms: None,
+                        },
+                    },
                     "overflow-subscription",
                 );
                 server_stream
                     .send(Message::Text(
-                        serde_json::to_string(&event)
-                            .expect("required event should serialize")
+                        serde_json::to_string(&request)
+                            .expect("retained server request should serialize")
                             .into(),
                     ))
                     .await
-                    .expect("server should send required event");
+                    .expect("server should send retained server request");
             }
 
             let overflow_request = thread_scoped_server_message(
@@ -2348,27 +2730,37 @@ mod tests {
                 .await
                 .expect("server should send overflowing request");
 
-            let rejection = timeout(Duration::from_secs(1), server_stream.next())
-                .await
-                .expect("client should promptly reject the overflowing server request")
-                .expect("client should send an overflowing server request rejection")
-                .expect("overflow rejection frame should succeed");
-            let Message::Text(text) = rejection else {
-                panic!("expected overflowing server request error text frame");
-            };
-            let JSONRPCMessage::Error(rejection) =
-                serde_json::from_str(&text).expect("overflow rejection should contain JSON-RPC")
-            else {
-                panic!("expected overflowing server request rejection");
-            };
-            assert_eq!(rejection.id, RequestId::Integer(99));
-            assert_eq!(rejection.error.code, -32000);
-            assert!(
-                rejection
-                    .error
-                    .message
-                    .contains("exceeded the bounded remote event backlog")
-            );
+            let mut rejected_request_ids = Vec::new();
+            for _ in 0..3 {
+                let rejection = timeout(Duration::from_secs(1), server_stream.next())
+                    .await
+                    .expect("client should promptly reject every terminal-overflow server request")
+                    .expect("client should send a terminal-overflow server request rejection")
+                    .expect("terminal-overflow rejection frame should succeed");
+                let Message::Text(text) = rejection else {
+                    panic!("expected terminal-overflow server request error text frame");
+                };
+                let JSONRPCMessage::Error(rejection) = serde_json::from_str(&text)
+                    .expect("terminal-overflow rejection should contain JSON-RPC")
+                else {
+                    panic!("expected terminal-overflow server request rejection");
+                };
+                assert_eq!(rejection.error.code, -32000);
+                assert!(
+                    rejection
+                        .error
+                        .message
+                        .contains("exceeded the bounded remote event backlog")
+                );
+                rejected_request_ids.push(rejection.id);
+            }
+            assert_eq!(rejected_request_ids.len(), 3);
+            for request_id in [97, 98, 99] {
+                assert!(
+                    rejected_request_ids.contains(&RequestId::Integer(request_id)),
+                    "request {request_id} should be rejected before terminal drain"
+                );
+            }
             rejection_observed_tx
                 .send(())
                 .expect("test client should wait for the server-request rejection");
@@ -2408,20 +2800,18 @@ mod tests {
             .expect("overflowing server request should be rejected before event drain")
             .expect("server should observe the overflowing request rejection");
 
-        for status_revision in [1, 2, 3] {
-            match timeout(Duration::from_secs(1), client.next_tagged_event())
-                .await
-                .expect("retained required event should drain promptly")
-            {
-                Some(TaggedAppServerEvent::ThreadServerNotification {
-                    thread_subscription_id,
-                    notification: ServerNotification::ThreadStatusChanged(notification),
-                }) => {
-                    assert_eq!(thread_subscription_id, "overflow-subscription");
-                    assert_eq!(notification.status_revision, Some(status_revision));
-                }
-                event => panic!("expected retained required event, got {event:?}"),
+        match timeout(Duration::from_secs(1), client.next_tagged_event())
+            .await
+            .expect("the first required event should remain observable")
+        {
+            Some(TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification: ServerNotification::ThreadStatusChanged(notification),
+            }) => {
+                assert_eq!(thread_subscription_id, "overflow-subscription");
+                assert_eq!(notification.status_revision, Some(1));
             }
+            event => panic!("expected the first retained required event, got {event:?}"),
         }
         match timeout(Duration::from_secs(1), client.next_tagged_event())
             .await
