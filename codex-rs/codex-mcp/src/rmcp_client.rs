@@ -269,6 +269,7 @@ struct McpStartupReconnectState {
     consecutive_failures: u32,
     retry_not_before: Option<TokioInstant>,
     cancelled: bool,
+    recovered_client_closed: bool,
 }
 
 #[derive(Clone)]
@@ -317,11 +318,20 @@ impl McpStartupReconnect {
         if !client.client.is_closed().await {
             return Some(client);
         }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.current_client = None;
+        state.recovered_client_closed = true;
+        None
+    }
+
+    fn recovered_client_closed(&self) -> bool {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .current_client = None;
-        None
+            .recovered_client_closed
     }
 
     fn cancel(&self) {
@@ -329,6 +339,18 @@ impl McpStartupReconnect {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .cancelled = true;
+    }
+
+    fn cancel_if_in_flight(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.reconnect_in_flight {
+            return false;
+        }
+        state.cancelled = true;
+        true
     }
 
     fn reconnect_in_background(self: &Arc<Self>) {
@@ -375,6 +397,7 @@ impl McpStartupReconnect {
                             state.current_client = Some(client);
                             state.consecutive_failures = 0;
                             state.retry_not_before = None;
+                            state.recovered_client_closed = false;
                             true
                         }
                         Err(error) => {
@@ -633,6 +656,12 @@ impl AsyncManagedClient {
         self.client.clone().await
     }
 
+    pub(crate) fn recovered_client_closed(&self) -> bool {
+        self.startup_reconnect
+            .as_ref()
+            .is_some_and(|reconnect| reconnect.recovered_client_closed())
+    }
+
     /// Refreshes a ready client's catalog and reports whether it changed.
     pub(crate) async fn refresh_tools_if_changed(&self, tool_timeout: Option<Duration>) -> bool {
         match self.client().await {
@@ -657,6 +686,18 @@ impl AsyncManagedClient {
             startup_reconnect.cancel();
         }
         self.cancel_token.cancel();
+    }
+
+    pub(crate) fn cancel_startup(&self) {
+        if !self.startup_complete.load(Ordering::Acquire) {
+            self.cancel();
+        } else if self
+            .startup_reconnect
+            .as_ref()
+            .is_some_and(|reconnect| reconnect.cancel_if_in_flight())
+        {
+            self.cancel_token.cancel();
+        }
     }
 
     pub(crate) async fn shutdown(&self) {
