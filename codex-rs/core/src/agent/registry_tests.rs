@@ -3,6 +3,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::error::CodexErrorDetails;
 use pretty_assertions::assert_eq;
 use std::collections::HashSet;
+use std::sync::Barrier;
 
 fn agent_path(path: &str) -> AgentPath {
     AgentPath::try_from(path).expect("valid agent path")
@@ -80,6 +81,65 @@ fn thread_spawn_depth_increments_and_enforces_limit() {
         child_depth,
         /*max_depth*/ 1
     ));
+}
+
+#[test]
+fn spawn_publication_cas_allows_exactly_one_terminal_decision() {
+    let registry = Arc::new(AgentRegistry::default());
+    let key = SpawnPublicationKey::new(ThreadId::new(), "spawn-call");
+    registry.begin_spawn_publication(key.clone());
+    let start = Arc::new(Barrier::new(3));
+
+    let publish_registry = Arc::clone(&registry);
+    let publish_key = key.clone();
+    let publish_start = Arc::clone(&start);
+    let publisher = std::thread::spawn(move || {
+        publish_start.wait();
+        publish_registry.publish_spawn_publication(&publish_key)
+    });
+
+    let cancel_registry = Arc::clone(&registry);
+    let cancel_key = key.clone();
+    let cancel_start = Arc::clone(&start);
+    let canceller = std::thread::spawn(move || {
+        cancel_start.wait();
+        cancel_registry.cancel_spawn_publication(cancel_key)
+    });
+
+    start.wait();
+    let publish_result = publisher.join().expect("publisher should join");
+    let cancel_result = canceller.join().expect("canceller should join");
+    assert_eq!(publish_result, cancel_result);
+    assert!(matches!(
+        publish_result,
+        SpawnPublicationDecision::Published | SpawnPublicationDecision::CancellationOwned
+    ));
+    assert_eq!(
+        registry.spawn_publication_decision(&key),
+        publish_result,
+        "the published decision must remain stable after both racing owners return"
+    );
+}
+
+#[test]
+fn spawn_cancellation_recorded_before_dispatch_rejects_late_publication() {
+    let registry = AgentRegistry::default();
+    let key = SpawnPublicationKey::new(ThreadId::new(), "spawn-call");
+
+    assert_eq!(
+        registry.cancel_spawn_publication(key.clone()),
+        SpawnPublicationDecision::CancellationOwned
+    );
+    registry.begin_spawn_publication(key.clone());
+    assert_eq!(
+        registry.publish_spawn_publication(&key),
+        SpawnPublicationDecision::CancellationOwned
+    );
+    registry.finish_spawn_publication(&key);
+    assert_eq!(
+        registry.spawn_publication_decision(&key),
+        SpawnPublicationDecision::Untracked
+    );
 }
 
 #[test]

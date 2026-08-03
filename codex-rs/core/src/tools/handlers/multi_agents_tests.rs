@@ -9,6 +9,7 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
@@ -557,6 +558,66 @@ async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5.4");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_live_hint() {
+    let (mut session, mut turn, mut events) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(&mut turn, config);
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .begin_tool_spawn_publication(root.thread_id, "call-1");
+    assert_eq!(
+        session
+            .services
+            .agent_control
+            .cancel_tool_spawn_publication(root.thread_id, "call-1"),
+        crate::agent::SpawnPublicationDecision::CancellationOwned
+    );
+
+    let error = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "must not reach a child",
+                "task_name": "cancelled_worker",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect_err("a cancellation-owned spawn should fail before publication");
+    let FunctionCallError::RespondToModel(message) = &error else {
+        panic!("cancellation should return a model-visible tool error: {error:?}");
+    };
+    assert!(
+        message.contains("turn aborted"),
+        "the tool result must describe cancellation rather than a child identifier: {message}"
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "a cancelled pre-publication child must not emit a V2 Started activity"
+    );
+    assert!(
+        manager.captured_ops().is_empty(),
+        "the child must not receive an initial delivery operation"
+    );
 }
 
 #[tokio::test]

@@ -428,6 +428,84 @@ async fn get_status_returns_not_found_without_manager() {
 }
 
 #[tokio::test]
+async fn cancellation_owned_tool_spawn_never_registers_a_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let call_id = "cancelled-spawn";
+    harness
+        .control
+        .begin_tool_spawn_publication(parent_thread_id, call_id);
+    assert_eq!(
+        harness
+            .control
+            .cancel_tool_spawn_publication(parent_thread_id, call_id),
+        SpawnPublicationDecision::CancellationOwned
+    );
+
+    let error = harness
+        .control
+        .spawn_agent_with_metadata(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::root()
+                        .join("cancelled")
+                        .expect("agent path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                spawn_call_id: Some(call_id.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("cancellation-owned spawn should abort before child publication");
+
+    assert_matches!(error.details(), CodexErrorDetails::TurnAborted);
+    assert!(
+        harness.control.state.live_agents().is_empty(),
+        "an aborted tool spawn must not leave a live registry or TUI-hint candidate"
+    );
+    harness
+        .control
+        .finish_tool_spawn_publication(parent_thread_id, call_id);
+}
+
+#[test]
+fn unpublished_spawn_reconciliation_preserves_terminal_taxonomy() {
+    for status in [AgentStatus::PendingInit, AgentStatus::Running] {
+        assert_eq!(
+            unpublished_spawn_reconciliation(&status),
+            UnpublishedSpawnReconciliation::ShutdownCancellationOwned
+        );
+    }
+    assert_eq!(
+        unpublished_spawn_reconciliation(&AgentStatus::Interrupted),
+        UnpublishedSpawnReconciliation::ShutdownPreexistingInterrupted
+    );
+    for status in [
+        AgentStatus::Completed(Some("done".to_string())),
+        AgentStatus::Errored("failed".to_string()),
+        AgentStatus::Shutdown,
+    ] {
+        assert_eq!(
+            unpublished_spawn_reconciliation(&status),
+            UnpublishedSpawnReconciliation::PreserveNaturalTerminal
+        );
+    }
+    assert_eq!(
+        unpublished_spawn_reconciliation(&AgentStatus::NotFound),
+        UnpublishedSpawnReconciliation::ChildDied
+    );
+}
+
+#[tokio::test]
 async fn on_event_updates_status_from_task_started() {
     let status = agent_status_from_event(&EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: "turn-1".to_string(),

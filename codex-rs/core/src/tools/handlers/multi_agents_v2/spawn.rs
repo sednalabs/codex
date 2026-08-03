@@ -130,6 +130,7 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    spawn_call_id: Some(call_id.clone()),
                 },
             ),
     )
@@ -153,19 +154,24 @@ async fn handle_spawn_agent(
         .as_ref()
         .map(|snapshot| snapshot.reasoning_effort.clone())
         .unwrap_or_else(|| args.reasoning_effort.clone());
-    emit_sub_agent_activity(
-        &session,
-        &turn,
-        SubAgentActivityItem {
-            id: call_id,
-            agent_thread_id: new_thread_id,
-            agent_path: new_agent_path.clone(),
-            model: Some(effective_model.clone()),
-            reasoning_effort: effective_reasoning_effort.clone(),
-            kind: SubAgentActivityKind::Started,
-        },
-    )
-    .await;
+    if matches!(
+        spawned_agent.status,
+        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted
+    ) {
+        emit_sub_agent_activity(
+            &session,
+            &turn,
+            SubAgentActivityItem {
+                id: call_id,
+                agent_thread_id: new_thread_id,
+                agent_path: new_agent_path.clone(),
+                model: Some(effective_model.clone()),
+                reasoning_effort: effective_reasoning_effort.clone(),
+                kind: SubAgentActivityKind::Started,
+            },
+        )
+        .await;
+    }
     let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
@@ -209,6 +215,12 @@ async fn handle_spawn_agent(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        // See the V1 handler: publication and cancellation share a control-plane decision, and
+        // the runtime must keep this future alive until a cancellation-owned child is reconciled.
+        true
     }
 }
 

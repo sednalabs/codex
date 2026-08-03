@@ -15,6 +15,7 @@ use tracing::instrument;
 use tracing::trace_span;
 
 use crate::function_tool::FunctionCallError;
+use crate::agent::SpawnPublicationDecision;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::tools::context::AbortedToolOutput;
@@ -26,6 +27,7 @@ use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 
@@ -36,6 +38,62 @@ struct ToolCallTimingGuard {
     turn_id: String,
     call_id: String,
     tool_name: codex_tools::ToolName,
+}
+
+/// Connects the tool runtime's cancellation branch to the spawn owner's publication CAS.
+///
+/// This record is created before dispatch admission, so cancellation cannot race a delayed
+/// handler past an unrecorded "no child yet" window.
+struct SpawnPublicationGuard {
+    control: crate::agent::AgentControl,
+    parent_thread_id: codex_protocol::ThreadId,
+    call_id: String,
+}
+
+fn is_multi_agent_spawn_call(call: &ToolCall, multi_agent_v2_namespace: Option<&str>) -> bool {
+    call.tool_name.name.as_str() == "spawn_agent"
+        && match call.tool_name.namespace.as_deref() {
+            None | Some(MULTI_AGENT_V1_NAMESPACE) => true,
+            Some(namespace) => Some(namespace) == multi_agent_v2_namespace,
+        }
+        && matches!(&call.payload, ToolPayload::Function { .. })
+}
+
+impl SpawnPublicationGuard {
+    fn begin(
+        session: &Session,
+        multi_agent_v2_namespace: Option<&str>,
+        call: &ToolCall,
+    ) -> Option<Self> {
+        if !is_multi_agent_spawn_call(call, multi_agent_v2_namespace) {
+            return None;
+        }
+        let guard = Self {
+            control: session.services.agent_control.clone(),
+            parent_thread_id: session.thread_id,
+            call_id: call.call_id.clone(),
+        };
+        guard
+            .control
+            .begin_tool_spawn_publication(guard.parent_thread_id, &guard.call_id);
+        Some(guard)
+    }
+
+    fn cancel(&self) -> SpawnPublicationDecision {
+        self.control
+            .cancel_tool_spawn_publication(self.parent_thread_id, &self.call_id)
+    }
+
+    fn finish(&self) {
+        self.control
+            .finish_tool_spawn_publication(self.parent_thread_id, &self.call_id);
+    }
+}
+
+impl Drop for SpawnPublicationGuard {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 #[derive(Clone)]
@@ -115,6 +173,11 @@ impl ToolCallRuntime {
         let abort_session = Arc::clone(&session);
         let abort_source = source.clone();
         let abort_turn = Arc::clone(&turn);
+        let spawn_publication = SpawnPublicationGuard::begin(
+            session.as_ref(),
+            turn.config.multi_agent_v2.tool_namespace.as_deref(),
+            &call,
+        );
         let terminal_outcome_reached = Arc::new(AtomicBool::new(false));
         let dispatch_terminal_outcome_reached = Arc::clone(&terminal_outcome_reached);
         let dispatch_call = call.clone();
@@ -157,10 +220,17 @@ impl ToolCallRuntime {
 
         async move {
             let _tool_call_timing_guard = tool_call_timing_guard;
-            tokio::select! {
+            let result = tokio::select! {
                 res = &mut dispatch_handle => res.map_err(Self::tool_task_join_error)?,
                 _ = cancellation_token.cancelled() => {
-                    if terminal_outcome_reached_or_finished(
+                    if spawn_publication
+                        .as_ref()
+                        .is_some_and(|publication| {
+                            publication.cancel() == SpawnPublicationDecision::Published
+                        })
+                    {
+                        dispatch_handle.await.map_err(Self::tool_task_join_error)?
+                    } else if terminal_outcome_reached_or_finished(
                         Some(&terminal_outcome_reached),
                         dispatch_handle.is_finished(),
                     ) {
@@ -199,7 +269,8 @@ impl ToolCallRuntime {
                         Ok(response)
                     }
                 },
-            }
+            };
+            result
         }
         .in_current_span()
     }
@@ -770,6 +841,20 @@ mod tests {
             ToolCallRuntime::abort_message(&call, /*secs*/ 1.25),
             "aborted by user after 1.2s"
         );
+    }
+
+    #[test]
+    fn spawn_publication_recognizes_v1_and_configured_v2_namespaces() {
+        let mut call = tool_call("spawn_agent");
+        assert!(is_multi_agent_spawn_call(&call, Some("agents")));
+
+        call.tool_name =
+            codex_tools::ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
+        assert!(is_multi_agent_spawn_call(&call, Some("agents")));
+
+        call.tool_name = codex_tools::ToolName::namespaced("profile_agents", "spawn_agent");
+        assert!(is_multi_agent_spawn_call(&call, Some("profile_agents")));
+        assert!(!is_multi_agent_spawn_call(&call, Some("agents")));
     }
 
     #[test]

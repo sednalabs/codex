@@ -1,6 +1,8 @@
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::registry::SpawnPublicationDecision;
+use crate::agent::registry::SpawnPublicationKey;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
@@ -74,6 +76,11 @@ mod lifecycle;
 mod residency;
 mod spawn;
 
+#[cfg(test)]
+use self::spawn::UnpublishedSpawnReconciliation;
+#[cfg(test)]
+use self::spawn::unpublished_spawn_reconciliation;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {
     FullHistory,
@@ -86,6 +93,11 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    /// The call that owns the parent-visible publication decision for a tool spawn.
+    ///
+    /// Direct control-plane callers leave this unset. Tool runtime dispatch creates the matching
+    /// record before the handler begins, so cancellation and child publication share one winner.
+    pub(crate) spawn_call_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -238,6 +250,33 @@ impl AgentControl {
 
     pub(crate) fn rollout_budget(&self) -> &RolloutBudget {
         self.rollout_budget.as_ref()
+    }
+
+    pub(crate) fn begin_tool_spawn_publication(
+        &self,
+        parent_thread_id: ThreadId,
+        call_id: &str,
+    ) {
+        self.state
+            .begin_spawn_publication(SpawnPublicationKey::new(parent_thread_id, call_id));
+    }
+
+    pub(crate) fn cancel_tool_spawn_publication(
+        &self,
+        parent_thread_id: ThreadId,
+        call_id: &str,
+    ) -> SpawnPublicationDecision {
+        self.state
+            .cancel_spawn_publication(SpawnPublicationKey::new(parent_thread_id, call_id))
+    }
+
+    pub(crate) fn finish_tool_spawn_publication(
+        &self,
+        parent_thread_id: ThreadId,
+        call_id: &str,
+    ) {
+        self.state
+            .finish_spawn_publication(&SpawnPublicationKey::new(parent_thread_id, call_id));
     }
 
     /// Send rich user input items to an existing agent thread.
