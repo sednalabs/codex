@@ -27,10 +27,11 @@
         "full_required_event_queue_still_allows_orderly_runtime_shutdown",
         "guaranteed_delivery_classifier_covers_every_required_notification",
         "in_process_facade_aggregates_a_dropped_lower_lag_marker",
-        "in_process_facade_preserves_every_required_notification_under_backpressure"
+        "in_process_facade_preserves_every_required_notification_under_backpressure",
+        "shutdown_unblocks_a_required_event_waiting_on_the_facade_queue"
       ],
       "owner": "downstream",
-      "notes": "Manually carries the bounded delivery semantics from app-server ancestry 7bd0a5515506584520235579e2472fb2ffefcc9c without importing that branch's wider stack. Keep both classifiers in exact parity, preserve lower lag counts when the facade is also saturated, and retain production-equivalent shutdown sender custody until an adopted upstream line provides equivalent bounded delivery and regressions.",
+      "notes": "Manually carries the bounded delivery semantics from app-server ancestry 7bd0a5515506584520235579e2472fb2ffefcc9c without importing that branch's wider stack. Keep both classifiers in exact parity, preserve lower lag counts when the facade is also saturated, retain production-equivalent shutdown sender custody, and drop the facade receiver before shutdown so a required event waiting on capacity cannot strand the worker. Preserve these semantics until an adopted upstream line provides equivalent bounded delivery and regressions.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "app-server-contributor",
       "hotspot_files": [
