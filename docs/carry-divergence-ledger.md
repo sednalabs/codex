@@ -1028,19 +1028,26 @@ decisions.
 
 ### Bounded In-Process Delivery And Metric Version Tags
 
-- Commit `faa62f2d6d` manually carries the bounded lower-queue delivery
+- Commits `faa62f2d6d` and `7f95ea88fe` manually carry bounded lower-queue
+  delivery and facade-classification parity
   semantics from app-server ancestry `7bd0a55155` without importing its wider
   programme stack. The capacity remains finite; one authoritative notification
   may wait for a permit while the runtime continues polling client control and
   shutdown. Reconstructible progress remains best-effort, and a counted lag
   marker is emitted before later writer traffic so a consumer can detect the
-  gap. The deterministic capacity-one regressions cover FIFO delivery, visible
-  lag, and shutdown while a required notification is pending.
+  gap. Both bounded tiers preserve the same nineteen transcript, completion,
+  lifecycle, goal, usage, name, settings, and request-resolution variants. The
+  deterministic capacity-one regressions cover FIFO delivery, visible lag,
+  facade saturation, and shutdown while a required notification is pending;
+  test-only sender custody is released before the runtime joins its outbound
+  router so shutdown has production-equivalent last-sender semantics.
 - Commit `b52b676538` follows upstream metric-tag sanitizer commits
   `bd861ff550` and `d9559390ec` while keeping the ordinary release version
   exact. Only the `app.version` value supplied to metrics replaces unsupported
   tag characters; session metadata and other release-version consumers retain
-  the unmodified string. Its whole-tag regression checks both values together.
+  the unmodified string. Its constructor regression uses the production
+  `RELEASE_VERSION` path and an injected nontrivial release value, then checks
+  both values and the complete metric-tag vector together.
 - These carries can be removed when the corresponding bounded delivery and
   metric-only sanitizer semantics are present in the adopted upstream line with
   equivalent regressions.
