@@ -25,6 +25,20 @@
     },
     "CollabAgentState": {
       "properties": {
+        "agent_nickname": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_role": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
           "type": [
             "string",

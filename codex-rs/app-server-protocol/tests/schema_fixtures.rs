@@ -146,6 +146,68 @@ fn json_schema_fixtures_keep_subagent_activity_kind_legacy_and_terminal_detail_a
     Ok(())
 }
 
+/// Locks the additive V1 child identity across every checked-in schema carrying a collab agent
+/// state. The existing whole-tree checks prove these fixtures are generated; this targeted check
+/// prevents an older generator/runtime from silently making the optional identity fields required.
+#[test]
+fn json_schema_fixtures_keep_collab_agent_identity_additive() -> Result<()> {
+    let schema_root = schema_root()?;
+    let fixture_tree = read_tree(&schema_root, "json")?;
+
+    for (path, bytes) in fixture_tree.iter().filter(|(path, bytes)| {
+        path.extension().is_some_and(|extension| extension == "json")
+            && String::from_utf8_lossy(bytes).contains("\"CollabAgentState\"")
+    }) {
+        let schema: Value = serde_json::from_slice(bytes)
+            .with_context(|| format!("parse JSON schema fixture {}", path.display()))?;
+        let mut collab_agent_states = Vec::new();
+        collect_named_schema_values(&schema, "CollabAgentState", &mut collab_agent_states);
+        assert_eq!(
+            collab_agent_states.len(),
+            1,
+            "{} must define CollabAgentState exactly once",
+            path.display()
+        );
+
+        let properties = collab_agent_states[0]
+            .get("properties")
+            .and_then(Value::as_object)
+            .with_context(|| {
+                format!("{} CollabAgentState must have properties", path.display())
+            })?;
+        let required = collab_agent_states[0]
+            .get("required")
+            .and_then(Value::as_array)
+            .with_context(|| {
+                format!("{} CollabAgentState must have required fields", path.display())
+            })?;
+        for field in ["agent_nickname", "agent_role"] {
+            let property = properties
+                .get(field)
+                .with_context(|| format!("{} must expose {field}", path.display()))?;
+            assert_eq!(
+                property.get("default"),
+                Some(&Value::Null),
+                "{} {field} must default to null",
+                path.display()
+            );
+            assert_eq!(
+                property.get("type"),
+                Some(&serde_json::json!(["string", "null"])),
+                "{} {field} must remain nullable",
+                path.display()
+            );
+            assert!(
+                !required.contains(&Value::String(field.to_string())),
+                "{} {field} must remain optional for older clients",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn expected_json_fixture_suffix(path: &Path) -> &'static [u8] {
     match path.file_name().and_then(|name| name.to_str()) {
         Some("codex_app_server_protocol.schemas.json" | "codex_app_server_protocol.v2.schemas.json") => {

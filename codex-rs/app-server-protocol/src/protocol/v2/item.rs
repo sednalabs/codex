@@ -1443,8 +1443,10 @@ pub struct CollabAgentState {
     /// V1 lifecycle events identify agents by nickname and role before the child thread starts.
     /// V2 agent paths remain available through `SubAgentActivity`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub agent_nickname: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub agent_role: Option<String>,
 }
 
