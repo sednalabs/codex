@@ -340,7 +340,9 @@ session-tui-resource-stability-targeted: core-multi-agent-orchestration-targeted
     cargo test -p codex-app-server --lib in_process::tests::delivery_classifier_preserves_reviewed_consumer_state_notifications -- --exact --test-threads=1
     cargo test -p codex-app-server --lib fuzzy_file_search::tests:: -- --test-threads=1
     cargo test -p codex-app-server-client --lib in_process_facade_ -- --test-threads=1
-    cargo test -p codex-app-server-client --lib in_process_pending_required_event_still_allows_ -- --test-threads=1
+    cargo test -p codex-app-server-client --lib in_process_pending_required_event_still_allows_request_control -- --exact --test-threads=1
+    cargo test -p codex-app-server-client --lib in_process_pending_required_event_still_allows_resolve_control -- --exact --test-threads=1
+    cargo test -p codex-app-server-client --lib in_process_pending_required_event_still_allows_reject_control -- --exact --test-threads=1
     cargo test -p codex-app-server-client --lib shutdown_releases_a_pending_required_facade_event -- --test-threads=1
     cargo test -p codex-app-server-client --lib remote_pending_required_event_keeps_control_commands_responsive -- --test-threads=1
     cargo test -p codex-app-server-client --lib remote_write_failure_preserves_pending_required_before_disconnect -- --test-threads=1
