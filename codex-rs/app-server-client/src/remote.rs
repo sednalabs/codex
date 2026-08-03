@@ -293,6 +293,16 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
+                    _ = event_tx.closed() => {
+                        terminate_for_closed_remote_event_consumer(
+                            &mut stream,
+                            &endpoint,
+                            &mut terminal_state,
+                            &mut pending_requests,
+                        )
+                        .await;
+                        break 'worker;
+                    }
                     command = command_rx.recv() => {
                         let Some(command) = command else {
                             let _ = close_remote_stream(&mut stream, &endpoint).await;
