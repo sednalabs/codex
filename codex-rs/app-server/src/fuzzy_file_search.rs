@@ -270,9 +270,9 @@ impl<T> PendingNotifications<T> {
         }
 
         if self.latest_update.is_some() {
-            add_completion_count(&mut self.completions_after_update, 1);
+            add_completion_count(&mut self.completions_after_update, /*additional*/ 1);
         } else {
-            add_completion_count(&mut self.completions_before_update, 1);
+            add_completion_count(&mut self.completions_before_update, /*additional*/ 1);
         }
         true
     }

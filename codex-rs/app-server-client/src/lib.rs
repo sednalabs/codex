@@ -1147,7 +1147,8 @@ mod tests {
     }
 
     async fn start_test_client_with_pending_facade_event() -> TestClient {
-        let client = start_test_client_with_capacity(SessionSource::Cli, 1).await;
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
 
         let (first_started_tx, first_started_rx) = oneshot::channel();
         let (first_response_tx, first_response_rx) = oneshot::channel();
