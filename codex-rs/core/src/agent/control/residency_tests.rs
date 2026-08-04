@@ -110,7 +110,8 @@ async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
         )
         .await;
     tokio::time::pause();
-    let queued_message = test_communication("queued across explicit resume", false);
+    let queued_message =
+        test_communication("queued across explicit resume", /*trigger_turn*/ false);
     first
         .thread
         .session
