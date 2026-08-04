@@ -306,8 +306,7 @@ impl AgentControl {
         residency_slot: V2ResidencySlot,
         lifecycle: &mut crate::agent::lifecycle::AgentLifecycleState,
     ) -> CodexResult<()> {
-        let terminal_idle_unload_timeout_ms =
-            config.multi_agent_v2.terminal_idle_unload_timeout_ms;
+        let terminal_idle_unload_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         if state.get_thread(thread_id).await.is_ok() {
             metadata.clear_cold_status();
             self.touch_loaded_v2_residency(state, thread_id).await;
@@ -465,8 +464,7 @@ impl AgentControl {
             && session_source
                 .as_ref()
                 .is_some_and(is_v2_resident_session_source);
-        let terminal_idle_unload_timeout_ms =
-            config.multi_agent_v2.terminal_idle_unload_timeout_ms;
+        let terminal_idle_unload_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         let residency_slot = if spawn_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
@@ -940,8 +938,7 @@ impl AgentControl {
         let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
         let resume_uses_v2_residency = multi_agent_version == MultiAgentVersion::V2
             && is_v2_resident_session_source(&session_source);
-        let terminal_idle_unload_timeout_ms =
-            config.multi_agent_v2.terminal_idle_unload_timeout_ms;
+        let terminal_idle_unload_timeout_ms = config.multi_agent_v2.terminal_idle_unload_timeout_ms;
         let residency_slot = if resume_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)

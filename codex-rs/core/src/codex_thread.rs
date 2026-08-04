@@ -495,10 +495,7 @@ impl CodexThread {
     async fn submit_tracked(&self, sub: Submission) -> CodexResult<()> {
         let submission_id = sub.id.clone();
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;
-        let mut pending = PendingResidencySubmission::new(
-            Arc::clone(&self.session),
-            submission_id,
-        );
+        let mut pending = PendingResidencySubmission::new(Arc::clone(&self.session), submission_id);
         let result = self.io.submit_with_id(sub).await;
         if result.is_ok() {
             pending.hand_off();

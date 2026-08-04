@@ -33,8 +33,10 @@ use tokio::time::advance;
 #[tokio::test]
 async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     let (_home, config, manager, control, first, metadata, _root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 1_000, /*ephemeral*/ false, /*sqlite*/ true)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 1_000, /*ephemeral*/ false, /*sqlite*/ true,
+        )
+        .await;
     tokio::time::pause();
     let first_message = test_communication("first queued message", /*trigger_turn*/ false);
     let second_message = test_communication("second queued message", /*trigger_turn*/ false);
@@ -103,8 +105,10 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
 #[tokio::test]
 async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
     let (_home, config, manager, control, first, metadata, root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ true)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ true,
+        )
+        .await;
     tokio::time::pause();
     let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(
@@ -158,8 +162,10 @@ async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_timeout_zero_disables_unload() {
     let (_home, _config, manager, _control, first, _metadata, _root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ false)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ false,
+        )
+        .await;
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
 
     advance(Duration::from_secs(3_600)).await;
@@ -174,8 +180,10 @@ async fn terminal_idle_unload_timeout_zero_disables_unload() {
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
     let (_home, _config, manager, control, first, _metadata, _root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
+        )
+        .await;
     mark_thread_status(
         first.thread.as_ref(),
         AgentStatus::Completed(Some("first turn complete".to_string())),
@@ -207,8 +215,10 @@ async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
     let (_home, _config, manager, _control, first, _metadata, _root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
+        )
+        .await;
     let queued = vec![
         test_communication("queue-only", /*trigger_turn*/ false),
         test_communication("trigger work", /*trigger_turn*/ true),
@@ -246,8 +256,10 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_waits_for_terminal_finalization() {
     let (_home, _config, manager, _control, first, metadata, _root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
+        )
+        .await;
     first
         .thread
         .session
@@ -255,8 +267,7 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
         .register_terminal_finalizer();
     let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
-    let generation =
-        wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
+    let generation = wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
 
     advance(Duration::from_millis(100)).await;
     let generation = wait_for_terminal_idle_generation_after(&metadata, generation).await;
@@ -268,11 +279,7 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
         .input_queue
         .begin_residency_activity()
         .await;
-    first
-        .thread
-        .session
-        .input_queue
-        .finish_terminal_finalizer();
+    first.thread.session.input_queue.finish_terminal_finalizer();
     drop(finalization);
     advance(Duration::from_millis(100)).await;
     wait_for_terminal_idle_generation_after(&metadata, generation).await;
@@ -283,8 +290,10 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
     let (_home, _config, manager, _control, first, metadata, _root_thread_id) =
-        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
-            .await;
+        terminal_idle_test_agent(
+            /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
+        )
+        .await;
     first
         .thread
         .session
@@ -292,8 +301,7 @@ async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
         .register_residency_submission("held-submission".to_string());
     let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
-    let generation =
-        wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
+    let generation = wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
 
     advance(Duration::from_millis(100)).await;
     wait_for_terminal_idle_generation_after(&metadata, generation).await;
@@ -398,10 +406,7 @@ fn test_communication(text: &str, trigger_turn: bool) -> InterAgentCommunication
     )
 }
 
-async fn resume_time_and_wait_for_thread_unloaded(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-) {
+async fn resume_time_and_wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) {
     tokio::time::resume();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -734,8 +739,7 @@ async fn explicit_v2_resume_reserves_the_only_child_residency_slot() {
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
         .await
         .expect("first resident slot");
-    let first =
-        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker").await;
+    let first = spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker").await;
     first_slot.commit(first.thread_id);
     control
         .state

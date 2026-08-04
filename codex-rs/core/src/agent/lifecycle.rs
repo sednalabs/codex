@@ -34,14 +34,12 @@ impl AgentLifecycle {
 
 impl AgentLifecycleState {
     pub(super) fn arm_terminal_idle_unload(&mut self) -> u64 {
-        self.terminal_idle_unload_generation =
-            self.terminal_idle_unload_generation.wrapping_add(1);
+        self.terminal_idle_unload_generation = self.terminal_idle_unload_generation.wrapping_add(1);
         self.terminal_idle_unload_generation
     }
 
     pub(super) fn invalidate_terminal_idle_unload(&mut self) {
-        self.terminal_idle_unload_generation =
-            self.terminal_idle_unload_generation.wrapping_add(1);
+        self.terminal_idle_unload_generation = self.terminal_idle_unload_generation.wrapping_add(1);
     }
 
     pub(super) fn terminal_idle_unload_is_current(&self, generation: u64) -> bool {

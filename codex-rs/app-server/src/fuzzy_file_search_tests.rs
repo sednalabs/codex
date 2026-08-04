@@ -13,14 +13,14 @@ use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use crate::outgoing_message::OutgoingEnvelope;
-use crate::outgoing_message::OutgoingMessage;
-use crate::outgoing_message::OutgoingMessageSender;
 use super::PendingNotification;
 use super::PendingNotifications;
 use super::SessionReporterImpl;
 use super::SessionShared;
 use super::forward_notifications;
+use crate::outgoing_message::OutgoingEnvelope;
+use crate::outgoing_message::OutgoingMessage;
+use crate::outgoing_message::OutgoingMessageSender;
 
 #[derive(Debug, Eq, PartialEq)]
 enum ObservedNotification {
@@ -28,11 +28,7 @@ enum ObservedNotification {
     Completed,
 }
 
-fn report_snapshot(
-    reporter: &SessionReporterImpl,
-    shared: &SessionShared,
-    query: &str,
-) {
+fn report_snapshot(reporter: &SessionReporterImpl, shared: &SessionShared, query: &str) {
     {
         #[expect(clippy::unwrap_used)]
         let mut latest_query = shared.latest_query.lock().unwrap();
@@ -102,8 +98,7 @@ fn pending_notifications_replace_latest_and_preserve_completion_order() {
 }
 
 #[tokio::test]
-async fn forwarder_serializes_replace_latest_completion_and_cancellation_under_backpressure()
-{
+async fn forwarder_serializes_replace_latest_completion_and_cancellation_under_backpressure() {
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
     let outgoing = Arc::new(OutgoingMessageSender::new(
         outgoing_tx,
