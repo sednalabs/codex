@@ -110,10 +110,8 @@ impl AgentControl {
                             }
                             lifecycle.arm_terminal_idle_unload()
                         };
-                        let runtime_activity_generation = thread
-                            .session
-                            .input_queue
-                            .residency_activity_generation();
+                        let runtime_activity_generation =
+                            thread.session.input_queue.residency_activity_generation();
                         tokio::select! {
                             () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {}
                             changed = status_rx.changed() => {
@@ -259,22 +257,17 @@ impl V2Residency {
         {
             return false;
         }
-        let Ok(thread) = manager.get_thread(expected_thread.session.thread_id()).await else {
+        let Ok(thread) = manager
+            .get_thread(expected_thread.session.thread_id())
+            .await
+        else {
             return false;
         };
         if !Arc::ptr_eq(&thread, expected_thread) || !is_resident_candidate(thread.as_ref()) {
             return false;
         }
-        let _residency_transition = thread
-            .session
-            .input_queue
-            .lock_residency_transition()
-            .await;
-        if thread
-            .session
-            .input_queue
-            .residency_activity_generation()
-            != runtime_activity_generation
+        let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
+        if thread.session.input_queue.residency_activity_generation() != runtime_activity_generation
         {
             return false;
         }
@@ -365,9 +358,9 @@ impl V2Residency {
                 .await;
             return false;
         }
-        if metadata.is_some_and(|metadata| {
-            !registry.metadata_is_current(candidate_thread_id, metadata)
-        }) {
+        if metadata
+            .is_some_and(|metadata| !registry.metadata_is_current(candidate_thread_id, metadata))
+        {
             candidate_thread
                 .session
                 .input_queue

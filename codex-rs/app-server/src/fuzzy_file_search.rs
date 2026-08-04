@@ -177,8 +177,7 @@ struct SessionShared {
     latest_query: Mutex<String>,
     outgoing: Arc<OutgoingMessageSender>,
     canceled: Arc<AtomicBool>,
-    pending_notifications:
-        Mutex<PendingNotifications<FuzzyFileSearchSessionUpdatedNotification>>,
+    pending_notifications: Mutex<PendingNotifications<FuzzyFileSearchSessionUpdatedNotification>>,
     notification_ready: Notify,
     #[cfg(test)]
     notification_dequeued: Notify,
@@ -203,10 +202,7 @@ impl SessionShared {
     fn enqueue_completion(&self) {
         let queued = {
             #[expect(clippy::unwrap_used)]
-            self.pending_notifications
-                .lock()
-                .unwrap()
-                .push_completion()
+            self.pending_notifications.lock().unwrap().push_completion()
         };
         if queued {
             self.notification_ready.notify_one();
@@ -334,18 +330,13 @@ async fn forward_notifications(shared: Arc<SessionShared>) {
             PendingNotification::Update(notification) => {
                 ServerNotification::FuzzyFileSearchSessionUpdated(notification)
             }
-            PendingNotification::Complete => {
-                ServerNotification::FuzzyFileSearchSessionCompleted(
-                    FuzzyFileSearchSessionCompletedNotification {
-                        session_id: shared.session_id.clone(),
-                    },
-                )
-            }
+            PendingNotification::Complete => ServerNotification::FuzzyFileSearchSessionCompleted(
+                FuzzyFileSearchSessionCompletedNotification {
+                    session_id: shared.session_id.clone(),
+                },
+            ),
         };
-        shared
-            .outgoing
-            .send_server_notification(notification)
-            .await;
+        shared.outgoing.send_server_notification(notification).await;
     }
 }
 

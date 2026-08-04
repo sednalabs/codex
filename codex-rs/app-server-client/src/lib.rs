@@ -1161,7 +1161,9 @@ mod tests {
             })
             .await
             .expect("first injection should reach the worker");
-        first_started_rx.await.expect("first injection should start");
+        first_started_rx
+            .await
+            .expect("first injection should start");
         assert_eq!(
             first_response_rx
                 .await
@@ -1354,9 +1356,8 @@ mod tests {
         .await;
     }
 
-    async fn expect_websocket_close<S>(
-        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
-    ) where
+    async fn expect_websocket_close<S>(websocket: &mut tokio_tungstenite::WebSocketStream<S>)
+    where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         loop {

@@ -1213,8 +1213,7 @@ impl MultiAgentV2Config {
             min_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS,
             max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
             default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
-            terminal_idle_unload_timeout_ms:
-                DEFAULT_MULTI_AGENT_V2_TERMINAL_IDLE_UNLOAD_TIMEOUT_MS,
+            terminal_idle_unload_timeout_ms: DEFAULT_MULTI_AGENT_V2_TERMINAL_IDLE_UNLOAD_TIMEOUT_MS,
             usage_hint_text: None,
             root_agent_usage_hint_text: Some(default_multi_agent_v2_usage_hint_text(
                 DEFAULT_MULTI_AGENT_V2_ROOT_AGENT_USAGE_HINT_TEXT,
