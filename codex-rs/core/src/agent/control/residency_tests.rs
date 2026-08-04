@@ -411,7 +411,7 @@ async fn terminal_idle_test_agent(
         spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
     residency_slot.commit(first.thread_id);
     let worker_path = AgentPath::root()
-        .join("worker-1")
+        .join("worker")
         .expect("worker path should be valid");
     control
         .state
@@ -849,20 +849,11 @@ async fn spawn_v2_subagent(
     parent_thread_id: ThreadId,
     label: &str,
 ) -> crate::thread_manager::NewThread {
-    let agent_path = AgentPath::root()
-        .join(label)
-        .expect("test agent path should be valid");
     state
         .spawn_new_thread_with_source(
             config,
             control.clone(),
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: 1,
-                agent_path: Some(agent_path),
-                agent_nickname: None,
-                agent_role: None,
-            }),
+            SessionSource::SubAgent(SubAgentSource::Other(label.to_string())),
             /*history_mode*/ None,
             Some(parent_thread_id),
             /*forked_from_thread_id*/ None,
