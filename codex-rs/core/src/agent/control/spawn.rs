@@ -881,26 +881,11 @@ impl AgentControl {
         session_source: SessionSource,
     ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
         let state = self.upgrade()?;
-        let reload_metadata = self.state.agent_metadata_for_thread(thread_id);
-        // Timed unload uses this gate while it flushes history, removes the runtime, and releases
-        // residency. Join that transition before reading persisted state or reserving a new slot.
-        let _reload_guard = match reload_metadata.as_ref() {
-            Some(metadata) => Some(metadata.lifecycle.lock_reload().await),
-            None => None,
-        };
-        if let Ok(thread) = state.get_thread(thread_id).await {
-            return Ok((
-                thread_id,
-                thread
-                    .multi_agent_version()
-                    .unwrap_or_else(|| config.multi_agent_version_from_features()),
-            ));
-        }
-        if reload_metadata
-            .as_ref()
-            .is_some_and(|metadata| !self.state.metadata_is_current(thread_id, metadata))
-        {
-            return Err(CodexErr::ThreadNotFound(thread_id));
+        // Timed unload retains the V2 registry identity and its lifecycle custody while removing
+        // only the runtime. Reuse that identity instead of reserving a duplicate path/count.
+        if self.uses_v2_lifecycle(&state, thread_id).await {
+            self.ensure_v2_agent_loaded(config, thread_id).await?;
+            return Ok((thread_id, MultiAgentVersion::V2));
         }
         let stored_thread = state
             .read_stored_thread(ReadThreadParams {

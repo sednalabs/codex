@@ -110,6 +110,13 @@ async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
         )
         .await;
     tokio::time::pause();
+    let queued_message = test_communication("queued across explicit resume", false);
+    first
+        .thread
+        .session
+        .input_queue
+        .enqueue_mailbox_communications(vec![queued_message.clone()])
+        .await;
     let previous_generation = terminal_idle_unload_generation(&metadata).await;
     mark_thread_status(
         first.thread.as_ref(),
@@ -119,10 +126,17 @@ async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
     wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
     advance(Duration::from_millis(100)).await;
     resume_time_and_wait_for_thread_unloaded(&manager, first.thread_id).await;
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 1);
+    assert!(
+        control
+            .state
+            .metadata_is_current(first.thread_id, &metadata),
+        "terminal-idle unload should retain the original registry identity"
+    );
 
     let reload_guard = metadata.lifecycle.lock_reload().await;
     let thread_id = first.thread_id;
-    let worker_path = AgentPath::root().join("worker").expect("worker path");
+    let worker_path = metadata.agent_path.clone().expect("registered worker path");
     let mut resume_task = tokio::spawn({
         let control = control.clone();
         async move {
@@ -156,7 +170,34 @@ async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
         .expect("explicit resume task should not panic")
         .expect("explicit resume should succeed");
     assert_eq!(resumed_thread_id, thread_id);
-    assert!(manager.get_thread(thread_id).await.is_ok());
+    assert!(
+        control.state.metadata_is_current(thread_id, &metadata),
+        "explicit resume should reuse the retained registry identity"
+    );
+    assert_eq!(
+        control
+            .state
+            .live_agents()
+            .into_iter()
+            .filter(|candidate| candidate.agent_id == Some(thread_id))
+            .count(),
+        1,
+        "explicit resume should not duplicate the retained registry entry"
+    );
+    let resumed = manager
+        .get_thread(thread_id)
+        .await
+        .expect("resumed worker should be loaded");
+    assert_eq!(
+        resumed
+            .session
+            .input_queue
+            .drain_mailbox_communications()
+            .await,
+        vec![queued_message],
+        "explicit resume should restore mail from the retained lifecycle"
+    );
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -368,12 +409,16 @@ async fn terminal_idle_test_agent(
     let first =
         spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
     residency_slot.commit(first.thread_id);
+    let worker_path = AgentPath::root()
+        .join("worker-1")
+        .expect("worker path should be valid");
     control
         .state
         .reserve_spawn_slot(/*max_threads*/ None)
         .expect("reserve registry slot")
         .commit(AgentMetadata {
             agent_id: Some(first.thread_id),
+            agent_path: Some(worker_path),
             ..Default::default()
         });
     let metadata = control
@@ -803,11 +848,20 @@ async fn spawn_v2_subagent(
     parent_thread_id: ThreadId,
     label: &str,
 ) -> crate::thread_manager::NewThread {
+    let agent_path = AgentPath::root()
+        .join(label)
+        .expect("test agent path should be valid");
     state
         .spawn_new_thread_with_source(
             config,
             control.clone(),
-            SessionSource::SubAgent(SubAgentSource::Other(label.to_string())),
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(agent_path),
+                agent_nickname: None,
+                agent_role: None,
+            }),
             /*history_mode*/ None,
             Some(parent_thread_id),
             /*forked_from_thread_id*/ None,
