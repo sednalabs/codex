@@ -47,6 +47,7 @@ on:
           - codex.tui-agent-usage-totals-targeted
           - codex.tui-weekly-pacing-status-line-targeted
           - codex.core-multi-agent-orchestration-targeted
+          - codex.session-tui-resource-stability-targeted
           - codex.blocking-waits-core-targeted
           - codex.blocking-waits-unified-exec-targeted
           - codex.blocking-waits-app-server-targeted
