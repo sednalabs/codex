@@ -707,6 +707,8 @@ class RouteSelectionTests(unittest.TestCase):
             "agent::control::residency::tests::"
             "terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent",
             "agent::control::residency::tests::"
+            "explicit_v2_resume_waits_for_terminal_idle_reload_gate",
+            "agent::control::residency::tests::"
             "terminal_idle_unload_timeout_zero_disables_unload",
             "agent::control::residency::tests::"
             "terminal_idle_unload_is_invalidated_by_new_user_work",

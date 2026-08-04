@@ -32,7 +32,7 @@ use tokio::time::advance;
 
 #[tokio::test]
 async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
-    let (_home, config, manager, control, first, metadata) =
+    let (_home, config, manager, control, first, metadata, _root_thread_id) =
         terminal_idle_test_agent(/*timeout_ms*/ 1_000, /*ephemeral*/ false, /*sqlite*/ true)
             .await;
     tokio::time::pause();
@@ -100,9 +100,64 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     );
 }
 
+#[tokio::test]
+async fn explicit_v2_resume_waits_for_terminal_idle_reload_gate() {
+    let (_home, config, manager, control, first, metadata, root_thread_id) =
+        terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ true)
+            .await;
+    tokio::time::pause();
+    let previous_generation = terminal_idle_unload_generation(&metadata).await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("persisted worker".to_string())),
+    )
+    .await;
+    wait_for_terminal_idle_generation_after(&metadata, previous_generation).await;
+    advance(Duration::from_millis(100)).await;
+    resume_time_and_wait_for_thread_unloaded(&manager, first.thread_id).await;
+
+    let reload_guard = metadata.lifecycle.lock_reload().await;
+    let thread_id = first.thread_id;
+    let worker_path = AgentPath::root().join("worker").expect("worker path");
+    let mut resume_task = tokio::spawn({
+        let control = control.clone();
+        async move {
+            control
+                .resume_agent_from_rollout(
+                    config,
+                    thread_id,
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id: root_thread_id,
+                        depth: 1,
+                        agent_path: Some(worker_path),
+                        agent_nickname: None,
+                        agent_role: None,
+                    }),
+                )
+                .await
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut resume_task)
+            .await
+            .is_err(),
+        "explicit resume should wait for terminal-idle unload custody"
+    );
+    assert!(manager.get_thread(thread_id).await.is_err());
+
+    drop(reload_guard);
+    let resumed_thread_id = tokio::time::timeout(Duration::from_secs(5), resume_task)
+        .await
+        .expect("explicit resume should finish after unload custody is released")
+        .expect("explicit resume task should not panic")
+        .expect("explicit resume should succeed");
+    assert_eq!(resumed_thread_id, thread_id);
+    assert!(manager.get_thread(thread_id).await.is_ok());
+}
+
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_timeout_zero_disables_unload() {
-    let (_home, _config, manager, _control, first, _metadata) =
+    let (_home, _config, manager, _control, first, _metadata, _root_thread_id) =
         terminal_idle_test_agent(/*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
@@ -118,7 +173,7 @@ async fn terminal_idle_unload_timeout_zero_disables_unload() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
-    let (_home, _config, manager, control, first, _metadata) =
+    let (_home, _config, manager, control, first, _metadata, _root_thread_id) =
         terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     mark_thread_status(
@@ -151,7 +206,7 @@ async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
-    let (_home, _config, manager, _control, first, _metadata) =
+    let (_home, _config, manager, _control, first, _metadata, _root_thread_id) =
         terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     let queued = vec![
@@ -190,7 +245,7 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_waits_for_terminal_finalization() {
-    let (_home, _config, manager, _control, first, metadata) =
+    let (_home, _config, manager, _control, first, metadata, _root_thread_id) =
         terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     first
@@ -227,7 +282,7 @@ async fn terminal_idle_unload_waits_for_terminal_finalization() {
 
 #[tokio::test(start_paused = true)]
 async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
-    let (_home, _config, manager, _control, first, metadata) =
+    let (_home, _config, manager, _control, first, metadata, _root_thread_id) =
         terminal_idle_test_agent(/*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false)
             .await;
     first
@@ -265,6 +320,7 @@ async fn terminal_idle_test_agent(
     AgentControl,
     crate::thread_manager::NewThread,
     AgentMetadata,
+    ThreadId,
 ) {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
@@ -321,7 +377,15 @@ async fn terminal_idle_test_agent(
         metadata.clone(),
         timeout_ms,
     );
-    (temp_home, config, manager, control, first, metadata)
+    (
+        temp_home,
+        config,
+        manager,
+        control,
+        first,
+        metadata,
+        root.thread_id,
+    )
 }
 
 fn test_communication(text: &str, trigger_turn: bool) -> InterAgentCommunication {

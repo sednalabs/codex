@@ -883,6 +883,27 @@ impl AgentControl {
         session_source: SessionSource,
     ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
         let state = self.upgrade()?;
+        let reload_metadata = self.state.agent_metadata_for_thread(thread_id);
+        // Timed unload uses this gate while it flushes history, removes the runtime, and releases
+        // residency. Join that transition before reading persisted state or reserving a new slot.
+        let _reload_guard = match reload_metadata.as_ref() {
+            Some(metadata) => Some(metadata.lifecycle.lock_reload().await),
+            None => None,
+        };
+        if let Ok(thread) = state.get_thread(thread_id).await {
+            return Ok((
+                thread_id,
+                thread
+                    .multi_agent_version()
+                    .unwrap_or_else(|| config.multi_agent_version_from_features()),
+            ));
+        }
+        if reload_metadata
+            .as_ref()
+            .is_some_and(|metadata| !self.state.metadata_is_current(thread_id, metadata))
+        {
+            return Err(CodexErr::ThreadNotFound(thread_id));
+        }
         let stored_thread = state
             .read_stored_thread(ReadThreadParams {
                 thread_id,
