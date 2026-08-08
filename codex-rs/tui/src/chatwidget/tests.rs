@@ -234,6 +234,7 @@ fn next_goal_draft(
 }
 
 mod app_server;
+mod automatic_turn;
 mod approval_requests;
 mod composer_submission;
 #[path = "tests/config_errors_tests.rs"]
