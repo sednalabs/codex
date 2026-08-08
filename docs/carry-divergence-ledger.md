@@ -2849,9 +2849,19 @@ decisions.
 - This is an operator opt-in for transient server-side outcomes, not a bypass
   of policy enforcement. Any future sync must preserve the typed, same-thread,
   bounded contract or replace it with an upstream-equivalent control signal.
+- Generated retries also carry a bounded, payload-free, model-opaque client provenance
+  envelope with the owning thread, exact policy-blocked trigger turn, and retry
+  ordinal. The extension-owned `usage.sqlite` projects that evidence into
+  `usage_automatic_turns` and records recovery, repeated block, exhaustion, or other
+  failure without changing the model-visible `continue` message. This provenance is
+  client-asserted at the app-server boundary; ordinary human turns are never tagged.
 - Primary files:
   - `codex-rs/tui/src/chatwidget/turn_runtime.rs`
   - `codex-rs/tui/src/chatwidget/tests/app_server.rs`
+  - `codex-rs/protocol/src/automatic_turn.rs`
+  - `codex-rs/state/src/runtime/extension_storage/automatic_turns.rs`
+  - `codex-rs/state/usage_migrations/0008_usage_automatic_turns.sql`
+  - `codex-rs/tui/src/chatwidget/automatic_turn_provenance.rs`
 
 ### MCP Server Safety Policy Extensions
 

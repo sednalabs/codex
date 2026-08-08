@@ -3140,6 +3140,52 @@
         "codex-rs/core/src/context_manager/history.rs"
       ],
       "extraction_target": "upstream model-safe MCP JSON-family resource output boundary"
+    },
+    {
+      "id": "automatic-turn-provenance-telemetry",
+      "title": "Automatic turn provenance and recovery telemetry",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": [
+        "automatic user-turn client provenance",
+        "cyber-policy retry lifecycle ledger"
+      ],
+      "files": [
+        "codex-rs/core/src/state/service.rs",
+        "codex-rs/protocol/src/automatic_turn.rs",
+        "codex-rs/protocol/src/lib.rs",
+        "codex-rs/state/src/runtime/extension_storage.rs",
+        "codex-rs/state/src/runtime/extension_storage/automatic_turns.rs",
+        "codex-rs/state/usage_migrations/0008_usage_automatic_turns.sql",
+        "codex-rs/tui/src/app/thread_routing.rs",
+        "codex-rs/tui/src/app_command.rs",
+        "codex-rs/tui/src/app_server_session.rs",
+        "codex-rs/tui/src/chatwidget/automatic_turn_provenance.rs",
+        "codex-rs/tui/src/chatwidget/input_submission.rs",
+        "codex-rs/tui/src/chatwidget/tests.rs",
+        "codex-rs/tui/src/chatwidget/tests/automatic_turn.rs"
+      ],
+      "behavior": "Typed cyber-policy auto-continuations carry a bounded payload-free client provenance envelope through the ordinary same-thread user-turn path. The extension-owned usage ledger projects exact trigger/result turn correlation and started, recovered, reblocked, exhausted, or failed lifecycle outcomes without changing the model-visible continue prompt or tagging ordinary human turns.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "core-ledger-smoke; codex.tui-thread-session-policy-targeted",
+      "tests": [
+        "cyber_policy_provenance_round_trips_without_prompt_text",
+        "parser_rejects_human_ids_and_invalid_attempts",
+        "automatic_turn_projection_records_exact_provenance_and_recovery",
+        "automatic_turn_projection_marks_reblock_and_exhaustion",
+        "ordinary_user_message_is_not_projected_as_automatic",
+        "cyber_policy_auto_continue_carries_exact_turn_provenance"
+      ],
+      "owner": "downstream",
+      "notes": "The client_user_message_id envelope is model-opaque and client-asserted at the app-server boundary; the Sedna TUI stamps it only for the typed live cyber-policy retry path. Provider/model/token analytics remain normalized in existing usage tables and join through turn_id rather than being duplicated here.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "client-provenance-observation",
+      "hotspot_files": [],
+      "extraction_target": "upstream-native generated-turn provenance and recovery observation"
     }
   ]
 }
