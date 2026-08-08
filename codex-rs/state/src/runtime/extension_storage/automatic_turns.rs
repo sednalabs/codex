@@ -130,8 +130,9 @@ ON CONFLICT(thread_id, client_user_message_id) DO UPDATE SET
             r#"
 UPDATE usage_automatic_turns
 SET outcome = ?,
-    completed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 WHERE turn_id = ?
+  AND outcome = 'started'
 "#,
         )
         .bind(outcome)
@@ -212,7 +213,7 @@ WHERE turn_id = ?
 "#,
         )
         .bind(turn_id)
-        .fetch_one(runtime.usage_pool().as_ref())
+        .fetch_one(runtime.usage_ledger_pool().as_ref())
         .await?)
     }
 
@@ -282,6 +283,44 @@ WHERE turn_id = ?
     }
 
     #[tokio::test]
+    async fn automatic_turn_projection_keeps_first_terminal_outcome() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let turn_id = "turn-auto-first-terminal";
+        runtime
+            .record_automatic_turn_event(&automatic_user_message(
+                thread_id,
+                "turn-trigger",
+                turn_id,
+                2,
+                3,
+            ))
+            .await;
+        runtime
+            .complete_automatic_turn(turn_id, OUTCOME_REBLOCKED)
+            .await?;
+        let first = row(runtime.as_ref(), turn_id).await?;
+        let first_completed_at = first
+            .completed_at
+            .clone()
+            .expect("first terminal event should set completed_at");
+        assert_eq!(first.outcome, OUTCOME_REBLOCKED);
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        runtime
+            .complete_automatic_turn(turn_id, OUTCOME_RECOVERED)
+            .await?;
+
+        let duplicate = row(runtime.as_ref(), turn_id).await?;
+        assert_eq!(duplicate.outcome, OUTCOME_REBLOCKED);
+        assert_eq!(
+            duplicate.completed_at.as_deref(),
+            Some(first_completed_at.as_str())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn ordinary_user_message_is_not_projected_as_automatic() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         runtime
@@ -295,7 +334,7 @@ WHERE turn_id = ?
             })
             .await;
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usage_automatic_turns")
-            .fetch_one(runtime.usage_pool().as_ref())
+            .fetch_one(runtime.usage_ledger_pool().as_ref())
             .await?;
         assert_eq!(count, 0);
         Ok(())

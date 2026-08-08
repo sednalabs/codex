@@ -17,8 +17,6 @@ CREATE TABLE IF NOT EXISTS usage_automatic_turns (
     CHECK (attempt <= max_attempts)
 );
 
-CREATE INDEX IF NOT EXISTS usage_automatic_turns_thread_idx
-    ON usage_automatic_turns(thread_id);
 CREATE INDEX IF NOT EXISTS usage_automatic_turns_trigger_idx
     ON usage_automatic_turns(thread_id, trigger_turn_id);
 CREATE INDEX IF NOT EXISTS usage_automatic_turns_origin_idx
