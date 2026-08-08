@@ -1,0 +1,38 @@
+name: Refine automatic-turn routing
+
+on:
+  push:
+    paths:
+      - '.github/auto-turn-refine/apply'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Apply and verify facade refinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/auto-turn-refine/app_server_session.patch
+          git apply .github/auto-turn-refine/app_server_session.patch
+          git apply --check .github/auto-turn-refine/thread_routing.patch
+          git apply .github/auto-turn-refine/thread_routing.patch
+          test "$(git hash-object codex-rs/tui/src/app_server_session.rs)" = "b0586273dc86812abb68d87c87c9c79e7c6df318"
+          test "$(git hash-object codex-rs/tui/src/app/thread_routing.rs)" = "1062a8b6360e6b35d50514336fbc6482af965f56"
+          git diff --check -- codex-rs/tui/src/app_server_session.rs codex-rs/tui/src/app/thread_routing.rs
+      - name: Commit facade refinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add codex-rs/tui/src/app_server_session.rs codex-rs/tui/src/app/thread_routing.rs
+          git commit -m 'tui: route automatic provenance through app-server facade'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
