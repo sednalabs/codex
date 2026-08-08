@@ -77,8 +77,8 @@ impl ChatWidget {
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
     ) -> bool {
-        let client_user_message_id = self
-            .automatic_turn_client_id_for_history_record(&history_record);
+        let client_user_message_id =
+            self.automatic_turn_client_id_for_history_record(&history_record);
         self.submit_user_message_with_history_record_and_client_id(
             user_message,
             history_record,

@@ -31,12 +31,13 @@ async fn cyber_policy_auto_continue_carries_exact_turn_provenance() {
         }]
     );
 
-    let provenance = codex_protocol::automatic_turn::AutomaticTurnProvenance::from_client_user_message_id(
-        client_user_message_id
-            .as_deref()
-            .expect("automatic continuation should carry provenance"),
-    )
-    .expect("automatic continuation provenance should decode");
+    let provenance =
+        codex_protocol::automatic_turn::AutomaticTurnProvenance::from_client_user_message_id(
+            client_user_message_id
+                .as_deref()
+                .expect("automatic continuation should carry provenance"),
+        )
+        .expect("automatic continuation provenance should decode");
     assert_eq!(provenance.thread_id, thread_id.to_string());
     assert_eq!(provenance.trigger_turn_id, "turn-policy-trigger");
     assert_eq!(provenance.attempt, 1);
