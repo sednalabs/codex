@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'ci: trigger automatic-turn divergence registration'
+    if: "${{ github.event.head_commit.message == 'ci: trigger automatic-turn divergence registration' }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
