@@ -84,9 +84,13 @@ mod tests {
     #[test]
     fn cyber_policy_provenance_round_trips_without_prompt_text() {
         let thread_id = ThreadId::new();
-        let provenance =
-            AutomaticTurnProvenance::cyber_policy_auto_continue(thread_id, "turn-trigger", 2, 3)
-                .expect("valid provenance");
+        let provenance = AutomaticTurnProvenance::cyber_policy_auto_continue(
+            thread_id,
+            "turn-trigger",
+            /*attempt*/ 2,
+            /*max_attempts*/ 3,
+        )
+        .expect("valid provenance");
         let client_id = provenance
             .to_client_user_message_id()
             .expect("bounded client id");
@@ -105,12 +109,22 @@ mod tests {
 
         let thread_id = ThreadId::new();
         assert!(
-            AutomaticTurnProvenance::cyber_policy_auto_continue(thread_id, "turn-trigger", 0, 3)
-                .is_none()
+            AutomaticTurnProvenance::cyber_policy_auto_continue(
+                thread_id,
+                "turn-trigger",
+                /*attempt*/ 0,
+                /*max_attempts*/ 3,
+            )
+            .is_none()
         );
         assert!(
-            AutomaticTurnProvenance::cyber_policy_auto_continue(thread_id, "turn-trigger", 4, 3)
-                .is_none()
+            AutomaticTurnProvenance::cyber_policy_auto_continue(
+                thread_id,
+                "turn-trigger",
+                /*attempt*/ 4,
+                /*max_attempts*/ 3,
+            )
+            .is_none()
         );
     }
 }
