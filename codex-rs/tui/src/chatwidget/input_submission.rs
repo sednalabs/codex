@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "automatic_turn_provenance.rs"]
+mod automatic_turn_provenance;
+
 impl ChatWidget {
     pub(super) fn user_message_from_submission(
         &mut self,
@@ -74,11 +77,35 @@ impl ChatWidget {
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
     ) -> bool {
+        let client_user_message_id = self
+            .automatic_turn_client_id_for_history_record(&history_record);
         self.submit_user_message_with_history_record_and_client_id(
             user_message,
             history_record,
-            /*client_user_message_id*/ None,
+            client_user_message_id,
         )
+    }
+
+    fn automatic_turn_client_id_for_history_record(
+        &self,
+        history_record: &UserMessageHistoryRecord,
+    ) -> Option<String> {
+        if self.cyber_policy_auto_continue_attempts == 0 {
+            return None;
+        }
+        let UserMessageHistoryRecord::Override(history) = history_record else {
+            return None;
+        };
+        if !history.text.is_empty() || !history.text_elements.is_empty() {
+            return None;
+        }
+
+        let trigger_turn_id = self
+            .last_non_retry_error
+            .as_ref()
+            .map(|(turn_id, _)| turn_id.as_str())
+            .or(self.turn_lifecycle.last_turn_id.as_deref())?;
+        self.cyber_policy_auto_continue_client_id(trigger_turn_id)
     }
 
     pub(super) fn submit_user_message_with_history_record_and_client_id(
