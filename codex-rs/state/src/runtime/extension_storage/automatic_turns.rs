@@ -151,7 +151,7 @@ mod tests {
     use codex_protocol::automatic_turn::AutomaticTurnProvenance;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::UserMessageEvent;
-    use codex_utils_absolute_path::PathBufExt;
+    use codex_utils_absolute_path::test_support::PathExt;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
