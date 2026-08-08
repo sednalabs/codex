@@ -1,0 +1,208 @@
+--- a/codex-rs/tui/src/app/thread_routing.rs
++++ b/codex-rs/tui/src/app/thread_routing.rs
+@@ -8,17 +8,10 @@
+ use super::*;
+ use crate::app_server_session::source_agent_path;
+ use crate::chatwidget::ThreadInputStateRestoreMode;
+-use crate::permission_compat::legacy_compatible_permission_profile;
+ use crate::session_resume::SessionModelSettings;
+ use crate::session_resume::read_session_model_settings;
+-use codex_app_server_client::TypedRequestError;
+-use codex_app_server_protocol::ClientRequest;
+ use codex_app_server_protocol::TurnInterruptParams;
+ use codex_app_server_protocol::TurnInterruptResponse;
+-use codex_app_server_protocol::TurnStartParams;
+-use codex_app_server_protocol::TurnStartResponse;
+-use codex_app_server_protocol::TurnSteerParams;
+-use codex_app_server_protocol::TurnSteerResponse;
+ use codex_app_server_protocol::WarningNotification;
+ 
+ impl App {
+@@ -670,23 +663,15 @@
+                     let mut steer_turn_id = turn_id;
+                     let mut retried_after_turn_mismatch = false;
+                     loop {
+-                        let steer_result = if let Some(client_user_message_id) =
+-                            client_user_message_id.clone()
+-                        {
+-                            turn_steer_with_client_user_message_id(
+-                                app_server,
++                        match app_server
++                            .turn_steer(
+                                 thread_id,
+                                 steer_turn_id.clone(),
+                                 items.to_vec(),
+-                                client_user_message_id,
++                                client_user_message_id.clone(),
+                             )
+                             .await
+-                        } else {
+-                            app_server
+-                                .turn_steer(thread_id, steer_turn_id.clone(), items.to_vec())
+-                                .await
+-                        };
+-                        match steer_result {
++                        {
+                             Ok(_) => return Ok(true),
+                             Err(error) => {
+                                 if let Some(turn_error) =
+@@ -754,14 +739,11 @@
+                             .as_ref()
+                             .map(|profile| &profile.permission_profile),
+                     );
+-                    let response = if let Some(client_user_message_id) =
+-                        client_user_message_id.clone()
+-                    {
+-                        turn_start_with_client_user_message_id(
+-                            app_server,
++                    let response = app_server
++                        .turn_start(
+                             thread_id,
+                             items.to_vec(),
+-                            client_user_message_id,
++                            client_user_message_id.clone(),
+                             cwd.clone(),
+                             *approval_policy,
+                             approvals_reviewer,
+@@ -775,27 +757,7 @@
+                             *personality,
+                             final_output_json_schema.clone(),
+                         )
+-                        .await?
+-                    } else {
+-                        app_server
+-                            .turn_start(
+-                                thread_id,
+-                                items.to_vec(),
+-                                cwd.clone(),
+-                                *approval_policy,
+-                                approvals_reviewer,
+-                                permissions_override,
+-                                config.permissions.user_visible_workspace_roots(),
+-                                model.to_string(),
+-                                effort.clone(),
+-                                *summary,
+-                                service_tier.clone(),
+-                                collaboration_mode.clone(),
+-                                *personality,
+-                                final_output_json_schema.clone(),
+-                            )
+-                            .await?
+-                    };
++                        .await?;
+                     if self.active_thread_id == Some(thread_id)
+                         && self.chat_widget.thread_id() == Some(thread_id)
+                     {
+@@ -1748,112 +1710,6 @@
+ }
+ 
+ 
+-// `AppServerSession::turn_start` and `turn_steer` intentionally preserve their legacy callers,
+-// which do not carry a client user-message id. Keep the client-aware path here until that facade
+-// grows the optional field; this mirrors its request construction exactly and changes only the id.
+-#[allow(clippy::too_many_arguments)]
+-async fn turn_start_with_client_user_message_id(
+-    app_server: &mut AppServerSession,
+-    thread_id: ThreadId,
+-    items: Vec<UserInput>,
+-    client_user_message_id: String,
+-    cwd: PathBuf,
+-    approval_policy: AskForApproval,
+-    approvals_reviewer: ApprovalsReviewer,
+-    permissions_override: TurnPermissionsOverride,
+-    workspace_roots: &[AbsolutePathBuf],
+-    model: String,
+-    effort: Option<ReasoningEffortConfig>,
+-    summary: Option<ReasoningSummaryConfig>,
+-    service_tier: Option<Option<String>>,
+-    collaboration_mode: Option<CollaborationMode>,
+-    personality: Option<Personality>,
+-    output_schema: Option<serde_json::Value>,
+-) -> Result<TurnStartResponse> {
+-    let request_id = app_server.next_request_id();
+-    let request_handle = app_server.request_handle();
+-    let (sandbox_policy, permissions) =
+-        turn_permissions_overrides_for_client_id(permissions_override, cwd.as_path());
+-    request_handle
+-        .request_typed::<TurnStartResponse>(ClientRequest::TurnStart {
+-            request_id,
+-            params: TurnStartParams {
+-                thread_id: thread_id.to_string(),
+-                client_user_message_id: Some(client_user_message_id),
+-                input: items,
+-                responsesapi_client_metadata: None,
+-                additional_context: None,
+-                environments: None,
+-                cwd: Some(cwd),
+-                runtime_workspace_roots: Some(workspace_roots.to_vec()),
+-                approval_policy: Some(approval_policy),
+-                approvals_reviewer: Some(approvals_reviewer.into()),
+-                sandbox_policy,
+-                permissions,
+-                model: Some(model),
+-                service_tier,
+-                effort,
+-                summary,
+-                personality,
+-                output_schema,
+-                collaboration_mode,
+-                multi_agent_mode: None,
+-            },
+-        })
+-        .await
+-        .wrap_err("turn/start failed in TUI")
+-}
+-
+-async fn turn_steer_with_client_user_message_id(
+-    app_server: &mut AppServerSession,
+-    thread_id: ThreadId,
+-    turn_id: String,
+-    items: Vec<UserInput>,
+-    client_user_message_id: String,
+-) -> std::result::Result<TurnSteerResponse, TypedRequestError> {
+-    let request_id = app_server.next_request_id();
+-    let request_handle = app_server.request_handle();
+-    request_handle
+-        .request_typed::<TurnSteerResponse>(ClientRequest::TurnSteer {
+-            request_id,
+-            params: TurnSteerParams {
+-                thread_id: thread_id.to_string(),
+-                client_user_message_id: Some(client_user_message_id),
+-                input: items,
+-                responsesapi_client_metadata: None,
+-                additional_context: None,
+-                expected_turn_id: turn_id,
+-            },
+-        })
+-        .await
+-}
+-
+-fn turn_permissions_overrides_for_client_id(
+-    permissions_override: TurnPermissionsOverride,
+-    cwd: &std::path::Path,
+-) -> (
+-    Option<codex_app_server_protocol::SandboxPolicy>,
+-    Option<String>,
+-) {
+-    match permissions_override {
+-        TurnPermissionsOverride::Preserve => (None, None),
+-        TurnPermissionsOverride::ActiveProfile(active_permission_profile) => {
+-            (None, Some(active_permission_profile.id))
+-        }
+-        TurnPermissionsOverride::LegacySandbox(permission_profile) => {
+-            let legacy_profile = legacy_compatible_permission_profile(&permission_profile, cwd);
+-            let policy = legacy_profile
+-                .to_legacy_sandbox_policy(cwd)
+-                .unwrap_or_else(|err| {
+-                    unreachable!(
+-                        "legacy-compatible permissions must project to legacy policy: {err}"
+-                    )
+-                });
+-            (Some(policy.into()), None)
+-        }
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use super::*;
