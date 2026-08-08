@@ -226,8 +226,8 @@ WHERE turn_id = ?
                 thread_id,
                 "turn-trigger",
                 "turn-auto-1",
-                1,
-                3,
+                /*attempt*/ 1,
+                /*max_attempts*/ 3,
             ))
             .await;
 
@@ -265,7 +265,7 @@ WHERE turn_id = ?
                     "turn-trigger",
                     turn_id,
                     attempt,
-                    3,
+                    /*max_attempts*/ 3,
                 ))
                 .await;
             runtime
@@ -292,8 +292,8 @@ WHERE turn_id = ?
                 thread_id,
                 "turn-trigger",
                 turn_id,
-                2,
-                3,
+                /*attempt*/ 2,
+                /*max_attempts*/ 3,
             ))
             .await;
         runtime
