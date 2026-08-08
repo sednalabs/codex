@@ -99,6 +99,10 @@ impl SessionServices {
         reason = "usage logger event handling mutates ordered in-memory snapshots around async ledger writes"
     )]
     pub(crate) async fn log_usage_event(&self, event: &Event) {
+        if let Some(state_db) = &self.state_db {
+            state_db.record_automatic_turn_event(event).await;
+        }
+
         let Some(usage_logger) = &self.usage_logger else {
             return;
         };
