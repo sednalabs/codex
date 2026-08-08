@@ -50,6 +50,9 @@ impl StateRuntime {
             }
             EventMsg::Error(error) => {
                 let outcome = Self::automatic_turn_error_outcome(error);
+                // `Event.id` is the correlated Submission id by protocol contract. Turn-scoped
+                // errors are emitted through `Session::send_event`, which stamps this field with
+                // `turn_context.sub_id`, the same key recorded for the automatic user turn.
                 self.complete_automatic_turn(event.id.as_str(), outcome)
                     .await?;
             }
@@ -252,7 +255,7 @@ WHERE turn_id = ?
     }
 
     #[tokio::test]
-    async fn automatic_turn_projection_marks_reblock_and_exhaustion() -> Result<()> {
+    async fn automatic_turn_error_uses_enclosing_submission_id_for_turn_correlation() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
         for (turn_id, attempt, expected) in [
@@ -277,7 +280,9 @@ WHERE turn_id = ?
                     }),
                 })
                 .await;
-            assert_eq!(row(runtime.as_ref(), turn_id).await?.outcome, expected);
+            let projected = row(runtime.as_ref(), turn_id).await?;
+            assert_eq!(projected.turn_id, turn_id);
+            assert_eq!(projected.outcome, expected);
         }
         Ok(())
     }
