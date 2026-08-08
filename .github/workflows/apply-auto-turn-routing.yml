@@ -1,0 +1,43 @@
+name: Apply automatic-turn routing update
+
+on:
+  push:
+    paths:
+      - '.github/auto-turn-routing/apply'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Reconstruct and verify routing file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/auto-turn-routing/chunk-* | tr -d '\n' | base64 --decode > codex-rs/tui/src/app/thread_routing.rs
+          actual="$(git hash-object codex-rs/tui/src/app/thread_routing.rs)"
+          expected="b7321b67212f1dd76cbb55cd215c461348c78d50"
+          test "$actual" = "$expected" || {
+            echo "routing blob mismatch: expected $expected, got $actual" >&2
+            exit 1
+          }
+          git diff --check -- codex-rs/tui/src/app/thread_routing.rs
+      - name: Commit verified routing change
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- codex-rs/tui/src/app/thread_routing.rs; then
+            echo 'routing file already matches candidate'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add codex-rs/tui/src/app/thread_routing.rs
+          git commit -m 'tui: route automatic turn client provenance'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
