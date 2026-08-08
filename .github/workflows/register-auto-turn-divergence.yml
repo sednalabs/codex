@@ -1,0 +1,122 @@
+name: Register automatic-turn divergence
+
+on:
+  push:
+    paths:
+      - '.github/auto-turn-divergence/apply'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'ci: trigger automatic-turn divergence registration'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Update divergence registry and ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import textwrap
+          from pathlib import Path
+
+          registry_path = Path('docs/divergences/index.yaml')
+          text = registry_path.read_text()
+          entry_id = 'automatic-turn-provenance-telemetry'
+          if f'"id": "{entry_id}"' in text:
+              raise SystemExit(f'{entry_id} already exists')
+          entry = {
+              'id': entry_id,
+              'title': 'Automatic turn provenance and recovery telemetry',
+              'status': 'live',
+              'category': 'usage-ledger',
+              'surface': [
+                  'automatic user-turn client provenance',
+                  'cyber-policy retry lifecycle ledger',
+              ],
+              'files': [
+                  'codex-rs/core/src/state/service.rs',
+                  'codex-rs/protocol/src/automatic_turn.rs',
+                  'codex-rs/protocol/src/lib.rs',
+                  'codex-rs/state/src/runtime/extension_storage.rs',
+                  'codex-rs/state/src/runtime/extension_storage/automatic_turns.rs',
+                  'codex-rs/state/usage_migrations/0008_usage_automatic_turns.sql',
+                  'codex-rs/tui/src/app/thread_routing.rs',
+                  'codex-rs/tui/src/app_command.rs',
+                  'codex-rs/tui/src/app_server_session.rs',
+                  'codex-rs/tui/src/chatwidget/automatic_turn_provenance.rs',
+                  'codex-rs/tui/src/chatwidget/input_submission.rs',
+                  'codex-rs/tui/src/chatwidget/tests.rs',
+                  'codex-rs/tui/src/chatwidget/tests/automatic_turn.rs',
+              ],
+              'behavior': 'Typed cyber-policy auto-continuations carry a bounded payload-free client provenance envelope through the ordinary same-thread user-turn path. The extension-owned usage ledger projects exact trigger/result turn correlation and started, recovered, reblocked, exhausted, or failed lifecycle outcomes without changing the model-visible continue prompt or tagging ordinary human turns.',
+              'upstream_equivalent': False,
+              'introduced_in': {'carry_commit': None, 'upstream_commit': None},
+              'guardrail_lane': 'core-ledger-smoke; codex.tui-thread-session-policy-targeted',
+              'tests': [
+                  'cyber_policy_provenance_round_trips_without_prompt_text',
+                  'parser_rejects_human_ids_and_invalid_attempts',
+                  'automatic_turn_projection_records_exact_provenance_and_recovery',
+                  'automatic_turn_projection_marks_reblock_and_exhaustion',
+                  'ordinary_user_message_is_not_projected_as_automatic',
+                  'cyber_policy_auto_continue_carries_exact_turn_provenance',
+              ],
+              'owner': 'downstream',
+              'notes': 'The client_user_message_id envelope is model-opaque and client-asserted at the app-server boundary; the Sedna TUI stamps it only for the typed live cyber-policy retry path. Provider/model/token analytics remain normalized in existing usage tables and join through turn_id rather than being duplicated here.',
+              'upstreamability_tier': 'downstream-adapter',
+              'boundary_type': 'client-provenance-observation',
+              'hotspot_files': [],
+              'extraction_target': 'upstream-native generated-turn provenance and recovery observation',
+          }
+          trailer = '\n  ]\n}\n'
+          if not text.endswith(trailer):
+              raise SystemExit('unexpected divergence registry trailer')
+          rendered = textwrap.indent(json.dumps(entry, indent=2), '    ')
+          registry_path.write_text(text[:-len(trailer)] + ',\n' + rendered + trailer)
+          json.loads(registry_path.read_text())
+
+          ledger_path = Path('docs/carry-divergence-ledger.md')
+          ledger = ledger_path.read_text()
+          header = '### Typed Cyber-Policy Retry Boundary\n'
+          start = ledger.index(header)
+          end = ledger.index('\n### ', start + len(header))
+          section = ledger[start:end]
+          needle = '- Primary files:\n'
+          if 'usage_automatic_turns' in section:
+              raise SystemExit('automatic-turn telemetry already documented in cyber section')
+          bullet = (
+              '- Generated retries also carry a bounded, payload-free, model-opaque client provenance\n'
+              '  envelope with the owning thread, exact policy-blocked trigger turn, and retry\n'
+              '  ordinal. The extension-owned `usage.sqlite` projects that evidence into\n'
+              '  `usage_automatic_turns` and records recovery, repeated block, exhaustion, or other\n'
+              '  failure without changing the model-visible `continue` message. This provenance is\n'
+              '  client-asserted at the app-server boundary; ordinary human turns are never tagged.\n'
+          )
+          section = section.replace(needle, bullet + needle, 1)
+          section = section.replace(
+              '  - `codex-rs/tui/src/chatwidget/tests/app_server.rs`\n',
+              '  - `codex-rs/tui/src/chatwidget/tests/app_server.rs`\n'
+              '  - `codex-rs/protocol/src/automatic_turn.rs`\n'
+              '  - `codex-rs/state/src/runtime/extension_storage/automatic_turns.rs`\n'
+              '  - `codex-rs/state/usage_migrations/0008_usage_automatic_turns.sql`\n'
+              '  - `codex-rs/tui/src/chatwidget/automatic_turn_provenance.rs`\n',
+              1,
+          )
+          ledger_path.write_text(ledger[:start] + section + ledger[end:])
+          PY
+          git diff --check -- docs/divergences/index.yaml docs/carry-divergence-ledger.md
+      - name: Commit divergence documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add docs/divergences/index.yaml docs/carry-divergence-ledger.md
+          git commit -m 'docs: register automatic-turn provenance telemetry'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
