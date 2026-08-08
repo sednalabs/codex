@@ -74,10 +74,24 @@ impl ChatWidget {
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
     ) -> bool {
+        self.submit_user_message_with_history_record_and_client_id(
+            user_message,
+            history_record,
+            /*client_user_message_id*/ None,
+        )
+    }
+
+    pub(super) fn submit_user_message_with_history_record_and_client_id(
+        &mut self,
+        user_message: UserMessage,
+        history_record: UserMessageHistoryRecord,
+        client_user_message_id: Option<String>,
+    ) -> bool {
         self.submit_user_message_with_history_and_shell_escape_policy(
             user_message,
             history_record,
             ShellEscapePolicy::Allow,
+            client_user_message_id,
         )
         .0
     }
@@ -91,6 +105,7 @@ impl ChatWidget {
             user_message,
             UserMessageHistoryRecord::UserMessageText,
             shell_escape_policy,
+            /*client_user_message_id*/ None,
         )
         .1
     }
@@ -100,6 +115,7 @@ impl ChatWidget {
         user_message: UserMessage,
         history_record: UserMessageHistoryRecord,
         shell_escape_policy: ShellEscapePolicy,
+        client_user_message_id: Option<String>,
     ) -> (bool, Option<AppCommand>) {
         if !self.is_session_configured() {
             tracing::warn!("cannot submit user message before session is configured; queueing");
@@ -347,7 +363,8 @@ impl ChatWidget {
             /*final_output_json_schema*/ None,
             collaboration_mode,
             personality,
-        );
+        )
+        .with_client_user_message_id(client_user_message_id);
         let submitted_message = UserMessage {
             text,
             local_images,
