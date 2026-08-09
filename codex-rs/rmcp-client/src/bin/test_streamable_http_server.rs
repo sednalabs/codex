@@ -531,9 +531,7 @@ async fn arm_initialize_post_failure(
     arm_post_failure(state, request, ArmedFailureTarget::Initialize).await
 }
 
-async fn wait_initialize_post_failure_started(
-    State(state): State<PostFailureState>,
-) -> StatusCode {
+async fn wait_initialize_post_failure_started(State(state): State<PostFailureState>) -> StatusCode {
     let hold = state
         .armed_failure
         .lock()
