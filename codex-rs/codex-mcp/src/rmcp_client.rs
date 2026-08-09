@@ -596,6 +596,10 @@ impl AsyncManagedClient {
         supports_openai_form_elicitation: bool,
     ) -> Self {
         let is_codex_apps_mcp_server = server_name == CODEX_APPS_MCP_SERVER_NAME;
+        let retry_failed_startup = matches!(
+            &server.config().transport,
+            McpServerTransportConfig::StreamableHttp { .. }
+        );
         let reconnect_server_name = server_name.clone();
         let reconnect_tx_event = tx_event.clone();
         let cached_server_info = if is_codex_apps_mcp_server {
@@ -624,7 +628,7 @@ impl AsyncManagedClient {
             startup_complete: Arc::clone(&startup_complete),
         });
         let client = startup.start();
-        let startup_reconnect = Some({
+        let startup_reconnect = retry_failed_startup.then(|| {
             let startup = Arc::clone(&startup);
             Arc::new(
                 McpStartupReconnect::new(Arc::new(move || startup.start()))
