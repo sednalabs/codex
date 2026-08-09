@@ -2613,6 +2613,33 @@ decisions.
   - `codex-rs/core/src/session/mcp_refresh.rs`
   - `codex-rs/core/src/state/service.rs`
 
+### MCP Transient Startup Recovery
+
+- An ordinary Streamable HTTP MCP server that fails its initial startup can
+  recover during the same Codex session. A later tool-list or binding capture
+  starts one bounded background retry; it does not require an operator restart
+  and does not wait on the retry before preserving already-ready servers in
+  that step. Stdio startup remains one-shot.
+- The reconnect state is single-flight and applies exponential backoff after a
+  failed retry. A successful client becomes the exact live catalogue and call
+  authority for the next binding.
+- Cancellation and shutdown fence the reconnect generation. A client that
+  finishes after cancellation is shut down instead of being installed, and a
+  recovered client found closed is retired before another bounded retry.
+- Upstream cached optional-startup, lazy-subagent, OAuth reauthentication, and
+  startup-status fixes are complementary but do not provide this generic
+  ordinary-failure recovery contract on the maintained downstream runtime.
+- `codex.mcp-tool-exposure-targeted` proves the lifecycle with deterministic
+  connection-manager tests and literal Streamable HTTP initial-failure and
+  cancellation integration tests.
+- Primary files:
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs`
+  - `codex-rs/codex-mcp/src/rmcp_client.rs`
+  - `codex-rs/codex-mcp/src/connection_manager_tests.rs`
+  - `codex-rs/core/tests/suite/rmcp_client.rs`
+  - `codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs`
+
 ### 2026-07-23 Upstream Integration Boundaries
 
 - Upstream `4462b9deef` adds default-on
