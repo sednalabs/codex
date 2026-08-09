@@ -294,7 +294,7 @@ impl McpStartupReconnect {
         }
     }
 
-    fn with_startup_status_context(
+    pub(crate) fn with_startup_status_context(
         mut self,
         submit_id: String,
         server_name: String,
@@ -388,9 +388,8 @@ impl McpStartupReconnect {
                 Ok(client) => Ok(client),
                 Err(error) => Err(error.to_string()),
             };
-            let startup_status_context = reconnect.startup_status_context.clone();
             let mut client_to_shutdown = None;
-            let recovered = {
+            {
                 let mut state = reconnect
                     .state
                     .lock()
@@ -398,7 +397,6 @@ impl McpStartupReconnect {
                 state.reconnect_in_flight = false;
                 if state.cancelled {
                     client_to_shutdown = result.ok();
-                    false
                 } else {
                     match result {
                         Ok(client) => {
@@ -406,7 +404,21 @@ impl McpStartupReconnect {
                             state.consecutive_failures = 0;
                             state.retry_not_before = None;
                             state.recovered_client_closed = false;
-                            true
+                            if let Some(context) = reconnect.startup_status_context.as_ref() {
+                                // Publish readiness while holding the same state lock that
+                                // serializes cancellation and replacement. The session event
+                                // channel is unbounded, so `try_send` cannot wait for capacity;
+                                // cancellation therefore either wins before installation (and
+                                // retires the client below) or observes readiness already
+                                // published for the installed client.
+                                let _ = context.tx_event.try_send(Event {
+                                    id: context.submit_id.clone(),
+                                    msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
+                                        server: context.server_name.clone(),
+                                        status: McpStartupStatus::Ready,
+                                    }),
+                                });
+                            }
                         }
                         Err(error) => {
                             state.consecutive_failures =
@@ -418,28 +430,13 @@ impl McpStartupReconnect {
                                 retry_after_ms = retry_after.as_millis(),
                                 "MCP startup reconnect failed"
                             );
-                            false
                         }
                     }
                 }
-            };
+            }
 
             if let Some(client) = client_to_shutdown {
                 client.client.shutdown().await;
-                return;
-            }
-
-            if recovered && let Some(context) = startup_status_context {
-                let _ = context
-                    .tx_event
-                    .send(Event {
-                        id: context.submit_id,
-                        msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
-                            server: context.server_name,
-                            status: McpStartupStatus::Ready,
-                        }),
-                    })
-                    .await;
             }
         });
     }
