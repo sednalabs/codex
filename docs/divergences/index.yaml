@@ -3092,6 +3092,50 @@
       "extraction_target": "upstream shared-launcher validation fixes"
     },
     {
+      "id": "mcp-transient-startup-recovery",
+      "title": "MCP transient startup recovery",
+      "status": "live",
+      "category": "core-runtime",
+      "surface_type": "runtime-correctness",
+      "surface": [
+        "ordinary Streamable HTTP MCP startup",
+        "per-turn MCP binding capture",
+        "MCP shutdown and cancellation"
+      ],
+      "files": [
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs",
+        "codex-rs/codex-mcp/src/connection_manager_tests.rs",
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/core/tests/suite/rmcp_client.rs",
+        "codex-rs/rmcp-client/src/bin/test_streamable_http_server.rs",
+        "justfile"
+      ],
+      "behavior": "An ordinary Streamable HTTP MCP server whose initial startup fails may retry in the background when a later tool listing or step binding needs it; stdio startup remains one-shot. Other servers remain usable while that retry runs. Recovery is single-flight and backoff-bounded, a cancelled or shutting-down connection cannot install a late client, and a recovered client that has already closed is retired before a later retry. A successful retry becomes the exact client and catalogue authority for the next binding without restarting the Codex session.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-tool-exposure-targeted",
+      "tests": [
+        "startup_recovery_recreates_ordinary_client_on_next_binding",
+        "startup_recovery_cancellation_retires_late_client",
+        "startup_recovery_retires_closed_client_before_retry",
+        "streamable_http_failed_startup_recovers_on_next_binding",
+        "streamable_http_cancelled_startup_reconnect_stays_unready"
+      ],
+      "owner": "downstream",
+      "notes": "Upstream's cached optional-startup, lazy-subagent, OAuth reauthentication, and startup-status repairs are adjacent but do not provide generic retry after an ordinary transient initial startup failure on the maintained downstream architecture. Preserve this bounded carry until an upstream equivalent covers ordinary recovery, unrelated-server progress, cancellation and shutdown fencing, closed-client retirement, and literal Streamable HTTP integration proof.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "runtime-recovery",
+      "hotspot_files": [
+        "codex-rs/codex-mcp/src/rmcp_client.rs",
+        "codex-rs/codex-mcp/src/connection_manager/tool_catalog.rs"
+      ],
+      "extraction_target": "upstream generic MCP transient startup recovery"
+    },
+    {
       "id": "mcp-json-resource-model-boundary",
       "title": "MCP JSON-family resource model-output boundary",
       "status": "live",
