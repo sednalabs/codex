@@ -309,22 +309,30 @@ impl McpStartupReconnect {
     }
 
     async fn current_client(&self) -> Option<ManagedClient> {
-        let client = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .current_client
-            .clone()?;
-        if !client.client.is_closed().await {
-            return Some(client);
+        loop {
+            let client = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .current_client
+                .clone()?;
+            if !client.client.is_closed().await {
+                return Some(client);
+            }
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let still_current = state
+                .current_client
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&current.client, &client.client));
+            if still_current {
+                state.current_client = None;
+                state.recovered_client_closed = true;
+                return None;
+            }
         }
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.current_client = None;
-        state.recovered_client_closed = true;
-        None
     }
 
     fn recovered_client_closed(&self) -> bool {
