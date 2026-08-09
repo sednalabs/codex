@@ -2799,7 +2799,7 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
         ]),
     )
     .await;
-    fixture.submit("prime MCP startup recovery").await?;
+    fixture.submit_turn("prime MCP startup recovery").await?;
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     wait_streamable_http_initialize_failure_started(&control_server_url).await?;
     set_streamable_http_initialize_failure(
@@ -2843,7 +2843,9 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
         ]),
     )
     .await;
-    fixture.submit("call the recovered MCP echo tool").await?;
+    fixture
+        .submit_turn("call the recovered MCP echo tool")
+        .await?;
 
     let end_event = wait_for_event(&fixture.codex, |ev| {
         matches!(ev, EventMsg::McpToolCallEnd(_))
@@ -2953,7 +2955,9 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
         ]),
     )
     .await;
-    fixture.submit("prime MCP startup cancellation").await?;
+    fixture
+        .submit_turn("prime MCP startup cancellation")
+        .await?;
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     wait_streamable_http_initialize_failure_started(&control_server_url).await?;
 
@@ -2974,7 +2978,7 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     )
     .await;
     fixture
-        .submit("inspect MCP resources after cancelling startup recovery")
+        .submit_turn("inspect MCP tools after cancelling startup recovery")
         .await?;
 
     // Keep the server response held through the unavailable snapshot. Because
@@ -3009,7 +3013,7 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
         )
         .await;
         fixture
-            .submit("confirm MCP recovery cancellation quiescence")
+            .submit_turn("confirm MCP recovery cancellation quiescence")
             .await?;
         wait_for_turn_complete_without_ready(&fixture, server_name).await
     })
