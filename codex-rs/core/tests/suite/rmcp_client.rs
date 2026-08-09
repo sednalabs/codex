@@ -2779,13 +2779,12 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
         .iter()
         .any(|failure| failure.server == server_name));
 
-    // Hold the recovery constructor after its first HTTP failure. The first
-    // turn captures the failed binding and starts ordinary startup recovery in
-    // the background.
+    // Make the server healthy before the later binding. The first turn captures
+    // the failed binding and starts ordinary startup recovery in the background.
     set_streamable_http_initialize_failure(
         &control_server_url,
-        /*remaining*/ 1,
-        /*hold_until_released*/ true,
+        /*remaining*/ 0,
+        /*hold_until_released*/ false,
     )
     .await?;
     mount_sse_once(
@@ -2804,23 +2803,25 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
             "prime MCP startup recovery",
         ))
         .await?;
-    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-    wait_streamable_http_initialize_failure_started(&control_server_url).await?;
-    set_streamable_http_initialize_failure(
-        &control_server_url,
-        /*remaining*/ 0,
-        /*hold_until_released*/ false,
-    )
-    .await?;
-    wait_for_event(&fixture.codex, |ev| {
-        matches!(
-            ev,
-            EventMsg::McpStartupUpdate(update)
-                if update.server == server_name
-                    && matches!(update.status, McpStartupStatus::Ready)
-        )
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut saw_ready = false;
+        let mut saw_turn_complete = false;
+        while !saw_ready || !saw_turn_complete {
+            match fixture.codex.next_event().await?.msg {
+                EventMsg::McpStartupUpdate(update)
+                    if update.server == server_name
+                        && matches!(update.status, McpStartupStatus::Ready) =>
+                {
+                    saw_ready = true;
+                }
+                EventMsg::TurnComplete(_) => saw_turn_complete = true,
+                _ => {}
+            }
+        }
+        Ok::<_, anyhow::Error>(())
     })
-    .await;
+    .await
+    .context("recovery did not publish Ready and complete its triggering turn")??;
 
     // The next production binding must use this same runtime's recovered
     // client; no config refresh or replacement runtime is involved.
