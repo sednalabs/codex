@@ -38,7 +38,11 @@ use codex_protocol::ToolName;
 use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::GranularApprovalConfig;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupFailureReason;
+use codex_protocol::protocol::McpStartupStatus;
+use codex_protocol::protocol::McpStartupUpdateEvent;
 use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::InProcessTransportFactory;
 use codex_rmcp_client::McpAuthState;
@@ -534,6 +538,40 @@ fn insert_failed_reconnecting_client(
             tool_catalog_cache_context: None,
             startup_complete: Arc::new(AtomicBool::new(true)),
             startup_reconnect: Some(Arc::new(McpStartupReconnect::new(reconnect_factory))),
+            cancel_token,
+        },
+    );
+}
+
+fn insert_failed_reconnecting_client_with_status(
+    manager: &mut McpConnectionSet,
+    server_name: &str,
+    reconnect_factory: Arc<dyn Fn() -> ManagedClientFuture + Send + Sync>,
+    cancel_token: CancellationToken,
+    tx_event: async_channel::Sender<Event>,
+) {
+    let failed_client = futures::future::ready(Err(StartupOutcomeError::Failed {
+        error: "initial startup failed".to_string(),
+        is_authentication_required: false,
+    }))
+    .boxed()
+    .shared();
+    let startup_reconnect = McpStartupReconnect::new(reconnect_factory)
+        .with_startup_status_context(
+            "startup-recovery-test".to_string(),
+            server_name.to_string(),
+            Some(tx_event),
+        );
+    manager.insert_test_client(
+        server_name.to_string(),
+        AsyncManagedClient {
+            client: failed_client,
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: Some(Arc::new(startup_reconnect)),
             cancel_token,
         },
     );
@@ -2102,6 +2140,65 @@ async fn startup_recovery_cancellation_retires_late_client() {
     .await
     .expect("late reconnect client should be shut down");
     assert!(manager.list_all_tools().await.is_empty());
+}
+
+#[tokio::test]
+async fn startup_recovery_shutdown_cannot_publish_late_ready() {
+    let recovered_client =
+        create_test_managed_client(vec![create_test_tool("ordinary", "search")]).await;
+    let reconnect_factory = {
+        let recovered_client = recovered_client.clone();
+        Arc::new(move || {
+            let recovered_client = recovered_client.clone();
+            async move { Ok(recovered_client) }.boxed().shared()
+        })
+    };
+    let approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+    let permission_profile = Constrained::allow_any(PermissionProfile::default());
+    let mut manager = McpConnectionSet::new_uninitialized(
+        &approval_policy,
+        &permission_profile,
+        /*prefix_mcp_tool_names*/ true,
+    );
+    let (tx_event, rx_event) = async_channel::bounded(1);
+    tx_event
+        .send(Event {
+            id: "sentinel".to_string(),
+            msg: EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
+                server: "sentinel".to_string(),
+                status: McpStartupStatus::Starting,
+            }),
+        })
+        .await
+        .expect("fill bounded status channel");
+    insert_failed_reconnecting_client_with_status(
+        &mut manager,
+        "ordinary",
+        reconnect_factory,
+        CancellationToken::new(),
+        tx_event,
+    );
+    let manager = Arc::new(manager);
+
+    assert!(manager.list_all_tools().await.is_empty());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while capture_binding(&manager).await.tools().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("recovered client should become the current binding");
+
+    manager.shutdown().await;
+    let sentinel = rx_event.recv().await.expect("receive sentinel event");
+    assert_eq!(sentinel.id, "sentinel");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), rx_event.recv())
+            .await
+            .is_err(),
+        "shutdown must not be followed by a stale startup Ready event"
+    );
+    assert!(recovered_client.client.is_closed().await);
 }
 
 #[tokio::test(start_paused = true)]
