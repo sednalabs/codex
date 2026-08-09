@@ -2799,7 +2799,10 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
     .await;
     fixture
         .codex
-        .submit(read_only_user_turn(&fixture, "prime MCP startup recovery"))
+        .submit(auto_approved_user_turn(
+            &fixture,
+            "prime MCP startup recovery",
+        ))
         .await?;
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     wait_streamable_http_initialize_failure_started(&control_server_url).await?;
@@ -2846,7 +2849,7 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
     .await;
     fixture
         .codex
-        .submit(read_only_user_turn(
+        .submit(auto_approved_user_turn(
             &fixture,
             "call the recovered MCP echo tool",
         ))
@@ -2960,7 +2963,7 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     .await;
     fixture
         .codex
-        .submit(read_only_user_turn(
+        .submit(auto_approved_user_turn(
             &fixture,
             "prime MCP startup cancellation",
         ))
@@ -2986,7 +2989,7 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     .await;
     fixture
         .codex
-        .submit(read_only_user_turn(
+        .submit(auto_approved_user_turn(
             &fixture,
             "inspect MCP tools after cancelling startup recovery",
         ))
@@ -3025,7 +3028,7 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
         .await;
         fixture
             .codex
-            .submit(read_only_user_turn(
+            .submit(auto_approved_user_turn(
                 &fixture,
                 "confirm MCP recovery cancellation quiescence",
             ))
