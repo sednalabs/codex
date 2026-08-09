@@ -2725,15 +2725,13 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
     let server = responses::start_mock_server().await;
     let server_name = "rmcp_http_startup_recovery";
     let namespace = format!("mcp__{server_name}");
-    let Some(http_server) = start_streamable_http_test_server(
+    let http_server = start_streamable_http_test_server(
         "startup-recovery",
         /*auth*/ None,
         ToolPagination::Disabled,
     )
     .await?
-    else {
-        return Ok(());
-    };
+    .context("startup recovery proof requires test_streamable_http_server")?;
     let server_url = http_server.url().to_string();
     let control_server_url = server_url.clone();
 
@@ -2799,7 +2797,10 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
         ]),
     )
     .await;
-    fixture.submit_turn("prime MCP startup recovery").await?;
+    fixture
+        .codex
+        .submit(read_only_user_turn(&fixture, "prime MCP startup recovery"))
+        .await?;
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     wait_streamable_http_initialize_failure_started(&control_server_url).await?;
     set_streamable_http_initialize_failure(
@@ -2844,7 +2845,11 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
     )
     .await;
     fixture
-        .submit_turn("call the recovered MCP echo tool")
+        .codex
+        .submit(read_only_user_turn(
+            &fixture,
+            "call the recovered MCP echo tool",
+        ))
         .await?;
 
     let end_event = wait_for_event(&fixture.codex, |ev| {
@@ -2887,15 +2892,13 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     let server = responses::start_mock_server().await;
     let server_name = "rmcp_http_cancelled_recovery";
     let namespace = format!("mcp__{server_name}");
-    let Some(http_server) = start_streamable_http_test_server(
+    let http_server = start_streamable_http_test_server(
         "cancelled-recovery",
         /*auth*/ None,
         ToolPagination::Disabled,
     )
     .await?
-    else {
-        return Ok(());
-    };
+    .context("startup cancellation proof requires test_streamable_http_server")?;
     let server_url = http_server.url().to_string();
     let control_server_url = server_url.clone();
     set_streamable_http_initialize_failure(
@@ -2956,7 +2959,11 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     )
     .await;
     fixture
-        .submit_turn("prime MCP startup cancellation")
+        .codex
+        .submit(read_only_user_turn(
+            &fixture,
+            "prime MCP startup cancellation",
+        ))
         .await?;
     wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     wait_streamable_http_initialize_failure_started(&control_server_url).await?;
@@ -2978,7 +2985,11 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     )
     .await;
     fixture
-        .submit_turn("inspect MCP tools after cancelling startup recovery")
+        .codex
+        .submit(read_only_user_turn(
+            &fixture,
+            "inspect MCP tools after cancelling startup recovery",
+        ))
         .await?;
 
     // Keep the server response held through the unavailable snapshot. Because
@@ -3013,7 +3024,11 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
         )
         .await;
         fixture
-            .submit_turn("confirm MCP recovery cancellation quiescence")
+            .codex
+            .submit(read_only_user_turn(
+                &fixture,
+                "confirm MCP recovery cancellation quiescence",
+            ))
             .await?;
         wait_for_turn_complete_without_ready(&fixture, server_name).await
     })
