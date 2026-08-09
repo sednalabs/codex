@@ -2774,10 +2774,12 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
             break summary;
         }
     };
-    assert!(startup_summary
-        .failed
-        .iter()
-        .any(|failure| failure.server == server_name));
+    assert!(
+        startup_summary
+            .failed
+            .iter()
+            .any(|failure| failure.server == server_name)
+    );
 
     // Make the server healthy before the later binding. The first turn captures
     // the failed binding and starts ordinary startup recovery in the background.
@@ -2942,10 +2944,12 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
             break summary;
         }
     };
-    assert!(startup_summary
-        .failed
-        .iter()
-        .any(|failure| failure.server == server_name));
+    assert!(
+        startup_summary
+            .failed
+            .iter()
+            .any(|failure| failure.server == server_name)
+    );
 
     set_streamable_http_initialize_failure(
         &control_server_url,
@@ -3003,10 +3007,12 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     // late Ready update.
     tokio::time::timeout(Duration::from_secs(10), async {
         wait_for_turn_complete_without_ready(&fixture, server_name).await?;
-        assert!(post_cancel_request
-            .single_request()
-            .tool_by_name(&namespace, "echo")
-            .is_none());
+        assert!(
+            post_cancel_request
+                .single_request()
+                .tool_by_name(&namespace, "echo")
+                .is_none()
+        );
 
         set_streamable_http_initialize_failure(
             &control_server_url,
@@ -3658,9 +3664,7 @@ async fn set_streamable_http_initialize_failure(
 
 /// Waits until the host-local test server has received the held initialize
 /// request, before the caller exercises startup cancellation.
-async fn wait_streamable_http_initialize_failure_started(
-    server_url: &str,
-) -> anyhow::Result<()> {
+async fn wait_streamable_http_initialize_failure_started(server_url: &str) -> anyhow::Result<()> {
     let base_url = server_url.strip_suffix("/mcp").unwrap_or(server_url);
     Client::new()
         .get(format!(
