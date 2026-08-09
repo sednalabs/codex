@@ -390,8 +390,8 @@ mcp-tool-exposure-targeted:
     cargo test -p codex-mcp capture_binding_uses_the_ready_clients_own_tools --lib -- --exact --test-threads=1
     cargo test -p codex-mcp startup_recovery_ --lib -- --test-threads=1
     cargo build -p codex-rmcp-client --bin test_streamable_http_server
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_failed_startup_recovers_on_next_binding --exact
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_cancelled_startup_reconnect_stays_unready --exact
+    RUST_BACKTRACE=1 RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_failed_startup_recovers_on_next_binding --exact
+    RUST_BACKTRACE=1 RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_cancelled_startup_reconnect_stays_unready --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently --exact
 
