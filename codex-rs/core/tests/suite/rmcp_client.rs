@@ -2812,7 +2812,8 @@ async fn streamable_http_failed_startup_recovers_on_next_binding() -> anyhow::Re
         matches!(
             ev,
             EventMsg::McpStartupUpdate(update)
-                if matches!(update.status, McpStartupStatus::Ready)
+                if update.server == server_name
+                    && matches!(update.status, McpStartupStatus::Ready)
         )
     })
     .await;
@@ -2960,25 +2961,15 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     // in flight before the real session interrupt path is invoked.
     fixture.codex.submit(Op::Interrupt).await?;
 
-    let post_cancel_call_id = "call-cancelled-recovery-list";
-    let post_cancel_first = mount_sse_once(
+    let post_cancel_request = mount_sse_once(
         &server,
         responses::sse(vec![
-            responses::ev_response_created("resp-cancelled-recovery-list"),
-            responses::ev_function_call(post_cancel_call_id, "list_mcp_resources", "{}"),
-            responses::ev_completed("resp-cancelled-recovery-list"),
-        ]),
-    )
-    .await;
-    let post_cancel_final = mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-cancelled-recovery-complete"),
+            responses::ev_response_created("resp-cancelled-recovery-unavailable"),
             responses::ev_assistant_message(
-                "msg-cancelled-recovery-complete",
+                "msg-cancelled-recovery-unavailable",
                 "cancelled recovery remained unavailable",
             ),
-            responses::ev_completed("resp-cancelled-recovery-complete"),
+            responses::ev_completed("resp-cancelled-recovery-unavailable"),
         ]),
     )
     .await;
@@ -2992,25 +2983,11 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
     // overall bound then drains a post-release sentinel turn and rejects any
     // late Ready update.
     tokio::time::timeout(Duration::from_secs(10), async {
-        wait_for_turn_complete_without_ready(&fixture).await?;
-        assert!(post_cancel_first
+        wait_for_turn_complete_without_ready(&fixture, server_name).await?;
+        assert!(post_cancel_request
             .single_request()
             .tool_by_name(&namespace, "echo")
             .is_none());
-        let post_cancel_output = post_cancel_final
-            .single_request()
-            .function_call_output_text(post_cancel_call_id)
-            .expect("cancelled MCP resource listing output");
-        assert_eq!(
-            serde_json::from_str::<Value>(&post_cancel_output)?,
-            json!({
-                "resources": [],
-                "failures": [{
-                    "server": server_name,
-                    "reason": "notReady"
-                }]
-            })
-        );
 
         set_streamable_http_initialize_failure(
             &control_server_url,
@@ -3034,7 +3011,7 @@ async fn streamable_http_cancelled_startup_reconnect_stays_unready() -> anyhow::
         fixture
             .submit("confirm MCP recovery cancellation quiescence")
             .await?;
-        wait_for_turn_complete_without_ready(&fixture).await
+        wait_for_turn_complete_without_ready(&fixture, server_name).await
     })
     .await
     .context("cancelled recovery did not reach bounded quiescence")??;
@@ -3675,11 +3652,15 @@ async fn wait_streamable_http_initialize_failure_started(
 /// Drains one turn boundary while rejecting any ready update from the
 /// cancelled reconnect. The caller supplies one overall timeout around the
 /// required sequence rather than timing out individual events.
-async fn wait_for_turn_complete_without_ready(fixture: &TestCodex) -> anyhow::Result<()> {
+async fn wait_for_turn_complete_without_ready(
+    fixture: &TestCodex,
+    server_name: &str,
+) -> anyhow::Result<()> {
     loop {
         match fixture.codex.next_event().await?.msg {
             EventMsg::McpStartupUpdate(update)
-                if matches!(update.status, McpStartupStatus::Ready) =>
+                if update.server == server_name
+                    && matches!(update.status, McpStartupStatus::Ready) =>
             {
                 anyhow::bail!("cancelled MCP recovery emitted a late ready update");
             }

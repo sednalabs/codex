@@ -593,7 +593,8 @@ async fn arm_post_failure(
             hold,
         })
     };
-    let previous = state.armed_failure.lock().await.replace(armed_failure);
+    let mut current_failure = state.armed_failure.lock().await;
+    let previous = std::mem::replace(&mut *current_failure, armed_failure);
     if let Some(previous) = previous.and_then(|failure| failure.hold) {
         previous.release.notify_one();
     }
