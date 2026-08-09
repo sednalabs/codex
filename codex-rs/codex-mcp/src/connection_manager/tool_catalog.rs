@@ -70,9 +70,10 @@ impl McpConnectionSet {
                 .client
                 .startup_complete
                 .load(Ordering::Acquire);
-            // Keep the published cache reachable while startup is pending. A
-            // ready client refreshes under the catalog authority lock so the
-            // snapshot replacement and stale-call revision stay atomic.
+            // Keep only the Apps cache reachable while startup is pending. An
+            // ordinary cached catalogue is not executable until its client is
+            // ready. A ready client refreshes under the catalog authority lock
+            // so snapshot replacement and stale-call revision stay atomic.
             if startup_complete || !has_cached_tools {
                 self.refresh_view_catalogue(server_name, view).await;
             }
