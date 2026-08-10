@@ -657,10 +657,10 @@ impl AsyncManagedClient {
     }
 
     pub(crate) async fn client(&self) -> Result<ManagedClient, StartupOutcomeError> {
-        if let Some(reconnect) = self.startup_reconnect.as_ref() {
-            if let Some(client) = reconnect.current_client().await {
-                return Ok(client);
-            }
+        if let Some(reconnect) = self.startup_reconnect.as_ref()
+            && let Some(client) = reconnect.current_client().await
+        {
+            return Ok(client);
         }
         self.client.clone().await
     }
