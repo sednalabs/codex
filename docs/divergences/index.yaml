@@ -2905,6 +2905,7 @@
         "regular_mcp_definition_cache_preserves_live_session_state",
         "capture_binding_uses_the_ready_clients_own_tools",
         "binding_resource_catalogue_reports_unready_server_and_recovers_on_next_binding",
+        "all_server_resource_payload_reports_partial_listing_failures",
         "all_server_resource_catalogues_report_unready_server_without_hiding_ready_results",
         "stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in",
         "stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently"
