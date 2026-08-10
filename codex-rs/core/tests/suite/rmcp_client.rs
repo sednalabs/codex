@@ -431,6 +431,136 @@ async fn openai_form_capability_is_not_advertised_by_default() -> anyhow::Result
     assert_openai_form_capability_advertisement(/*expected*/ false).await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_server_resource_catalogues_report_unready_server_without_hiding_ready_results()
+-> anyhow::Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "requires a Windows test_stdio_server in the Wine-exec environment"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let resources_call_id = "list-all-resources";
+    let templates_call_id = "list-all-resource-templates";
+    let explicit_call_id = "list-unready-resources";
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call(resources_call_id, "list_mcp_resources", "{}"),
+            responses::ev_function_call(templates_call_id, "list_mcp_resource_templates", "{}"),
+            responses::ev_function_call(
+                explicit_call_id,
+                "list_mcp_resources",
+                &json!({"server": "unready"}).to_string(),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let final_mock = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg-1", "Resource catalogues inspected."),
+            responses::ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let ready_command = remote_aware_stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            insert_mcp_server(
+                config,
+                "ready",
+                stdio_transport(ready_command, /*env*/ None, Vec::new()),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+            insert_mcp_server(
+                config,
+                "unready",
+                stdio_transport(
+                    "codex-test-missing-mcp-server".to_string(),
+                    /*env*/ None,
+                    Vec::new(),
+                ),
+                TestMcpServerOptions {
+                    environment_id: remote_aware_environment_id(),
+                    ..Default::default()
+                },
+            );
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    wait_for_mcp_server(&fixture.codex, "ready").await?;
+
+    fixture
+        .codex
+        .submit(read_only_user_turn(
+            &fixture,
+            "inspect all MCP resource catalogues",
+        ))
+        .await?;
+    wait_for_event(&fixture.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let request = final_mock.single_request();
+    let resources_output = request
+        .function_call_output_text(resources_call_id)
+        .expect("resource catalogue output");
+    assert_eq!(
+        serde_json::from_str::<Value>(&resources_output)?,
+        json!({
+            "resources": [{
+                "server": "ready",
+                "uri": "memo://codex/example-note",
+                "name": "example-note",
+                "title": "Example Note",
+                "description": "A sample MCP resource exposed for integration tests.",
+                "mimeType": "text/plain"
+            }],
+            "failures": [{
+                "server": "unready",
+                "reason": "notReady"
+            }]
+        })
+    );
+    let templates_output = request
+        .function_call_output_text(templates_call_id)
+        .expect("resource template catalogue output");
+    assert_eq!(
+        serde_json::from_str::<Value>(&templates_output)?,
+        json!({
+            "resourceTemplates": [{
+                "server": "ready",
+                "uriTemplate": "memo://codex/{slug}",
+                "name": "codex-memo",
+                "title": "Codex Memo",
+                "description": "Template for memo://codex/{slug} resources used in tests.",
+                "mimeType": "text/plain"
+            }],
+            "failures": [{
+                "server": "unready",
+                "reason": "notReady"
+            }]
+        })
+    );
+    let explicit_output = request
+        .function_call_output_text(explicit_call_id)
+        .expect("explicit unavailable-server output");
+    assert!(
+        explicit_output.contains("MCP server 'unready' was not ready for this step"),
+        "unexpected explicit-server output: {explicit_output}"
+    );
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn openai_form_capability_updates_for_loaded_thread() -> anyhow::Result<()> {
     skip_if_wine_exec!(

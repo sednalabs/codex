@@ -837,6 +837,15 @@ for a removed crate path.
   `preparation_holds_catalog_authority_until_it_finishes` are required beside
   the pagination checks. A live `list_changed` replacement must advance the
   manager revision without publishing a partial or locally filtered snapshot.
+- Resource-catalogue checks
+  `binding_resource_catalogue_reports_unready_server_and_recovers_on_next_binding`
+  `all_server_resource_payload_reports_partial_listing_failures`, and
+  `all_server_resource_catalogues_report_unready_server_without_hiding_ready_results`
+  require all-server resource and template results to report bounded
+  machine-readable failures for configured-but-unready clients while retaining
+  ready-server results. Explicit server calls remain fail-closed, and a
+  recovered server becomes visible only through a newly captured binding. The
+  `codex.mcp-tool-exposure-targeted` lane runs all three checks.
 - Execution prepares from that already captured step binding; it must not
   refresh and recapture a binding for each tool call. The prepared RPC holds
   catalogue read authority through completion, so a competing recapture write
