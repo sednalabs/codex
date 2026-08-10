@@ -267,7 +267,10 @@ impl ServerHandler for ResourceCatalogueTransportFactory {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        if matches!(self.listing_behavior, ResourceCatalogueListingBehavior::Fails) {
+        if matches!(
+            self.listing_behavior,
+            ResourceCatalogueListingBehavior::Fails
+        ) {
             return Err(McpError::internal_error("resource list failed", None));
         }
         Ok(ListResourcesResult {
@@ -294,7 +297,10 @@ impl ServerHandler for ResourceCatalogueTransportFactory {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
-        if matches!(self.listing_behavior, ResourceCatalogueListingBehavior::Fails) {
+        if matches!(
+            self.listing_behavior,
+            ResourceCatalogueListingBehavior::Fails
+        ) {
             return Err(McpError::internal_error(
                 "resource template list failed",
                 None,
@@ -2421,11 +2427,9 @@ async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_
         ResourceCatalogueListingBehavior::Succeeds,
     )
     .await?;
-    let failed_client = create_resource_managed_client(
-        failed_server_name,
-        ResourceCatalogueListingBehavior::Fails,
-    )
-    .await?;
+    let failed_client =
+        create_resource_managed_client(failed_server_name, ResourceCatalogueListingBehavior::Fails)
+            .await?;
     let recovered_client = create_resource_managed_client(
         CODEX_APPS_MCP_SERVER_NAME,
         ResourceCatalogueListingBehavior::Succeeds,
