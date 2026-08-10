@@ -235,6 +235,13 @@ impl InProcessTransportFactory for TestInProcessTransportFactory {
 #[derive(Clone)]
 struct ResourceCatalogueTransportFactory {
     server_name: String,
+    listing_behavior: ResourceCatalogueListingBehavior,
+}
+
+#[derive(Clone, Copy)]
+enum ResourceCatalogueListingBehavior {
+    Succeeds,
+    Fails,
 }
 
 impl ServerHandler for ResourceCatalogueTransportFactory {
@@ -260,6 +267,9 @@ impl ServerHandler for ResourceCatalogueTransportFactory {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
+        if matches!(self.listing_behavior, ResourceCatalogueListingBehavior::Fails) {
+            return Err(McpError::internal_error("resource list failed", None));
+        }
         Ok(ListResourcesResult {
             resources: vec![Resource::new(
                 RawResource {
@@ -284,6 +294,12 @@ impl ServerHandler for ResourceCatalogueTransportFactory {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, McpError> {
+        if matches!(self.listing_behavior, ResourceCatalogueListingBehavior::Fails) {
+            return Err(McpError::internal_error(
+                "resource template list failed",
+                None,
+            ));
+        }
         Ok(ListResourceTemplatesResult {
             resource_templates: vec![ResourceTemplate::new(
                 RawResourceTemplate {
@@ -474,10 +490,14 @@ async fn create_test_managed_client(tools: Vec<ToolInfo>) -> ManagedClient {
     }
 }
 
-async fn create_resource_managed_client(server_name: &str) -> anyhow::Result<ManagedClient> {
+async fn create_resource_managed_client(
+    server_name: &str,
+    listing_behavior: ResourceCatalogueListingBehavior,
+) -> anyhow::Result<ManagedClient> {
     let client = Arc::new(
         RmcpClient::new_in_process_client(Arc::new(ResourceCatalogueTransportFactory {
             server_name: server_name.to_string(),
+            listing_behavior,
         }))
         .await?,
     );
@@ -2395,8 +2415,22 @@ async fn startup_recovery_retires_closed_client_before_retry() {
 async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_binding()
 -> anyhow::Result<()> {
     let ready_server_name = "ready";
-    let ready_client = create_resource_managed_client(ready_server_name).await?;
-    let recovered_client = create_resource_managed_client(CODEX_APPS_MCP_SERVER_NAME).await?;
+    let failed_server_name = "failed";
+    let ready_client = create_resource_managed_client(
+        ready_server_name,
+        ResourceCatalogueListingBehavior::Succeeds,
+    )
+    .await?;
+    let failed_client = create_resource_managed_client(
+        failed_server_name,
+        ResourceCatalogueListingBehavior::Fails,
+    )
+    .await?;
+    let recovered_client = create_resource_managed_client(
+        CODEX_APPS_MCP_SERVER_NAME,
+        ResourceCatalogueListingBehavior::Succeeds,
+    )
+    .await?;
     let release_reconnect = Arc::new(Notify::new());
     let release_reconnect_for_factory = Arc::clone(&release_reconnect);
     let reconnect_finished = Arc::new(Notify::new());
@@ -2431,6 +2465,23 @@ async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_
             cancel_token: CancellationToken::new(),
         },
     );
+    manager.insert_test_client(
+        failed_server_name,
+        AsyncManagedClient {
+            client: futures::future::ready::<Result<ManagedClient, StartupOutcomeError>>(Ok(
+                failed_client,
+            ))
+            .boxed()
+            .shared(),
+            is_codex_apps_mcp_server: false,
+            cached_server_info: None,
+            codex_apps_tools_cache_context: None,
+            tool_catalog_cache_context: None,
+            startup_complete: Arc::new(AtomicBool::new(true)),
+            startup_reconnect: None,
+            cancel_token: CancellationToken::new(),
+        },
+    );
     let manager = Arc::new(manager);
     let reconnect_finished_wait = reconnect_finished.notified();
 
@@ -2449,10 +2500,16 @@ async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_
     );
     assert_eq!(
         first_resources.failures,
-        vec![crate::McpResourceListingFailure {
-            server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
-            reason: crate::McpResourceListingFailureReason::NotReady,
-        }]
+        vec![
+            crate::McpResourceListingFailure {
+                server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                reason: crate::McpResourceListingFailureReason::NotReady,
+            },
+            crate::McpResourceListingFailure {
+                server: failed_server_name.to_string(),
+                reason: crate::McpResourceListingFailureReason::ListFailed,
+            },
+        ]
     );
     assert_eq!(first_templates.failures, first_resources.failures);
     assert_eq!(
@@ -2473,8 +2530,14 @@ async fn binding_resource_catalogue_reports_unready_server_and_recovers_on_next_
     let recovered_templates = recovered_binding
         .list_all_resource_templates(|_| true)
         .await;
-    assert_eq!(recovered_resources.failures, Vec::new());
-    assert_eq!(recovered_templates.failures, Vec::new());
+    assert_eq!(
+        recovered_resources.failures,
+        vec![crate::McpResourceListingFailure {
+            server: failed_server_name.to_string(),
+            reason: crate::McpResourceListingFailureReason::ListFailed,
+        }]
+    );
+    assert_eq!(recovered_templates.failures, recovered_resources.failures);
     assert_eq!(
         serde_json::to_value(&recovered_resources.by_server)?,
         serde_json::json!({
