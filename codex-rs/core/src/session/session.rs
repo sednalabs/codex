@@ -1431,7 +1431,8 @@ impl Session {
             }
             if matches!(&sess.fork_persistence, ForkPersistence::Referenced { .. }) {
                 // Keep the source reserved until the child's history reference is durable.
-                sess.try_ensure_rollout_materialized().await?;
+                sess.try_ensure_rollout_materialized(PersistContext::Standard)
+                    .await?;
             }
             {
                 let mut state = sess.state.lock().await;
