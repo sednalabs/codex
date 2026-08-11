@@ -45,6 +45,27 @@ pub struct TrackEventsContext {
     pub product_client_id: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactOperationLifecycle {
+    Started,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactOperation {
+    pub item_id: String,
+    pub lifecycle: ArtifactOperationLifecycle,
+    pub occurred_at_ms: u64,
+    pub plugin_id: String,
+    pub script_path: String,
+    pub skill: String,
+    pub artifact_type: String,
+    pub operation_kind: String,
+    pub expected_output_count: u32,
+    pub output_format: String,
+    pub execution_backend: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodeModeToolCallFact {
     CellStarted {
@@ -489,6 +510,7 @@ pub(crate) enum AnalyticsFact {
 }
 
 pub(crate) enum CustomAnalyticsFact {
+    ArtifactOperation(ArtifactOperationInput),
     CodeModeToolCall(CodeModeToolCallFact),
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
@@ -509,6 +531,11 @@ pub(crate) enum CustomAnalyticsFact {
     PluginInstallFailed(PluginInstallFailedInput),
     ExternalAgentConfigImportCompleted(ExternalAgentConfigImportCompletedInput),
     ExternalAgentConfigImportFailure(ExternalAgentConfigImportFailureInput),
+}
+
+pub(crate) struct ArtifactOperationInput {
+    pub tracking: TrackEventsContext,
+    pub operation: ArtifactOperation,
 }
 
 pub(crate) struct SkillInvokedInput {
