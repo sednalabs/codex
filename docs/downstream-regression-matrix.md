@@ -521,6 +521,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
     touching `README.md` or `docs/**`.
 - `sedna-branch-build.yml` is the preview artifact path.
   - It is manual-dispatch only.
+  - Linux `x86_64` remains the default; the explicit `platform=macos` path
+    produces separate disposable Apple Silicon and Intel artifacts that are ad
+    hoc signed but not notarized or published as official releases.
   - Treat it as artifact validation, not the primary downstream correctness
     gate.
 

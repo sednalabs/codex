@@ -1892,7 +1892,14 @@ decisions.
   source is available only when those values remain `openai/codex` and
   `rust-v`; custom downstream origins always resolve and download through their
   configured GitHub repository.
+- The manual branch-build workflow keeps Linux `x86_64` as its default and
+  offers an explicit macOS preview mode. That mode builds separate Apple
+  Silicon and Intel artifacts, applies ad hoc signatures for local execution,
+  and records that the artifacts are not notarized; it does not widen the
+  Linux-only official release contract or publish a GitHub Release.
 - Primary files:
+  - `.github/workflows/sedna-branch-build.yml`
+  - `.github/scripts/test_ci_planners.py`
   - `codex-rs/utils/version/build.rs`
   - `codex-rs/utils/version/src/lib.rs`
   - `codex-rs/cli/src/main.rs`

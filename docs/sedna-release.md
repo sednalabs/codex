@@ -133,7 +133,10 @@ changes can be detected explicitly instead of inferred from tag shape alone.
 - release smoke runs may warm dependency and compiler caches for the official publisher, but
   `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
   publication steps itself
-- `sedna-branch-build` produces disposable preview binaries only when manually dispatched
+- `sedna-branch-build` produces disposable preview binaries only when manually
+  dispatched. Its default remains Linux `x86_64`; `platform=macos` produces
+  separate ad hoc signed, non-notarized Apple Silicon and Intel artifacts for
+  preview use without publishing a GitHub Release.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases

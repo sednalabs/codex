@@ -160,12 +160,18 @@ artifacts.
     success already exists, so idle branches do not spend runner time proving
     the same SHA again.
 11. Use `sedna-branch-build` only when you intentionally want a preview binary.
+    - `platform=linux-x86_64` remains the default.
+    - `platform=macos` produces separate disposable Apple Silicon and Intel
+      artifacts. These are ad hoc signed, not notarized, and are not official
+      Sedna releases.
 12. Use `sedna-release` only for official releases.
 
 ## Current downstream platform policy
 
 - Supported downstream platform: Linux `x86_64`
-- Parked but unsupported for now: macOS, Windows, Linux arm64, and other historical upstream targets
+- Parked but unsupported for official releases: macOS, Windows, Linux arm64,
+  and other historical upstream targets. The opt-in macOS branch-build lane is
+  preview-only and does not change the supported release-platform contract.
 - Scheduled and routine heavyweight CI should stay Linux `x86_64` only until Sedna deliberately
   re-enables another platform with matching docs, workflow, and release-policy updates
 
