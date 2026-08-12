@@ -2774,8 +2774,8 @@ class ValidationPlanScriptTests(unittest.TestCase):
     ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-branch-build.yml")
         workflow_dispatch_inputs = (
-            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
-        )
+            (payload.get("on") or {}).get("workflow_dispatch") or {}
+        ).get("inputs") or {}
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("options"),
             ["linux-x86_64", "macos"],
@@ -2831,7 +2831,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         macos_build_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
-            "build-macos",
             "Build macOS preview binaries",
         )
         macos_build_script = macos_build_step.get("run") or ""
@@ -2840,7 +2839,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         macos_stage_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
-            "build-macos",
             "Stage ad hoc signed macOS preview artifact",
         )
         macos_stage_script = macos_stage_step.get("run") or ""

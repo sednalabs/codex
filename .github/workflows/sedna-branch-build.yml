@@ -148,9 +148,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
-          ref: ${{ needs.metadata.outputs.checkout_ref }}
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Require the selected workflow ref for macOS previews
+        if: ${{ inputs.ref != '' }}
+        shell: bash
+        run: |
+          echo "macOS preview builds use the workflow's selected ref; leave the ref input empty." >&2
+          exit 1
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ matrix.target }}
 
