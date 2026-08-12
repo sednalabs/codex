@@ -121,7 +121,7 @@ jobs:
     needs: metadata
     if: ${{ inputs.platform == 'macos' }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 180
     permissions:
       contents: read
     defaults:

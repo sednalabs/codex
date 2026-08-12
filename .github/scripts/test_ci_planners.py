@@ -2829,6 +2829,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 },
             ],
         )
+        self.assertEqual(macos_job.get("timeout-minutes"), 180)
         macos_build_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
             "build-macos",
