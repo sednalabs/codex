@@ -2778,7 +2778,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).get("inputs") or {}
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("options"),
-            ["linux-x86_64", "macos"],
+            ["linux-x86_64", "macos", "macos-aarch64"],
         )
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("default"),
@@ -2815,19 +2815,20 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", run_command)
 
         macos_job = (payload.get("jobs") or {}).get("build-macos") or {}
-        self.assertEqual(macos_job.get("if"), "${{ inputs.platform == 'macos' }}")
         self.assertEqual(
-            ((macos_job.get("strategy") or {}).get("matrix") or {}).get("include"),
-            [
-                {
-                    "runner": "macos-15",
-                    "target": "aarch64-apple-darwin",
-                },
-                {
-                    "runner": "macos-15-intel",
-                    "target": "x86_64-apple-darwin",
-                },
-            ],
+            macos_job.get("if"), "${{ startsWith(inputs.platform, 'macos') }}"
+        )
+        macos_matrix = (macos_job.get("strategy") or {}).get("matrix") or {}
+        macos_include = macos_matrix.get("include") or ""
+        self.assertIn("inputs.platform == 'macos-aarch64'", macos_include)
+        self.assertIn('"runner":"macos-15"', macos_include)
+        self.assertIn('"runner":"macos-15-intel"', macos_include)
+        self.assertEqual(
+            (macos_job.get("env") or {}).get("CARGO_PROFILE_RELEASE_LTO"), "false"
+        )
+        self.assertEqual(
+            (macos_job.get("env") or {}).get("CARGO_PROFILE_RELEASE_CODEGEN_UNITS"),
+            "16",
         )
         self.assertEqual(macos_job.get("timeout-minutes"), 180)
         macos_build_step = workflow_step_by_name(

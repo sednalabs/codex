@@ -18,6 +18,7 @@ on:
         options:
           - linux-x86_64
           - macos
+          - macos-aarch64
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}-${{ inputs.platform }}
@@ -119,7 +120,7 @@ jobs:
   build-macos:
     name: Build macOS preview - ${{ matrix.target }}
     needs: metadata
-    if: ${{ inputs.platform == 'macos' }}
+    if: ${{ startsWith(inputs.platform, 'macos') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -131,6 +132,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
       CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
       CODEX_RELEASE_TAG_PREFIX: v
       CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
@@ -139,11 +142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
+        include: ${{ fromJSON(inputs.platform == 'macos-aarch64' && '[{"runner":"macos-15","target":"aarch64-apple-darwin"}]' || '[{"runner":"macos-15","target":"aarch64-apple-darwin"},{"runner":"macos-15-intel","target":"x86_64-apple-darwin"}]') }}
     steps:
       - uses: actions/checkout@v7
         with:
