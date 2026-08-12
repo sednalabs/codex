@@ -2831,6 +2831,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         )
         macos_build_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
             "Build macOS preview binaries",
         )
         macos_build_script = macos_build_step.get("run") or ""
@@ -2839,6 +2840,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         macos_stage_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
             "Stage ad hoc signed macOS preview artifact",
         )
         macos_stage_script = macos_stage_step.get("run") or ""
