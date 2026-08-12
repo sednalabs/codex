@@ -2769,8 +2769,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
         self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
 
-    def test_sedna_branch_build_uses_safe_ref_env_and_json_encoding(self) -> None:
+    def test_sedna_branch_build_uses_safe_ref_env_and_macos_preview_matrix(
+        self,
+    ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-branch-build.yml")
+        workflow_dispatch_inputs = (
+            (payload.get("on") or {}).get("workflow_dispatch") or {}
+        ).get("inputs") or {}
+        self.assertEqual(
+            (workflow_dispatch_inputs.get("platform") or {}).get("options"),
+            ["linux-x86_64", "macos"],
+        )
+        self.assertEqual(
+            (workflow_dispatch_inputs.get("platform") or {}).get("default"),
+            "linux-x86_64",
+        )
+
         metadata_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
             "metadata",
@@ -2799,6 +2813,40 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('os.environ["DISPLAY_REF"]', run_command)
         self.assertIn("json.dump(payload, sys.stdout, indent=2)", run_command)
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", run_command)
+
+        macos_job = (payload.get("jobs") or {}).get("build-macos") or {}
+        self.assertEqual(macos_job.get("if"), "${{ inputs.platform == 'macos' }}")
+        self.assertEqual(
+            ((macos_job.get("strategy") or {}).get("matrix") or {}).get("include"),
+            [
+                {
+                    "runner": "macos-15",
+                    "target": "aarch64-apple-darwin",
+                },
+                {
+                    "runner": "macos-15-intel",
+                    "target": "x86_64-apple-darwin",
+                },
+            ],
+        )
+        macos_build_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Build macOS preview binaries",
+        )
+        macos_build_script = macos_build_step.get("run") or ""
+        self.assertIn("--locked", macos_build_script)
+        self.assertIn("--bin codex-code-mode-host", macos_build_script)
+
+        macos_stage_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Stage ad hoc signed macOS preview artifact",
+        )
+        macos_stage_script = macos_stage_step.get("run") or ""
+        self.assertIn('"signing": "ad-hoc"', macos_stage_script)
+        self.assertIn('"notarized": False', macos_stage_script)
+        self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", macos_stage_script)
 
     def test_validation_lab_uses_safe_ref_env_for_checkout_and_display_refs(self) -> None:
         metadata_step = workflow_step_by_name(
