@@ -6500,6 +6500,10 @@ class HelperScriptTests(unittest.TestCase):
         )
         self.assertIn("always()", publish_job.get("if") or "")
         self.assertIn("macos_release_mode == 'off'", publish_job.get("if") or "")
+        self.assertIn(
+            "needs.release-linux.result == 'success'",
+            publish_job.get("if") or "",
+        )
         self.assertEqual(publish_job.get("environment"), "release")
         self.assertEqual(
             publish_job.get("permissions"),
