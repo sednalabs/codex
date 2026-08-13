@@ -9,6 +9,9 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: read
+
 jobs:
   cargo-deny:
     if: ${{ inputs.run_cargo_deny }}
