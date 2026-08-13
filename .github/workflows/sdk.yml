@@ -2,9 +2,21 @@ name: sdk
 
 on:
   workflow_call:
+    inputs:
+      run_python:
+        description: Run Python SDK validation for this change.
+        required: false
+        type: boolean
+        default: true
+      run_typescript:
+        description: Run TypeScript SDK and Codex integration validation for this change.
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   python-sdk:
+    if: ${{ inputs.run_python }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -42,6 +54,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   sdks:
+    if: ${{ inputs.run_typescript }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
@@ -162,3 +175,42 @@ jobs:
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
+
+  required:
+    name: sdk required gate
+    if: ${{ always() }}
+    needs:
+      - python-sdk
+      - sdks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require selected SDK lanes
+        shell: bash
+        env:
+          RUN_PYTHON: ${{ inputs.run_python }}
+          PYTHON_RESULT: ${{ needs.python-sdk.result }}
+          RUN_TYPESCRIPT: ${{ inputs.run_typescript }}
+          TYPESCRIPT_RESULT: ${{ needs.sdks.result }}
+        run: |
+          set -euo pipefail
+
+          require_result() {
+            local selected="$1"
+            local result="$2"
+            local name="$3"
+            if [[ "${selected}" == "true" ]]; then
+              [[ "${result}" == "success" ]] || {
+                echo "${name} was required but concluded: ${result}" >&2
+                exit 1
+              }
+            else
+              [[ "${result}" == "skipped" ]] || {
+                echo "${name} was not selected but concluded unexpectedly: ${result}" >&2
+                exit 1
+              }
+              echo "${name} not applicable to this change."
+            fi
+          }
+
+          require_result "${RUN_PYTHON}" "${PYTHON_RESULT}" python-sdk
+          require_result "${RUN_TYPESCRIPT}" "${TYPESCRIPT_RESULT}" typescript-sdk
