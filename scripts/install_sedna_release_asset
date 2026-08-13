@@ -40,12 +40,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${repository,,}" != "sednalabs/codex" ]]; then
-  echo "error: repository must be sednalabs/codex, got ${repository@Q}" >&2
+if [[ "$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')" != "sednalabs/codex" ]]; then
+  printf 'error: repository must be sednalabs/codex, got %s\n' "$repository" >&2
   exit 1
 fi
 
-target="x86_64-unknown-linux-gnu"
+host_os="$(uname -s)"
+host_arch="$(uname -m)"
+case "${host_os}/${host_arch}" in
+  Linux/x86_64|Linux/amd64)
+    target="x86_64-unknown-linux-gnu"
+    checksum_name="SHA256SUMS.txt"
+    metadata_name="RELEASE-METADATA.json"
+    ;;
+  Darwin/x86_64)
+    target="x86_64-apple-darwin"
+    checksum_name="SHA256SUMS-${target}.txt"
+    metadata_name="RELEASE-METADATA-${target}.json"
+    ;;
+  *)
+    printf 'error: unsupported release platform: %s/%s (supported: Linux/x86_64, Darwin/x86_64)\n' \
+      "$host_os" "$host_arch" >&2
+    exit 1
+    ;;
+esac
+
 api_root="https://api.github.com/repos/sednalabs/codex"
 install_root="${HOME}/.codex/packages/standalone"
 bin_dir="${HOME}/.local/bin"
@@ -101,7 +120,7 @@ PY
 fi
 
 if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?-sedna\.[0-9]+(\+upstream\.[0-9]+)?$ ]]; then
-  echo "error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got ${release_tag@Q}" >&2
+  printf 'error: release tag must look like v0.124.0-sedna.2 or v0.126.0-alpha.5-sedna.1+upstream.1, got %s\n' "$release_tag" >&2
   exit 1
 fi
 
@@ -126,12 +145,12 @@ if release.get("tag_name") != expected_tag:
 PY
 
 asset_manifest="${work_dir}/assets.tsv"
-python3 - "$release_json" "$archive_name" > "$asset_manifest" <<'PY'
+python3 - "$release_json" "$archive_name" "$checksum_name" "$metadata_name" > "$asset_manifest" <<'PY'
 import json
 import sys
 
-release_path, archive_name = sys.argv[1:3]
-required = (archive_name, "SHA256SUMS.txt", "RELEASE-METADATA.json")
+release_path, archive_name, checksum_name, metadata_name = sys.argv[1:5]
+required = (archive_name, checksum_name, metadata_name)
 release = json.loads(open(release_path, encoding="utf-8").read())
 assets = {asset.get("name"): asset for asset in release.get("assets", [])}
 missing = [name for name in required if name not in assets]
@@ -149,24 +168,25 @@ while IFS=$'\t' read -r name asset_id; do
     "$archive_name")
       fetch_asset "$asset_id" "${work_dir}/${archive_name}"
       ;;
-    SHA256SUMS.txt)
-      fetch_asset "$asset_id" "${work_dir}/SHA256SUMS.txt"
+    "$checksum_name")
+      fetch_asset "$asset_id" "${work_dir}/${checksum_name}"
       ;;
-    RELEASE-METADATA.json)
-      fetch_asset "$asset_id" "${work_dir}/RELEASE-METADATA.json"
+    "$metadata_name")
+      fetch_asset "$asset_id" "${work_dir}/${metadata_name}"
       ;;
   esac
 done < "$asset_manifest"
 
-python3 - "$work_dir" "$archive_name" "$release_tag" "$release_version" "$target" <<'PY'
+python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" <<'PY'
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
-work_dir, archive_name, release_tag, release_version, target = sys.argv[1:6]
+work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target = sys.argv[1:8]
 root = Path(work_dir)
-metadata = json.loads((root / "RELEASE-METADATA.json").read_text(encoding="utf-8"))
+metadata = json.loads((root / metadata_name).read_text(encoding="utf-8"))
 expected = {
     "release_tag": release_tag,
     "release_version": release_version,
@@ -179,14 +199,18 @@ if str(metadata.get("repository", "")).lower() != "sednalabs/codex":
     raise SystemExit(f"error: metadata repository={metadata.get('repository')!r}, expected 'sednalabs/codex'")
 
 checksums = {}
-for raw in (root / "SHA256SUMS.txt").read_text(encoding="utf-8").splitlines():
+for raw in (root / checksum_name).read_text(encoding="utf-8").splitlines():
     fields = raw.strip().split()
     if len(fields) >= 2:
         digest, name = fields[0], fields[1].lstrip("*").removeprefix("./")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            raise SystemExit(f"error: invalid SHA-256 digest for {name!r}")
+        if name in checksums:
+            raise SystemExit(f"error: duplicate checksum entry for {name!r}")
         checksums[name] = digest.lower()
 digest = checksums.get(archive_name)
 if digest is None:
-    raise SystemExit(f"error: SHA256SUMS.txt does not include {archive_name}")
+    raise SystemExit(f"error: {checksum_name} does not include {archive_name}")
 actual = hashlib.sha256((root / archive_name).read_bytes()).hexdigest()
 if actual != digest:
     raise SystemExit(f"error: checksum mismatch for {archive_name}: expected {digest}, got {actual}")
@@ -203,15 +227,21 @@ from pathlib import Path
 archive_path, destination = sys.argv[1:3]
 destination_path = Path(destination)
 allowed = {"codex", "codex-responses-api-proxy"}
+seen = set()
 with tarfile.open(archive_path, mode="r:gz") as archive:
     for member in archive.getmembers():
         if member.name in ("", ".", "./"):
             continue
+        if member.name.startswith("/") or "\\" in member.name:
+            raise SystemExit(f"error: refusing unsafe archive member {member.name!r}")
         parts = [part for part in member.name.split("/") if part not in ("", ".")]
-        if len(parts) != 1 or parts[0] not in allowed or ".." in parts:
+        if len(parts) != 1 or parts[0] not in allowed or any(part == ".." for part in parts):
             raise SystemExit(f"error: refusing unexpected archive member {member.name!r}")
         if not member.isfile():
             raise SystemExit(f"error: refusing unsafe archive member {member.name!r}")
+        if parts[0] in seen:
+            raise SystemExit(f"error: refusing duplicate archive member {member.name!r}")
+        seen.add(parts[0])
         source = archive.extractfile(member)
         if source is None:
             raise SystemExit(f"error: failed to read archive member {member.name!r}")
@@ -219,9 +249,12 @@ with tarfile.open(archive_path, mode="r:gz") as archive:
         with source, target.open("wb") as output:
             shutil.copyfileobj(source, output)
         target.chmod(member.mode & 0o777)
+missing = allowed - seen
+if missing:
+    raise SystemExit(f"error: archive is missing required members: {', '.join(sorted(missing))}")
 PY
-cp "$work_dir/RELEASE-METADATA.json" "$staged/RELEASE-METADATA.json"
-cp "$work_dir/SHA256SUMS.txt" "$staged/SHA256SUMS.txt"
+cp "$work_dir/$metadata_name" "$staged/RELEASE-METADATA.json"
+cp "$work_dir/$checksum_name" "$staged/SHA256SUMS.txt"
 
 for executable in codex codex-responses-api-proxy; do
   if [[ ! -x "$staged/$executable" ]]; then
@@ -230,9 +263,18 @@ for executable in codex codex-responses-api-proxy; do
   fi
 done
 
+if [[ "$target" == "x86_64-apple-darwin" ]]; then
+  for executable in codex codex-responses-api-proxy; do
+    if ! codesign --verify --strict "$staged/$executable"; then
+      echo "error: macOS code signature verification failed: $executable" >&2
+      exit 1
+    fi
+  done
+fi
+
 staged_version_output="$("$staged/codex" --version 2>&1)"
 if [[ "$staged_version_output" != *"$release_version"* ]]; then
-  echo "error: staged codex --version did not report ${release_version@Q}: $staged_version_output" >&2
+  printf 'error: staged codex --version did not report %s: %s\n' "$release_version" "$staged_version_output" >&2
   exit 1
 fi
 
@@ -270,12 +312,17 @@ if [[ ! -d "$release_dir" ]]; then
   cp -p "$staged/codex-responses-api-proxy" "$tmp_release/codex-responses-api-proxy"
   cp "$staged/RELEASE-METADATA.json" "$tmp_release/RELEASE-METADATA.json"
   cp "$staged/SHA256SUMS.txt" "$tmp_release/SHA256SUMS.txt"
-  mv -T "$tmp_release" "$release_dir"
+  mv "$tmp_release" "$release_dir"
 fi
 
 current_tmp="${install_root}/.current.tmp.$$"
 ln -s "$release_dir" "$current_tmp"
-mv -Tf "$current_tmp" "${install_root}/current"
+python3 - "$current_tmp" "${install_root}/current" <<'PY'
+import os
+import sys
+
+os.replace(sys.argv[1], sys.argv[2])
+PY
 
 visible_codex="${bin_dir}/codex"
 if [[ -e "$visible_codex" && ! -L "$visible_codex" ]]; then
@@ -287,11 +334,16 @@ fi
 
 codex_tmp="${bin_dir}/.codex.tmp.$$"
 ln -s "${release_dir}/codex" "$codex_tmp"
-mv -Tf "$codex_tmp" "$visible_codex"
+python3 - "$codex_tmp" "$visible_codex" <<'PY'
+import os
+import sys
+
+os.replace(sys.argv[1], sys.argv[2])
+PY
 
 visible_version_output="$("$visible_codex" --version 2>&1)"
 if [[ "$visible_version_output" != *"$release_version"* ]]; then
-  echo "error: codex --version did not report ${release_version@Q}: $visible_version_output" >&2
+  printf 'error: codex --version did not report %s: %s\n' "$release_version" "$visible_version_output" >&2
   exit 1
 fi
 
