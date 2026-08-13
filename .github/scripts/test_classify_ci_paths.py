@@ -10,6 +10,19 @@ from classify_ci_paths import CODEQL_ALL, classify  # noqa: E402
 
 
 class ClassifyCiPathsTests(unittest.TestCase):
+    def test_empty_change_set_selects_full_validation(self) -> None:
+        scope = classify([])
+        self.assertTrue(scope.force_full_blocking)
+        self.assertTrue(scope.force_full_codeql)
+        self.assertTrue(scope.cargo_deny)
+        self.assertTrue(scope.repo_policy)
+        self.assertTrue(scope.repo_package)
+        self.assertTrue(scope.repo_format)
+        self.assertTrue(scope.repo_readme)
+        self.assertTrue(scope.sdk_python)
+        self.assertTrue(scope.sdk_typescript)
+        self.assertEqual(scope.codeql_languages, CODEQL_ALL)
+
     def test_root_readme_is_lightweight(self) -> None:
         scope = classify(["README.md"])
         self.assertTrue(scope.repo_readme)
