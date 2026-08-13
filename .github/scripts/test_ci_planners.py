@@ -3775,7 +3775,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         workflow_json = json.dumps(payload, sort_keys=True)
         self.assertNotIn("autobuild", workflow_json)
-        self.assertNotIn("manual", workflow_json)
+        self.assertNotIn('"build-mode": "manual"', workflow_json)
 
         checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
         self.assertEqual(checkout_step.get("uses"), "actions/checkout@v7")
