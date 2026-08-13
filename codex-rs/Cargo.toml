@@ -59,6 +59,7 @@ members = [
     "ext/goal",
     "ext/git-attribution",
     "ext/guardian",
+    "ext/guardian-v2",
     "ext/image-generation",
     "ext/items",
     "ext/memories",
