@@ -2817,7 +2817,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         macos_job = (payload.get("jobs") or {}).get("build-macos") or {}
         self.assertEqual(macos_job.get("if"), "${{ inputs.platform == 'macos' }}")
         self.assertEqual(macos_job.get("runs-on"), "macos-15-intel")
-        self.assertEqual(macos_job.get("timeout-minutes"), 210)
+        self.assertEqual(macos_job.get("timeout-minutes"), "210")
         self.assertNotIn("strategy", macos_job)
         self.assertEqual((macos_job.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", macos_job.get("env") or {})
@@ -6432,7 +6432,10 @@ class HelperScriptTests(unittest.TestCase):
         )
         self.assertNotIn("environment", release_job)
         self.assertEqual(publish_job.get("name"), "Publish GitHub release")
-        self.assertEqual(publish_job.get("needs"), ["resolve", "release-linux"])
+        self.assertEqual(
+            publish_job.get("needs"),
+            ["resolve", "release-linux", "release-macos-finalize"],
+        )
         self.assertEqual(publish_job.get("environment"), "release")
         self.assertEqual(
             publish_job.get("permissions"),
@@ -6459,6 +6462,10 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(
             named_steps["Download Linux release artifacts"].get("with") or {},
             {"name": "sedna-release-linux", "path": "dist"},
+        )
+        self.assertEqual(
+            named_steps["Download Intel macOS release artifacts"].get("with") or {},
+            {"name": "sedna-release-macos-x64", "path": "dist"},
         )
 
         config_step = named_steps["Check release publisher app configuration"]
@@ -6515,10 +6522,109 @@ class HelperScriptTests(unittest.TestCase):
 
         self.assertLess(version_check_index, dry_run_index)
         self.assertIn(
-            'staged codex --version did not report ${release_version@Q}',
+            "error: staged codex --version did not report %s: %s",
             installer,
         )
         self.assertIn('echo "$staged_version_output"', installer)
+
+    def test_sedna_release_macos_x64_is_signed_notarized_and_verified(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        jobs = payload.get("jobs") or {}
+        preflight = jobs.get("release-macos-signing-preflight") or {}
+        build = jobs.get("release-macos-build") or {}
+        sign = jobs.get("release-macos-sign") or {}
+        package = jobs.get("release-macos-package") or {}
+        sign_dmg = jobs.get("release-macos-sign-dmg") or {}
+        finalize = jobs.get("release-macos-finalize") or {}
+
+        self.assertEqual(preflight.get("runs-on"), "ubuntu-slim")
+        self.assertEqual(
+            preflight.get("environment"),
+            {"name": "codesigning", "deployment": "false"},
+        )
+        preflight_steps = {
+            step.get("name"): step
+            for step in preflight.get("steps") or []
+            if step.get("name")
+        }
+        config = preflight_steps["Check Intel macOS signing configuration"]
+        self.assertIn("Missing Intel macOS release signing configuration", config.get("run") or "")
+        self.assertIn("APPLE_NOTARIZATION_KEY_P8", config.get("env") or {})
+
+        self.assertEqual(build.get("runs-on"), "macos-15-intel")
+        self.assertEqual(build.get("needs"), ["resolve", "release-macos-signing-preflight"])
+        self.assertEqual((build.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
+        self.assertEqual(sign.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(sign.get("environment"), {"name": "codesigning", "deployment": "false"})
+        self.assertEqual((sign.get("permissions") or {}).get("id-token"), "write")
+        sign_steps = {step.get("name"): step for step in sign.get("steps") or [] if step.get("name")}
+        self.assertIn(
+            "notarize_macos_binary_with_rcodesign.sh",
+            sign_steps["Sign and notarize Intel macOS binaries"].get("run") or "",
+        )
+
+        self.assertEqual(package.get("runs-on"), "macos-15-intel")
+        package_steps = {
+            step.get("name"): step for step in package.get("steps") or [] if step.get("name")
+        }
+        package_script = package_steps["Package Intel macOS release assets"].get("run") or ""
+        self.assertIn("hdiutil create", package_script)
+        self.assertIn("codex codex-responses-api-proxy", package_script)
+
+        self.assertEqual(sign_dmg.get("environment"), {"name": "codesigning", "deployment": "false"})
+        sign_dmg_steps = {
+            step.get("name"): step for step in sign_dmg.get("steps") or [] if step.get("name")
+        }
+        self.assertIn(
+            "notarize_macos_dmg_with_rcodesign.sh",
+            sign_dmg_steps["Sign, notarize, and staple Intel macOS DMG"].get("run") or "",
+        )
+
+        self.assertEqual(finalize.get("runs-on"), "macos-15-intel")
+        finalize_steps = {
+            step.get("name"): step for step in finalize.get("steps") or [] if step.get("name")
+        }
+        verify_script = finalize_steps["Verify Intel macOS release assets"].get("run") or ""
+        for evidence in (
+            "lipo",
+            "codesign --verify --strict",
+            "diff -u",
+            "hdiutil verify",
+            "xcrun stapler validate",
+            "hdiutil attach",
+        ):
+            self.assertIn(evidence, verify_script)
+
+    def test_sedna_release_installer_targets_native_linux_and_intel_macos(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml"
+        )
+        include = (
+            (((payload.get("jobs") or {}).get("install") or {}).get("strategy") or {})
+            .get("matrix", {})
+            .get("include", [])
+        )
+        self.assertEqual(
+            include,
+            [
+                {
+                    "platform": "Linux x64",
+                    "runner": "ubuntu-24.04",
+                    "target": "x86_64-unknown-linux-gnu",
+                },
+                {
+                    "platform": "Intel macOS x64",
+                    "runner": "macos-15-intel",
+                    "target": "x86_64-apple-darwin",
+                },
+            ],
+        )
+        installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Darwin/x86_64", installer)
+        self.assertIn("x86_64-apple-darwin", installer)
+        self.assertIn("codesign --verify --strict", installer)
 
     def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
         install_workflow = (
@@ -6638,7 +6744,22 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("Dispatch release asset verifier", release_workflow)
         self.assertIn('-f "dry_run=true"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
-        self.assertEqual(install_job.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(install_job.get("runs-on"), "${{ matrix.runner }}")
+        self.assertEqual(
+            ((install_job.get("strategy") or {}).get("matrix") or {}).get("include"),
+            [
+                {
+                    "platform": "Linux x64",
+                    "runner": "ubuntu-24.04",
+                    "target": "x86_64-unknown-linux-gnu",
+                },
+                {
+                    "platform": "Intel macOS x64",
+                    "runner": "macos-15-intel",
+                    "target": "x86_64-apple-darwin",
+                },
+            ],
+        )
         workflow_json = json.dumps(install_payload, sort_keys=True)
         self.assertNotIn("self-hosted", workflow_json)
         self.assertIn("public workflow requires true", workflow_json)

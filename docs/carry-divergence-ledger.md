@@ -1896,8 +1896,11 @@ decisions.
   offers an explicit macOS preview mode. That mode builds one Intel x64
   artifact, applies ad hoc signatures for local execution, records that the
   artifact is not notarized, and reuses Cargo-home and compiler-cache entries
-  without changing the release optimization profile. It does not widen the
-  Linux-only official release contract or publish a GitHub Release.
+  without changing the release optimization profile. It remains a disposable
+  preview and does not publish a GitHub Release. The official release contract
+  independently supports native Linux x64 and Intel macOS x64 archives with
+  target-bound metadata, checksums, and native-runner verification; Apple
+  Silicon remains unsupported.
 - Primary files:
   - `.github/workflows/sedna-branch-build.yml`
   - `.github/scripts/test_ci_planners.py`
