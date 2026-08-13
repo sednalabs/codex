@@ -135,8 +135,9 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually
   dispatched. Its default remains Linux `x86_64`; `platform=macos` produces
-  separate ad hoc signed, non-notarized Apple Silicon and Intel artifacts for
-  preview use without publishing a GitHub Release.
+  one ad hoc signed, non-notarized Intel x64 artifact for preview use without
+  publishing a GitHub Release. Cargo-home and `sccache` reuse reduce repeat-build
+  cost without changing the canonical release optimization profile.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
