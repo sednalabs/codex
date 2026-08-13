@@ -3683,8 +3683,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/codeql.yml")
         trigger = payload.get("on") or {}
         jobs = payload.get("jobs") or {}
+        plan_job = jobs.get("plan") or {}
         analyze_job = jobs.get("analyze") or {}
         results_job = jobs.get("results") or {}
+        plan_steps = plan_job.get("steps") or []
         steps = analyze_job.get("steps") or []
 
         self.assertIn("workflow_dispatch", trigger)
@@ -3701,9 +3703,61 @@ class ValidationPlanScriptTests(unittest.TestCase):
             concurrency.get("cancel-in-progress"),
             "${{ github.event_name == 'pull_request' }}",
         )
-        self.assertNotIn("plan", jobs)
-        self.assertNotIn("needs", analyze_job)
-        self.assertNotIn("if", analyze_job)
+
+        self.assertEqual(plan_job.get("name"), "CodeQL language planner")
+        self.assertEqual(plan_job.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(plan_job.get("permissions") or {}, {"contents": "read"})
+        self.assertEqual(
+            plan_job.get("outputs") or {},
+            {
+                "matrix": "${{ steps.plan.outputs.matrix }}",
+                "run_analysis": "${{ steps.plan.outputs.run_analysis }}",
+                "selected_languages": "${{ steps.plan.outputs.selected_languages }}",
+            },
+        )
+        plan_checkout = next(
+            step
+            for step in plan_steps
+            if step.get("name") == "Checkout PR head for path classification"
+        )
+        self.assertEqual(
+            plan_checkout.get("if"),
+            "${{ github.event_name == 'pull_request' }}",
+        )
+        self.assertEqual(plan_checkout.get("uses"), "actions/checkout@v7")
+        self.assertEqual(
+            plan_checkout.get("with") or {},
+            {
+                "ref": "${{ github.event.pull_request.head.sha }}",
+                "fetch-depth": "1",
+                "persist-credentials": "false",
+            },
+        )
+        select_step = next(
+            step for step in plan_steps if step.get("name") == "Select CodeQL languages"
+        )
+        self.assertEqual(select_step.get("id"), "plan")
+        select_run = select_step.get("run") or ""
+        self.assertIn(
+            'full_languages=\'["actions","c-cpp","javascript-typescript","python","rust"]\'',
+            select_run,
+        )
+        self.assertIn(
+            "if [[ '${{ github.event_name }}' != 'pull_request' ]]; then",
+            select_run,
+        )
+        self.assertIn('git fetch --no-tags --depth=1 origin "${BASE_SHA}"', select_run)
+        self.assertIn("classify_ci_paths.py --base-sha", select_run)
+        self.assertIn("Unable to fetch PR base; running every CodeQL language.", select_run)
+        self.assertIn("Unable to classify PR paths; running every CodeQL language.", select_run)
+        self.assertIn('["codeql_languages"]', select_run)
+        self.assertIn('"language": "not-applicable"', select_run)
+
+        self.assertEqual(analyze_job.get("needs"), "plan")
+        self.assertEqual(
+            analyze_job.get("if"),
+            "${{ needs.plan.outputs.run_analysis == 'true' }}",
+        )
         self.assertEqual(analyze_job.get("runs-on"), "ubuntu-24.04")
         self.assertEqual(
             analyze_job.get("permissions") or {},
@@ -3714,47 +3768,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "security-events": "write",
             },
         )
-
         self.assertEqual(
             ((analyze_job.get("strategy") or {}).get("matrix")),
-            {
-                "include": [
-                    {
-                        "language": "actions",
-                        "build-mode": "none",
-                        "config_file": "./.codeql-runtime/codeql-actions.yml",
-                    },
-                    {
-                        "language": "c-cpp",
-                        "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-config.yml",
-                    },
-                    {
-                        "language": "javascript-typescript",
-                        "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-config.yml",
-                    },
-                    {
-                        "language": "python",
-                        "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-config.yml",
-                    },
-                    {
-                        "language": "rust",
-                        "build-mode": "none",
-                        "config_file": "./.github/codeql/codeql-rust.yml",
-                    },
-                ]
-            },
+            "${{ fromJSON(needs.plan.outputs.matrix) }}",
         )
 
         workflow_json = json.dumps(payload, sort_keys=True)
         self.assertNotIn("autobuild", workflow_json)
         self.assertNotIn("manual", workflow_json)
-        self.assertNotIn("resolve_codeql_plan", workflow_json)
-        self.assertNotIn("has_codeql_relevant_changes", workflow_json)
-        self.assertNotIn("run_all_languages", workflow_json)
-        self.assertNotIn("fromJSON(needs.plan.outputs.matrix)", workflow_json)
 
         checkout_step = next(step for step in steps if step.get("name") == "Checkout repository")
         self.assertEqual(checkout_step.get("uses"), "actions/checkout@v7")
@@ -3768,7 +3789,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("rust-toolchain*", install_rust_run)
         self.assertIn('"--component"', install_rust_run)
         self.assertIn('"rust-src"', install_rust_run)
-        self.assertNotIn("toolchain.get(\"components\"", install_rust_run)
+        self.assertNotIn('toolchain.get("components"', install_rust_run)
         self.assertNotIn('"clippy"', install_rust_run)
         self.assertNotIn('"rustfmt"', install_rust_run)
         self.assertNotIn('"rustc-dev"', install_rust_run)
@@ -3784,7 +3805,6 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("~/.cargo/registry/cache/", restore_cache_with.get("path") or "")
         self.assertIn("~/.cargo/git/db/", restore_cache_with.get("path") or "")
         self.assertIn("codeql-rust-cargo-home-v1-", restore_cache_with.get("key") or "")
-        workflow_json = json.dumps(payload, sort_keys=True)
         self.assertNotIn("~/.rustup/toolchains", workflow_json)
 
         telemetry_step = next(
@@ -3866,7 +3886,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertNotIn("target/", (save_rust_cache_step.get("with") or {}).get("path") or "")
 
         self.assertEqual(results_job.get("name"), "CodeQL required gate")
-        self.assertEqual(results_job.get("needs"), ["analyze"])
+        self.assertEqual(results_job.get("needs"), ["plan", "analyze"])
         self.assertEqual(results_job.get("if"), "always()")
         self.assertEqual(results_job.get("permissions") or {}, {"actions": "read"})
         timing_step = next(
@@ -3875,9 +3895,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         timing_run = timing_step.get("run") or ""
         self.assertIn("CodeQL timing", timing_run)
         self.assertIn("actions/runs/${{ github.run_id }}/jobs", timing_run)
+        self.assertIn("CodeQL language planner", timing_run)
         self.assertIn("Analyze \\\\(", timing_run)
-        results_run = "\n".join(step.get("run") or "" for step in results_job.get("steps") or [])
-        self.assertIn("CodeQL analysis failed", results_run)
+        results_run = "\n".join(
+            step.get("run") or "" for step in results_job.get("steps") or []
+        )
+        self.assertIn("CodeQL planner failed", results_run)
+        self.assertIn("Selected CodeQL analysis failed", results_run)
+        self.assertIn("No CodeQL language analysis was applicable", results_run)
 
         config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-config.yml").read_text(encoding="utf-8"),
@@ -3915,7 +3940,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(actions_pack.get("name"), "sednalabs/actions-workflow-security")
         self.assertEqual(actions_pack.get("extractor"), "actions")
         self.assertEqual(actions_pack.get("dependencies"), {"codeql/actions-all": "*"})
-        self.assertEqual(actions_pack.get("defaultSuiteFile"), "suites/actions-workflow-security.qls")
+        self.assertEqual(
+            actions_pack.get("defaultSuiteFile"),
+            "suites/actions-workflow-security.qls",
+        )
         self.assertIn(
             "@id actions/sensitive-workflow-value-to-log",
             (REPO_ROOT / ".github/codeql/actions-workflow-security/SensitiveWorkflowValueToLog.ql")
@@ -3980,7 +4008,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ),
             Loader=yaml.BaseLoader,
         )
-        self.assertEqual(rust_contract_pack.get("name"), "sednalabs/rust-computer-use-contract")
+        self.assertEqual(
+            rust_contract_pack.get("name"),
+            "sednalabs/rust-computer-use-contract",
+        )
         self.assertEqual(rust_contract_pack.get("extractor"), "rust")
         self.assertEqual(rust_contract_pack.get("dependencies"), {"codeql/rust-all": "*"})
         for query_id in [
