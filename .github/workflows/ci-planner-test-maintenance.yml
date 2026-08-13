@@ -1,62 +1,13 @@
-name: CI planner fixture maintenance
+name: CI planner fixture maintenance (retired)
 
 on:
-  push:
-    branches:
-      - ci/path-aware-blocking-checks
+  workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  patch:
-    if: ${{ github.repository == 'sednalabs/codex' }}
+  retired:
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout maintenance branch
-        uses: actions/checkout@v7
-        with:
-          ref: ci/path-aware-blocking-checks
-          fetch-depth: 1
-
-      - name: Replace stale CodeQL planner fixture
-        shell: bash
-        env:
-          REPLACEMENT_ZLIB_B64: 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
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import base64
-          import os
-          import zlib
-          from pathlib import Path
-
-          path = Path('.github/scripts/test_ci_planners.py')
-          text = path.read_text(encoding='utf-8')
-          start_marker = '    def test_codeql_advanced_workflow_is_authoritative_hardened_setup(self) -> None:\n'
-          end_marker = '    def test_closed_pr_run_canceller_preserves_post_merge_branch_runs(self) -> None:\n'
-          start = text.find(start_marker)
-          end = text.find(end_marker, start + 1)
-          if start < 0 or end < 0:
-              raise SystemExit('expected CodeQL test markers not found')
-          replacement = zlib.decompress(base64.b64decode(os.environ['REPLACEMENT_ZLIB_B64'])).decode('utf-8')
-          updated = text[:start] + replacement + text[end:]
-          if updated == text:
-              print('fixture already current')
-              raise SystemExit(0)
-          path.write_text(updated, encoding='utf-8')
-          PY
-
-      - name: Commit fixture update
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- .github/scripts/test_ci_planners.py; then
-            echo 'No fixture update required.'
-            exit 0
-          fi
-          git config user.name 'Sedna CI maintenance'
-          git config user.email 'ci-maintenance@users.noreply.github.com'
-          git add .github/scripts/test_ci_planners.py
-          git commit -m 'ci: update CodeQL planner contract test'
-          git push origin HEAD:ci/path-aware-blocking-checks
+      - run: echo "One-shot maintenance completed; workflow retained inert only until cleanup."
