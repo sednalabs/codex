@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Iterable
 
@@ -191,13 +191,18 @@ def classify(paths: Iterable[str]) -> Scope:
         if _starts(path, ".github/workflows/", ".github/actions/"):
             codeql.add("actions")
 
-        if suffix in C_CPP_SUFFIXES or path in {"CMakeLists.txt"} or path.endswith("/CMakeLists.txt"):
+        if (
+            suffix in C_CPP_SUFFIXES
+            or path == "CMakeLists.txt"
+            or path.endswith("/CMakeLists.txt")
+        ):
             codeql.add("c-cpp")
 
         if (
             suffix in JS_TS_SUFFIXES
             or path in PACKAGE_ROOT_PATHS
-            or PurePosixPath(path).name in {"tsconfig.json", "eslint.config.js", "eslint.config.mjs"}
+            or PurePosixPath(path).name
+            in {"tsconfig.json", "eslint.config.js", "eslint.config.mjs"}
         ):
             codeql.add("javascript-typescript")
 
@@ -209,7 +214,8 @@ def classify(paths: Iterable[str]) -> Scope:
 
         if (
             suffix == ".rs"
-            or PurePosixPath(path).name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
+            or PurePosixPath(path).name
+            in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
             or _starts(path, ".cargo/", "codex-rs/.cargo/")
         ):
             codeql.add("rust")
