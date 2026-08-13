@@ -29,9 +29,10 @@ from upstream OpenAI releases.
   `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
   `upstream_distance_from_tag`, `upstream_position`, `downstream_commit`, `target_commit`, and
   the compact `build_provenance` / `version_display` strings
-- Linux `x86_64` is the only supported Sedna release target today. Other upstream platform
-  packaging remains parked in the repository and may be revived later, but it is not part of the
-  current downstream release contract.
+- Linux `x86_64` (`x86_64-unknown-linux-gnu`) and Intel macOS `x86_64`
+  (`x86_64-apple-darwin`) are the officially supported Sedna release targets. Apple Silicon,
+  Windows, Linux arm64, and other upstream targets remain outside the current downstream release
+  contract.
 
 The upstream track is resolved from the target commit's merge-base with `origin/upstream-main`.
 That merge-base is the upstream reference point for the release, even if `origin/upstream-main`
@@ -90,13 +91,13 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 
 Current workflow characteristics:
 
-- GitHub-hosted Linux `x86_64` release build
+- Native GitHub-hosted Linux `x86_64` and Intel macOS `x86_64` release builds
 - Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
   repository token while the small publication job owns the release environment and write-scoped
   publishing permissions.
 - Cargo home and `sccache` restore/save around the official release build to reduce duplicate
   compilation when prior release smoke runs warmed matching caches
-- Keyless Sigstore signing for Linux binaries
+- Keyless Sigstore signing for Linux binaries and native code-signing checks for Intel macOS
 - GitHub Release publication through a dedicated GitHub App installation token instead of the
   default workflow integration token
 - GitHub Release assets named with the Sedna release identity
@@ -113,6 +114,29 @@ then store:
 The workflow checks that these are configured before starting the release build, then mints the
 short-lived installation token only after the assets are staged so the publication token is fresh
 for GitHub Release creation and verifier dispatch.
+
+Intel macOS publication is fail-closed: an official release is not created unless its binaries and
+DMG have been Developer ID signed, accepted by Apple's notarization service, and verified again on
+an Intel macOS runner. Configure a `codesigning` GitHub Actions environment with the same Azure Key
+Vault PKCS#11 and App Store Connect secrets used by the upstream macOS signing actions:
+
+- `AKV_CODESIGN_RCODESIGN_BLOB_URI`
+- `AKV_CODESIGN_RCODESIGN_SHA256`
+- `AKV_CODESIGN_PKCS11_LIBRARY_BLOB_URI`
+- `AKV_CODESIGN_PKCS11_LIBRARY_SHA256`
+- `AKV_CODESIGN_AZURE_CLIENT_ID`
+- `AKV_CODESIGN_TENANT`
+- `AKV_CODESIGN_SUBSCRIPTION`
+- `AKV_CODESIGN_KEY_VAULT_NAME`
+- `AKV_CODESIGN_KEY_NAME`
+- optional `AKV_CODESIGN_KEY_VERSION`
+- optional `AKV_CODESIGN_CERTIFICATE_SHA256`
+- `APPLE_NOTARIZATION_KEY_P8`
+- `APPLE_NOTARIZATION_KEY_ID`
+- `APPLE_NOTARIZATION_ISSUER_ID`
+
+The signing job reports the exact missing secret names without exposing values. Ad hoc branch
+artifacts remain preview-only and cannot satisfy this official release gate.
 
 The resolver writes `version_policy=sedna-upstream-track-v2` into release metadata so future policy
 changes can be detected explicitly instead of inferred from tag shape alone.
@@ -135,8 +159,9 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually
   dispatched. Its default remains Linux `x86_64`; `platform=macos` produces
-  separate ad hoc signed, non-notarized Apple Silicon and Intel artifacts for
-  preview use without publishing a GitHub Release.
+  one ad hoc signed, non-notarized Intel x64 artifact for preview use without
+  publishing a GitHub Release. Cargo-home and `sccache` reuse reduce repeat-build
+  cost without changing the canonical release optimization profile.
 - `sedna-heavy-tests` runs expensive remote validation without using the local development machine as the build factory
 - branch artifacts retain for 3 days and are never updater candidates
 - only `sedna-release` is allowed to publish official GitHub Releases
@@ -174,7 +199,9 @@ runner. It intentionally does not perform host-local installation from the publi
   release publisher token.
 - Manual `workflow_dispatch` runs require `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
-- The verifier checks the tag shape, release metadata, `SHA256SUMS.txt`, and executable payload
+- The verifier checks both supported targets on native Linux and Intel macOS runners, including
+  tag shape, target-bound release metadata, checksums, safe archive membership, and executable
+  payloads
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them
