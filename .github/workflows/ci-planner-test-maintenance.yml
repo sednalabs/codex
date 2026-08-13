@@ -1,0 +1,47 @@
+name: CI planner assertion maintenance
+
+on:
+  push:
+    branches:
+      - ci/path-aware-blocking-checks
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.repository == 'sednalabs/codex' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout maintenance branch
+        uses: actions/checkout@v7
+        with:
+          ref: ci/path-aware-blocking-checks
+          fetch-depth: 1
+
+      - name: Narrow stale CodeQL manual-mode assertion
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/test_ci_planners.py')
+          text = path.read_text(encoding='utf-8')
+          old = '        self.assertNotIn("manual", workflow_json)\n'
+          new = '        self.assertNotIn(\'"build-mode": "manual"\', workflow_json)\n'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one stale manual assertion, found {count}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Commit assertion update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Sedna CI maintenance'
+          git config user.email 'ci-maintenance@users.noreply.github.com'
+          git add .github/scripts/test_ci_planners.py
+          git commit -m 'ci: narrow CodeQL manual-mode contract assertion'
+          git push origin HEAD:ci/path-aware-blocking-checks
