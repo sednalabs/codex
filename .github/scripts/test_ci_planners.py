@@ -515,6 +515,7 @@ class DispatchSednaReleaseTests(unittest.TestCase):
             dispatch_ref="main",
             channel="prerelease",
             draft=False,
+            macos_release_mode="off",
             repo=Path("/repo"),
             dry_run=True,
         )
@@ -544,6 +545,8 @@ class DispatchSednaReleaseTests(unittest.TestCase):
                 "release_tag=v0.133.0-sedna.1+upstream.31",
                 "-f",
                 "draft=false",
+                "-f",
+                "macos_release_mode=off",
             ],
             cwd=Path("/repo"),
             dry_run=True,
@@ -602,6 +605,49 @@ class DispatchSednaReleaseTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(events, ["refresh", "resolve", "dispatch"])
+
+    def test_main_rejects_macos_preview_for_stable_release(self) -> None:
+        metadata = {
+            "release_tag": "v0.133.0-sedna.1",
+            "target_commit": "d4b356a4c23ff606556dac7232353c80d2ce8deb",
+            "github_prerelease": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "refresh_upstream_rust_tags",
+                ),
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "resolve_release_metadata",
+                    return_value=metadata,
+                ),
+                mock.patch.object(
+                    DISPATCH_SEDNA_RELEASE,
+                    "dispatch_release",
+                ) as dispatch,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                result = DISPATCH_SEDNA_RELEASE.main(
+                    [
+                        "--repo",
+                        tmpdir,
+                        "--target-sha",
+                        metadata["target_commit"],
+                        "--macos-release-mode",
+                        "preview",
+                    ]
+                )
+
+        self.assertEqual(result, 1)
+        dispatch.assert_not_called()
+        self.assertIn(
+            "Intel macOS preview assets may only be attached to prereleases",
+            stderr.getvalue(),
+        )
 
 
 class RouteSelectionTests(unittest.TestCase):
@@ -6351,11 +6397,12 @@ class HelperScriptTests(unittest.TestCase):
 
     def test_sedna_release_manual_dispatch_defaults_to_auto_channel(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
-        channel_input = (
-            (((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {})
-            .get("channel")
+        inputs = (
+            ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs")
             or {}
         )
+        channel_input = inputs.get("channel") or {}
+        macos_input = inputs.get("macos_release_mode") or {}
 
         self.assertEqual(
             {
@@ -6365,6 +6412,16 @@ class HelperScriptTests(unittest.TestCase):
             {
                 "default": "auto",
                 "options": ["auto", "stable", "prerelease"],
+            },
+        )
+        self.assertEqual(
+            {
+                "default": macos_input.get("default"),
+                "options": macos_input.get("options"),
+            },
+            {
+                "default": "off",
+                "options": ["off", "preview", "notarized"],
             },
         )
 
@@ -6434,8 +6491,15 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(publish_job.get("name"), "Publish GitHub release")
         self.assertEqual(
             publish_job.get("needs"),
-            ["resolve", "release-linux", "release-macos-finalize"],
+            [
+                "resolve",
+                "release-linux",
+                "release-macos-preview-package",
+                "release-macos-finalize",
+            ],
         )
+        self.assertIn("always()", publish_job.get("if") or "")
+        self.assertIn("macos_release_mode == 'off'", publish_job.get("if") or "")
         self.assertEqual(publish_job.get("environment"), "release")
         self.assertEqual(
             publish_job.get("permissions"),
@@ -6466,6 +6530,10 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(
             named_steps["Download Intel macOS release artifacts"].get("with") or {},
             {"name": "sedna-release-macos-x64", "path": "dist"},
+        )
+        self.assertEqual(
+            named_steps["Download Intel macOS preview artifacts"].get("with") or {},
+            {"name": "sedna-release-macos-x64-preview", "path": "dist"},
         )
 
         config_step = named_steps["Check release publisher app configuration"]
@@ -6538,6 +6606,10 @@ class HelperScriptTests(unittest.TestCase):
         finalize = jobs.get("release-macos-finalize") or {}
 
         self.assertEqual(preflight.get("runs-on"), "ubuntu-slim")
+        self.assertIn(
+            "macos_release_mode == 'notarized'",
+            preflight.get("if") or "",
+        )
         self.assertEqual(
             preflight.get("environment"),
             {"name": "codesigning", "deployment": "false"},
@@ -6555,6 +6627,10 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(build.get("needs"), ["resolve", "release-macos-signing-preflight"])
         self.assertEqual((build.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
         self.assertEqual(sign.get("runs-on"), "ubuntu-24.04")
+        self.assertIn(
+            "macos_release_mode == 'notarized'",
+            sign.get("if") or "",
+        )
         self.assertEqual(sign.get("environment"), {"name": "codesigning", "deployment": "false"})
         self.assertEqual((sign.get("permissions") or {}).get("id-token"), "write")
         sign_steps = {step.get("name"): step for step in sign.get("steps") or [] if step.get("name")}
@@ -6595,29 +6671,105 @@ class HelperScriptTests(unittest.TestCase):
         ):
             self.assertIn(evidence, verify_script)
 
+    def test_sedna_release_macos_preview_is_explicit_and_unnotarized(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        jobs = payload.get("jobs") or {}
+        build = jobs.get("release-macos-build") or {}
+        preview = jobs.get("release-macos-preview-package") or {}
+        publish = jobs.get("publish-release") or {}
+        resolve_script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release.yml",
+            "resolve",
+            "Resolve release metadata",
+        )["run"]
+
+        self.assertIn('macos_release_mode="off"', resolve_script)
+        self.assertIn(
+            "Ad-hoc signed Intel macOS assets may only be attached to prereleases",
+            resolve_script,
+        )
+        self.assertIn("always()", build.get("if") or "")
+        self.assertIn("macos_release_mode == 'preview'", build.get("if") or "")
+        self.assertEqual(preview.get("runs-on"), "macos-15-intel")
+        self.assertEqual(preview.get("needs"), ["resolve", "release-macos-build"])
+        self.assertIn("macos_release_mode == 'preview'", preview.get("if") or "")
+
+        preview_steps = {
+            step.get("name"): step
+            for step in preview.get("steps") or []
+            if step.get("name")
+        }
+        package_script = preview_steps[
+            "Ad-hoc sign and package Intel macOS preview"
+        ].get("run") or ""
+        for evidence in (
+            "--identity -",
+            "Signature=adhoc",
+            "UNNOTARIZED-PREVIEW",
+            '"signing": "ad-hoc"',
+            '"notarized": False',
+            '"gatekeeper_ready": False',
+        ):
+            self.assertIn(evidence, package_script)
+
+        publish_steps = {
+            step.get("name"): step
+            for step in publish.get("steps") or []
+            if step.get("name")
+        }
+        create_script = publish_steps["Create GitHub release"].get("run") or ""
+        self.assertIn("not Developer ID signed or notarized", create_script)
+        self.assertIn("not an official supported macOS distribution", create_script)
+
     def test_sedna_release_installer_targets_native_linux_and_intel_macos(self) -> None:
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/sedna-release-install.yml"
         )
-        include = (
-            (((payload.get("jobs") or {}).get("install") or {}).get("strategy") or {})
-            .get("matrix", {})
-            .get("include", [])
-        )
+        jobs = payload.get("jobs") or {}
+        plan = jobs.get("plan") or {}
+        install = jobs.get("install") or {}
+        matrix_script = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
+            "plan",
+            "Build verification matrix",
+        )["run"]
+
+        def resolve_matrix(mode: str) -> list[dict[str, str]]:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "github-output.txt"
+                output_path.write_text("", encoding="utf-8")
+                proc = subprocess.run(
+                    ["bash", "-c", f"set -euo pipefail\n{matrix_script}"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "GITHUB_OUTPUT": str(output_path),
+                        "MACOS_RELEASE_MODE": mode,
+                    },
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                return json.loads(parse_github_output_file(output_path)["matrix"])
+
+        linux = {
+            "platform": "Linux x64",
+            "runner": "ubuntu-24.04",
+            "target": "x86_64-unknown-linux-gnu",
+        }
+        macos = {
+            "platform": "Intel macOS x64",
+            "runner": "macos-15-intel",
+            "target": "x86_64-apple-darwin",
+        }
+        self.assertEqual(resolve_matrix("off"), [linux])
+        self.assertEqual(resolve_matrix("preview"), [linux, macos])
+        self.assertEqual(resolve_matrix("notarized"), [linux, macos])
+        self.assertEqual(plan.get("runs-on"), "ubuntu-slim")
+        self.assertEqual(install.get("needs"), "plan")
         self.assertEqual(
-            include,
-            [
-                {
-                    "platform": "Linux x64",
-                    "runner": "ubuntu-24.04",
-                    "target": "x86_64-unknown-linux-gnu",
-                },
-                {
-                    "platform": "Intel macOS x64",
-                    "runner": "macos-15-intel",
-                    "target": "x86_64-apple-darwin",
-                },
-            ],
+            ((install.get("strategy") or {}).get("matrix") or {}).get("include"),
+            "${{ fromJSON(needs.plan.outputs.matrix) }}",
         )
         installer = (REPO_ROOT / "scripts/install_sedna_release_asset").read_text(
             encoding="utf-8"
@@ -6625,6 +6777,8 @@ class HelperScriptTests(unittest.TestCase):
         self.assertIn("Darwin/x86_64", installer)
         self.assertIn("x86_64-apple-darwin", installer)
         self.assertIn("codesign --verify --strict", installer)
+        self.assertIn("--macos-preview", installer)
+        self.assertIn("UNNOTARIZED-PREVIEW", installer)
 
     def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
         install_workflow = (
@@ -6743,22 +6897,12 @@ class HelperScriptTests(unittest.TestCase):
 
         self.assertIn("Dispatch release asset verifier", release_workflow)
         self.assertIn('-f "dry_run=true"', release_workflow)
+        self.assertIn('-f "macos_release_mode=${MACOS_RELEASE_MODE}"', release_workflow)
         self.assertNotIn('-f "dry_run=false"', release_workflow)
         self.assertEqual(install_job.get("runs-on"), "${{ matrix.runner }}")
         self.assertEqual(
             ((install_job.get("strategy") or {}).get("matrix") or {}).get("include"),
-            [
-                {
-                    "platform": "Linux x64",
-                    "runner": "ubuntu-24.04",
-                    "target": "x86_64-unknown-linux-gnu",
-                },
-                {
-                    "platform": "Intel macOS x64",
-                    "runner": "macos-15-intel",
-                    "target": "x86_64-apple-darwin",
-                },
-            ],
+            "${{ fromJSON(needs.plan.outputs.matrix) }}",
         )
         workflow_json = json.dumps(install_payload, sort_keys=True)
         self.assertNotIn("self-hosted", workflow_json)

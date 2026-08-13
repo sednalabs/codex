@@ -5,9 +5,10 @@ repository="${GITHUB_REPOSITORY:-}"
 release_tag=""
 dry_run=false
 allow_prerelease=false
+macos_preview=false
 
 usage() {
-  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease]" >&2
+  echo "usage: install_sedna_release_asset --repository sednalabs/codex --release-tag TAG|latest [--dry-run] [--allow-prerelease] [--macos-preview]" >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -26,6 +27,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-prerelease)
       allow_prerelease=true
+      shift
+      ;;
+    --macos-preview)
+      macos_preview=true
       shift
       ;;
     -h|--help)
@@ -55,8 +60,13 @@ case "${host_os}/${host_arch}" in
     ;;
   Darwin/x86_64)
     target="x86_64-apple-darwin"
-    checksum_name="SHA256SUMS-${target}.txt"
-    metadata_name="RELEASE-METADATA-${target}.json"
+    if [[ "$macos_preview" == "true" ]]; then
+      checksum_name="SHA256SUMS-${target}-UNNOTARIZED-PREVIEW.txt"
+      metadata_name="RELEASE-METADATA-${target}-UNNOTARIZED-PREVIEW.json"
+    else
+      checksum_name="SHA256SUMS-${target}.txt"
+      metadata_name="RELEASE-METADATA-${target}.json"
+    fi
     ;;
   *)
     printf 'error: unsupported release platform: %s/%s (supported: Linux/x86_64, Darwin/x86_64)\n' \
@@ -126,6 +136,9 @@ fi
 
 release_version="${release_tag#v}"
 archive_name="codex-sedna-${release_version}-${target}.tar.gz"
+if [[ "$target" == "x86_64-apple-darwin" && "$macos_preview" == "true" ]]; then
+  archive_name="codex-sedna-${release_version}-${target}-UNNOTARIZED-PREVIEW.tar.gz"
+fi
 
 release_json="${work_dir}/release.json"
 fetch_json "${api_root}/releases/tags/${release_tag}" "$release_json"
@@ -177,14 +190,14 @@ while IFS=$'\t' read -r name asset_id; do
   esac
 done < "$asset_manifest"
 
-python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" <<'PY'
+python3 - "$work_dir" "$archive_name" "$checksum_name" "$metadata_name" "$release_tag" "$release_version" "$target" "$macos_preview" <<'PY'
 import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
-work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target = sys.argv[1:8]
+work_dir, archive_name, checksum_name, metadata_name, release_tag, release_version, target, macos_preview = sys.argv[1:9]
 root = Path(work_dir)
 metadata = json.loads((root / metadata_name).read_text(encoding="utf-8"))
 expected = {
@@ -197,6 +210,22 @@ for key, value in expected.items():
         raise SystemExit(f"error: metadata {key}={metadata.get(key)!r}, expected {value!r}")
 if str(metadata.get("repository", "")).lower() != "sednalabs/codex":
     raise SystemExit(f"error: metadata repository={metadata.get('repository')!r}, expected 'sednalabs/codex'")
+if target == "x86_64-apple-darwin":
+    expected_trust = (
+        {
+            "distribution": "preview",
+            "signing": "ad-hoc",
+            "notarized": False,
+            "gatekeeper_ready": False,
+        }
+        if macos_preview == "true"
+        else {"signing": "developer-id", "notarized": True}
+    )
+    for key, value in expected_trust.items():
+        if metadata.get(key) != value:
+            raise SystemExit(
+                f"error: metadata {key}={metadata.get(key)!r}, expected {value!r}"
+            )
 
 checksums = {}
 for raw in (root / checksum_name).read_text(encoding="utf-8").splitlines():
