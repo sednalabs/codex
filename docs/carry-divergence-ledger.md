@@ -1893,9 +1893,10 @@ decisions.
   `rust-v`; custom downstream origins always resolve and download through their
   configured GitHub repository.
 - The manual branch-build workflow keeps Linux `x86_64` as its default and
-  offers an explicit macOS preview mode. That mode builds separate Apple
-  Silicon and Intel artifacts, applies ad hoc signatures for local execution,
-  and records that the artifacts are not notarized; it does not widen the
+  offers an explicit macOS preview mode. That mode builds one Intel x64
+  artifact, applies ad hoc signatures for local execution, records that the
+  artifact is not notarized, and reuses Cargo-home and compiler-cache entries
+  without changing the release optimization profile. It does not widen the
   Linux-only official release contract or publish a GitHub Release.
 - Primary files:
   - `.github/workflows/sedna-branch-build.yml`

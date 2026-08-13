@@ -2769,7 +2769,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('if [[ "${LAB_PROFILE}" == "artifact"', run_script)
         self.assertIn("git -C \"${target_checkout}\" tag --merged HEAD", run_script)
 
-    def test_sedna_branch_build_uses_safe_ref_env_and_macos_preview_matrix(
+    def test_sedna_branch_build_uses_safe_ref_env_and_cached_macos_x64_preview(
         self,
     ) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-branch-build.yml")
@@ -2816,18 +2816,51 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         macos_job = (payload.get("jobs") or {}).get("build-macos") or {}
         self.assertEqual(macos_job.get("if"), "${{ inputs.platform == 'macos' }}")
+        self.assertEqual(macos_job.get("runs-on"), "macos-15-intel")
+        self.assertEqual(macos_job.get("timeout-minutes"), 210)
+        self.assertNotIn("strategy", macos_job)
+        self.assertEqual((macos_job.get("env") or {}).get("TARGET"), "x86_64-apple-darwin")
+        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", macos_job.get("env") or {})
+        self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", macos_job.get("env") or {})
+        install_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Install sccache",
+        )
         self.assertEqual(
-            ((macos_job.get("strategy") or {}).get("matrix") or {}).get("include"),
-            [
-                {
-                    "runner": "macos-15",
-                    "target": "aarch64-apple-darwin",
-                },
-                {
-                    "runner": "macos-15-intel",
-                    "target": "x86_64-apple-darwin",
-                },
-            ],
+            install_sccache_step.get("uses"),
+            "taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e",
+        )
+        configure_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Configure sccache backend",
+        )
+        self.assertIn(
+            "configure_sccache_backend.sh write-fallback",
+            configure_sccache_step.get("run") or "",
+        )
+        restore_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Restore sccache cache",
+        )
+        self.assertIn(
+            "sccache-macos-15-intel-x86_64-apple-darwin-release-",
+            (restore_sccache_step.get("with") or {}).get("key") or "",
+        )
+        save_sccache_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "build-macos",
+            "Save sccache cache",
+        )
+        self.assertEqual(
+            save_sccache_step.get("uses"),
+            "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+        )
+        self.assertIn(
+            "steps.build_macos.outcome == 'success'",
+            save_sccache_step.get("if") or "",
         )
         macos_build_step = workflow_step_by_name(
             REPO_ROOT / ".github/workflows/sedna-branch-build.yml",

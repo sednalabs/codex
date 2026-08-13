@@ -522,8 +522,9 @@ GitHub Actions lane naming (`.github/workflows/sedna-heavy-tests.yml`):
 - `sedna-branch-build.yml` is the preview artifact path.
   - It is manual-dispatch only.
   - Linux `x86_64` remains the default; the explicit `platform=macos` path
-    produces separate disposable Apple Silicon and Intel artifacts that are ad
-    hoc signed but not notarized or published as official releases.
+    produces one disposable Intel x64 artifact that is ad hoc signed but not
+    notarized or published as an official release. Cargo-home and `sccache`
+    entries are restored and saved for repeat builds.
   - Treat it as artifact validation, not the primary downstream correctness
     gate.
 
