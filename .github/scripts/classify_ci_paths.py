@@ -98,6 +98,19 @@ def _suffix(path: str) -> str:
 def classify(paths: Iterable[str]) -> Scope:
     changed = tuple(sorted({_norm(path) for path in paths if _norm(path)}))
 
+    if not changed:
+        return Scope(
+            cargo_deny=True,
+            repo_policy=True,
+            repo_package=True,
+            repo_format=True,
+            repo_readme=True,
+            sdk_python=True,
+            sdk_typescript=True,
+            codeql_languages=CODEQL_ALL,
+            force_full_blocking=True,
+            force_full_codeql=True,
+        )
     force_full_blocking = any(path in FULL_BLOCKING_PATHS for path in changed)
     force_full_codeql = any(
         path in FULL_CODEQL_PATHS or _starts(path, *FULL_CODEQL_PREFIXES)
