@@ -91,10 +91,6 @@ def _starts(path: str, *prefixes: str) -> bool:
     return any(path.startswith(prefix) for prefix in prefixes)
 
 
-def _suffix(path: str) -> str:
-    return PurePosixPath(path).suffix.lower()
-
-
 def classify(paths: Iterable[str]) -> Scope:
     changed = tuple(sorted({_norm(path) for path in paths if _norm(path)}))
 
@@ -128,7 +124,9 @@ def classify(paths: Iterable[str]) -> Scope:
     codeql: set[str] = set(CODEQL_ALL if force_full_codeql else ())
 
     for path in changed:
-        suffix = _suffix(path)
+        posix_path = PurePosixPath(path)
+        suffix = posix_path.suffix.lower()
+        name = posix_path.name
 
         if path == "README.md" or path in {
             "scripts/asciicheck.py",
@@ -206,29 +204,26 @@ def classify(paths: Iterable[str]) -> Scope:
 
         if (
             suffix in C_CPP_SUFFIXES
-            or path == "CMakeLists.txt"
-            or path.endswith("/CMakeLists.txt")
+            or name == "CMakeLists.txt"
         ):
             codeql.add("c-cpp")
 
         if (
             suffix in JS_TS_SUFFIXES
             or path in PACKAGE_ROOT_PATHS
-            or PurePosixPath(path).name
-            in {"tsconfig.json", "eslint.config.js", "eslint.config.mjs"}
+            or name in {"tsconfig.json", "eslint.config.js", "eslint.config.mjs"}
         ):
             codeql.add("javascript-typescript")
 
         if (
             suffix == ".py"
-            or PurePosixPath(path).name in {"pyproject.toml", "uv.lock", "requirements.txt"}
+            or name in {"pyproject.toml", "uv.lock", "requirements.txt"}
         ):
             codeql.add("python")
 
         if (
             suffix == ".rs"
-            or PurePosixPath(path).name
-            in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
+            or name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
             or _starts(path, ".cargo/", "codex-rs/.cargo/")
         ):
             codeql.add("rust")
