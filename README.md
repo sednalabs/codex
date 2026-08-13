@@ -217,7 +217,7 @@ Codex can perform dynamic client registration when the authorization server supp
 Otherwise an explicit client ID can be configured:
 
 ```bash
-codex mcp add --oauth-client-id <client-id>
+codex mcp add <server-name> --oauth-client-id <client-id>
 ```
 
 The fork also carries downstream behaviour around MCP configuration, bounded recovery, partial catalogue availability, approvals, and remote or headless operation.
