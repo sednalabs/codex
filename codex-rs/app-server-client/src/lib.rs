@@ -2768,20 +2768,35 @@ mod tests {
                 )
                 .await;
             }
-            for id in 0_i64..3 {
-                let JSONRPCMessage::Error(response) = read_websocket_message(&mut websocket).await
-                else {
-                    panic!("expected unsupported request rejection");
-                };
-                assert_eq!(response.id, RequestId::Integer(id));
-                assert_eq!(response.error.code, -32601);
+            let mut rejected_ids = Vec::new();
+            let mut account_request = None;
+            while rejected_ids.len() < 3 || account_request.is_none() {
+                match read_websocket_message(&mut websocket).await {
+                    JSONRPCMessage::Error(response) => {
+                        let RequestId::Integer(id) = response.id else {
+                            panic!("unsupported request rejection should use an integer ID");
+                        };
+                        assert!((0_i64..3).contains(&id));
+                        assert!(
+                            !rejected_ids.contains(&id),
+                            "unsupported request rejection should not be duplicated"
+                        );
+                        assert_eq!(response.error.code, -32601);
+                        rejected_ids.push(id);
+                    }
+                    JSONRPCMessage::Request(request) => {
+                        assert_eq!(request.method, "account/read");
+                        assert!(
+                            account_request.replace(request).is_none(),
+                            "account/read should be sent only once"
+                        );
+                    }
+                    message => panic!("unexpected message while collecting responses: {message:?}"),
+                }
             }
-
-            let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
-            else {
-                panic!("expected request after unsupported request reuse");
-            };
-            assert_eq!(request.method, "account/read");
+            rejected_ids.sort_unstable();
+            assert_eq!(rejected_ids, vec![0, 1, 2]);
+            let request = account_request.expect("account/read request should arrive");
             write_websocket_message(
                 &mut websocket,
                 JSONRPCMessage::Response(JSONRPCResponse {
@@ -2795,7 +2810,7 @@ mod tests {
             .await;
         })
         .await;
-        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+        let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
             channel_capacity: 1,
             ..test_remote_connect_args(websocket_url)
         })
