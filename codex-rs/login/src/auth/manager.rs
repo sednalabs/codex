@@ -1213,6 +1213,81 @@ fn logout_all_stores(
     Ok(removed_ephemeral || removed_managed)
 }
 
+fn logout_store_matching_rejected_auth(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    rejected_auth: &CodexAuth,
+) -> std::io::Result<bool> {
+    logout_store_if(
+        codex_home,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+        |auth| auth_dot_json_matches_rejected_auth(auth, rejected_auth),
+    )
+}
+
+fn logout_store_if(
+    codex_home: &Path,
+    auth_credentials_store_mode: AuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    should_logout: impl Fn(&AuthDotJson) -> bool,
+) -> std::io::Result<bool> {
+    let Some(auth) = load_auth_dot_json(
+        codex_home,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )? else {
+        return Ok(false);
+    };
+    if !should_logout(&auth) {
+        return Ok(false);
+    }
+    logout(codex_home, auth_credentials_store_mode, keyring_backend_kind)
+}
+
+fn auth_dot_json_matches_rejected_auth(auth: &AuthDotJson, rejected: &CodexAuth) -> bool {
+    if auth.resolved_mode() != rejected.api_auth_mode() {
+        return false;
+    }
+    match rejected {
+        CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
+            let Some(rejected_auth) = rejected.get_current_auth_json() else {
+                return false;
+            };
+            let (Some(tokens), Some(rejected_tokens)) = (&auth.tokens, &rejected_auth.tokens) else {
+                return false;
+            };
+            tokens.access_token == rejected_tokens.access_token
+                && tokens.refresh_token == rejected_tokens.refresh_token
+                && auth_dot_json_chatgpt_account_id(auth)
+                    == auth_dot_json_chatgpt_account_id(&rejected_auth)
+        }
+        CodexAuth::AgentIdentity(rejected) => auth
+            .agent_identity
+            .as_deref()
+            .and_then(|jwt| AgentIdentityAuthRecord::from_agent_identity_jwt(jwt).ok())
+            .is_some_and(|record| &record == rejected.record()),
+        CodexAuth::PersonalAccessToken(rejected) => {
+            auth.personal_access_token.as_deref() == Some(rejected.access_token())
+        }
+        CodexAuth::ApiKey(_) | CodexAuth::Headers(_) | CodexAuth::BedrockApiKey(_) => false,
+    }
+}
+
+fn auth_dot_json_chatgpt_account_id(auth: &AuthDotJson) -> Option<&str> {
+    auth.tokens.as_ref().and_then(|tokens| {
+        tokens
+            .account_id
+            .as_deref()
+            .or(tokens.id_token.chatgpt_account_id.as_deref())
+    })
+}
+
+fn auth_dot_json_uses_codex_backend(auth: &AuthDotJson) -> bool {
+    auth.resolved_mode().uses_codex_backend()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn load_auth(
     codex_home: &Path,
@@ -1590,6 +1665,7 @@ pub struct UnauthorizedRecovery {
     manager: Arc<AuthManager>,
     step: UnauthorizedRecoveryStep,
     expected_account_id: Option<String>,
+    rejected_auth: Option<CodexAuth>,
     mode: UnauthorizedRecoveryMode,
 }
 
@@ -1621,6 +1697,7 @@ impl UnauthorizedRecovery {
             manager,
             step,
             expected_account_id,
+            rejected_auth: cached_auth,
             mode,
         }
     }
@@ -1698,6 +1775,19 @@ impl UnauthorizedRecovery {
             UnauthorizedRecoveryStep::ExternalRefresh => "external_refresh",
             UnauthorizedRecoveryStep::Done => "done",
         }
+    }
+
+    pub fn current_auth_uses_codex_backend(&self) -> bool {
+        self.manager.current_auth_uses_codex_backend()
+    }
+
+    pub async fn force_logout_due_to_server_auth_rejection(
+        &mut self,
+    ) -> std::io::Result<bool> {
+        self.step = UnauthorizedRecoveryStep::Done;
+        self.manager
+            .force_logout_due_to_server_auth_rejection(self.rejected_auth.as_ref())
+            .await
     }
 
     pub async fn next(&mut self) -> Result<UnauthorizedRecoveryStepResult, RefreshTokenError> {
@@ -2491,6 +2581,74 @@ impl AuthManager {
         self.clear_external_auth();
         self.reload().await;
         Ok(result)
+    }
+
+    pub async fn force_logout_due_to_server_auth_rejection(
+        &self,
+        rejected_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<bool> {
+        if !self.current_auth_uses_codex_backend() {
+            return Ok(false);
+        }
+        let removal_result = self.logout_stores_matching_rejected_auth(rejected_auth);
+        self.clear_external_auth();
+        let cache_changed = self.set_cached_auth(self.load_auth_from_storage().await);
+        let removed = removal_result?;
+        Ok(removed || cache_changed)
+    }
+
+    fn logout_stores_matching_rejected_auth(
+        &self,
+        rejected_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<bool> {
+        let Some(rejected_auth) = rejected_auth else {
+            return logout_all_stores(
+                &self.codex_home,
+                self.auth_credentials_store_mode,
+                self.keyring_backend_kind,
+            );
+        };
+        if rejected_auth.is_external_chatgpt_tokens() {
+            let removed_ephemeral = logout_store_matching_rejected_auth(
+                &self.codex_home,
+                AuthCredentialsStoreMode::Ephemeral,
+                AuthKeyringBackendKind::default(),
+                rejected_auth,
+            )?;
+            if self.auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
+                return Ok(removed_ephemeral);
+            }
+            let removed_file = logout_store_if(
+                &self.codex_home,
+                AuthCredentialsStoreMode::File,
+                AuthKeyringBackendKind::default(),
+                auth_dot_json_uses_codex_backend,
+            )?;
+            let removed_managed = if self.auth_credentials_store_mode == AuthCredentialsStoreMode::File {
+                false
+            } else {
+                logout_store_if(
+                    &self.codex_home,
+                    self.auth_credentials_store_mode,
+                    self.keyring_backend_kind,
+                    auth_dot_json_uses_codex_backend,
+                )?
+            };
+            return Ok(removed_ephemeral || removed_file || removed_managed);
+        }
+        let removed_ephemeral = logout_store_matching_rejected_auth(
+            &self.codex_home,
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+            rejected_auth,
+        )?;
+        let removed_managed = logout_store_matching_rejected_auth(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            self.keyring_backend_kind,
+            rejected_auth,
+        )?;
+        Ok(removed_ephemeral || removed_managed)
     }
 
     /// Returns the precise kind of credentials backing the current authentication.

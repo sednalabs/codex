@@ -148,6 +148,9 @@ pub const X_CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 pub const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 pub const X_OPENAI_MEMGEN_REQUEST_HEADER: &str = "x-openai-memgen-request";
 pub const X_OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
+pub const CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE: &str =
+    "chatgpt_ip_workspace_restricted";
+const CHATGPT_IP_WORKSPACE_RESTRICTED_MESSAGE: &str = "Your ChatGPT session is no longer authorized for this network or workspace. Please sign in again and choose an allowed workspace.";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
 const X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str =
@@ -2202,6 +2205,49 @@ async fn handle_unauthorized(
     provider: &SharedModelProvider,
 ) -> Result<UnauthorizedRecoveryExecution> {
     let debug = extract_response_debug_context(&transport);
+    if is_chatgpt_ip_workspace_restricted_unauthorized(&transport, &debug)
+        && let Some(recovery) = auth_recovery
+        && recovery.current_auth_uses_codex_backend()
+    {
+        let mode = recovery.mode_name();
+        let phase = recovery.step_name();
+        let auth_state_changed = match recovery
+            .force_logout_due_to_server_auth_rejection()
+            .await
+        {
+            Ok(changed) => Some(changed),
+            Err(err) => {
+                warn!("failed to clear auth after server auth rejection: {err}");
+                None
+            }
+        };
+        session_telemetry.record_auth_recovery(
+            mode,
+            phase,
+            "forced_logout",
+            debug.request_id.as_deref(),
+            debug.cf_ray.as_deref(),
+            debug.auth_error.as_deref(),
+            Some(CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE),
+            /*recovery_reason*/ None,
+            auth_state_changed,
+        );
+        emit_feedback_auth_recovery_tags(
+            mode,
+            phase,
+            "forced_logout",
+            debug.request_id.as_deref(),
+            debug.cf_ray.as_deref(),
+            debug.auth_error.as_deref(),
+            Some(CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE),
+        );
+        return Err(CodexErr::RefreshTokenFailed(
+            codex_protocol::auth::RefreshTokenFailedError::new(
+                codex_protocol::auth::RefreshTokenFailedReason::Other,
+                CHATGPT_IP_WORKSPACE_RESTRICTED_MESSAGE,
+            ),
+        ));
+    }
     if let Some(recovery) = auth_recovery
         && recovery.has_next()
     {
@@ -2310,6 +2356,35 @@ async fn handle_unauthorized(
     );
 
     Err(provider.map_api_error(ApiError::Transport(transport)))
+}
+
+fn is_chatgpt_ip_workspace_restricted_unauthorized(
+    transport: &TransportError,
+    debug: &codex_response_debug_context::ResponseDebugContext,
+) -> bool {
+    let TransportError::Http { status, body, .. } = transport else {
+        return false;
+    };
+    if *status != StatusCode::UNAUTHORIZED {
+        return false;
+    }
+    if debug.auth_error_code.as_deref() == Some(CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE) {
+        return true;
+    }
+    body.as_deref().is_some_and(|body| {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| value.get("code").and_then(serde_json::Value::as_str))
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some(CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE)
+    })
 }
 
 fn api_error_http_status(error: &ApiError) -> Option<u16> {
