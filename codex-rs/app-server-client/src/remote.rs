@@ -716,7 +716,7 @@ impl RemoteEventBacklog {
         if let Some(request_id) = &server_request_id {
             // A repeated peer request ID denotes the same in-flight request.
             // Do not publish a second prompt or generate a second response.
-            match self.claim_server_request_id(request_id, false) {
+            match self.claim_server_request_id(request_id, /*allow_deferred*/ false) {
                 Ok(false) => {
                     warn!(%request_id, "ignoring duplicate remote app-server server request");
                     return Ok(());
@@ -816,8 +816,10 @@ impl RemoteEventBacklog {
         match &event.event {
             AppServerEvent::ServerRequest(request)
                 if self.server_request_dispositions.contains_key(request.id()) =>
+            {
                 self.events.len() < self.capacity
-                    && self.direct_server_request_count() < self.direct_server_request_capacity(),
+                    && self.direct_server_request_count() < self.direct_server_request_capacity()
+            }
             AppServerEvent::ServerRequest(_) => {
                 self.events.len() < self.capacity
                     && self.direct_server_request_count() < self.direct_server_request_capacity()
@@ -1302,7 +1304,7 @@ where
             Ok(JSONRPCMessage::Request(request)) => {
                 let request_id = request.id.clone();
                 let method = request.method.clone();
-                match backlog.claim_server_request_id(&request_id, true) {
+                match backlog.claim_server_request_id(&request_id, /*allow_deferred*/ true) {
                     Ok(false) => {
                         warn!(%request_id, "ignoring duplicate remote app-server server request");
                         #[cfg(test)]
@@ -1397,7 +1399,7 @@ fn enqueue_remote_worker_event(
     };
 
     if let Some(request_id) = &server_request_id {
-        match backlog.claim_server_request_id(request_id, true) {
+        match backlog.claim_server_request_id(request_id, /*allow_deferred*/ true) {
             Ok(false) => {
                 warn!(%request_id, "ignoring duplicate remote app-server server request");
                 #[cfg(test)]
@@ -1843,7 +1845,7 @@ where
                         JSONRPCMessage::Request(request) => {
                             let request_id = request.id.clone();
                             let method = request.method.clone();
-                            match backlog.claim_server_request_id(&request_id, false) {
+                            match backlog.claim_server_request_id(&request_id, /*allow_deferred*/ false) {
                                 Ok(false) => {
                                     warn!(%request_id, "ignoring duplicate remote app-server server request during initialize");
                                 }
