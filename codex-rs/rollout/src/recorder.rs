@@ -36,9 +36,9 @@ use tracing::warn;
 
 use super::ARCHIVED_SESSIONS_SUBDIR;
 use super::SESSIONS_SUBDIR;
-use super::compression;
 use super::command_admission::RolloutCommandAdmission;
 use super::command_admission::RolloutCommandAdmissionError;
+use super::compression;
 use super::list::Cursor;
 use super::list::SortDirection;
 use super::list::ThreadItem;
@@ -88,6 +88,8 @@ use codex_utils_path as path_utils;
 pub struct RolloutRecorder {
     tx: Sender<RolloutCmd>,
     writer_task: Arc<RolloutWriterTask>,
+    #[cfg(test)]
+    mutation_authority: RolloutMutationAuthority,
     pub(crate) rollout_path: PathBuf,
 }
 
@@ -172,11 +174,14 @@ impl RolloutWriterTask {
     async fn reserve_data<'a>(
         &self,
         tx: &'a Sender<RolloutCmd>,
-    ) -> std::io::Result<(crate::command_admission::RolloutDataAdmission, mpsc::Permit<'a, RolloutCmd>)>
-    {
-        let admission = self.command_admission.acquire_data().await.map_err(|_| {
-            IoError::other("rollout writer terminal command was already committed")
-        })?;
+    ) -> std::io::Result<(
+        crate::command_admission::RolloutDataAdmission,
+        mpsc::Permit<'a, RolloutCmd>,
+    )> {
+        let admission =
+            self.command_admission.acquire_data().await.map_err(|_| {
+                IoError::other("rollout writer terminal command was already committed")
+            })?;
         let permit = tx.reserve().await.map_err(|err| {
             self.terminal_failure().unwrap_or_else(|| {
                 IoError::other(format!("failed to reserve rollout command: {err}"))
@@ -231,9 +236,7 @@ impl RolloutWriterTask {
             );
         };
         match ack_rx.await {
-            Ok(Ok(())) => {
-                self.sealed_terminal_outcome(transition, Ok(()), custody.wait().await)
-            }
+            Ok(Ok(())) => self.sealed_terminal_outcome(transition, Ok(()), custody.wait().await),
             Ok(Err(err)) => {
                 let race = match custody.handle.as_mut() {
                     Some(handle) => {
@@ -265,11 +268,9 @@ impl RolloutWriterTask {
                         transition.reopen();
                         TerminalCommandOutcome::Retryable(err)
                     }
-                    WriterContinuationRace::SignalLost => self.sealed_terminal_outcome(
-                        transition,
-                        Err(err),
-                        custody.wait().await,
-                    ),
+                    WriterContinuationRace::SignalLost => {
+                        self.sealed_terminal_outcome(transition, Err(err), custody.wait().await)
+                    }
                 }
             }
             Err(err) => self.sealed_terminal_outcome(
@@ -1082,7 +1083,7 @@ impl RolloutRecorder {
                 )
                 .await?;
                 RolloutWriterState {
-                    writer: Some(JsonlWriter { file }),
+                    writer: Some(JsonlWriter::new(file, mutation_authority.clone())),
                     deferred_log_file_info: None,
                     pending_items: Vec::new(),
                     meta: None,
@@ -1125,6 +1126,8 @@ impl RolloutRecorder {
         Ok(Self {
             tx,
             writer_task,
+            #[cfg(test)]
+            mutation_authority,
             rollout_path,
         })
     }
@@ -1902,9 +1905,10 @@ impl RolloutWriterState {
             .map(|info| info.path.as_path())
             .unwrap_or(self.rollout_path.as_path());
         let file = open_log_file_with_authority(path, self.mutation_authority.clone())?;
-        self.writer = Some(JsonlWriter {
-            file: tokio::fs::File::from_std(file),
-        });
+        self.writer = Some(JsonlWriter::new(
+            tokio::fs::File::from_std(file),
+            self.mutation_authority.clone(),
+        ));
         self.deferred_log_file_info = None;
         Ok(())
     }
@@ -1930,9 +1934,6 @@ impl RolloutWriterState {
 
         self.write_pending_items_once().await?;
 
-        if let Some(writer) = self.writer.as_mut() {
-            writer.file.flush().await?;
-        }
         Ok(())
     }
 
@@ -2039,16 +2040,14 @@ pub async fn append_rollout_item_to_path(
     rollout_path: &Path,
     item: &RolloutItem,
 ) -> std::io::Result<()> {
-    let (_rollout_path, file, ordinal_state) = open_rollout_for_append(rollout_path).await?;
+    let mutation_authority = RolloutMutationAuthority::new();
+    let (_rollout_path, file, ordinal_state) =
+        open_rollout_for_append_with_authority(rollout_path, mutation_authority.clone()).await?;
     let ordinal = ordinal_state.current()?;
-    let mut writer = JsonlWriter { file };
-    writer.write_rollout_item(item, ordinal).await
-}
-
-async fn open_rollout_for_append(
-    path: &Path,
-) -> std::io::Result<(PathBuf, tokio::fs::File, RolloutOrdinalState)> {
-    open_rollout_for_append_with_authority(path, RolloutMutationAuthority::new()).await
+    let mut writer = JsonlWriter::new(file, mutation_authority.clone());
+    let result = writer.write_rollout_item(item, ordinal).await;
+    mutation_authority.revoke().await;
+    result
 }
 
 async fn open_rollout_for_append_with_authority(
@@ -2060,9 +2059,9 @@ async fn open_rollout_for_append_with_authority(
     let path = compression::plain_rollout_path(path);
     let path_for_open = path.clone();
     let (file, ordinal_state) = tokio::task::spawn_blocking(move || {
-        let custody = authority.admit().map_err(|err| {
-            IoError::other(format!("rollout mutation admission failed: {err:?}"))
-        })?;
+        let custody = authority
+            .admit()
+            .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
         let result = (|| {
             let path_for_open =
                 compression::materialize_rollout_for_append_blocking(path_for_open.as_path())?;
@@ -2103,7 +2102,17 @@ fn ensure_rollout_is_newline_terminated(file: &mut File) -> std::io::Result<()> 
 }
 
 struct JsonlWriter {
-    file: tokio::fs::File,
+    file: Arc<tokio::sync::Mutex<tokio::fs::File>>,
+    mutation_authority: RolloutMutationAuthority,
+    #[cfg(test)]
+    write_gate: Option<JsonlWriteGate>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct JsonlWriteGate {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 #[derive(serde::Serialize)]
@@ -2116,6 +2125,15 @@ struct RolloutLineRef<'a> {
 }
 
 impl JsonlWriter {
+    fn new(file: tokio::fs::File, mutation_authority: RolloutMutationAuthority) -> Self {
+        Self {
+            file: Arc::new(tokio::sync::Mutex::new(file)),
+            mutation_authority,
+            #[cfg(test)]
+            write_gate: None,
+        }
+    }
+
     async fn write_rollout_item(
         &mut self,
         rollout_item: &RolloutItem,
@@ -2138,9 +2156,28 @@ impl JsonlWriter {
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        let custody = self
+            .mutation_authority
+            .admit()
+            .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
+        let file = Arc::clone(&self.file);
+        #[cfg(test)]
+        let write_gate = self.write_gate.clone();
+        tokio::spawn(async move {
+            // This owned continuation retains both filesystem and mutation custody if the outer
+            // caller is cancelled. Revocation therefore waits for the exact admitted write.
+            let _custody = custody;
+            #[cfg(test)]
+            if let Some(write_gate) = write_gate {
+                write_gate.entered.notify_one();
+                write_gate.release.notified().await;
+            }
+            let mut file = file.lock().await;
+            file.write_all(json.as_bytes()).await?;
+            file.flush().await
+        })
+        .await
+        .map_err(|err| IoError::other(format!("rollout append task failed: {err}")))?
     }
 }
 
