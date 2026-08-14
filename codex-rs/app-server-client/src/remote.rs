@@ -65,6 +65,8 @@ use url::Url;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
+const MAX_UNANSWERED_SERVER_REQUESTS: usize = 1024;
+const MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES: usize = 256 << 10;
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
 // the bytes travel over the Unix socket, not TCP.
 const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
@@ -154,38 +156,72 @@ enum ServerRequestDisposition {
     ResponseAttempted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerRequestRegistration {
+    Registered,
+    Duplicate,
+    CapacityExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ServerRequestLedgerEntry {
+    disposition: ServerRequestDisposition,
+    request_id_bytes: usize,
+}
+
 #[derive(Debug, Default)]
 struct ServerRequestLedger {
-    dispositions: HashMap<RequestId, ServerRequestDisposition>,
+    entries: HashMap<RequestId, ServerRequestLedgerEntry>,
     order: VecDeque<RequestId>,
+    request_id_bytes: usize,
 }
 
 impl ServerRequestLedger {
-    fn register(&mut self, request_id: RequestId) -> bool {
-        if self.dispositions.contains_key(&request_id) {
-            return false;
+    fn register(&mut self, request_id: RequestId) -> ServerRequestRegistration {
+        if self.entries.contains_key(&request_id) {
+            return ServerRequestRegistration::Duplicate;
         }
-        self.dispositions
-            .insert(request_id.clone(), ServerRequestDisposition::Pending);
+        let request_id_bytes = match &request_id {
+            RequestId::String(value) => value.len(),
+            RequestId::Integer(_) => std::mem::size_of::<i64>(),
+        };
+        let Some(next_request_id_bytes) = self.request_id_bytes.checked_add(request_id_bytes)
+        else {
+            return ServerRequestRegistration::CapacityExceeded;
+        };
+        if self.entries.len() >= MAX_UNANSWERED_SERVER_REQUESTS
+            || next_request_id_bytes > MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES
+        {
+            return ServerRequestRegistration::CapacityExceeded;
+        }
+        self.entries.insert(
+            request_id.clone(),
+            ServerRequestLedgerEntry {
+                disposition: ServerRequestDisposition::Pending,
+                request_id_bytes,
+            },
+        );
         self.order.push_back(request_id);
-        true
+        self.request_id_bytes = next_request_id_bytes;
+        ServerRequestRegistration::Registered
     }
 
     fn begin_response(&mut self, request_id: &RequestId) -> bool {
-        let Some(disposition) = self.dispositions.get_mut(request_id) else {
+        let Some(entry) = self.entries.get_mut(request_id) else {
             return false;
         };
-        if *disposition == ServerRequestDisposition::ResponseAttempted {
+        if entry.disposition == ServerRequestDisposition::ResponseAttempted {
             return false;
         }
         // A failed socket write might still have reached the peer. Retain the
         // attempted disposition so terminal cleanup never answers it twice.
-        *disposition = ServerRequestDisposition::ResponseAttempted;
+        entry.disposition = ServerRequestDisposition::ResponseAttempted;
         true
     }
 
     fn complete_response(&mut self, request_id: &RequestId) {
-        if self.dispositions.remove(request_id).is_some() {
+        if let Some(entry) = self.entries.remove(request_id) {
+            self.request_id_bytes -= entry.request_id_bytes;
             self.order
                 .retain(|pending_request_id| pending_request_id != request_id);
         }
@@ -194,12 +230,20 @@ impl ServerRequestLedger {
     fn take_unanswered(&mut self) -> Vec<RequestId> {
         let mut unanswered = Vec::new();
         while let Some(request_id) = self.order.pop_front() {
-            match self.dispositions.remove(&request_id) {
-                Some(ServerRequestDisposition::Pending) => unanswered.push(request_id),
-                Some(ServerRequestDisposition::ResponseAttempted) | None => {}
+            match self.entries.remove(&request_id) {
+                Some(ServerRequestLedgerEntry {
+                    disposition: ServerRequestDisposition::Pending,
+                    ..
+                }) => unanswered.push(request_id),
+                Some(ServerRequestLedgerEntry {
+                    disposition: ServerRequestDisposition::ResponseAttempted,
+                    ..
+                })
+                | None => {}
             }
         }
-        debug_assert!(self.dispositions.is_empty());
+        self.request_id_bytes = 0;
+        debug_assert!(self.entries.is_empty());
         unanswered
     }
 }
@@ -271,7 +315,7 @@ impl RemoteAppServerClient {
         let mut server_requests = ServerRequestLedger::default();
         for event in &pending_events {
             if let AppServerEvent::ServerRequest(request) = event {
-                server_requests.register(request.id().clone());
+                let _ = server_requests.register(request.id().clone());
             }
         }
         let worker_handle = tokio::spawn(async move {
@@ -279,6 +323,7 @@ impl RemoteAppServerClient {
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
             let mut worker_exit_error: Option<(ErrorKind, String)> = None;
             let mut skipped_events = 0usize;
+            let mut pending_required_events = VecDeque::new();
             loop {
                 tokio::select! {
                     command = command_rx.recv() => {
@@ -323,6 +368,7 @@ impl RemoteAppServerClient {
                                     if let Err(err) = deliver_event(
                                         &event_tx,
                                         &mut skipped_events,
+                                        &mut pending_required_events,
                                         AppServerEvent::Disconnected {
                                             message: message.clone(),
                                         },
@@ -419,7 +465,20 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
-                    message = stream.next() => {
+                    permit = event_tx.reserve(), if !pending_required_events.is_empty() => {
+                        match permit {
+                            Ok(permit) => {
+                                let event = pending_required_events
+                                    .pop_front()
+                                    .expect("pending required event should exist");
+                                permit.send(event);
+                            }
+                            Err(_) => {
+                                pending_required_events.clear();
+                            }
+                        }
+                    }
+                    message = stream.next(), if pending_required_events.is_empty() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
                                 match serde_json::from_str::<JSONRPCMessage>(&text) {
@@ -439,6 +498,7 @@ impl RemoteAppServerClient {
                                             && let Err(err) = deliver_event(
                                                 &event_tx,
                                                 &mut skipped_events,
+                                                &mut pending_required_events,
                                                 event,
                                             )
                                             .await
@@ -456,13 +516,31 @@ impl RemoteAppServerClient {
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
-                                                if !server_requests.register(request_id.clone()) {
-                                                    warn!(%request_id, "ignoring duplicate remote app-server server request");
-                                                    continue;
+                                                match server_requests.register(request_id.clone()) {
+                                                    ServerRequestRegistration::Registered => {}
+                                                    ServerRequestRegistration::Duplicate => {
+                                                        warn!(%request_id, "ignoring duplicate remote app-server server request");
+                                                        continue;
+                                                    }
+                                                    ServerRequestRegistration::CapacityExceeded => {
+                                                        warn!(%request_id, "rejecting remote app-server server request because the unanswered-request limit was reached");
+                                                        if let Err(err) = reject_server_request_overflow(
+                                                            &mut stream,
+                                                            &endpoint,
+                                                            request_id,
+                                                        )
+                                                        .await
+                                                        {
+                                                            worker_exit_error = Some((ErrorKind::BrokenPipe, err.to_string()));
+                                                            break;
+                                                        }
+                                                        continue;
+                                                    }
                                                 }
                                                 if let Err(err) = deliver_event(
                                                     &event_tx,
                                                     &mut skipped_events,
+                                                    &mut pending_required_events,
                                                     AppServerEvent::ServerRequest(request),
                                                 )
                                                 .await
@@ -500,6 +578,7 @@ impl RemoteAppServerClient {
                                                     if let Err(err) = deliver_event(
                                                         &event_tx,
                                                         &mut skipped_events,
+                                                        &mut pending_required_events,
                                                         AppServerEvent::Disconnected {
                                                             message: message.clone(),
                                                         },
@@ -522,6 +601,7 @@ impl RemoteAppServerClient {
                                         if let Err(deliver_err) = deliver_event(
                                             &event_tx,
                                             &mut skipped_events,
+                                            &mut pending_required_events,
                                             AppServerEvent::Disconnected {
                                                 message: message.clone(),
                                             },
@@ -548,6 +628,7 @@ impl RemoteAppServerClient {
                                 if let Err(err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
+                                    &mut pending_required_events,
                                     AppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
@@ -573,6 +654,7 @@ impl RemoteAppServerClient {
                                 if let Err(deliver_err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
+                                    &mut pending_required_events,
                                     AppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
@@ -591,6 +673,7 @@ impl RemoteAppServerClient {
                                 if let Err(err) = deliver_event(
                                     &event_tx,
                                     &mut skipped_events,
+                                    &mut pending_required_events,
                                     AppServerEvent::Disconnected {
                                         message: message.clone(),
                                     },
@@ -1093,16 +1176,26 @@ fn app_server_event_from_notification(notification: JSONRPCNotification) -> Opti
 async fn deliver_event(
     event_tx: &mpsc::Sender<AppServerEvent>,
     skipped_events: &mut usize,
+    pending_required_events: &mut VecDeque<AppServerEvent>,
     event: AppServerEvent,
 ) -> IoResult<()> {
     if *skipped_events > 0 {
         if remote_event_requires_delivery(&event) {
-            event_tx
-                .send(AppServerEvent::Lagged {
-                    skipped: *skipped_events,
-                })
-                .await
-                .map_err(|_| event_consumer_closed())?;
+            let lagged = AppServerEvent::Lagged {
+                skipped: *skipped_events,
+            };
+            match event_tx.try_send(lagged) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(lagged)) => {
+                    pending_required_events.push_back(lagged);
+                    pending_required_events.push_back(event);
+                    *skipped_events = 0;
+                    return Ok(());
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(event_consumer_closed());
+                }
+            }
             *skipped_events = 0;
         } else {
             match event_tx.try_send(AppServerEvent::Lagged {
@@ -1122,10 +1215,14 @@ async fn deliver_event(
     }
 
     if remote_event_requires_delivery(&event) {
-        event_tx
-            .send(event)
-            .await
-            .map_err(|_| event_consumer_closed())
+        match event_tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                pending_required_events.push_back(event);
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(event_consumer_closed()),
+        }
     } else {
         match event_tx.try_send(event) {
             Ok(()) => Ok(()),
@@ -1226,6 +1323,29 @@ where
     Ok(())
 }
 
+async fn reject_server_request_overflow<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    request_id: RequestId,
+) -> IoResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    write_jsonrpc_message(
+        stream,
+        JSONRPCMessage::Error(JSONRPCError {
+            error: JSONRPCErrorError {
+                code: -32603,
+                message: "too many unanswered remote app-server server requests".to_string(),
+                data: None,
+            },
+            id: request_id,
+        }),
+        endpoint,
+    )
+    .await
+}
+
 fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
     match err {
         TungsteniteError::ConnectionClosed | TungsteniteError::AlreadyClosed => true,
@@ -1269,14 +1389,51 @@ mod tests {
     fn response_attempt_is_not_rejected_during_shutdown_cleanup() {
         let request_id = RequestId::Integer(1);
         let mut ledger = ServerRequestLedger::default();
-        assert!(ledger.register(request_id.clone()));
+        assert_eq!(
+            ledger.register(request_id.clone()),
+            ServerRequestRegistration::Registered
+        );
         assert!(ledger.begin_response(&request_id));
         assert!(!ledger.begin_response(&request_id));
         assert!(ledger.take_unanswered().is_empty());
     }
 
+    #[test]
+    fn unanswered_server_request_ledger_limits_count() {
+        let mut ledger = ServerRequestLedger::default();
+        for request_id in 0..MAX_UNANSWERED_SERVER_REQUESTS {
+            assert_eq!(
+                ledger.register(RequestId::Integer(request_id as i64)),
+                ServerRequestRegistration::Registered
+            );
+        }
+        assert_eq!(
+            ledger.register(RequestId::Integer(MAX_UNANSWERED_SERVER_REQUESTS as i64)),
+            ServerRequestRegistration::CapacityExceeded
+        );
+        assert_eq!(
+            ledger.take_unanswered().len(),
+            MAX_UNANSWERED_SERVER_REQUESTS
+        );
+        assert_eq!(ledger.request_id_bytes, 0);
+    }
+
+    #[test]
+    fn unanswered_server_request_ledger_counts_string_bytes() {
+        let mut ledger = ServerRequestLedger::default();
+        let nearly_full = "a".repeat(MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES - 1);
+        assert_eq!(
+            ledger.register(RequestId::String(nearly_full)),
+            ServerRequestRegistration::Registered
+        );
+        assert_eq!(
+            ledger.register(RequestId::String("é".to_string())),
+            ServerRequestRegistration::CapacityExceeded
+        );
+    }
+
     #[tokio::test]
-    async fn shutdown_acknowledges_after_required_event_receiver_closes() {
+    async fn control_commands_remain_live_while_required_event_queue_is_full() {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let client_stream = WebSocketStream::from_raw_socket(
             client_io,
@@ -1337,29 +1494,37 @@ mod tests {
                 .send(())
                 .expect("request send signal should remain open");
 
-            let mut rejected = Vec::new();
-            while rejected.len() < 2 {
-                let Message::Text(message) = server_stream
-                    .next()
-                    .await
-                    .expect("client should reject each unanswered request")
-                    .expect("rejection frame should succeed")
-                else {
-                    panic!("expected rejection text frame");
-                };
-                let JSONRPCMessage::Error(error) = serde_json::from_str(&message)
-                    .expect("rejection frame should contain JSON-RPC")
-                else {
-                    panic!("expected JSON-RPC error");
-                };
-                rejected.push((error.id, error.error.code));
-            }
+            let Message::Text(message) = server_stream
+                .next()
+                .await
+                .expect("client should resolve the first request")
+                .expect("response frame should succeed")
+            else {
+                panic!("expected response text frame");
+            };
+            let JSONRPCMessage::Response(response) =
+                serde_json::from_str(&message).expect("response frame should contain JSON-RPC")
+            else {
+                panic!("expected JSON-RPC response");
+            };
+            assert_eq!(response.id, RequestId::Integer(1));
+
+            let Message::Text(message) = server_stream
+                .next()
+                .await
+                .expect("client should reject the remaining unanswered request")
+                .expect("rejection frame should succeed")
+            else {
+                panic!("expected rejection text frame");
+            };
+            let JSONRPCMessage::Error(error) =
+                serde_json::from_str(&message).expect("rejection frame should contain JSON-RPC")
+            else {
+                panic!("expected JSON-RPC error");
+            };
             assert_eq!(
-                rejected,
-                vec![
-                    (RequestId::Integer(1), -32603),
-                    (RequestId::Integer(2), -32603),
-                ]
+                (error.id, error.error.code),
+                (RequestId::Integer(2), -32603)
             );
             assert!(matches!(
                 server_stream.next().await,
@@ -1395,6 +1560,14 @@ mod tests {
         for _ in 0..8 {
             tokio::task::yield_now().await;
         }
+
+        timeout(
+            Duration::from_secs(2),
+            client.resolve_server_request(RequestId::Integer(1), serde_json::json!({})),
+        )
+        .await
+        .expect("resolve should not wait for required-event queue capacity")
+        .expect("first request should resolve");
 
         let RemoteAppServerClient {
             command_tx,
