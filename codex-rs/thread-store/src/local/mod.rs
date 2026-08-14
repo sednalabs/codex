@@ -94,6 +94,8 @@ pub struct LocalThreadStore {
 
 struct LiveRecorderEntry {
     recorder: RolloutRecorder,
+    /// Identity for this installation of the thread's local writer.
+    generation: Arc<()>,
     // Local rollout files are materialized lazily, but metadata updates can arrive before the
     // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened
     // so missing SQLite rows can still be seeded.
@@ -300,12 +302,28 @@ impl LocalThreadStore {
             Entry::Vacant(entry) => {
                 entry.insert(LiveRecorderEntry {
                     recorder,
+                    generation: Arc::new(()),
                     history_mode,
                     writer_lock,
                 });
                 Ok(())
             }
         }
+    }
+
+    pub(super) async fn remove_live_recorder_generation(
+        &self,
+        thread_id: ThreadId,
+        generation: &Arc<()>,
+    ) -> bool {
+        let mut recorders = self.live_recorders.lock().await;
+        let matches_generation = recorders
+            .get(&thread_id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.generation, generation));
+        if matches_generation {
+            recorders.remove(&thread_id);
+        }
+        matches_generation
     }
 
     async fn load_history(
@@ -600,6 +618,56 @@ mod tests {
         assert!(
             matches!(err, ThreadStoreError::ThreadNotFound { thread_id: missing } if missing == thread_id)
         );
+    }
+
+    #[tokio::test]
+    async fn cancelled_old_shutdown_cannot_remove_replacement_generation() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let thread_id = ThreadId::default();
+
+        store
+            .create_thread(create_thread_params(thread_id))
+            .await
+            .expect("create old generation");
+        let old_generation = Arc::clone(
+            &store
+                .live_recorders
+                .lock()
+                .await
+                .get(&thread_id)
+                .expect("old generation")
+                .generation,
+        );
+        store
+            .shutdown_thread(thread_id)
+            .await
+            .expect("shutdown old generation");
+
+        store
+            .create_thread(create_thread_params(thread_id))
+            .await
+            .expect("install replacement generation");
+        let replacement_generation = Arc::clone(
+            &store
+                .live_recorders
+                .lock()
+                .await
+                .get(&thread_id)
+                .expect("replacement generation")
+                .generation,
+        );
+        assert!(!Arc::ptr_eq(&old_generation, &replacement_generation));
+        assert!(
+            !store
+                .remove_live_recorder_generation(thread_id, &old_generation)
+                .await
+        );
+        assert!(store.live_rollout_path(thread_id).await.is_ok());
+        store
+            .discard_thread(thread_id)
+            .await
+            .expect("discard replacement generation");
     }
 
     #[tokio::test]

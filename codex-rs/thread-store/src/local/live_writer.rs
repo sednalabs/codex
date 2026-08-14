@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::RolloutItem;
@@ -153,32 +154,48 @@ pub(super) async fn shutdown_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
-    let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
-    let (recorder, history_mode) = live_writer_parts(store, thread_id).await?;
-    let rollout_path = recorder.rollout_path().to_path_buf();
-    if matches!(history_mode, ThreadHistoryMode::Legacy) {
+    let live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+    let (recorder, history_mode, generation) = live_writer_parts(store, thread_id).await?;
+    let store = store.clone();
+    tokio::spawn(async move {
+        // Keep per-thread lifecycle custody in this owned continuation. Dropping the caller cannot
+        // let a replacement generation race the old writer's terminal drain.
+        let _live_writer_guard = live_writer_guard;
+        let rollout_path = recorder.rollout_path().to_path_buf();
         recorder.shutdown().await.map_err(thread_store_io_error)?;
-    } else {
-        recorder.shutdown().await.map_err(thread_store_io_error)?;
-        if let Err(err) = super::thread_history_materialization::materialize_to_sqlite(
-            store,
-            thread_id,
-            rollout_path.as_path(),
-        )
-        .await
+        if matches!(history_mode, ThreadHistoryMode::Paginated)
+            && let Err(err) = super::thread_history_materialization::materialize_to_sqlite(
+                &store,
+                thread_id,
+                rollout_path.as_path(),
+            )
+            .await
         {
             warn!("failed to project durable rollout during shutdown for {thread_id}: {err}");
         }
-    }
-    sync_materialized_rollout_path(store, thread_id, rollout_path.as_path()).await?;
-    if let Some(metrics) = codex_otel::global()
-        && let Ok(metadata) = tokio::fs::metadata(rollout_path).await
-    {
-        let size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-        let _ = metrics.histogram(ROLLOUT_SIZE_BYTES_METRIC, size_bytes, &[]);
-    }
-    store.live_recorders.lock().await.remove(&thread_id);
-    Ok(())
+        sync_materialized_rollout_path(&store, thread_id, rollout_path.as_path()).await?;
+        if let Some(metrics) = codex_otel::global()
+            && let Ok(metadata) = tokio::fs::metadata(&rollout_path).await
+        {
+            let size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+            let _ = metrics.histogram(ROLLOUT_SIZE_BYTES_METRIC, size_bytes, &[]);
+        }
+        if !store
+            .remove_live_recorder_generation(thread_id, &generation)
+            .await
+        {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "thread {thread_id} local writer generation changed during shutdown"
+                ),
+            });
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("local writer shutdown task failed: {err}"),
+    })?
 }
 
 pub(super) async fn discard_thread(
@@ -277,12 +294,16 @@ enum RolloutWriteOp {
 async fn live_writer_parts(
     store: &LocalThreadStore,
     thread_id: ThreadId,
-) -> ThreadStoreResult<(RolloutRecorder, ThreadHistoryMode)> {
+) -> ThreadStoreResult<(RolloutRecorder, ThreadHistoryMode, Arc<()>)> {
     let live_recorders = store.live_recorders.lock().await;
     let entry = live_recorders
         .get(&thread_id)
         .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
-    Ok((entry.recorder.clone(), entry.history_mode))
+    Ok((
+        entry.recorder.clone(),
+        entry.history_mode,
+        Arc::clone(&entry.generation),
+    ))
 }
 
 async fn write_and_project(
@@ -294,7 +315,7 @@ async fn write_and_project(
     // shutdown/discard/delete removes it. Keep the lookup defensive so late writes fail after
     // teardown.
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
-    let (recorder, history_mode) = live_writer_parts(store, thread_id).await?;
+    let (recorder, history_mode, _generation) = live_writer_parts(store, thread_id).await?;
     let sync_rollout_path = matches!(&write_op, RolloutWriteOp::Persist | RolloutWriteOp::Flush);
     let write_op = match write_op {
         RolloutWriteOp::AppendItems(items) => {
