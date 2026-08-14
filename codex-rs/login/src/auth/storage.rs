@@ -211,8 +211,13 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
 static AUTH_STORAGE_TRANSACTION_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 fn lock_auth_storage(codex_home: &Path) -> std::io::Result<File> {
-    std::fs::create_dir_all(codex_home)?;
-    let lock_path = codex_home.join(".auth.lock");
+    let absolute_codex_home = std::path::absolute(codex_home)?;
+    let mut hasher = Sha256::new();
+    hasher.update(absolute_codex_home.to_string_lossy().as_bytes());
+    let lock_key = digest_hex(hasher.finalize());
+    let lock_dir = std::env::temp_dir().join("codex-auth-locks");
+    std::fs::create_dir_all(&lock_dir)?;
+    let lock_path = lock_dir.join(lock_key);
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true);
     #[cfg(unix)]

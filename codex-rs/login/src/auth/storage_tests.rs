@@ -39,6 +39,16 @@ async fn file_storage_load_returns_auth_dot_json() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn empty_auth_read_does_not_create_codex_home_files() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = FileAuthStorage::new(codex_home.path().to_path_buf());
+
+    assert_eq!(storage.load()?, None);
+    assert_eq!(std::fs::read_dir(codex_home.path())?.count(), 0);
+    Ok(())
+}
+
 #[tokio::test]
 async fn file_storage_save_persists_auth_dot_json() -> anyhow::Result<()> {
     let codex_home = tempdir()?;
