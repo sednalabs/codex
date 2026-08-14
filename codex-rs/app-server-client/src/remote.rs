@@ -83,6 +83,7 @@ const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
 pub(super) enum RemoteWorkerTestEvent {
     ServerRequestQueued(RequestId),
     ServerRequestPublished(RequestId),
+    ServerRequestDeferred(RequestId),
 }
 
 #[cfg(test)]
@@ -1180,6 +1181,13 @@ fn enqueue_remote_worker_event(
                     server_request_id,
                 ))
             } else {
+                #[cfg(test)]
+                if let Some(request_id) = server_request_id {
+                    record_remote_worker_test_event(
+                        endpoint,
+                        RemoteWorkerTestEvent::ServerRequestDeferred(request_id),
+                    );
+                }
                 None
             }
         }
