@@ -570,7 +570,7 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         agent_id: String,
     }
 
-    let (mut session, mut turn, mut events) = make_session_and_context_with_rx().await;
+    let (mut session, mut turn, events) = make_session_and_context_with_rx().await;
     let mut config = (*turn.config).clone();
     config
         .features
@@ -749,7 +749,7 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
 
 #[tokio::test]
 async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_live_hint() {
-    let (mut session, mut turn, mut events) = make_session_and_context_with_rx().await;
+    let (mut session, mut turn, events) = make_session_and_context_with_rx().await;
     let mut config = (*turn.config).clone();
     config
         .features
@@ -816,7 +816,7 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
 
 #[tokio::test]
 async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity() {
-    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
@@ -941,7 +941,7 @@ async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity()
 
 #[tokio::test]
 async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
-    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
