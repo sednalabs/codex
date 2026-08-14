@@ -1230,55 +1230,6 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
 }
 
 #[tokio::test]
-async fn commit_aware_append_drops_failed_suffix_before_retry() -> std::io::Result<()> {
-    let home = TempDir::new().expect("temp dir");
-    let rollout_path = home.path().join("rollout.jsonl");
-    File::create(&rollout_path)?;
-    let writer_file = std::fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(&rollout_path)?;
-    let mut state = RolloutWriterState {
-        writer: Some(JsonlWriter {
-            file: tokio::fs::File::from_std(writer_file),
-        }),
-        deferred_log_file_info: None,
-        pending_items: Vec::new(),
-        meta: None,
-        cwd: home.path().to_path_buf(),
-        rollout_path: rollout_path.clone(),
-        ordinal_state: RolloutOrdinalState::Legacy,
-        last_logged_error: None,
-        fail_after_writes: Some(1),
-    };
-    let first = agent_message_item("first durable item");
-    let second = agent_message_item("second durable item");
-
-    let err = state
-        .append_items_with_progress(vec![first.clone(), second.clone()])
-        .await
-        .expect_err("injected writer failure should report partial progress");
-    assert_eq!(err.committed(), 1);
-    assert!(state.pending_items.is_empty());
-
-    state.fail_after_writes = None;
-    state
-        .append_items_with_progress(vec![second.clone()])
-        .await
-        .expect("retrying the uncommitted suffix should succeed");
-
-    let items = read_rollout_lines(&rollout_path)?
-        .into_iter()
-        .map(|line| line.item)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        serde_json::to_value(items)?,
-        serde_json::to_value(vec![first, second])?
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn resumed_paginated_rollout_continues_after_ordinal_gap() -> std::io::Result<()> {
     let home = TempDir::new().expect("temp dir");
     let config = test_config(home.path());

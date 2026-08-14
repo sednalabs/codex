@@ -2033,14 +2033,6 @@ impl RolloutWriterState {
         let mut written_count = 0usize;
         let mut write_result = Ok(());
         for item in &self.pending_items {
-            #[cfg(test)]
-            if let Some(remaining) = self.fail_after_writes.as_mut() {
-                if *remaining == 0 {
-                    write_result = Err(IoError::other("injected rollout append failure"));
-                    break;
-                }
-                *remaining -= 1;
-            }
             match self.ordinal_state.current() {
                 Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
                     Ok(()) => self.ordinal_state.advance(),
@@ -2062,47 +2054,6 @@ impl RolloutWriterState {
         }
 
         write_result
-    }
-
-    async fn append_items_with_progress(
-        &mut self,
-        items: Vec<RolloutItem>,
-    ) -> Result<usize, RolloutAppendError> {
-        let item_count = items.len();
-        self.pending_items.extend(items);
-
-        let committed_after_attempt =
-            |pending_items: &[RolloutItem]| item_count.saturating_sub(pending_items.len());
-        match self.write_pending_once().await {
-            Ok(()) => {
-                self.last_logged_error = None;
-                Ok(item_count)
-            }
-            Err(first_err) => {
-                let first_committed = committed_after_attempt(self.pending_items.as_slice());
-                self.enter_recovery_mode(&first_err);
-                warn!("failed to append rollout items; reopening and retrying: {first_err}");
-                match self.write_pending_once().await {
-                    Ok(()) => {
-                        self.last_logged_error = None;
-                        Ok(item_count)
-                    }
-                    Err(second_err) => {
-                        let second_committed =
-                            committed_after_attempt(self.pending_items.as_slice());
-                        let committed = first_committed.max(second_committed);
-                        self.enter_recovery_mode(&second_err);
-                        // The caller owns retrying the uncommitted suffix. Do not retain it in the
-                        // recorder queue, or the next append would write that suffix twice.
-                        self.pending_items.clear();
-                        Err(RolloutAppendError {
-                            committed,
-                            source: second_err,
-                        })
-                    }
-                }
-            }
-        }
     }
 }
 
