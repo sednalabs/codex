@@ -324,6 +324,16 @@ async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str
     thread
         .inject_user_message_without_turn(message.to_string())
         .await;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if history_contains_text(thread.session.clone_history().await.raw_items(), message) {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("injected resume fixture should reach thread history");
     thread.session.ensure_rollout_materialized().await;
     thread
         .session
