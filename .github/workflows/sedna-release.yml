@@ -36,6 +36,15 @@ on:
         required: false
         default: false
         type: boolean
+      macos_release_mode:
+        description: "Intel macOS assets: omit, publish an ad-hoc signed preview, or require Developer ID notarization."
+        required: true
+        default: off
+        type: choice
+        options:
+          - off
+          - preview
+          - notarized
 
 permissions: {}
 
@@ -183,6 +192,7 @@ jobs:
       release_channel: ${{ steps.meta.outputs.release_channel }}
       release_build_required: ${{ steps.meta.outputs.release_build_required }}
       release_marker: ${{ steps.meta.outputs.release_marker }}
+      macos_release_mode: ${{ steps.meta.outputs.macos_release_mode }}
       release_requested: ${{ steps.meta.outputs.release_requested }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       release_version: ${{ steps.meta.outputs.release_version }}
@@ -228,6 +238,7 @@ jobs:
           INPUT_CHANNEL: ${{ inputs.channel }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           INPUT_DRAFT: ${{ inputs.draft }}
+          INPUT_MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
         run: |
           set -euo pipefail
 
@@ -250,6 +261,7 @@ jobs:
             fi
             {
               echo "draft=${INPUT_DRAFT}"
+              echo "macos_release_mode=${INPUT_MACOS_RELEASE_MODE:-off}"
             } >> "${GITHUB_OUTPUT}"
           elif [[ "${REF_TYPE}" == "tag" ]]; then
             args+=(
@@ -260,17 +272,28 @@ jobs:
             )
             {
               echo "draft=false"
+              echo "macos_release_mode=off"
             } >> "${GITHUB_OUTPUT}"
           else
             args+=(--target-sha "${GITHUB_SHA}" --channel auto --require-marker)
             {
               echo "draft=false"
+              echo "macos_release_mode=off"
             } >> "${GITHUB_OUTPUT}"
           fi
 
           meta_json="${RUNNER_TEMP}/sedna-release-metadata.json"
           python3 .github/scripts/resolve_sedna_release_version.py "${args[@]}" | tee "${meta_json}"
           jq -r 'to_entries[] | "\(.key)=\(.value)"' "${meta_json}" >> "${GITHUB_OUTPUT}"
+
+          macos_release_mode="${INPUT_MACOS_RELEASE_MODE:-off}"
+          if [[ "${EVENT_NAME}" != "workflow_dispatch" ]]; then
+            macos_release_mode="off"
+          fi
+          if [[ "${macos_release_mode}" == "preview" ]] && [[ "$(jq -r '.github_prerelease' "${meta_json}")" != "true" ]]; then
+            echo "Ad-hoc signed Intel macOS assets may only be attached to prereleases." >&2
+            exit 1
+          fi
 
           release_build_required="true"
           release_work_skip_reason=""
@@ -619,7 +642,12 @@ jobs:
   release-macos-signing-preflight:
     name: Check Intel macOS release signing configuration
     needs: resolve
-    if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
+    if: >-
+      ${{
+        needs.resolve.outputs.release_requested == 'true' &&
+        needs.resolve.outputs.release_build_required == 'true' &&
+        needs.resolve.outputs.macos_release_mode == 'notarized'
+      }}
     runs-on: ubuntu-slim
     timeout-minutes: 5
     environment:
@@ -673,7 +701,18 @@ jobs:
     needs:
       - resolve
       - release-macos-signing-preflight
-    if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
+    if: >-
+      ${{
+        always() &&
+        needs.resolve.result == 'success' &&
+        needs.resolve.outputs.release_requested == 'true' &&
+        needs.resolve.outputs.release_build_required == 'true' &&
+        needs.resolve.outputs.macos_release_mode != 'off' &&
+        (
+          needs.resolve.outputs.macos_release_mode == 'preview' ||
+          needs.release-macos-signing-preflight.result == 'success'
+        )
+      }}
     runs-on: macos-15-intel
     timeout-minutes: 210
     concurrency:
@@ -834,11 +873,112 @@ jobs:
           path: ${{ github.workspace }}/.sccache/
           key: sccache-macos-15-intel-x86_64-apple-darwin-release-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
+  release-macos-preview-package:
+    name: Package Intel macOS prerelease preview
+    needs:
+      - resolve
+      - release-macos-build
+    if: ${{ needs.resolve.outputs.macos_release_mode == 'preview' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      TARGET: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download unsigned Intel macOS binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: sedna-release-macos-x64-unsigned
+          path: ${{ runner.temp }}/unsigned-macos
+
+      - name: Ad-hoc sign and package Intel macOS preview
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
+        run: |
+          set -euo pipefail
+          input_dir="${RUNNER_TEMP}/unsigned-macos"
+          stage_dir="${RUNNER_TEMP}/sedna-release-preview/${TARGET}"
+          dist_dir="${GITHUB_WORKSPACE}/dist-macos-preview"
+          archive_name="codex-sedna-${RELEASE_VERSION}-${TARGET}-UNNOTARIZED-PREVIEW.tar.gz"
+          metadata_name="RELEASE-METADATA-${TARGET}-UNNOTARIZED-PREVIEW.json"
+          checksum_name="SHA256SUMS-${TARGET}-UNNOTARIZED-PREVIEW.txt"
+          rm -rf "${stage_dir}" "${dist_dir}"
+          mkdir -p "${stage_dir}" "${dist_dir}"
+
+          for binary in codex codex-code-mode-host codex-responses-api-proxy; do
+            staged_path="${stage_dir}/${binary}"
+            zstd -d --stdout "${input_dir}/${binary}-${TARGET}-unsigned.zst" > "${staged_path}"
+            chmod 0755 "${staged_path}"
+            entitlements="${GITHUB_WORKSPACE}/.github/scripts/macos-signing/${binary}.entitlements.plist"
+            .github/scripts/macos-signing/sign_macos_code.sh \
+              --target "${staged_path}" \
+              --identity - \
+              --deep false \
+              --identifier "${binary}" \
+              --options runtime \
+              --timestamp none \
+              --entitlements "${entitlements}"
+            lipo "${staged_path}" -verify_arch x86_64
+            codesign --verify --strict --verbose=2 "${staged_path}"
+            codesign -dvvv "${staged_path}" 2>&1 | grep -F "Signature=adhoc"
+          done
+          "${stage_dir}/codex" --version | grep -F "${RELEASE_VERSION}"
+
+          tar -C "${stage_dir}" -czf "${dist_dir}/${archive_name}" \
+            codex codex-responses-api-proxy
+
+          python3 - <<'PY' > "${dist_dir}/${metadata_name}"
+          import json
+          import os
+          import sys
+
+          json.dump(
+              {
+                  "release_tag": os.environ["RELEASE_TAG"],
+                  "release_version": os.environ["RELEASE_VERSION"],
+                  "repository": os.environ["REPOSITORY"],
+                  "target_commit": os.environ["TARGET_COMMIT"],
+                  "target": os.environ["TARGET"],
+                  "distribution": "preview",
+                  "signing": "ad-hoc",
+                  "notarized": False,
+                  "gatekeeper_ready": False,
+              },
+              sys.stdout,
+              indent=2,
+              sort_keys=True,
+          )
+          sys.stdout.write("\n")
+          PY
+
+          (
+            cd "${dist_dir}"
+            shasum -a 256 "${archive_name}" "${metadata_name}" > "${checksum_name}"
+          )
+
+      - name: Upload Intel macOS preview assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: sedna-release-macos-x64-preview
+          path: dist-macos-preview/*
+          if-no-files-found: error
+          retention-days: 3
+
   release-macos-sign:
     name: Sign and notarize Intel macOS binaries
     needs:
       - resolve
       - release-macos-build
+    if: ${{ needs.resolve.outputs.macos_release_mode == 'notarized' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment:
@@ -1192,8 +1332,27 @@ jobs:
     needs:
       - resolve
       - release-linux
+      - release-macos-preview-package
       - release-macos-finalize
-    if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
+    if: >-
+      ${{
+        always() &&
+        needs.resolve.result == 'success' &&
+        needs.resolve.outputs.release_requested == 'true' &&
+        needs.resolve.outputs.release_build_required == 'true' &&
+        needs.release-linux.result == 'success' &&
+        (
+          needs.resolve.outputs.macos_release_mode == 'off' ||
+          (
+            needs.resolve.outputs.macos_release_mode == 'preview' &&
+            needs.release-macos-preview-package.result == 'success'
+          ) ||
+          (
+            needs.resolve.outputs.macos_release_mode == 'notarized' &&
+            needs.release-macos-finalize.result == 'success'
+          )
+        )
+      }}
     runs-on: ubuntu-slim
     timeout-minutes: 10
     environment: release
@@ -1210,9 +1369,17 @@ jobs:
           path: dist
 
       - name: Download Intel macOS release artifacts
+        if: ${{ needs.resolve.outputs.macos_release_mode == 'notarized' }}
         uses: actions/download-artifact@v8
         with:
           name: sedna-release-macos-x64
+          path: dist
+
+      - name: Download Intel macOS preview artifacts
+        if: ${{ needs.resolve.outputs.macos_release_mode == 'preview' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: sedna-release-macos-x64-preview
           path: dist
 
       - name: Check release publisher app configuration
@@ -1254,6 +1421,7 @@ jobs:
           RELEASE_PRERELEASE: ${{ needs.resolve.outputs.github_prerelease }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          MACOS_RELEASE_MODE: ${{ needs.resolve.outputs.macos_release_mode }}
           TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
         run: |
           set -euo pipefail
@@ -1280,12 +1448,21 @@ jobs:
             prerelease_flag+=(--prerelease)
           fi
 
+          notes_flag=()
+          if [[ "${MACOS_RELEASE_MODE}" == "preview" ]]; then
+            preview_notes="### Intel macOS preview"$'\n\n'
+            preview_notes+="The Intel macOS asset is ad-hoc signed and **not Developer ID signed or notarized by Apple**. "
+            preview_notes+="It is a preview artifact, may be blocked by Gatekeeper, and is not an official supported macOS distribution."
+            notes_flag+=(--notes "${preview_notes}")
+          fi
+
           gh release create "${RELEASE_TAG}" "${assets[@]}" \
             --repo "${GH_REPO}" \
             --title "Codex Sedna ${RELEASE_VERSION}" \
             --generate-notes \
             --target "${TARGET_COMMIT}" \
             "${prerelease_flag[@]}" \
+            "${notes_flag[@]}" \
             "${draft_flag[@]}"
 
       - name: Dispatch release asset verifier
@@ -1296,6 +1473,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_PRERELEASE: ${{ needs.resolve.outputs.github_prerelease }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          MACOS_RELEASE_MODE: ${{ needs.resolve.outputs.macos_release_mode }}
         run: |
           set -euo pipefail
 
@@ -1304,7 +1482,8 @@ jobs:
             --ref main \
             -f "release_tag=${RELEASE_TAG}" \
             -f "dry_run=true" \
-            -f "allow_prerelease=${RELEASE_PRERELEASE}"
+            -f "allow_prerelease=${RELEASE_PRERELEASE}" \
+            -f "macos_release_mode=${MACOS_RELEASE_MODE}"
 
       - name: Summarize release decision
         if: ${{ always() }}
@@ -1313,6 +1492,7 @@ jobs:
           RELEASE_REQUESTED: ${{ needs.resolve.outputs.release_requested }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          MACOS_RELEASE_MODE: ${{ needs.resolve.outputs.macos_release_mode }}
           SKIP_REASON: ${{ needs.resolve.outputs.skip_reason }}
           TARGET_COMMIT: ${{ needs.resolve.outputs.target_commit }}
           UPSTREAM_BASE_TAG: ${{ needs.resolve.outputs.upstream_base_tag }}
@@ -1325,6 +1505,7 @@ jobs:
             if [[ "${RELEASE_REQUESTED:-false}" == "true" ]]; then
               echo "- Release tag: ${RELEASE_TAG}"
               echo "- Release version: ${RELEASE_VERSION}"
+              echo "- Intel macOS mode: ${MACOS_RELEASE_MODE}"
               echo "- Target commit: ${TARGET_COMMIT}"
               echo "- Upstream base tag: ${UPSTREAM_BASE_TAG}"
               echo "- Upstream distance from tag: ${UPSTREAM_DISTANCE_FROM_TAG}"

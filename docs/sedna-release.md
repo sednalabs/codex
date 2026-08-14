@@ -91,13 +91,15 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 
 Current workflow characteristics:
 
-- Native GitHub-hosted Linux `x86_64` and Intel macOS `x86_64` release builds
+- Native GitHub-hosted Linux `x86_64` release builds, with Intel macOS `x86_64` assets selected
+  explicitly as `off`, `preview`, or `notarized`
 - Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
   repository token while the small publication job owns the release environment and write-scoped
   publishing permissions.
 - Cargo home and `sccache` restore/save around the official release build to reduce duplicate
   compilation when prior release smoke runs warmed matching caches
-- Keyless Sigstore signing for Linux binaries and native code-signing checks for Intel macOS
+- Keyless Sigstore signing for Linux binaries; ad-hoc code-signing checks for Intel macOS previews;
+  and an optional Developer ID signing and notarization path
 - GitHub Release publication through a dedicated GitHub App installation token instead of the
   default workflow integration token
 - GitHub Release assets named with the Sedna release identity
@@ -115,10 +117,25 @@ The workflow checks that these are configured before starting the release build,
 short-lived installation token only after the assets are staged so the publication token is fresh
 for GitHub Release creation and verifier dispatch.
 
-Intel macOS publication is fail-closed: an official release is not created unless its binaries and
-DMG have been Developer ID signed, accepted by Apple's notarization service, and verified again on
-an Intel macOS runner. Configure a `codesigning` GitHub Actions environment with the same Azure Key
-Vault PKCS#11 and App Store Connect secrets used by the upstream macOS signing actions:
+Intel macOS publication has three explicit modes:
+
+- `off` is the default, including automatic tag and release-marker events. It publishes no macOS
+  asset and never reads the `codesigning` environment.
+- `preview` is allowed only for prereleases. It publishes an Intel x64 tarball whose filename and
+  metadata identify it as an unnotarized preview. The binaries are ad-hoc signed, architecture and
+  signature checked, checksummed, and executed on an Intel macOS runner. They are not Developer ID
+  signed, may be blocked by Gatekeeper, and are not an official supported macOS distribution.
+- `notarized` is fail-closed. It publishes Intel x64 binaries and a DMG only after Developer ID
+  signing, Apple notarization, stapling, and a final Intel-runner verification pass.
+
+Apple provides Developer ID and notarization through the paid Apple Developer Program. This is a
+product prerequisite for the `notarized` mode, not merely a CI configuration detail. The free
+`preview` mode cannot provide the same Gatekeeper experience. See Apple's
+[membership comparison](https://developer.apple.com/support/compare-memberships/) and
+[notarization requirements](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+To enable `notarized`, configure a `codesigning` GitHub Actions environment with the Azure Key
+Vault PKCS#11 and App Store Connect secrets expected by the macOS signing actions:
 
 - `AKV_CODESIGN_RCODESIGN_BLOB_URI`
 - `AKV_CODESIGN_RCODESIGN_SHA256`
@@ -135,8 +152,19 @@ Vault PKCS#11 and App Store Connect secrets used by the upstream macOS signing a
 - `APPLE_NOTARIZATION_KEY_ID`
 - `APPLE_NOTARIZATION_ISSUER_ID`
 
-The signing job reports the exact missing secret names without exposing values. Ad hoc branch
-artifacts remain preview-only and cannot satisfy this official release gate.
+The signing job reports the exact missing secret names without exposing values. Ad-hoc assets can
+never satisfy the notarized release gate.
+
+For a zero-credential Intel preview, dispatch a prerelease explicitly:
+
+```bash
+python3 .github/scripts/dispatch_sedna_release.py \
+  --channel prerelease \
+  --macos-release-mode preview
+```
+
+Omit `--macos-release-mode` to publish without macOS assets. Use `notarized` only after the
+`codesigning` environment has been provisioned.
 
 The resolver writes `version_policy=sedna-upstream-track-v2` into release metadata so future policy
 changes can be detected explicitly instead of inferred from tag shape alone.
