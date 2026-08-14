@@ -1701,7 +1701,7 @@ mod tests {
 
     #[test]
     fn initialization_backlog_counts_best_effort_loss_at_capacity_one() {
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
             .enqueue(AppServerEvent::Lagged { skipped: 10 })
             .expect("first event should fit");
@@ -1712,7 +1712,7 @@ mod tests {
             .enqueue(AppServerEvent::Lagged { skipped: 12 })
             .expect("best-effort overflow should remain accounted for");
 
-        let events = backlog.finalize(None, "terminal".to_string());
+        let events = backlog.finalize(/*deferred_event*/ None, "terminal".to_string());
         assert!(matches!(events[0], AppServerEvent::Lagged { skipped: 10 }));
         assert!(matches!(events[1], AppServerEvent::Lagged { skipped: 2 }));
         assert!(matches!(
@@ -1723,7 +1723,7 @@ mod tests {
 
     #[test]
     fn initialization_backlog_uses_the_connection_capacity_for_all_required_events() {
-        let mut backlog = RemoteEventBacklog::new(128);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 128);
         for id in 0..33 {
             backlog
                 .enqueue(server_request(id))
@@ -1736,9 +1736,9 @@ mod tests {
 
     #[test]
     fn required_server_request_overflow_keeps_all_unanswered_ids_for_rejection() {
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("first server request should fit");
         let public_request = backlog
             .pop_next_for_public()
@@ -1748,10 +1748,10 @@ mod tests {
             AppServerEvent::ServerRequest(ref request) if request.id() == &RequestId::Integer(1)
         ));
         backlog
-            .enqueue(server_request(2))
+            .enqueue(server_request(/*id*/ 2))
             .expect("second server request should occupy the private backlog");
         let overflow = backlog
-            .enqueue(server_request(3))
+            .enqueue(server_request(/*id*/ 3))
             .expect_err("third required server request should overflow");
         assert_eq!(overflow.server_request_id, Some(RequestId::Integer(3)));
 
@@ -1763,9 +1763,9 @@ mod tests {
 
     #[test]
     fn public_server_request_ownership_is_released_only_after_client_completion() {
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("server request should fit");
         backlog
             .pop_next_for_public()
@@ -1778,7 +1778,7 @@ mod tests {
 
     #[test]
     fn unanswered_public_server_requests_remain_bounded_by_both_event_channels() {
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         for id in [1, 2] {
             backlog
                 .enqueue(server_request(id))
@@ -1789,22 +1789,22 @@ mod tests {
         }
 
         let overflow = backlog
-            .enqueue(server_request(3))
+            .enqueue(server_request(/*id*/ 3))
             .expect_err("unanswered public requests must not create unbounded ownership");
         assert_eq!(overflow.server_request_id, Some(RequestId::Integer(3)));
     }
 
     #[test]
     fn duplicate_server_request_id_does_not_create_a_second_prompt_or_response() {
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("first server request should fit");
         backlog
             .pop_next_for_public()
             .expect("first server request should cross the public boundary");
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("duplicate server request should be ignored");
 
         assert!(!backlog.has_pending_public_event());
@@ -1816,9 +1816,9 @@ mod tests {
 
     #[test]
     fn response_attempt_is_not_rejected_again_during_terminal_cleanup() {
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("server request should fit");
 
         assert!(backlog.begin_server_request_response(&RequestId::Integer(1)));
@@ -1837,9 +1837,9 @@ mod tests {
         )
         .await;
         let mut pending_requests = HashMap::new();
-        let mut backlog = RemoteEventBacklog::new(1);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("server request should fit");
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -1868,9 +1868,9 @@ mod tests {
 
     #[test]
     fn terminal_finalization_retains_fifo_then_lagged_then_one_disconnect() {
-        let mut backlog = RemoteEventBacklog::new(2);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 2);
         backlog
-            .enqueue(server_request(1))
+            .enqueue(server_request(/*id*/ 1))
             .expect("first event should fit");
         backlog
             .enqueue(AppServerEvent::Lagged { skipped: 7 })
@@ -1879,7 +1879,7 @@ mod tests {
             .enqueue(AppServerEvent::Lagged { skipped: 8 })
             .expect("best-effort event should be accounted for");
 
-        let events = backlog.finalize(None, "terminal".to_string());
+        let events = backlog.finalize(/*deferred_event*/ None, "terminal".to_string());
         assert!(matches!(
             events[0],
             AppServerEvent::ServerRequest(ref request) if request.id() == &RequestId::Integer(1)
