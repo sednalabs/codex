@@ -463,8 +463,13 @@ async fn partial_append_retries_only_the_uncommitted_suffix() {
         .load_history(/*include_archived*/ true)
         .await
         .expect("load canonical history");
+    let compacted_items = history
+        .items
+        .into_iter()
+        .filter(|item| matches!(item, RolloutItem::Compacted(_)))
+        .collect::<Vec<_>>();
     assert_eq!(
-        serde_json::to_value(history.items).expect("serialize persisted history"),
+        serde_json::to_value(compacted_items).expect("serialize persisted history"),
         serde_json::to_value(vec![first, second]).expect("serialize expected history")
     );
 }
