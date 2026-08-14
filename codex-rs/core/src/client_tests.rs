@@ -85,6 +85,22 @@ use wiremock::matchers::path;
 const TEST_CHATGPT_ID_TOKEN: &str = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJlbWFpbCI6InVzZXJAZXhhbXBsZS5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfdXNlcl9pZCI6InVzZXItMTIzNDUiLCJ1c2VyX2lkIjoidXNlci0xMjM0NSIsImNoYXRncHRfcGxhbl90eXBlIjoicHJvIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.c2ln";
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
+#[test]
+fn workspace_restricted_401_is_detected_from_structured_error_body() {
+    let transport = TransportError::Http {
+        status: http::StatusCode::UNAUTHORIZED,
+        url: None,
+        headers: None,
+        body: Some(
+            r#"{"error":{"code":"chatgpt_ip_workspace_restricted"}}"#.to_string(),
+        ),
+    };
+    let debug = codex_response_debug_context::extract_response_debug_context(&transport);
+    assert!(super::is_chatgpt_ip_workspace_restricted_unauthorized(
+        &transport, &debug
+    ));
+}
+
 fn test_model_client(session_source: SessionSource) -> ModelClient {
     test_model_client_with_thread_id(ThreadId::new(), session_source)
 }

@@ -30,6 +30,7 @@ mod realtime_start_with_instructions;
 mod recommended_plugins_instructions;
 mod rollout_budget;
 mod subagent_notification;
+mod subagent_runtime_identity;
 mod terminal_completion_notification;
 #[cfg(test)]
 mod terminal_completion_notification_tests;
@@ -76,6 +77,7 @@ pub(crate) use realtime_start_with_instructions::RealtimeStartWithInstructions;
 pub(crate) use recommended_plugins_instructions::RecommendedPluginsInstructions;
 pub(crate) use rollout_budget::RolloutBudgetContext;
 pub(crate) use subagent_notification::SubagentNotification;
+pub(crate) use subagent_runtime_identity::SubagentRuntimeIdentity;
 pub(crate) use terminal_completion_notification::TerminalCompletionNotification;
 pub(crate) use terminal_completion_notification::TerminalCompletionStatus;
 pub(crate) use token_budget_context::AutoCompactFallbackPrompt;
