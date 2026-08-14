@@ -156,7 +156,12 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
         .expect("start V2 root thread");
     let control = root.thread.session.services.agent_control.clone();
     control.state.release_spawned_thread(root.thread_id);
-    assert!(control.state.agent_metadata_for_thread(root.thread_id).is_none());
+    assert!(
+        control
+            .state
+            .agent_metadata_for_thread(root.thread_id)
+            .is_none()
+    );
     let injected_item = assistant_output("root injection");
 
     manager
