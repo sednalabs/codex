@@ -1704,7 +1704,7 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
 
     def _run_identity_fixture(
         self,
-        repo: TempGitRepo,
+        repo: TempGitRepo | Path,
         *,
         event_name: str,
         checkout_ref: str,
@@ -1714,6 +1714,7 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
     ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
         script = workflow_checkout_identity_script(self.workflow_path)
         command = f"set -euo pipefail\n{script}\n"
+        repo_root = repo.root if isinstance(repo, TempGitRepo) else repo
         with tempfile.TemporaryDirectory(prefix="ci-planner-output-") as tmpdir:
             output_path = Path(tmpdir) / "github-output.txt"
             output_path.write_text("", encoding="utf-8")
@@ -1729,7 +1730,7 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             }
             proc = subprocess.run(
                 ["nice", "-n", "19", "ionice", "-c", "3", "bash", "-c", command],
-                cwd=repo.root,
+                cwd=repo_root,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1737,19 +1738,62 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             )
             return proc, parse_github_output_file(output_path)
 
-    def _fixture_repo(self) -> tuple[TempGitRepo, tempfile.TemporaryDirectory, str, str, str]:
-        repo = TempGitRepo()
-        base_sha = repo.commit("fixture base", {"payload.txt": "base\n"})
-        resolved_sha = repo.commit("fixture resolved", {"payload.txt": "resolved\n"})
-        moved_sha = repo.commit("fixture moved", {"payload.txt": "moved\n"})
-        repo._git("branch", "mutable", resolved_sha)
-        repo._git("tag", "lightweight", resolved_sha)
-        repo._git("tag", "-a", "annotated", "-m", "annotated fixture", resolved_sha)
+    def _fixture_repo(
+        self,
+    ) -> tuple[
+        TempGitRepo,
+        tempfile.TemporaryDirectory,
+        tempfile.TemporaryDirectory,
+        Path,
+        str,
+        str,
+        str,
+    ]:
+        source = TempGitRepo()
+        base_sha = source.commit("fixture base", {"payload.txt": "base\n"})
+        source._git("checkout", "--orphan", "target")
+        source._git("rm", "-rf", ".")
+        resolved_sha = source.commit("fixture resolved", {"payload.txt": "resolved\n"})
+        source._git("checkout", "main")
+        moved_sha = source.commit("fixture moved", {"payload.txt": "moved\n"})
+        source._git("branch", "mutable", resolved_sha)
+        source._git("tag", "lightweight", resolved_sha)
+        source._git("tag", "-a", "annotated", "-m", "annotated fixture", resolved_sha)
         origin_tmpdir = tempfile.TemporaryDirectory(prefix="ci-planner-origin-")
         origin = Path(origin_tmpdir.name) / "origin.git"
-        repo._git("clone", "--bare", str(repo.root), str(origin))
-        repo._git("remote", "add", "origin", str(origin))
-        return repo, origin_tmpdir, base_sha, resolved_sha, moved_sha
+        source._git("clone", "--bare", str(source.root), str(origin))
+        source._git("remote", "add", "origin", str(origin))
+        checkout_tmpdir = tempfile.TemporaryDirectory(prefix="ci-planner-checkout-")
+        checkout = Path(checkout_tmpdir.name) / "checkout"
+        for args in (
+            ("init", "--initial-branch=main", str(checkout)),
+            ("-C", str(checkout), "remote", "add", "origin", f"file://{origin}"),
+            (
+                "-C",
+                str(checkout),
+                "fetch",
+                "--depth=1",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            ),
+            ("-C", str(checkout), "checkout", "-B", "main", "origin/main"),
+        ):
+            subprocess.run(
+                ["nice", "-n", "19", "ionice", "-c", "3", "git", *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        return (
+            source,
+            origin_tmpdir,
+            checkout_tmpdir,
+            checkout,
+            base_sha,
+            resolved_sha,
+            moved_sha,
+        )
 
     def _move_fixture_refs(
         self,
@@ -1771,10 +1815,41 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
         )
 
     def test_complete_output_boundary_uses_real_git_refs_and_peels_to_immutable_sha(self) -> None:
-        repo, origin_tmpdir, base_sha, resolved_sha, moved_sha = self._fixture_repo()
+        (
+            source,
+            origin_tmpdir,
+            checkout_tmpdir,
+            checkout,
+            base_sha,
+            resolved_sha,
+            moved_sha,
+        ) = self._fixture_repo()
         try:
             pr_head_sha = "a" * 40
             symbolic_outputs: dict[str, dict[str, str]] = {}
+            workflow_sha = moved_sha
+            self.assertNotEqual(
+                subprocess.run(
+                    [
+                        "nice",
+                        "-n",
+                        "19",
+                        "ionice",
+                        "-c",
+                        "3",
+                        "git",
+                        "-C",
+                        str(checkout),
+                        "cat-file",
+                        "-e",
+                        f"{resolved_sha}^{{commit}}",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                ).returncode,
+                0,
+            )
             cases = [
                 (
                     "pull_request",
@@ -1783,7 +1858,7 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
                     "feature/head",
                     pr_head_sha,
                 ),
-                ("workflow_dispatch", "", "", "", base_sha),
+                ("workflow_dispatch", "", "", "", workflow_sha),
                 ("workflow_dispatch", resolved_sha, "", "", resolved_sha),
                 ("workflow_dispatch", "mutable", "", "", resolved_sha),
                 ("workflow_dispatch", "lightweight", "", "", resolved_sha),
@@ -1792,9 +1867,9 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             for event_name, input_ref, pr_head, pr_ref, expected_sha in cases:
                 with self.subTest(event_name=event_name, input_ref=input_ref):
                     proc, outputs = self._run_identity_fixture(
-                        repo,
+                        checkout,
                         event_name=event_name,
-                        checkout_ref=base_sha,
+                        checkout_ref=workflow_sha,
                         input_ref=input_ref,
                         pr_head_sha=pr_head,
                         pr_head_ref=pr_ref,
@@ -1803,29 +1878,54 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
                     self.assertEqual(outputs.get("checkout_ref"), expected_sha)
                     self.assertEqual(outputs.get("checkout_sha"), expected_sha)
                     self.assertEqual(
+                        outputs.get("event_policy"),
+                        (
+                            "pull_request_exact_head_lane_fingerprint"
+                            if event_name == "pull_request"
+                            else "workflow_dispatch_exact_head_manual"
+                        ),
+                    )
+                    self.assertEqual(
                         outputs.get("display_ref"),
                         pr_ref or input_ref or "main",
                     )
                     if input_ref in {"mutable", "lightweight", "annotated"}:
                         symbolic_outputs[input_ref] = outputs
 
-            self._move_fixture_refs(repo, origin_tmpdir, moved_sha)
-            repo._git("fetch", "origin", "mutable")
-            self.assertEqual(repo.rev_parse("origin/mutable"), moved_sha)
+            self._move_fixture_refs(source, origin_tmpdir, moved_sha)
+            source._git("fetch", "origin", "mutable")
+            self.assertEqual(source.rev_parse("origin/mutable"), moved_sha)
             for input_ref, outputs in symbolic_outputs.items():
                 self.assertEqual(outputs.get("checkout_ref"), resolved_sha, input_ref)
                 self.assertEqual(outputs.get("checkout_sha"), resolved_sha, input_ref)
-            self.assertEqual(resolved_sha, repo.rev_parse(resolved_sha))
+            self.assertEqual(resolved_sha, source.rev_parse(resolved_sha))
             self.assertNotEqual(resolved_sha, moved_sha)
         finally:
-            repo.cleanup()
+            source.cleanup()
             origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
 
-    def test_full_sha_manual_input_fails_closed_when_commit_is_missing(self) -> None:
-        repo, origin_tmpdir, base_sha, _, _ = self._fixture_repo()
+    def test_unsupported_event_fails_closed_before_identity_output(self) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
         try:
             proc, outputs = self._run_identity_fixture(
-                repo,
+                checkout,
+                event_name="push",
+                checkout_ref=base_sha,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertEqual(outputs, {})
+            self.assertIn("unsupported event", proc.stderr)
+        finally:
+            source.cleanup()
+            origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
+
+    def test_full_sha_manual_input_fails_closed_when_commit_is_missing(self) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        try:
+            proc, outputs = self._run_identity_fixture(
+                checkout,
                 event_name="workflow_dispatch",
                 checkout_ref=base_sha,
                 input_ref="e" * 40,
@@ -1834,8 +1934,9 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             self.assertEqual(outputs, {})
             self.assertIn("unable to fetch checkout ref", proc.stderr)
         finally:
-            repo.cleanup()
+            source.cleanup()
             origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
 
     def test_identity_variables_are_not_reassigned_after_output_boundary(self) -> None:
         payload = load_workflow_payload(self.workflow_path)
@@ -1864,12 +1965,29 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             metadata_outputs.get("display_ref"),
             "${{ steps.meta.outputs.display_ref }}",
         )
-        consumer_count = 0
-        for job in jobs.values():
-            with_section = (job or {}).get("with") or {}
-            if with_section.get("checkout_ref") == "${{ needs.metadata.outputs.checkout_ref }}":
-                consumer_count += 1
-        self.assertGreater(consumer_count, 0)
+        expected_consumers = {
+            "smoke_workflow_lanes",
+            "smoke_node_lanes",
+            "smoke_rust_minimal_lanes",
+            "smoke_rust_integration_lanes",
+            "smoke_release_lanes",
+            "workflow_lanes",
+            "node_lanes",
+            "rust_minimal_lanes",
+            "rust_minimal_batches",
+            "rust_integration_lanes",
+            "rust_integration_batches",
+            "release_lanes_eager",
+            "release_lanes",
+        }
+        actual_consumers = {
+            name
+            for name, job in jobs.items()
+            if ((job or {}).get("with") or {}).get("checkout_ref")
+            == "${{ needs.metadata.outputs.checkout_ref }}"
+        }
+        self.assertEqual(actual_consumers, expected_consumers)
+        self.assertEqual(len(actual_consumers), 13)
         summary_run = next(
             step.get("run") or ""
             for step in (jobs["summary"].get("steps") or [])
@@ -5422,6 +5540,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
 
         metadata_outputs = (jobs.get("metadata") or {}).get("outputs") or {}
         self.assertEqual(metadata_outputs.get("display_ref"), "${{ steps.meta.outputs.display_ref }}")
+        self.assertEqual(
+            metadata_outputs.get("event_policy"),
+            "${{ steps.meta.outputs.event_policy }}",
+        )
         self.assertEqual(metadata_outputs.get("checkout_sha"), "${{ steps.meta.outputs.checkout_sha }}")
         self.assertEqual(
             metadata_outputs.get("planned_matrix"),
@@ -5502,6 +5624,13 @@ class ValidationPlanScriptTests(unittest.TestCase):
             metadata_outputs.get("dedupe_reason"),
             "${{ steps.meta.outputs.dedupe_reason }}",
         )
+        self.assertEqual(
+            metadata_outputs.get("event_policy"),
+            "${{ steps.meta.outputs.event_policy }}",
+        )
+        self.assertIn('event_policy="pull_request_exact_head_lane_fingerprint"', metadata_run)
+        self.assertIn('event_policy="workflow_dispatch_exact_head_manual"', metadata_run)
+        self.assertIn("unsupported event for sedna-heavy-tests checkout identity", metadata_run)
         self.assertIn(".ci_proof_v1.schema_version == \"ci-proof-v1\"", metadata_run)
         self.assertIn(".ci_proof_v1.planner_fingerprint == $planner", metadata_run)
         self.assertIn(".ci_proof_v1.conclusion == \"success\"", metadata_run)
@@ -5576,7 +5705,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             report_step.get("run") or "",
         )
         self.assertIn(
-            '--event-policy "pull_request_exact_head_lane_fingerprint"',
+            '--event-policy "${{ needs.metadata.outputs.event_policy }}"',
             report_step.get("run") or "",
         )
         self.assertIn(

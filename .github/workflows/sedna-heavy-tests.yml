@@ -138,6 +138,7 @@ jobs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
       checkout_sha: ${{ steps.meta.outputs.checkout_sha }}
       display_ref: ${{ steps.meta.outputs.display_ref }}
+      event_policy: ${{ steps.meta.outputs.event_policy }}
       planner_fingerprint: ${{ steps.meta.outputs.planner_fingerprint }}
       dedupe_reason: ${{ steps.meta.outputs.dedupe_reason }}
       smoke_gate_kind: ${{ steps.meta.outputs.smoke_gate_kind }}
@@ -206,6 +207,19 @@ jobs:
           set -euo pipefail
 
           # BEGIN checkout identity
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request)
+              event_policy="pull_request_exact_head_lane_fingerprint"
+              ;;
+            workflow_dispatch)
+              event_policy="workflow_dispatch_exact_head_manual"
+              ;;
+            *)
+              echo "unsupported event for sedna-heavy-tests checkout identity: ${GITHUB_EVENT_NAME}" >&2
+              exit 1
+              ;;
+          esac
+
           resolve_checkout_identity() {
             checkout_ref="${CHECKOUT_REF}"
             checkout_sha="${CHECKOUT_REF}"
@@ -263,6 +277,7 @@ jobs:
             echo "checkout_ref=${checkout_ref}"
             echo "checkout_sha=${checkout_sha}"
             echo "display_ref=${display_ref}"
+            echo "event_policy=${event_policy}"
           } >> "$GITHUB_OUTPUT"
           # END checkout identity
 
@@ -1249,7 +1264,7 @@ jobs:
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --workflow-file "sedna-heavy-tests.yml" \
-            --event-policy "pull_request_exact_head_lane_fingerprint" \
+            --event-policy "${{ needs.metadata.outputs.event_policy }}" \
             --run-selected-lanes "${RUN_SELECTED_LANES}" \
             --run-smoke-gate "${RUN_SMOKE_GATE}" \
             --smoke-gate-kind "${SMOKE_GATE_KIND}" \
