@@ -195,7 +195,6 @@ impl DesktopRuntimeConfig {
 
         let env_command = env
             .command
-            .clone()
             .and_then(|command| command_spec_to_argv(CommandSpec::String(command)));
         if let Some(command) = env_command {
             return Some(Self {
@@ -554,7 +553,10 @@ mod tests {
 
         let provider = config.default_provider().expect("default provider");
         assert_eq!(provider.id, "legacy");
-        assert_eq!(command_config(provider).argv, vec!["desktop-provider".to_string()]);
+        assert_eq!(
+            command_config(provider).argv,
+            vec!["desktop-provider".to_string()]
+        );
         assert_eq!(provider.timeout, Duration::from_secs(7));
     }
 
@@ -620,7 +622,10 @@ mod tests {
 
         let provider = config.default_provider().expect("default provider");
         assert_eq!(provider.id, "second");
-        assert_eq!(command_config(provider).argv, vec!["second-provider".to_string()]);
+        assert_eq!(
+            command_config(provider).argv,
+            vec!["second-provider".to_string()]
+        );
         assert_eq!(provider.timeout, Duration::from_secs(8));
     }
 
