@@ -128,7 +128,7 @@ def test_collab_spawn_identity_is_phase_compatible_and_uses_camel_case_wire_name
             "type": "collabAgentToolCall",
         }
     )
-    assert item.model_dump(by_alias=True, exclude_none=True) == {
+    assert item.model_dump(by_alias=True, exclude_none=True, mode="json") == {
         "agentsStates": {},
         "id": "spawn-1",
         "effectiveModel": "gpt-effective",
