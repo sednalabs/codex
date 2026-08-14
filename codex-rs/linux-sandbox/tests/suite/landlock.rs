@@ -502,7 +502,7 @@ async fn detached_children_survive_parent_exit_under_bwrap() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let log_path = tempdir.path().join("detached.log");
     let command = format!(
-        "nohup sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do printf x >> \"{log}\"; sleep 0.2; done' >/dev/null 2>&1 </dev/null &",
+        "parent=$$; nohup sh -c 'while kill -0 \"$1\" 2>/dev/null; do sleep 0.05; done; printf survived > \"$2\"' sh \"$parent\" \"{log}\" >/dev/null 2>&1 </dev/null &",
         log = log_path.to_string_lossy(),
     );
 
@@ -517,19 +517,9 @@ async fn detached_children_survive_parent_exit_under_bwrap() {
     .expect("sandboxed command should execute");
 
     assert_eq!(output.exit_code, 0);
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let first_len = std::fs::metadata(&log_path)
-        .expect("detached child should create log file")
-        .len();
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let second_len = std::fs::metadata(&log_path)
-        .expect("detached child log file should still exist")
-        .len();
-    assert!(
-        second_len > first_len,
-        "detached child should keep writing after the parent exits",
+    assert_eq!(
+        std::fs::read_to_string(&log_path).expect("detached child should report parent exit"),
+        "survived",
     );
 }
 
