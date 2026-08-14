@@ -2570,6 +2570,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_duplicate_id_is_claimed_before_unknown_request_conversion() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            let request_id = RequestId::Integer(7);
+            let valid_request = JSONRPCRequest {
+                id: request_id.clone(),
+                method: "item/tool/requestUserInput".to_string(),
+                params: Some(
+                    serde_json::to_value(ToolRequestUserInputParams {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "call-1".to_string(),
+                        questions: vec![ToolRequestUserInputQuestion {
+                            id: "question-1".to_string(),
+                            header: "Mode".to_string(),
+                            question: "Pick one".to_string(),
+                            is_other: false,
+                            is_secret: false,
+                            options: Some(vec![]),
+                        }],
+                        is_blocking: true,
+                        auto_resolution_ms: None,
+                    })
+                    .expect("params should serialize"),
+                ),
+                trace: None,
+            };
+            write_websocket_message(&mut websocket, JSONRPCMessage::Request(valid_request)).await;
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: request_id.clone(),
+                    method: "thread/unknown".to_string(),
+                    params: None,
+                    trace: None,
+                }),
+            )
+            .await;
+
+            let JSONRPCMessage::Response(response) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("the duplicate unknown request must not receive -32601");
+            };
+            assert_eq!(response.id, request_id);
+            match websocket.next().await {
+                Some(Ok(Message::Close(_))) | None => {}
+                frame => panic!("duplicate request must not receive a second response: {frame:?}"),
+            }
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+
+        let AppServerEvent::ServerRequest(request) = client
+            .next_event()
+            .await
+            .expect("valid server request should arrive")
+        else {
+            panic!("expected the first-seen valid server request");
+        };
+        client
+            .resolve_server_request(request.id().clone(), serde_json::json!({}))
+            .await
+            .expect("valid server request should resolve");
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
     async fn remote_server_request_received_during_initialize_is_delivered() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
