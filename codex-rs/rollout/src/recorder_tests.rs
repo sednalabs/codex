@@ -211,7 +211,7 @@ async fn shutdown_waits_for_exact_admitted_write_and_blocks_stale_generation() {
     admitted_writer.write_gate = Some(gate.clone());
     let write = tokio::spawn(async move {
         admitted_writer
-            .write_rollout_item(&agent_message_item("admitted write"), None)
+            .write_rollout_item(&agent_message_item("admitted write"), /*ordinal*/ None)
             .await
     });
     gate.entered.notified().await;
@@ -253,7 +253,7 @@ async fn shutdown_waits_for_exact_admitted_write_and_blocks_stale_generation() {
         recorder.mutation_authority.clone(),
     );
     stale_writer
-        .write_rollout_item(&agent_message_item("stale write"), None)
+        .write_rollout_item(&agent_message_item("stale write"), /*ordinal*/ None)
         .await
         .expect_err("revoked generation must reject actual filesystem append");
     assert!(fs::read(&stale_path).expect("read stale target").is_empty());
@@ -318,7 +318,7 @@ async fn failed_async_write_releases_mutation_custody_for_retry() {
     let authority = RolloutMutationAuthority::new();
     let mut writer = JsonlWriter::new(tokio::fs::File::from_std(file), authority.clone());
     writer
-        .write_rollout_item(&agent_message_item("write failure"), None)
+        .write_rollout_item(&agent_message_item("write failure"), /*ordinal*/ None)
         .await
         .expect_err("read-only writer must fail");
     drop(
