@@ -824,10 +824,6 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
     }
 }
 
-fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
-    agent_label_spans(agent).into()
-}
-
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let nickname = agent
