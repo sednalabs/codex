@@ -403,6 +403,44 @@ async fn partial_progress_retries_only_the_uncommitted_suffix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_store_reports_durable_prefix_and_retries_without_duplicate_jsonl_records() {
+    let home = TempDir::new().expect("temp dir");
+    let config = LocalThreadStoreConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        default_model_provider_id: "test-provider".to_string(),
+    };
+    let local_store = Arc::new(LocalThreadStore::new(config, /*state_db*/ None));
+    local_store.fail_next_append_after(/*durable_item_count*/ 1);
+    let thread_id = ThreadId::new();
+    let live_thread = LiveThread::create(local_store, create_thread_params(thread_id, home.path()))
+        .await
+        .expect("create live thread");
+
+    live_thread
+        .append_items(&[
+            user_message_item("one"),
+            user_message_item("two"),
+            user_message_item("three"),
+        ])
+        .await
+        .expect("retry exact local rollout suffix");
+    let history = live_thread
+        .load_history(/*include_archived*/ true)
+        .await
+        .expect("load production local-store history");
+    let messages = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::UserMessage(event)) => Some(event.message.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(messages, vec!["one", "two", "three"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persist_waits_for_append_observation_before_flushing_pending_metadata() {
     let home = TempDir::new().expect("temp dir");
     let config = LocalThreadStoreConfig {
