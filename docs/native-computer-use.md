@@ -358,6 +358,34 @@ with `CODEX_DESKTOP_COMPUTER_USE_COMMAND` or
 }
 ```
 
+The file form also supports a provider registry so operators can keep separate
+desktop runtimes for macOS Screen Recording/Accessibility, Linux/noVNC, or
+future Windows desktop shells without changing Codex core:
+
+```json
+{
+  "providers": [
+    {
+      "id": "macos-accessibility",
+      "provider": "command",
+      "platforms": ["macos"],
+      "command": ["/path/to/macos-desktop-provider", "stdio"]
+    },
+    {
+      "id": "linux-visible-desktop",
+      "provider": "command",
+      "platforms": ["linux"],
+      "command": ["/path/to/linux-desktop-provider", "stdio"],
+      "timeout_secs": 180
+    }
+  ],
+  "routing": {
+    "fallback_order": ["macos-accessibility", "linux-visible-desktop"]
+  },
+  "timeout_secs": 120
+}
+```
+
 The desktop provider receives the same `ComputerUseCallParams` object on stdin
 and must return one `ComputerUseCallResponse` object on stdout. Successful
 visual responses must include a native `inputImage` content item. Permission
