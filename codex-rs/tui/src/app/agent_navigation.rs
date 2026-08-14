@@ -29,6 +29,8 @@ use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+const MAX_PICKER_PAGE_CURSORS: usize = 128;
+
 /// Small state container for multi-agent picker ordering and labeling.
 ///
 /// `App` owns thread lifecycle and UI side effects. This type keeps the pure rules for stable
@@ -50,6 +52,8 @@ pub(crate) struct AgentNavigationState {
     parent_owned_threads: HashSet<ThreadId>,
     /// Opaque continuation for the next bounded persisted-subagent page.
     next_picker_page_cursor: Option<String>,
+    /// Cursors already offered within the active persisted-picker pagination sequence.
+    seen_picker_page_cursors: HashSet<String>,
     /// Whether this session completed the bounded legacy relation repair fallback.
     legacy_relation_fallback_checked: bool,
 }
@@ -299,11 +303,25 @@ impl AgentNavigationState {
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
         self.next_picker_page_cursor = None;
+        self.seen_picker_page_cursors.clear();
         self.legacy_relation_fallback_checked = false;
     }
 
-    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) {
-        self.next_picker_page_cursor = next_cursor;
+    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) -> bool {
+        let Some(next_cursor) = next_cursor else {
+            self.next_picker_page_cursor = None;
+            self.seen_picker_page_cursors.clear();
+            return true;
+        };
+        if self.seen_picker_page_cursors.len() >= MAX_PICKER_PAGE_CURSORS
+            || !self.seen_picker_page_cursors.insert(next_cursor.clone())
+        {
+            self.next_picker_page_cursor = None;
+            self.seen_picker_page_cursors.clear();
+            return false;
+        }
+        self.next_picker_page_cursor = Some(next_cursor);
+        true
     }
 
     pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {
@@ -812,7 +830,7 @@ mod tests {
     #[test]
     fn clear_drops_picker_page_cursor_and_reenables_legacy_fallback() {
         let mut state = AgentNavigationState::default();
-        state.set_next_picker_page_cursor(Some("opaque-cursor".to_string()));
+        assert!(state.set_next_picker_page_cursor(Some("opaque-cursor".to_string())));
         state.mark_legacy_relation_fallback_checked();
 
         state.clear();
