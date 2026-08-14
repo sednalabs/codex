@@ -90,6 +90,10 @@ Codex exposes:
 
 The current TUI runtime seam is an external command provider configured with
 `CODEX_DESKTOP_COMPUTER_USE_COMMAND` or `~/.codex/desktop-computer-use.json`.
+The file form can hold either one legacy command provider or a `providers[]`
+registry plus `routing.fallback_order`, so macOS Screen
+Recording/Accessibility, Linux/noVNC, and future Windows desktop providers can
+be selected by platform without changing Codex hot paths.
 
 Minimum provider capabilities:
 

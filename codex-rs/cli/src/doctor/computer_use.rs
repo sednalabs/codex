@@ -361,7 +361,10 @@ fn append_desktop_computer_use_details(
         }
     }
 
-    let mut configured = desktop_provider_configured_from_env();
+    let mut configured_providers = Vec::new();
+    if desktop_provider_configured_from_env() {
+        configured_providers.push("env-command".to_string());
+    }
     let mut read_any_config = false;
     for file_name in DESKTOP_COMPUTER_USE_CONFIG_FILES {
         let path = codex_home.join(file_name);
@@ -374,102 +377,17 @@ fn append_desktop_computer_use_details(
                 read_any_config = true;
                 match serde_json::from_str::<DesktopComputerUseDoctorConfig>(&contents) {
                     Ok(parsed) => {
-                        let provider = parsed.provider.as_deref().unwrap_or("command");
-                        let platform_matches = parsed.matches_current_platform();
+                        let summaries = parsed.provider_summaries();
                         details.push(format!("desktop provider config {file_name} parse: ok"));
                         details.push(format!(
-                            "desktop provider config {file_name} provider: {}",
-                            if provider.trim().is_empty() {
-                                "command"
-                            } else {
-                                provider.trim()
-                            }
+                            "desktop provider config {file_name} providers: {}",
+                            summaries.len()
                         ));
-                        if let Some(platforms) = &parsed.platforms {
-                            details.push(format!(
-                                "desktop provider config {file_name} platforms: {}",
-                                display_list(platforms)
-                            ));
-                            details.push(format!(
-                                "desktop provider config {file_name} platform match: {}",
-                                if platform_matches { "yes" } else { "no" }
-                            ));
-                        }
-                        if let Some(timeout_secs) = parsed.timeout_secs {
-                            details.push(format!(
-                                "desktop provider config {file_name} timeout_secs: {timeout_secs}"
-                            ));
-                        }
-                        if !platform_matches {
-                            continue;
-                        }
-                        if desktop_provider_is_disabled(provider) {
-                            continue;
-                        }
-                        if !desktop_provider_is_command(provider) {
-                            issues.push(
-                                DoctorIssue::new(
-                                    CheckStatus::Warning,
-                                    format!(
-                                        "desktop provider config {file_name} has unknown provider kind"
-                                    ),
-                                )
-                                .measured(provider.to_string())
-                                .expected("command or none")
-                                .remedy("Use a command provider for desktop computer-use bridges.")
-                                .field(format!("desktop provider config {file_name} provider")),
-                            );
-                            continue;
-                        }
-                        match parsed.command.as_ref().and_then(DoctorCommandSpec::argv) {
-                            Some(argv) if !argv.is_empty() => {
-                                let program = argv[0].clone();
-                                configured = true;
-                                details.push(format!(
-                                    "desktop provider config {file_name} command: {program}"
-                                ));
-                                details.push(format!(
-                                    "desktop provider config {file_name} command readiness: {}",
-                                    command_readiness(&program)
-                                ));
-                                if stdio_command_resolves(
-                                    &program, /*cwd*/ None, /*server_env*/ None,
-                                )
-                                .is_err()
-                                {
-                                    issues.push(
-                                        DoctorIssue::new(
-                                            CheckStatus::Warning,
-                                            format!(
-                                                "desktop provider config {file_name} command is not resolvable"
-                                            ),
-                                        )
-                                        .measured(program)
-                                        .expected("command on PATH or executable path")
-                                        .remedy(
-                                            "Install the desktop provider command or update desktop-computer-use.json.",
-                                        )
-                                        .field(format!(
-                                            "desktop provider config {file_name} command readiness"
-                                        )),
-                                    );
-                                }
-                            }
-                            _ if parsed.provider.as_deref() == Some(PROVIDER_NONE) => {}
-                            _ => {
-                                issues.push(
-                                    DoctorIssue::new(
-                                        CheckStatus::Warning,
-                                        format!(
-                                            "desktop provider config {file_name} command is missing"
-                                        ),
-                                    )
-                                    .expected("non-empty command")
-                                    .remedy(
-                                        "Add a command array/string for this provider, or disable it.",
-                                    )
-                                    .field(format!("desktop provider config {file_name} command")),
-                                );
+                        for provider in summaries {
+                            provider.append_details(details);
+                            provider.append_issues(issues);
+                            if provider.is_configured_for_current_platform() {
+                                configured_providers.push(provider.id);
                             }
                         }
                     }
@@ -509,9 +427,15 @@ fn append_desktop_computer_use_details(
         }
     }
 
+    configured_providers.sort();
+    configured_providers.dedup();
     details.push(format!(
         "desktop providers configured: {}",
-        if configured { 1 } else { 0 }
+        configured_providers.len()
+    ));
+    details.push(format!(
+        "desktop provider ids: {}",
+        display_list(&configured_providers)
     ));
     read_any_config
 }
@@ -661,17 +585,58 @@ struct DesktopComputerUseDoctorConfig {
     command: Option<DoctorCommandSpec>,
     timeout_secs: Option<u64>,
     platforms: Option<Vec<String>>,
+    providers: Option<Vec<DesktopDoctorProviderConfig>>,
+    routing: Option<DesktopDoctorRoutingConfig>,
 }
 
 impl DesktopComputerUseDoctorConfig {
-    fn matches_current_platform(&self) -> bool {
-        let Some(platforms) = &self.platforms else {
-            return true;
-        };
-        platforms
-            .iter()
-            .any(|platform| platform_matches_current(platform))
+    fn provider_summaries(&self) -> Vec<DesktopProviderDoctorSummary> {
+        let mut summaries = Vec::new();
+        if self.command.is_some() || self.provider.is_some() {
+            let provider = self.provider.as_deref().unwrap_or("command");
+            if provider != PROVIDER_NONE {
+                summaries.push(DesktopProviderDoctorSummary {
+                    id: "legacy".to_string(),
+                    provider: provider.to_string(),
+                    platforms: self.platforms.clone().unwrap_or_default(),
+                    timeout_secs: self.timeout_secs,
+                    command: self.command.clone(),
+                });
+            }
+        }
+        if let Some(providers) = &self.providers {
+            summaries.extend(
+                providers
+                    .iter()
+                    .filter(|provider| {
+                        provider.provider.as_deref().unwrap_or("command") != PROVIDER_NONE
+                    })
+                    .map(DesktopProviderDoctorSummary::from),
+            );
+        }
+        if let Some(order) = self
+            .routing
+            .as_ref()
+            .and_then(|routing| routing.fallback_order.as_ref())
+        {
+            summaries = order_desktop_provider_summaries(summaries, order);
+        }
+        summaries
     }
+}
+
+#[derive(Deserialize)]
+struct DesktopDoctorRoutingConfig {
+    fallback_order: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct DesktopDoctorProviderConfig {
+    id: Option<String>,
+    provider: Option<String>,
+    command: Option<DoctorCommandSpec>,
+    timeout_secs: Option<u64>,
+    platforms: Option<Vec<String>>,
 }
 
 fn platform_matches_current(platform: &str) -> bool {
@@ -994,10 +959,162 @@ impl From<&BrowserDoctorProviderConfig> for BrowserProviderDoctorSummary {
     }
 }
 
+#[derive(Clone)]
+struct DesktopProviderDoctorSummary {
+    id: String,
+    provider: String,
+    platforms: Vec<String>,
+    timeout_secs: Option<u64>,
+    command: Option<DoctorCommandSpec>,
+}
+
+impl DesktopProviderDoctorSummary {
+    fn matches_current_platform(&self) -> bool {
+        self.platforms.is_empty()
+            || self
+                .platforms
+                .iter()
+                .any(|platform| platform_matches_current(platform))
+    }
+
+    fn is_configured_for_current_platform(&self) -> bool {
+        self.matches_current_platform()
+            && desktop_provider_is_command(&self.provider)
+            && self
+                .command
+                .as_ref()
+                .and_then(DoctorCommandSpec::argv)
+                .is_some()
+    }
+
+    fn append_details(&self, details: &mut Vec<String>) {
+        details.push(format!(
+            "desktop provider {} kind: {}",
+            self.id, self.provider
+        ));
+        if !self.platforms.is_empty() {
+            details.push(format!(
+                "desktop provider {} platforms: {}",
+                self.id,
+                display_list(&self.platforms)
+            ));
+            details.push(format!(
+                "desktop provider {} platform match: {}",
+                self.id,
+                if self.matches_current_platform() {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+        }
+        if let Some(timeout_secs) = self.timeout_secs {
+            details.push(format!(
+                "desktop provider {} timeout_secs: {}",
+                self.id, timeout_secs
+            ));
+        }
+        if let Some(argv) = self.command.as_ref().and_then(DoctorCommandSpec::argv)
+            && let Some(program) = argv.first()
+        {
+            details.push(format!("desktop provider {} command: {}", self.id, program));
+            details.push(format!(
+                "desktop provider {} command readiness: {}",
+                self.id,
+                command_readiness(program)
+            ));
+        }
+    }
+
+    fn append_issues(&self, issues: &mut Vec<DoctorIssue>) {
+        if !self.matches_current_platform() {
+            return;
+        }
+
+        if !desktop_provider_is_command(&self.provider) {
+            issues.push(
+                DoctorIssue::new(
+                    CheckStatus::Warning,
+                    format!("desktop provider {} has unknown provider kind", self.id),
+                )
+                .measured(self.provider.clone())
+                .expected("command or none")
+                .remedy("Use a command provider for desktop computer-use bridges.")
+                .field(format!("desktop provider {} kind", self.id)),
+            );
+            return;
+        }
+
+        match self.command.as_ref().and_then(DoctorCommandSpec::argv) {
+            Some(argv)
+                if argv.first().is_some_and(|program| {
+                    stdio_command_resolves(program, /*cwd*/ None, /*server_env*/ None).is_ok()
+                }) => {}
+            Some(argv) => {
+                let program = argv.first().cloned().unwrap_or_default();
+                issues.push(
+                    DoctorIssue::new(
+                        CheckStatus::Warning,
+                        format!("desktop provider {} command is not resolvable", self.id),
+                    )
+                    .measured(program)
+                    .expected("command on PATH or executable path")
+                    .remedy(
+                        "Install the desktop provider command or update desktop-computer-use.json.",
+                    )
+                    .field(format!("desktop provider {} command readiness", self.id)),
+                );
+            }
+            None => {
+                issues.push(
+                    DoctorIssue::new(
+                        CheckStatus::Warning,
+                        format!("desktop provider {} command is missing", self.id),
+                    )
+                    .expected("non-empty command")
+                    .remedy("Add a command array/string for this provider, or disable it.")
+                    .field(format!("desktop provider {} command", self.id)),
+                );
+            }
+        }
+    }
+}
+
+impl From<&DesktopDoctorProviderConfig> for DesktopProviderDoctorSummary {
+    fn from(provider: &DesktopDoctorProviderConfig) -> Self {
+        let provider_kind = provider
+            .provider
+            .clone()
+            .unwrap_or_else(|| "command".to_string());
+        Self {
+            id: provider.id.clone().unwrap_or_else(|| provider_kind.clone()),
+            provider: provider_kind,
+            platforms: provider.platforms.clone().unwrap_or_default(),
+            timeout_secs: provider.timeout_secs,
+            command: provider.command.clone(),
+        }
+    }
+}
+
 fn order_provider_summaries(
     providers: Vec<BrowserProviderDoctorSummary>,
     order: &[String],
 ) -> Vec<BrowserProviderDoctorSummary> {
+    let mut remaining = providers;
+    let mut ordered = Vec::new();
+    for id in order {
+        if let Some(index) = remaining.iter().position(|provider| provider.id == *id) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
+}
+
+fn order_desktop_provider_summaries(
+    providers: Vec<DesktopProviderDoctorSummary>,
+    order: &[String],
+) -> Vec<DesktopProviderDoctorSummary> {
     let mut remaining = providers;
     let mut ordered = Vec::new();
     for id in order {
