@@ -2609,27 +2609,27 @@ impl AuthManager {
             return Ok(false);
         }
         if rejected_auth.is_some_and(CodexAuth::is_external_chatgpt_tokens) {
-            let mut external_auth = self
-                .external_auth
-                .write()
-                .map_err(|_| std::io::Error::other("external auth lock is poisoned"))?;
-            let provider_matches = external_auth
-                .as_ref()
-                .zip(rejected_external_auth)
-                .is_some_and(|(current, rejected)| Arc::ptr_eq(current, rejected));
-            let auth_matches = self
-                .auth_cached()
-                .as_ref()
-                .zip(rejected_auth)
-                .is_some_and(|(current, rejected)| Self::auths_equal(Some(current), Some(rejected)));
-            if !provider_matches || !auth_matches {
-                return Ok(false);
-            }
+            let (removed, cache_changed) = {
+                let mut external_auth = self
+                    .external_auth
+                    .write()
+                    .map_err(|_| std::io::Error::other("external auth lock is poisoned"))?;
+                let provider_matches = external_auth
+                    .as_ref()
+                    .zip(rejected_external_auth)
+                    .is_some_and(|(current, rejected)| Arc::ptr_eq(current, rejected));
+                let auth_matches = self.auth_cached().as_ref().zip(rejected_auth).is_some_and(
+                    |(current, rejected)| Self::auths_equal(Some(current), Some(rejected)),
+                );
+                if !provider_matches || !auth_matches {
+                    return Ok(false);
+                }
 
-            let removed = self.logout_stores_matching_rejected_auth(rejected_auth)?;
-            external_auth.take();
-            let cache_changed = self.set_cached_auth(/*new_auth*/ None);
-            drop(external_auth);
+                let removed = self.logout_stores_matching_rejected_auth(rejected_auth)?;
+                external_auth.take();
+                let cache_changed = self.set_cached_auth(/*new_auth*/ None);
+                (removed, cache_changed)
+            };
             self.reload().await;
             return Ok(removed || cache_changed);
         }

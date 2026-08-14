@@ -85,7 +85,9 @@ fn conditional_delete_cannot_erase_concurrent_replacement() -> anyhow::Result<()
         })
     });
 
-    compared_rx.recv().expect("conditional delete compared auth");
+    compared_rx
+        .recv()
+        .expect("conditional delete compared auth");
     let (saving_tx, saving_rx) = mpsc::channel();
     let save_storage = Arc::clone(&storage);
     let replacement_for_save = replacement.clone();
