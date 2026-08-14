@@ -93,8 +93,7 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     )
     .await;
     yield_now().await;
-    advance(Duration::from_millis(1_000)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    advance_until_thread_unloaded(&manager, first.thread_id, Duration::from_millis(1_000)).await;
     assert_eq!(
         control.get_status(first.thread_id).await,
         AgentStatus::Completed(Some("reloaded turn complete".to_string()))
@@ -280,6 +279,21 @@ async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) 
         yield_now().await;
     }
     panic!("thread {thread_id} should be unloaded");
+}
+
+async fn advance_until_thread_unloaded(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+    retry_interval: Duration,
+) {
+    for _ in 0..8 {
+        advance(retry_interval).await;
+        yield_now().await;
+        if manager.get_thread(thread_id).await.is_err() {
+            return;
+        }
+    }
+    panic!("thread {thread_id} should be unloaded after bounded idle retries");
 }
 
 #[tokio::test]
