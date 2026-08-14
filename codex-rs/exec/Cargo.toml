@@ -42,6 +42,7 @@ codex-tools = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-utils-oss = { workspace = true }
+codex-utils-path = { workspace = true }
 codex-utils-sandbox-summary = { workspace = true }
 codex-utils-version = { workspace = true }
 owo-colors = { workspace = true }
