@@ -80,8 +80,12 @@ pub(crate) async fn handle_desktop_computer_use(
         return DesktopComputerUseOutcome::Unavailable;
     };
 
-    let request_timeout = config.timeout;
-    let response = match timeout(request_timeout, handle_with_config(params, config)).await {
+    let Some(provider) = config.default_provider().cloned() else {
+        return DesktopComputerUseOutcome::Unavailable;
+    };
+
+    let request_timeout = provider.timeout;
+    let response = match timeout(request_timeout, handle_with_provider(params, provider)).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => failed_response(err),
         Err(_) => failed_response(format!(
@@ -92,11 +96,13 @@ pub(crate) async fn handle_desktop_computer_use(
     DesktopComputerUseOutcome::Handled(response)
 }
 
-async fn handle_with_config(
+async fn handle_with_provider(
     params: &ComputerUseCallParams,
-    config: DesktopRuntimeConfig,
+    provider: ConfiguredDesktopProvider,
 ) -> Result<ComputerUseCallResponse, String> {
-    let mut response = run_command_provider(params, &config.command).await?;
+    let mut response = match provider.provider {
+        DesktopProvider::Command(command) => run_command_provider(params, &command).await,
+    }?;
     require_native_image_for_visual_response(
         &mut response,
         "Desktop observation missing native image output.",
@@ -165,8 +171,7 @@ fn parse_provider_response(bytes: &[u8]) -> Result<ComputerUseCallResponse, Stri
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesktopRuntimeConfig {
-    command: CommandProviderConfig,
-    timeout: Duration,
+    providers: Vec<ConfiguredDesktopProvider>,
 }
 
 impl DesktopRuntimeConfig {
@@ -178,47 +183,69 @@ impl DesktopRuntimeConfig {
         file: Option<DesktopRuntimeConfigFile>,
         env: DesktopRuntimeEnv,
     ) -> Option<Self> {
-        let provider_name = env
-            .provider
-            .as_deref()
-            .or_else(|| file.as_ref().and_then(|config| config.provider.as_deref()))
-            .unwrap_or(PROVIDER_COMMAND);
-        if provider_is_disabled(provider_name) || !provider_is_command(provider_name) {
-            return None;
-        }
-
-        let env_command = env
-            .command
-            .clone()
-            .and_then(|command| command_spec_to_argv(CommandSpec::String(command)));
-        if file
-            .as_ref()
-            .is_some_and(|config| !config.matches_current_platform())
-            && env_command.is_none()
+        if let Some(provider) = env.provider.as_deref()
+            && (provider_is_disabled(provider) || !provider_is_command(provider))
         {
             return None;
         }
 
-        let command = env_command.or_else(|| {
-            file.as_ref()
-                .filter(|config| config.matches_current_platform())
-                .and_then(|config| config.command.clone().and_then(command_spec_to_argv))
-        })?;
         let timeout = env
             .timeout_secs
-            .or_else(|| {
-                file.as_ref()
-                    .filter(|config| config.matches_current_platform())
-                    .and_then(|config| config.timeout_secs)
-            })
+            .or_else(|| file.as_ref().and_then(|config| config.timeout_secs))
             .map(Duration::from_secs)
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT);
 
-        Some(Self {
-            command: CommandProviderConfig { argv: command },
-            timeout,
-        })
+        let env_command = env
+            .command
+            .and_then(|command| command_spec_to_argv(CommandSpec::String(command)));
+        if let Some(command) = env_command {
+            return Some(Self {
+                providers: vec![ConfiguredDesktopProvider::command(
+                    "env-command",
+                    command,
+                    timeout,
+                )],
+            });
+        }
+
+        let file = file?;
+        let mut providers = file.configured_providers(timeout);
+        if let Some(order) = file
+            .routing
+            .as_ref()
+            .and_then(|routing| routing.fallback_order.as_ref())
+        {
+            providers = order_providers(providers, order);
+        }
+
+        (!providers.is_empty()).then_some(Self { providers })
     }
+
+    fn default_provider(&self) -> Option<&ConfiguredDesktopProvider> {
+        self.providers.first()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfiguredDesktopProvider {
+    id: String,
+    provider: DesktopProvider,
+    timeout: Duration,
+}
+
+impl ConfiguredDesktopProvider {
+    fn command(id: impl Into<String>, argv: Vec<String>, timeout: Duration) -> Self {
+        Self {
+            id: id.into(),
+            provider: DesktopProvider::Command(CommandProviderConfig { argv }),
+            timeout,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DesktopProvider {
+    Command(CommandProviderConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +259,8 @@ struct DesktopRuntimeConfigFile {
     command: Option<CommandSpec>,
     timeout_secs: Option<u64>,
     platforms: Option<Vec<String>>,
+    providers: Option<Vec<DesktopProviderConfigFile>>,
+    routing: Option<DesktopRoutingConfigFile>,
 }
 
 impl DesktopRuntimeConfigFile {
@@ -250,6 +279,48 @@ impl DesktopRuntimeConfigFile {
         None
     }
 
+    fn configured_providers(&self, default_timeout: Duration) -> Vec<ConfiguredDesktopProvider> {
+        let mut providers = Vec::new();
+        if self.command.is_some() || self.provider.is_some() {
+            let legacy_provider = DesktopProviderConfigFile {
+                id: Some("legacy".to_string()),
+                provider: self.provider.clone(),
+                command: self.command.clone(),
+                timeout_secs: self.timeout_secs,
+                platforms: self.platforms.clone(),
+            };
+            if let Some(provider) = legacy_provider.to_configured(default_timeout) {
+                providers.push(provider);
+            }
+        }
+
+        if let Some(configured) = &self.providers {
+            providers.extend(
+                configured
+                    .iter()
+                    .filter(|provider| provider.matches_current_platform())
+                    .filter_map(|provider| provider.to_configured(default_timeout)),
+            );
+        }
+        providers
+    }
+}
+
+#[derive(Deserialize)]
+struct DesktopRoutingConfigFile {
+    fallback_order: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct DesktopProviderConfigFile {
+    id: Option<String>,
+    provider: Option<String>,
+    command: Option<CommandSpec>,
+    timeout_secs: Option<u64>,
+    platforms: Option<Vec<String>>,
+}
+
+impl DesktopProviderConfigFile {
     fn matches_current_platform(&self) -> bool {
         let Some(platforms) = &self.platforms else {
             return true;
@@ -257,6 +328,27 @@ impl DesktopRuntimeConfigFile {
         platforms
             .iter()
             .any(|platform| platform_matches_current(platform))
+    }
+
+    fn to_configured(&self, default_timeout: Duration) -> Option<ConfiguredDesktopProvider> {
+        if !self.matches_current_platform() {
+            return None;
+        }
+
+        let provider_name = self.provider.as_deref().unwrap_or(PROVIDER_COMMAND);
+        if provider_is_disabled(provider_name) || !provider_is_command(provider_name) {
+            return None;
+        }
+
+        let timeout = self
+            .timeout_secs
+            .map(Duration::from_secs)
+            .unwrap_or(default_timeout);
+        let id = self.id.clone().unwrap_or_else(|| provider_name.to_string());
+        self.command
+            .clone()
+            .and_then(command_spec_to_argv)
+            .map(|argv| ConfiguredDesktopProvider::command(id, argv, timeout))
     }
 }
 
@@ -292,6 +384,21 @@ fn command_spec_to_argv(command: CommandSpec) -> Option<Vec<String>> {
     argv.first()
         .is_some_and(|program| !program.trim().is_empty())
         .then_some(argv)
+}
+
+fn order_providers(
+    providers: Vec<ConfiguredDesktopProvider>,
+    order: &[String],
+) -> Vec<ConfiguredDesktopProvider> {
+    let mut remaining = providers;
+    let mut ordered = Vec::new();
+    for id in order {
+        if let Some(index) = remaining.iter().position(|provider| provider.id == *id) {
+            ordered.push(remaining.remove(index));
+        }
+    }
+    ordered.extend(remaining);
+    ordered
 }
 
 fn first_env(keys: &[&str]) -> Option<String> {
@@ -390,6 +497,12 @@ mod tests {
     use serde_json::json;
     use std::io::Write as _;
 
+    fn command_config(provider: &ConfiguredDesktopProvider) -> &CommandProviderConfig {
+        match &provider.provider {
+            DesktopProvider::Command(command) => command,
+        }
+    }
+
     #[test]
     fn command_spec_accepts_shell_like_string_and_array() {
         assert_eq!(
@@ -433,13 +546,20 @@ mod tests {
                 command: Some(CommandSpec::Array(vec!["desktop-provider".to_string()])),
                 timeout_secs: Some(7),
                 platforms: Some(vec!["all".to_string()]),
+                providers: None,
+                routing: None,
             }),
             DesktopRuntimeEnv::default(),
         )
         .expect("desktop provider config");
 
-        assert_eq!(config.command.argv, vec!["desktop-provider".to_string()]);
-        assert_eq!(config.timeout, Duration::from_secs(7));
+        let provider = config.default_provider().expect("default provider");
+        assert_eq!(provider.id, "legacy");
+        assert_eq!(
+            command_config(provider).argv,
+            vec!["desktop-provider".to_string()]
+        );
+        assert_eq!(provider.timeout, Duration::from_secs(7));
     }
 
     #[test]
@@ -450,6 +570,8 @@ mod tests {
                 command: Some(CommandSpec::Array(vec!["file-provider".to_string()])),
                 timeout_secs: Some(7),
                 platforms: Some(vec!["not-this-platform".to_string()]),
+                providers: None,
+                routing: None,
             }),
             DesktopRuntimeEnv {
                 command: Some("env-provider --stdio".to_string()),
@@ -459,11 +581,74 @@ mod tests {
         )
         .expect("desktop env provider config");
 
+        let provider = config.default_provider().expect("default provider");
+        assert_eq!(provider.id, "env-command");
         assert_eq!(
-            config.command.argv,
+            command_config(provider).argv,
             vec!["env-provider".to_string(), "--stdio".to_string()]
         );
-        assert_eq!(config.timeout, Duration::from_secs(9));
+        assert_eq!(provider.timeout, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn desktop_invalid_env_provider_disables_file_fallback() {
+        let config = DesktopRuntimeConfig::from_sources(
+            Some(DesktopRuntimeConfigFile {
+                provider: Some(PROVIDER_COMMAND.to_string()),
+                command: Some(CommandSpec::Array(vec!["file-provider".to_string()])),
+                timeout_secs: None,
+                platforms: None,
+                providers: None,
+                routing: None,
+            }),
+            DesktopRuntimeEnv {
+                provider: Some("unsupported".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn desktop_providers_array_uses_fallback_order() {
+        let config = DesktopRuntimeConfig::from_sources(
+            Some(DesktopRuntimeConfigFile {
+                provider: None,
+                command: None,
+                timeout_secs: Some(5),
+                platforms: None,
+                providers: Some(vec![
+                    DesktopProviderConfigFile {
+                        id: Some("first".to_string()),
+                        provider: Some(PROVIDER_COMMAND.to_string()),
+                        command: Some(CommandSpec::Array(vec!["first-provider".to_string()])),
+                        timeout_secs: None,
+                        platforms: Some(vec!["all".to_string()]),
+                    },
+                    DesktopProviderConfigFile {
+                        id: Some("second".to_string()),
+                        provider: Some(PROVIDER_COMMAND.to_string()),
+                        command: Some(CommandSpec::Array(vec!["second-provider".to_string()])),
+                        timeout_secs: Some(8),
+                        platforms: Some(vec!["all".to_string()]),
+                    },
+                ]),
+                routing: Some(DesktopRoutingConfigFile {
+                    fallback_order: Some(vec!["second".to_string(), "first".to_string()]),
+                }),
+            }),
+            DesktopRuntimeEnv::default(),
+        )
+        .expect("desktop provider registry config");
+
+        let provider = config.default_provider().expect("default provider");
+        assert_eq!(provider.id, "second");
+        assert_eq!(
+            command_config(provider).argv,
+            vec!["second-provider".to_string()]
+        );
+        assert_eq!(provider.timeout, Duration::from_secs(8));
     }
 
     #[test]
@@ -474,6 +659,8 @@ mod tests {
                 command: Some(CommandSpec::Array(vec!["desktop-provider".to_string()])),
                 timeout_secs: None,
                 platforms: None,
+                providers: None,
+                routing: None,
             }),
             DesktopRuntimeEnv::default(),
         );

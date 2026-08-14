@@ -2395,7 +2395,8 @@ decisions.
   rather than in hot Codex core paths.
 - The desktop adapter is the cleanroom provider seam for macOS Screen
   Recording/Accessibility-style runtimes and future native desktop providers.
-  TUI dispatch stays behind an operator-configured command provider.
+  TUI dispatch stays behind operator-configured command providers, selected by
+  the platform-filtered desktop provider registry.
 - `codex doctor` includes read-only native provider diagnostics for browser
   provider configuration, headed display/Chrome fields, and Android provider
   endpoint/credential shape without launching browsers, connecting to profiles,
