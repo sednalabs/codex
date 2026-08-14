@@ -56,6 +56,11 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    /// Current plain-text filter for a searchable list view.
+    fn search_query(&self) -> Option<&str> {
+        None
+    }
+
     /// Handle Ctrl-C while this view is active.
     fn on_ctrl_c(&mut self) -> CancellationEvent {
         CancellationEvent::NotHandled
