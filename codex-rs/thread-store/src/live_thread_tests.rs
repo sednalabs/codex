@@ -445,14 +445,12 @@ async fn partial_append_retries_only_the_uncommitted_suffix() {
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, usize::MAX).with_partial_append_once());
+    let gated_store =
+        Arc::new(GatedThreadStore::new(local_store, usize::MAX).with_partial_append_once());
     let thread_id = ThreadId::new();
-    let live_thread = LiveThread::create(
-        gated_store,
-        create_thread_params(thread_id, home.path()),
-    )
-    .await
-    .expect("create live thread");
+    let live_thread = LiveThread::create(gated_store, create_thread_params(thread_id, home.path()))
+        .await
+        .expect("create live thread");
     let first = compacted_item();
     let second = compacted_item();
 
