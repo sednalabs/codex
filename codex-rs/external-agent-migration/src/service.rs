@@ -48,6 +48,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
@@ -58,6 +59,68 @@ const EXTERNAL_AGENT_DIR: &str = crate::ClaSource::CONFIG_DIR;
 const EXTERNAL_AGENT_CONFIG_MD: &str = crate::ClaSource::CONFIG_MD;
 
 const EXTERNAL_AGENT_CONFIG_IMPORT_METRIC: &str = "codex.external_agent_config.import";
+const MAX_SKILL_MANIFEST_BYTES: u64 = 1024 * 1024;
+
+fn configure_skill_manifest_open(options: &mut fs::OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+}
+
+fn read_skill_manifest(skill_file: &Path) -> io::Result<String> {
+    let path_metadata = fs::symlink_metadata(skill_file)?;
+    if !path_metadata.file_type().is_file() {
+        return Err(invalid_data_error(format!(
+            "invalid skill {}: manifest must be a regular file",
+            skill_file.display()
+        )));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    configure_skill_manifest_open(&mut options);
+    let file = options.open(skill_file)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(invalid_data_error(format!(
+            "invalid skill {}: manifest must be a regular file",
+            skill_file.display()
+        )));
+    }
+    if metadata.len() > MAX_SKILL_MANIFEST_BYTES {
+        return Err(invalid_data_error(format!(
+            "invalid skill {}: manifest exceeds {MAX_SKILL_MANIFEST_BYTES} bytes",
+            skill_file.display()
+        )));
+    }
+
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_SKILL_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SKILL_MANIFEST_BYTES {
+        return Err(invalid_data_error(format!(
+            "invalid skill {}: manifest exceeds {MAX_SKILL_MANIFEST_BYTES} bytes",
+            skill_file.display()
+        )));
+    }
+    String::from_utf8(bytes).map_err(|err| {
+        invalid_data_error(format!(
+            "invalid skill {}: manifest is not valid UTF-8: {err}",
+            skill_file.display()
+        ))
+    })
+}
 
 fn validate_skill_import_root(source_skills: &Path) -> io::Result<()> {
     for entry in fs::read_dir(source_skills)? {
@@ -66,36 +129,11 @@ fn validate_skill_import_root(source_skills: &Path) -> io::Result<()> {
             continue;
         }
         let skill_file = entry.path().join("SKILL.md");
-        let contents = fs::read_to_string(&skill_file)?;
-        let Some(frontmatter) = contents.strip_prefix("---\n").and_then(|contents| {
-            contents
-                .split_once("\n---")
-                .map(|(frontmatter, _)| frontmatter)
-        }) else {
-            return Err(invalid_data_error(format!(
-                "invalid skill {}: missing YAML frontmatter delimited by ---",
-                skill_file.display()
-            )));
-        };
-        let metadata: serde_yaml::Value = serde_yaml::from_str(frontmatter).map_err(|err| {
-            invalid_data_error(format!(
-                "invalid skill {}: invalid YAML frontmatter: {err}",
-                skill_file.display()
-            ))
-        })?;
-        for field in ["name", "description"] {
-            let present = metadata
-                .as_mapping()
-                .and_then(|mapping| mapping.get(&serde_yaml::Value::from(field)))
-                .and_then(serde_yaml::Value::as_str)
-                .is_some_and(|value| !value.trim().is_empty());
-            if !present {
-                return Err(invalid_data_error(format!(
-                    "invalid skill {}: missing non-empty `{field}` frontmatter field",
-                    skill_file.display()
-                )));
-            }
-        }
+        let contents = read_skill_manifest(&skill_file)?;
+        let default_name = entry.file_name().to_string_lossy().into_owned();
+        codex_core::skills::loader::validate_skill_frontmatter(&contents, &default_name).map_err(
+            |err| invalid_data_error(format!("invalid skill {}: {err}", skill_file.display())),
+        )?;
     }
     Ok(())
 }

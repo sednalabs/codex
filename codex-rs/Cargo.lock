@@ -3253,6 +3253,7 @@ dependencies = [
  "codex-rollout",
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",
+ "libc",
  "pretty_assertions",
  "serde",
  "serde_json",

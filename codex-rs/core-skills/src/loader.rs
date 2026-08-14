@@ -791,6 +791,14 @@ fn parse_skill_frontmatter_metadata_inner(
     })
 }
 
+/// Validates skill frontmatter using the same compatibility rules as the
+/// canonical skill loader, including name fallback and scalar repair.
+pub fn validate_skill_frontmatter(contents: &str, default_name: &str) -> Result<(), String> {
+    parse_skill_frontmatter_metadata_inner(contents, || sanitize_single_line(default_name))
+        .map(drop)
+        .map_err(|err| err.to_string())
+}
+
 fn default_skill_name(path: &AbsolutePathBuf) -> String {
     path.parent()
         .and_then(|parent| {
