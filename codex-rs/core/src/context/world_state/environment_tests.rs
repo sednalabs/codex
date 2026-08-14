@@ -7,6 +7,86 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 
 #[test]
+fn subagent_context_preserves_ordinary_rows() {
+    let mut builder = SubagentContextBuilder::default();
+    assert!(builder.push(SubagentContextRow::new("agent-1", Some("atlas"))));
+    assert!(builder.push(SubagentContextRow::new("agent-2", None)));
+
+    assert_eq!(builder.finish().as_str(), "- agent-1: atlas\n- agent-2");
+}
+
+#[test]
+fn subagent_context_escapes_normalizes_and_truncates_dynamic_fields() {
+    let hostile = format!("  <agent attr=\"x\">\n{}", "<&\"' oversized ".repeat(100));
+    let mut builder = SubagentContextBuilder::default();
+    assert!(builder.push(SubagentContextRow::new(
+        hostile.as_str(),
+        Some(hostile.as_str()),
+    )));
+    let rendered = builder.finish();
+
+    assert!(rendered.as_str().contains("&lt;agent attr=&quot;x&quot;&gt;"));
+    assert!(rendered.as_str().contains("&amp;"));
+    assert!(rendered.as_str().contains("&apos;"));
+    assert!(!rendered.as_str().contains('\n'));
+    assert!(rendered.as_str().ends_with("..."));
+    assert!(
+        rendered.as_str().len()
+            <= 2 + SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES
+                + 2
+                + SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES
+    );
+}
+
+#[test]
+fn subagent_context_enforces_row_and_total_byte_caps_with_omitted_count() {
+    let mut row_capped = SubagentContextBuilder::default();
+    for index in 0..SUBAGENT_CONTEXT_MAX_ROWS {
+        assert!(row_capped.push(SubagentContextRow::new(
+            format!("worker-{index}").as_str(),
+            None,
+        )));
+    }
+    assert!(!row_capped.push(SubagentContextRow::new("worker-over-cap", None)));
+    row_capped.note_omitted(1);
+    let row_capped = row_capped.finish();
+    assert_eq!(
+        row_capped.as_str().matches("- worker-").count(),
+        SUBAGENT_CONTEXT_MAX_ROWS
+    );
+    assert!(row_capped.as_str().ends_with("<omitted count=\"1\" />"));
+
+    let total_rows = 100;
+    let mut builder = SubagentContextBuilder::default();
+    let mut omitted = 0;
+    for index in 0..total_rows {
+        let row = SubagentContextRow::new(
+            format!("worker-{index}-{}", "x".repeat(400)).as_str(),
+            Some("y".repeat(400).as_str()),
+        );
+        if !builder.push(row) {
+            omitted = total_rows - index;
+            break;
+        }
+    }
+    builder.note_omitted(omitted);
+    let subagents = builder.finish();
+    let row_count = subagents.as_str().matches("- worker-").count();
+
+    assert!(row_count < SUBAGENT_CONTEXT_MAX_ROWS);
+    assert_eq!(omitted, total_rows - row_count);
+    assert!(
+        subagents
+            .as_str()
+            .contains(&format!("<omitted count=\"{omitted}\" />"))
+    );
+    assert!(
+        subagent_context_rendered_bytes(subagents.as_str())
+            <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
+    );
+}
+
+#[test]
 fn snapshots() -> Result<()> {
     use PreviousSectionState::Absent;
     use PreviousSectionState::Known;
