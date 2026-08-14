@@ -140,7 +140,7 @@ async fn import_home_migrates_supported_config_fields_skills_and_agents_md() {
             .join("skill-a")
             .join("SKILL.md"),
         format!(
-            "Use {SOURCE_EXTERNAL_AGENT_PRODUCT_NAME} and {SOURCE_EXTERNAL_AGENT_UPPER_NAME} utilities."
+            "---\nname: skill-a\ndescription: Source skill\n---\nUse {SOURCE_EXTERNAL_AGENT_PRODUCT_NAME} and {SOURCE_EXTERNAL_AGENT_UPPER_NAME} utilities.\n"
         ),
     )
     .expect("write skill");
@@ -200,8 +200,51 @@ MY_TEAM = "codex"
     assert_eq!(
         fs::read_to_string(agents_skills.join("skill-a").join("SKILL.md"))
             .expect("read copied skill"),
-        "Use Codex and Codex utilities."
+        "---\nname: skill-a\ndescription: Source skill\n---\nUse Codex and Codex utilities.\n"
     );
+}
+
+#[tokio::test]
+async fn import_skills_rejects_invalid_skill_without_copying() {
+    let (_root, external_agent_home, codex_home) = fixture_paths();
+    let source_skill = external_agent_home.join("skills").join("broken-skill");
+    let agents_skills = codex_home
+        .parent()
+        .map(|parent| parent.join(".agents").join("skills"))
+        .unwrap_or_else(|| PathBuf::from(".agents").join("skills"));
+    fs::create_dir_all(&source_skill).expect("create source skill");
+    fs::write(source_skill.join("SKILL.md"), "missing frontmatter\n")
+        .expect("write invalid skill");
+
+    let outcome = service_for_paths(external_agent_home, codex_home)
+        .import(vec![ExternalAgentConfigMigrationItem {
+            item_type: ExternalAgentConfigMigrationItemType::Skills,
+            description: "Import skills".to_string(),
+            cwd: None,
+            details: None,
+        }])
+        .await;
+
+    assert_eq!(outcome.pending_plugin_imports, Vec::new());
+    let item_result = outcome
+        .item_results
+        .into_iter()
+        .next()
+        .expect("skills import result");
+    assert_eq!(
+        item_result.item_type,
+        ExternalAgentConfigMigrationItemType::Skills
+    );
+    assert_eq!(item_result.success_count, 0);
+    assert_eq!(item_result.error_count, 1);
+    assert_eq!(item_result.successes, Vec::new());
+    assert_eq!(item_result.raw_errors.len(), 1);
+    assert!(
+        item_result.raw_errors[0]
+            .message
+            .contains("missing YAML frontmatter delimited by ---")
+    );
+    assert!(!agents_skills.join("broken-skill").exists());
 }
 
 #[tokio::test]
