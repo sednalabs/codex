@@ -889,13 +889,17 @@ impl TurnRequestProcessor {
             .map_err(invalid_request)?;
         validate_response_item_image_urls(&items)?;
 
-        self.thread_manager
-            .inject_response_items((*self.config).clone(), thread_id, items)
-            .await
-            .map_err(|err| match err.details() {
-                CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
-                _ => internal_error(format!("failed to inject response items: {err}")),
-            })?;
+        // Keep the cold-reload future out of the monolithic request dispatch stack.
+        Box::pin(self.thread_manager.inject_response_items(
+            (*self.config).clone(),
+            thread_id,
+            items,
+        ))
+        .await
+        .map_err(|err| match err.details() {
+            CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+            _ => internal_error(format!("failed to inject response items: {err}")),
+        })?;
         Ok(ThreadInjectItemsResponse {})
     }
 
