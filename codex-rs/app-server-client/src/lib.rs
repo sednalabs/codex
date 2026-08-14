@@ -2497,6 +2497,22 @@ mod tests {
                 )
                 .await;
             }
+            let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("client should send an account request after the transcript burst");
+            };
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: request.id,
+                    result: serde_json::to_value(GetAccountResponse {
+                        account: None,
+                        requires_openai_auth: false,
+                    })
+                    .expect("response should serialize"),
+                }),
+            )
+            .await;
             let _ = done_rx.await;
         })
         .await;
@@ -2506,6 +2522,26 @@ mod tests {
         })
         .await
         .expect("remote client should connect");
+
+        let response: GetAccountResponse = timeout(
+            Duration::from_secs(2),
+            client.request_typed(ClientRequest::GetAccount {
+                request_id: RequestId::Integer(93),
+                params: codex_app_server_protocol::GetAccountParams {
+                    refresh_token: false,
+                },
+            }),
+        )
+        .await
+        .expect("response after the transcript burst should arrive before event draining")
+        .expect("account request should succeed");
+        assert_eq!(
+            response,
+            GetAccountResponse {
+                account: None,
+                requires_openai_auth: false,
+            }
+        );
 
         let first_event = timeout(Duration::from_secs(2), client.next_event())
             .await

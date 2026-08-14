@@ -235,7 +235,10 @@ impl RemoteAppServerClient {
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
             let mut terminal_state = None::<RemoteTerminalState>;
             let mut event_delivery_enabled = true;
-            let mut pending_events = RemoteEventBacklog::new(channel_capacity);
+            // Together with the public event channel, this permits at most
+            // `4 * channel_capacity` ordinary events to remain in transport
+            // custody while response frames continue to flow independently.
+            let mut pending_events = RemoteEventBacklog::new(channel_capacity.saturating_mul(3));
             loop {
                 tokio::select! {
                     permit = event_tx.reserve(), if event_delivery_enabled && (
