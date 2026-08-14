@@ -10,7 +10,7 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 fn subagent_context_preserves_ordinary_rows() {
     let mut builder = SubagentContextBuilder::default();
     assert!(builder.push(SubagentContextRow::new("agent-1", Some("atlas"))));
-    assert!(builder.push(SubagentContextRow::new("agent-2", None)));
+    assert!(builder.push(SubagentContextRow::new("agent-2", /*nickname*/ None,)));
 
     assert_eq!(builder.finish().as_str(), "- agent-1: atlas\n- agent-2");
 }
@@ -71,11 +71,14 @@ fn subagent_context_enforces_row_and_total_byte_caps_with_omitted_count() {
     for index in 0..SUBAGENT_CONTEXT_MAX_ROWS {
         assert!(row_capped.push(SubagentContextRow::new(
             format!("worker-{index}").as_str(),
-            None,
+            /*nickname*/ None,
         )));
     }
-    assert!(!row_capped.push(SubagentContextRow::new("worker-over-cap", None)));
-    row_capped.note_omitted(1);
+    assert!(!row_capped.push(SubagentContextRow::new(
+        "worker-over-cap",
+        /*nickname*/ None,
+    )));
+    row_capped.note_omitted(/*count*/ 1);
     let row_capped = row_capped.finish();
     assert_eq!(
         row_capped.as_str().matches("- worker-").count(),
