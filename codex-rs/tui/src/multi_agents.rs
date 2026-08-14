@@ -872,7 +872,7 @@ fn title_with_primitive_spawn_details(
         spawn_request_matches_effective(spawn_request, effective_model, effective_reasoning_effort)
     });
     spans.extend(model_reasoning_spans_with_label(
-        (!request_matches_effective && spawn_request.is_some()).then_some("effective"),
+        (!request_matches_effective).then_some("effective"),
         effective_model,
         effective_reasoning_effort,
     ));
@@ -1938,8 +1938,8 @@ mod tests {
         assert_eq!(title.spans[7].content.as_ref(), "[explorer]");
         assert_eq!(title.spans[7].style.fg, None);
         assert!(!title.spans[7].style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(title.spans[9].content.as_ref(), "(gpt-5 high)");
-        assert_eq!(title.spans[9].style.fg, Some(Color::Magenta));
+        assert_eq!(title.spans[8].content.as_ref(), " (gpt-5 high)");
+        assert_eq!(title.spans[8].style.fg, Some(Color::Magenta));
     }
 
     #[test]

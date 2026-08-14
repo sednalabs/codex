@@ -743,10 +743,10 @@ mod tests {
         };
         assert_eq!(model, Some(effective_model.clone()));
         assert_eq!(reasoning_effort, Some(effective_reasoning_effort.clone()));
-        assert_eq!(terminal_requested_model, Some(requested_model.clone()));
+        assert_eq!(terminal_requested_model, Some(requested_model));
         assert_eq!(
             terminal_requested_reasoning_effort,
-            Some(requested_reasoning_effort.clone())
+            Some(requested_reasoning_effort)
         );
         assert_eq!(terminal_effective_model, Some(effective_model));
         assert_eq!(

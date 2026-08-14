@@ -259,8 +259,7 @@ async fn replayed_failed_collab_spawn_without_receiver_keeps_requested_identity(
         "an unavailable effective identity must not be inferred from the request: {rendered}"
     );
     insta::assert_snapshot!(
-        "replayed_failed_collab_spawn_without_receiver_keeps_requested_identity",
-        &rendered,
+        rendered,
         @"• Agent spawn failed · primitive: spawn_agent (requested: gpt-requested high)"
     );
 }
