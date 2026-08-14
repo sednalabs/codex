@@ -1290,10 +1290,6 @@ fn auth_dot_json_chatgpt_account_id(auth: &AuthDotJson) -> Option<&str> {
     })
 }
 
-fn auth_dot_json_uses_codex_backend(auth: &AuthDotJson) -> bool {
-    auth.resolved_mode().uses_codex_backend()
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn load_auth(
     codex_home: &Path,
@@ -2619,27 +2615,10 @@ impl AuthManager {
                 AuthKeyringBackendKind::default(),
                 rejected_auth,
             )?;
-            if self.auth_credentials_store_mode == AuthCredentialsStoreMode::Ephemeral {
-                return Ok(removed_ephemeral);
-            }
-            let removed_file = logout_store_if(
-                &self.codex_home,
-                AuthCredentialsStoreMode::File,
-                AuthKeyringBackendKind::default(),
-                auth_dot_json_uses_codex_backend,
-            )?;
-            let removed_managed =
-                if self.auth_credentials_store_mode == AuthCredentialsStoreMode::File {
-                    false
-                } else {
-                    logout_store_if(
-                        &self.codex_home,
-                        self.auth_credentials_store_mode,
-                        self.keyring_backend_kind,
-                        auth_dot_json_uses_codex_backend,
-                    )?
-                };
-            return Ok(removed_ephemeral || removed_file || removed_managed);
+            // External credentials are mirrored only into the ephemeral store. A persisted
+            // credential may belong to another account and must remain available after the
+            // rejected external session is cleared.
+            return Ok(removed_ephemeral);
         }
         let removed_ephemeral = logout_store_matching_rejected_auth(
             &self.codex_home,

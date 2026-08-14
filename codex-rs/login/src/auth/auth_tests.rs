@@ -1107,6 +1107,85 @@ impl ExternalAuth for StaticExternalAuth {
 }
 
 #[tokio::test]
+#[serial(codex_auth_env)]
+async fn rejected_external_chatgpt_auth_preserves_distinct_managed_auth() {
+    let _access_token_guard = remove_access_token_env_var();
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed managed auth");
+    let managed_auth = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("load managed auth")
+    .expect("managed auth should exist");
+    let manager = AuthManager::new(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    let external_token = fake_jwt_for_auth_file_params(&AuthFileParams {
+        openai_api_key: None,
+        chatgpt_plan_type: Some("team".to_string()),
+        chatgpt_account_id: Some(WORKSPACE_ID_DISALLOWED.to_string()),
+    })
+    .expect("external token");
+    let external_auth = CodexAuth::from_external_chatgpt_tokens(
+        &external_token,
+        WORKSPACE_ID_DISALLOWED,
+        Some("team"),
+    )
+    .expect("external auth");
+    manager
+        .set_external_auth(Arc::new(StaticExternalAuth(external_auth.clone())))
+        .await
+        .expect("install external auth");
+
+    assert!(
+        manager
+            .force_logout_due_to_server_auth_rejection(Some(&external_auth))
+            .await
+            .expect("clear rejected external auth")
+    );
+
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load ephemeral auth"),
+        None
+    );
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("reload managed auth"),
+        Some(managed_auth)
+    );
+    assert_eq!(
+        manager.auth_cached().and_then(|auth| auth.get_account_id()),
+        Some(WORKSPACE_ID_ALLOWED.to_string())
+    );
+}
+
+#[tokio::test]
 async fn external_auth_provider_can_install_headers() {
     let mut headers = http::HeaderMap::new();
     headers.insert(
