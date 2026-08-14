@@ -16,6 +16,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Weak;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -39,6 +40,126 @@ struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
+    spawn_publications: HashMap<SpawnPublicationKey, Arc<SpawnPublication>>,
+}
+
+/// Identifies the one tool call that is allowed to publish a spawned child.
+///
+/// The runtime creates this record before dispatching `spawn_agent`. The spawn owner and the
+/// cancellation path then share the same compare-and-swap decision rather than independently
+/// sampling cancellation and child liveness.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct SpawnPublicationKey {
+    parent_thread_id: ThreadId,
+    call_id: String,
+}
+
+impl SpawnPublicationKey {
+    pub(crate) fn new(parent_thread_id: ThreadId, call_id: impl Into<String>) -> Self {
+        Self {
+            parent_thread_id,
+            call_id: call_id.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SpawnPublicationDecision {
+    /// No tool-runtime record exists, so this is a direct control-plane spawn.
+    Untracked,
+    /// The runtime registered the call, but neither owner has reached its terminal decision.
+    Pending,
+    /// The spawn owner has claimed initial delivery. Cancellation must wait for the handler's
+    /// actual delivery result rather than returning an aborted parent while that delivery can
+    /// start a private child turn.
+    DeliveryOwned,
+    /// Initial delivery and the parent-visible publication both succeeded. Later cancellation
+    /// must preserve the successful tool result.
+    Published,
+    /// Cancellation won and owns reconciliation of the provisional child.
+    CancellationOwned,
+}
+
+const SPAWN_PUBLICATION_PENDING: u8 = 0;
+const SPAWN_PUBLICATION_DELIVERY_OWNED: u8 = 1;
+const SPAWN_PUBLICATION_PUBLISHED: u8 = 2;
+const SPAWN_PUBLICATION_CANCELLED: u8 = 3;
+
+struct SpawnPublication {
+    state: AtomicU8,
+}
+
+impl Default for SpawnPublication {
+    fn default() -> Self {
+        Self {
+            state: AtomicU8::new(SPAWN_PUBLICATION_PENDING),
+        }
+    }
+}
+
+impl SpawnPublication {
+    /// Claim the right to submit the child's initial input.
+    ///
+    /// This is deliberately separate from parent-visible publication. Once delivery owns this
+    /// transition, cancellation may no longer claim an aborted parent result because submitting
+    /// the input can begin a private child turn. The runtime instead waits for this handler to
+    /// publish or return its true delivery failure.
+    fn claim_delivery(&self) -> SpawnPublicationDecision {
+        match self.state.compare_exchange(
+            SPAWN_PUBLICATION_PENDING,
+            SPAWN_PUBLICATION_DELIVERY_OWNED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => {
+                SpawnPublicationDecision::DeliveryOwned
+            }
+            Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
+            Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
+            Err(state) => unreachable!("invalid spawn publication state: {state}"),
+        }
+    }
+
+    fn publish(&self) -> SpawnPublicationDecision {
+        match self.state.compare_exchange(
+            SPAWN_PUBLICATION_DELIVERY_OWNED,
+            SPAWN_PUBLICATION_PUBLISHED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
+            Err(SPAWN_PUBLICATION_PENDING) => SpawnPublicationDecision::Pending,
+            Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
+            Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
+            Err(state) => unreachable!("invalid spawn publication state: {state}"),
+        }
+    }
+
+    fn cancel(&self) -> SpawnPublicationDecision {
+        match self.state.compare_exchange(
+            SPAWN_PUBLICATION_PENDING,
+            SPAWN_PUBLICATION_CANCELLED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) | Err(SPAWN_PUBLICATION_CANCELLED) => {
+                SpawnPublicationDecision::CancellationOwned
+            }
+            Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
+            Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
+            Err(state) => unreachable!("invalid spawn publication state: {state}"),
+        }
+    }
+
+    fn decision(&self) -> SpawnPublicationDecision {
+        match self.state.load(Ordering::Acquire) {
+            SPAWN_PUBLICATION_PENDING => SpawnPublicationDecision::Pending,
+            SPAWN_PUBLICATION_DELIVERY_OWNED => SpawnPublicationDecision::DeliveryOwned,
+            SPAWN_PUBLICATION_PUBLISHED => SpawnPublicationDecision::Published,
+            SPAWN_PUBLICATION_CANCELLED => SpawnPublicationDecision::CancellationOwned,
+            state => unreachable!("invalid spawn publication state: {state}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -142,6 +263,92 @@ pub(crate) fn exceeds_thread_spawn_depth_limit(depth: i32, max_depth: i32) -> bo
 }
 
 impl AgentRegistry {
+    pub(crate) fn begin_spawn_publication(&self, key: SpawnPublicationKey) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents
+            .spawn_publications
+            .entry(key)
+            .or_insert_with(|| Arc::new(SpawnPublication::default()));
+    }
+
+    pub(crate) fn cancel_spawn_publication(
+        &self,
+        key: SpawnPublicationKey,
+    ) -> SpawnPublicationDecision {
+        let publication = {
+            let mut active_agents = self
+                .active_agents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(
+                active_agents
+                    .spawn_publications
+                    .entry(key)
+                    .or_insert_with(|| Arc::new(SpawnPublication::default())),
+            )
+        };
+        publication.cancel()
+    }
+
+    pub(crate) fn publish_spawn_publication(
+        &self,
+        key: &SpawnPublicationKey,
+    ) -> SpawnPublicationDecision {
+        let publication = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn_publications
+            .get(key)
+            .cloned();
+        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
+            publication.publish()
+        })
+    }
+
+    pub(crate) fn claim_spawn_publication_delivery(
+        &self,
+        key: &SpawnPublicationKey,
+    ) -> SpawnPublicationDecision {
+        let publication = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn_publications
+            .get(key)
+            .cloned();
+        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
+            publication.claim_delivery()
+        })
+    }
+
+    pub(crate) fn spawn_publication_decision(
+        &self,
+        key: &SpawnPublicationKey,
+    ) -> SpawnPublicationDecision {
+        let publication = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn_publications
+            .get(key)
+            .cloned();
+        publication.map_or(SpawnPublicationDecision::Untracked, |publication| {
+            publication.decision()
+        })
+    }
+
+    pub(crate) fn finish_spawn_publication(&self, key: &SpawnPublicationKey) {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .spawn_publications
+            .remove(key);
+    }
+
     pub(crate) fn reserve_spawn_slot(
         self: &Arc<Self>,
         max_threads: Option<usize>,
