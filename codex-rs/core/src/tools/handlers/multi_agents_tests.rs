@@ -857,7 +857,7 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
 
 #[tokio::test]
 async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity() {
-    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))

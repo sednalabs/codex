@@ -54,10 +54,26 @@ fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
         CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied => true,
         CodexErrorDetails::Io(error) => error
             .get_ref()
-            .and_then(|source| source.downcast_ref::<CodexErr>())
-            .is_some_and(is_benign_unpublished_spawn_cleanup_error),
+            .is_some_and(is_benign_unpublished_spawn_cleanup_source),
         _ => false,
     }
+}
+
+fn is_benign_unpublished_spawn_cleanup_source(source: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(error) = source.downcast_ref::<CodexErr>() {
+        return is_benign_unpublished_spawn_cleanup_error(error);
+    }
+    if let Some(details) = source.downcast_ref::<CodexErrorDetails>()
+        && matches!(
+            details,
+            CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+        )
+    {
+        return true;
+    }
+    source
+        .source()
+        .is_some_and(is_benign_unpublished_spawn_cleanup_source)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -915,7 +931,7 @@ impl AgentControl {
     /// would make capacity and a requested agent path reusable even though the manager still owns
     /// the runtime. The caller retains its original cancellation or initial-delivery error; a
     /// cleanup failure is logged and handed to a bounded, explicit cleanup owner instead.
-    pub(crate) async fn reconcile_unpublished_spawn(
+    pub(super) async fn reconcile_unpublished_spawn(
         &self,
         state: &Arc<ThreadManagerState>,
         child_thread_id: ThreadId,
