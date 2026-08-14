@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::config::RolloutConfig;
+use crate::mutation_authority::MutationAdmissionError;
 use chrono::TimeZone;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -509,7 +510,10 @@ async fn opening_existing_rollout_preserves_modified_time() -> std::io::Result<(
     drop(open_log_file(&rollout_path)?);
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
 
-    drop(open_rollout_for_append(&rollout_path).await?);
+    drop(
+        open_rollout_for_append_with_authority(&rollout_path, RolloutMutationAuthority::new())
+            .await?,
+    );
     assert_eq!(fs::metadata(&rollout_path)?.modified()?, modified);
     Ok(())
 }
