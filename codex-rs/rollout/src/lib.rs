@@ -10,6 +10,7 @@ pub(crate) mod compression;
 pub(crate) mod config;
 pub(crate) mod list;
 pub(crate) mod metadata;
+mod mutation_authority;
 mod model_context;
 mod ordinal;
 mod persistence_metrics;
