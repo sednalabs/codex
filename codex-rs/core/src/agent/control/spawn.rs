@@ -1,6 +1,7 @@
 use super::residency::V2ResidencySlot;
 use super::residency::is_v2_resident_session_source;
 use super::*;
+use crate::context::SubagentRuntimeIdentity;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -726,6 +727,11 @@ impl AgentControl {
                             &multi_agent_v2_usage_hint_texts_to_filter,
                         )
                 )
+                && !matches!(
+                    item,
+                    RolloutItem::ResponseItem(response_item)
+                        if SubagentRuntimeIdentity::matches_response_item(response_item)
+                )
         });
         if destination_history_mode == Some(ThreadHistoryMode::Paginated) {
             forked_rollout_items.retain(|item| {
@@ -748,7 +754,7 @@ impl AgentControl {
                     !is_multi_agent_v2_usage_hint_message(
                         response_item,
                         &multi_agent_v2_usage_hint_texts_to_filter,
-                    )
+                    ) && !SubagentRuntimeIdentity::matches_response_item(response_item)
                 });
             }
         }
