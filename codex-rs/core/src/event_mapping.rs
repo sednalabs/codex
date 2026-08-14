@@ -54,6 +54,7 @@ const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     CONTEXT_WINDOW_OPEN_TAG,
     CONTEXT_WINDOW_GUIDANCE_OPEN_TAG,
     "<rollout_budget>",
+    "<subagent_runtime_identity>",
 ];
 
 pub(crate) fn is_contextual_user_message_content(message: &[ContentItem]) -> bool {

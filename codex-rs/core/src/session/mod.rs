@@ -29,6 +29,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::NetworkRuleSaved;
 use crate::context::PersonalitySpecInstructions;
 use crate::context::RecommendedPluginsInstructions;
+use crate::context::SubagentRuntimeIdentity;
 use crate::context::world_state::WorldState;
 use crate::current_time::TimeProvider;
 use crate::default_skill_metadata_budget;
@@ -3111,6 +3112,31 @@ impl Session {
                 .await;
         }
         world_state
+    }
+
+    /// Ensure a spawned agent receives one runtime-authored request identity fragment.
+    /// User task text containing the same markers cannot satisfy this developer-message check.
+    pub(crate) async fn ensure_subagent_runtime_identity_context(
+        &self,
+        turn_context: &TurnContext,
+    ) {
+        let identity = {
+            let state = self.state.lock().await;
+            let snapshot = state.session_configuration.thread_config_snapshot();
+            if !snapshot.session_source.is_non_root_agent()
+                || state
+                    .history
+                    .raw_items()
+                    .iter()
+                    .any(SubagentRuntimeIdentity::matches_response_item)
+            {
+                return;
+            }
+            SubagentRuntimeIdentity::from_snapshot(&snapshot)
+        };
+        let item = identity.into();
+        self.record_conversation_items(turn_context, std::slice::from_ref(&item))
+            .await;
     }
 
     /// Captures one request-scoped view of dynamic state.
