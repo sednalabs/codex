@@ -2874,6 +2874,8 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
+        requested_model: None,
+        requested_reasoning_effort: None,
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
@@ -2890,6 +2892,10 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {
@@ -2899,6 +2905,42 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             )]
             .into_iter()
             .collect(),
+        }
+    );
+
+    let failed_spawn = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-2".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::Failed,
+        sender_thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect".to_string()),
+        model: Some("gpt-effective".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: Some("gpt-requested".to_string()),
+        requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        agents_states: HashMap::new(),
+    });
+
+    assert_eq!(
+        ThreadItem::from(failed_spawn),
+        ThreadItem::CollabAgentToolCall {
+            id: "spawn-2".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::Failed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some("inspect".to_string()),
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            requested_model: Some("gpt-requested".to_string()),
+            requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+            effective_model: Some("gpt-effective".to_string()),
+            effective_reasoning_effort: Some(
+                codex_protocol::openai_models::ReasoningEffort::Medium
+            ),
+            agents_states: HashMap::new(),
         }
     );
 

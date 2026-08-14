@@ -472,6 +472,79 @@ def test_generated_chatgpt_account_email_is_required_nullable() -> None:
         ChatgptAccount.model_validate({"planType": "pro", "type": "chatgpt"})
 
 
+def test_collab_spawn_identity_generator_keeps_current_fields_required_nullable(
+    tmp_path: Path,
+) -> None:
+    script = _load_update_script_module()
+    artifact = tmp_path / "v2_all.py"
+    artifact.write_text(
+        """class CollabAgentToolCallThreadItem(BaseModel):
+    requested_model: Annotated[
+        str | None,
+        Field(alias=\"requestedModel\"),
+    ] = None
+    requested_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(alias=\"requestedReasoningEffort\"),
+    ] = None
+    effective_model: Annotated[
+        str | None,
+        Field(alias=\"effectiveModel\"),
+    ] = None
+    effective_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(alias=\"effectiveReasoningEffort\"),
+    ] = None
+"""
+    )
+
+    script._require_nullable_collab_spawn_identity_fields(artifact)
+
+    assert artifact.read_text().count("] = None") == 0
+
+
+def test_generated_collab_spawn_identity_is_required_nullable() -> None:
+    from openai_codex.generated.v2_all import CollabAgentToolCallThreadItem
+
+    payload = {
+        "agentsStates": {},
+        "effectiveModel": None,
+        "effectiveReasoningEffort": None,
+        "id": "spawn-1",
+        "receiverThreadIds": [],
+        "requestedModel": None,
+        "requestedReasoningEffort": None,
+        "senderThreadId": "parent",
+        "status": "inProgress",
+        "tool": "spawnAgent",
+        "type": "collabAgentToolCall",
+    }
+    item = CollabAgentToolCallThreadItem.model_validate(payload)
+
+    assert item.effective_model is None
+    assert item.requested_model is None
+    for field_name in (
+        "requested_model",
+        "requested_reasoning_effort",
+        "effective_model",
+        "effective_reasoning_effort",
+    ):
+        assert CollabAgentToolCallThreadItem.model_fields[field_name].is_required()
+    assert not CollabAgentToolCallThreadItem.model_fields["model"].is_required()
+    assert not CollabAgentToolCallThreadItem.model_fields["reasoning_effort"].is_required()
+
+    for wire_name in (
+        "requestedModel",
+        "requestedReasoningEffort",
+        "effectiveModel",
+        "effectiveReasoningEffort",
+    ):
+        missing = dict(payload)
+        del missing[wire_name]
+        with pytest.raises(ValidationError):
+            CollabAgentToolCallThreadItem.model_validate(missing)
+
+
 def test_runtime_package_template_has_no_checked_in_binaries() -> None:
     runtime_root = ROOT.parent / "python-runtime" / "src" / "codex_cli_bin"
     assert sorted(

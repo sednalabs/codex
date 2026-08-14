@@ -674,6 +674,76 @@ class RouteSelectionTests(unittest.TestCase):
         cls.catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
         cls.routes = cls.catalog["followup_routes"]
 
+    collab_spawn_identity_candidate_paths = [
+        ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/test_ci_planners.py",
+        ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+        ".github/validation-lanes.json",
+        ".github/workflows/sedna-heavy-tests.yml",
+        "codex-rs/analytics/src/analytics_client_tests.rs",
+        "codex-rs/analytics/src/reducer.rs",
+        "codex-rs/app-server-protocol/schema/json/ServerNotification.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ItemStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ReviewStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadForkResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadListResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadMetadataUpdateResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadResumeResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/ThreadUnarchiveResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnCompletedNotification.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartResponse.json",
+        "codex-rs/app-server-protocol/schema/json/v2/TurnStartedNotification.json",
+        "codex-rs/app-server-protocol/schema/typescript/v2/ThreadItem.ts",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs",
+        "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs",
+        "codex-rs/app-server-protocol/src/protocol/event_mapping.rs",
+        "codex-rs/app-server-protocol/src/protocol/mod.rs",
+        "codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
+        "codex-rs/app-server/README.md",
+        "codex-rs/app-server/tests/suite/v2/turn_start.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/close_agent.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/resume_agent.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/send_input.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/exec/tests/event_processor_with_json_output.rs",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/legacy_events.rs",
+        "codex-rs/protocol/src/protocol.rs",
+        "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/tui/src/app/tests.rs",
+        "codex-rs/tui/src/chatwidget/protocol.rs",
+        "codex-rs/tui/src/chatwidget/replay.rs",
+        "codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__app_server_collab_spawn_completed_renders_requested_model_and_effort.snap",
+        "codex-rs/tui/src/chatwidget/tests/app_server.rs",
+        "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
+        "codex-rs/tui/src/multi_agents.rs",
+        "docs/carry-divergence-ledger.md",
+        "docs/divergences/index.yaml",
+        "docs/downstream-regression-matrix.md",
+        "docs/downstream.md",
+        "justfile",
+        "sdk/python/docs/api-reference.md",
+        "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/openai_codex/client.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
+        "sdk/python/tests/test_artifact_workflow_and_binaries.py",
+        "sdk/python/tests/test_client_rpc_methods.py",
+    ]
+
     def test_picker_shared_surface_routes_to_both_picker_lanes(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/tui/src/app.rs"],
@@ -1021,10 +1091,53 @@ class RouteSelectionTests(unittest.TestCase):
 
     def test_app_server_schema_fixture_route_stays_on_schema_contract_lane(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
-            ["codex-rs/app-server-protocol/schema/json/ServerNotification.json"],
+            ["codex-rs/app-server-protocol/schema/json/v2/ThreadReadResponse.json"],
             self.routes,
         )
         self.assertEqual(lanes, ["codex.app-server-protocol-test"])
+
+    def test_collab_spawn_identity_source_outranks_generic_routes(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        self.assertEqual(route["priority"], 10)
+        self.assertEqual(
+            route["lane_ids"],
+            [
+                "codex.app-server-protocol-test",
+                "codex.app-server-collab-spawn-identity-targeted",
+                "codex.tui-collab-spawn-identity-targeted",
+            ],
+        )
+
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            ["codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs"],
+            self.routes,
+        )
+        self.assertEqual(lanes, route["lane_ids"])
+
+    def test_followup_route_priority_fails_closed_on_equal_highest_match(self) -> None:
+        routes = [
+            {
+                "route_id": "first",
+                "priority": 1,
+                "lane_ids": ["codex.first"],
+                "allowed_paths": ["identity/**"],
+            },
+            {
+                "route_id": "second",
+                "priority": 1,
+                "lane_ids": ["codex.second"],
+                "allowed_paths": ["identity/**"],
+            },
+        ]
+
+        self.assertEqual(
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes(["identity/source.rs"], routes),
+            [],
+        )
 
     def test_brokered_tool_replay_route_stays_tight(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
@@ -2048,6 +2161,10 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
+    collab_spawn_identity_candidate_paths = (
+        RouteSelectionTests.collab_spawn_identity_candidate_paths
+    )
+
     maxDiff = None
 
     def validation_lab_fingerprint(
@@ -2327,6 +2444,25 @@ class ValidationPlanScriptTests(unittest.TestCase):
             ],
         )
 
+    def test_recommend_lab_full_collab_spawn_identity_candidate_includes_explicit_lanes(
+        self,
+    ) -> None:
+        payload = self.recommend_lab_for_files(self.collab_spawn_identity_candidate_paths)
+
+        self.assertEqual(payload["profile"], "targeted")
+        self.assertEqual(payload["lane_set"], "ui-protocol")
+        self.assertEqual(payload["source"], "followup_route")
+        self.assertEqual(
+            payload["lane_ids"],
+            [
+                "codex.app-server-protocol-test",
+                "codex.app-server-collab-spawn-identity-targeted",
+                "codex.tui-collab-spawn-identity-targeted",
+            ],
+        )
+        self.assertTrue(payload["include_explicit_lanes"])
+        self.assertEqual(payload["dispatch_inputs"]["include_explicit_lanes"], "true")
+
     def test_recommend_lab_external_agent_containment_route_is_fail_closed(self) -> None:
         payload = self.recommend_lab_for_files(
             [
@@ -2508,6 +2644,57 @@ class ValidationPlanScriptTests(unittest.TestCase):
             recipe,
         )
         self.assertEqual(recipe.count("--exact"), 5)
+
+    def test_collab_spawn_identity_recipes_pin_exact_cross_surface_checks(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.load_catalog()
+        expected_lanes = {
+            "codex.app-server-collab-spawn-identity-targeted": (
+                "app-server-collab-spawn-identity-targeted",
+                "rust_integration",
+                [
+                    "suite::v2::turn_start::"
+                    "turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2",
+                    "suite::v2::turn_start::"
+                    "turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2",
+                ],
+            ),
+            "codex.tui-collab-spawn-identity-targeted": (
+                "tui-collab-spawn-identity-targeted",
+                "rust_minimal",
+                [
+                    "chatwidget::tests::history_replay::"
+                    "replayed_collab_spawn_terminal_uses_only_explicit_effective_identity",
+                    "chatwidget::tests::history_replay::"
+                    "replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective",
+                    "chatwidget::tests::history_replay::"
+                    "replayed_failed_collab_spawn_without_receiver_keeps_requested_identity",
+                    "chatwidget::tests::app_server::"
+                    "live_app_server_collab_spawn_completed_renders_requested_model_and_effort",
+                    "chatwidget::tests::app_server::"
+                    "live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata",
+                ],
+            ),
+        }
+        recipes = just_recipe_bodies(REPO_ROOT / "justfile")
+
+        for lane_id, (recipe_name, setup_class, selectors) in expected_lanes.items():
+            with self.subTest(lane_id=lane_id):
+                lane = next(
+                    lane for lane in catalog["lanes"] if lane["lane_id"] == lane_id
+                )
+                self.assertTrue(lane["explicit_only"])
+                self.assertEqual(lane["setup_class"], setup_class)
+                self.assertEqual(lane["script_args"], [recipe_name])
+
+                exact_selectors = []
+                for line in recipes[recipe_name]:
+                    command, separator, _ = line.strip().partition(" -- --exact ")
+                    if separator:
+                        exact_selectors.append(
+                            command.removesuffix(" --lib").rsplit(maxsplit=1)[-1]
+                        )
+                self.assertEqual(len(exact_selectors), len(selectors))
+                self.assertCountEqual(exact_selectors, selectors)
 
     def test_recommend_lab_docs_path_uses_docs_domain_fallback(self) -> None:
         payload = self.recommend_lab_for_files(["docs/validation_workflow.md"])
@@ -2870,6 +3057,21 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "must not contain '..' path segments",
         ):
             RESOLVE_VALIDATION_PLAN.validate_catalog(traversal_catalog, repo_root=REPO_ROOT)
+
+    def test_validation_catalog_rejects_invalid_followup_route_priority(self) -> None:
+        catalog = RESOLVE_VALIDATION_PLAN.normalize_catalog(RESOLVE_VALIDATION_PLAN.load_catalog())
+        route = next(
+            route
+            for route in catalog["followup_routes"]
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        route["priority"] = False
+
+        with self.assertRaisesRegex(
+            SystemExit,
+            "must set priority to a non-negative integer",
+        ):
+            RESOLVE_VALIDATION_PLAN.validate_catalog(catalog, repo_root=REPO_ROOT)
 
     def test_heavy_plan_splits_selected_lanes_by_setup_class(self) -> None:
         payload = run_script(
@@ -3785,6 +3987,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.tui-agent-picker-usage-targeted",
                 "codex.tui-agent-usage-totals-targeted",
                 "codex.tui-brokered-tool-replay-targeted",
+                "codex.tui-collab-spawn-identity-targeted",
                 "codex.tui-config-refresh-session-targeted",
                 "codex.tui-esc-interrupt-targeted",
                 "codex.tui-front-queue-submit-targeted",
@@ -5306,16 +5509,16 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("codex.argument-comment-lint", selected_lane_ids)
         self.assertIn("downstream-ledger-seam", selected_lane_ids)
         self.assertIn("codex.core-multi-agent-orchestration-targeted", selected_lane_ids)
-        self.assertEqual(payload["planned_job_count"], 43)
+        self.assertEqual(payload["planned_job_count"], 44)
         self.assertEqual(payload["selected_workflow_lane_count"], 7)
         self.assertEqual(payload["selected_node_lane_count"], 2)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 1)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 14)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
-        self.assertEqual(payload["selected_rust_integration_batch_count"], 12)
+        self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "26")
-        self.assertEqual(payload["rust_integration_max_parallel"], "25")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "27")
+        self.assertEqual(payload["rust_integration_max_parallel"], "26")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:
         catalog = {

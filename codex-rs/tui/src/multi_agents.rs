@@ -99,8 +99,10 @@ struct AgentLabel<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpawnRequestSummary {
-    pub(crate) model: String,
-    pub(crate) reasoning_effort: ReasoningEffortConfig,
+    /// Model explicitly supplied to `spawn_agent`, when any.
+    pub(crate) model: Option<String>,
+    /// Reasoning effort explicitly supplied to `spawn_agent`, when any.
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[cfg_attr(debug_assertions, allow(dead_code))]
@@ -375,13 +377,32 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
     match item {
         ThreadItem::CollabAgentToolCall {
             tool: CollabAgentTool::SpawnAgent,
-            model: Some(model),
-            reasoning_effort: Some(reasoning_effort),
+            status,
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
             ..
-        } => Some(SpawnRequestSummary {
-            model: model.clone(),
-            reasoning_effort: reasoning_effort.clone(),
-        }),
+        } => {
+            let has_explicit_request =
+                requested_model.is_some() || requested_reasoning_effort.is_some();
+            let (model, reasoning_effort) = if has_explicit_request {
+                (requested_model.clone(), requested_reasoning_effort.clone())
+            } else if matches!(status, CollabAgentToolCallStatus::InProgress) {
+                // Older in-progress payloads only exposed their request through
+                // the established legacy aliases.
+                (model.clone(), reasoning_effort.clone())
+            } else {
+                // Historic terminal payloads used the legacy pair for an
+                // effective snapshot. With no explicit requested provenance,
+                // treating it as a request would be a false assertion.
+                return None;
+            };
+            (model.is_some() || reasoning_effort.is_some()).then_some(SpawnRequestSummary {
+                model,
+                reasoning_effort,
+            })
+        }
         _ => None,
     }
 }
@@ -397,6 +418,12 @@ pub(crate) fn tool_call_history_cell(
         sender_thread_id: _,
         receiver_thread_ids,
         prompt,
+        model,
+        reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        effective_model,
+        effective_reasoning_effort,
         agents_states,
         ..
     } = item
@@ -408,6 +435,29 @@ pub(crate) fn tool_call_history_cell(
         .first()
         .and_then(|id| parse_thread_id(id));
     let prompt = prompt.as_deref().unwrap_or_default();
+    let terminal_legacy_aliases_are_observed_effective_identity = matches!(
+        (tool, status),
+        (
+            CollabAgentTool::SpawnAgent,
+            CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+        )
+    ) && requested_model.is_none()
+        && requested_reasoning_effort.is_none()
+        && effective_model.is_none()
+        && effective_reasoning_effort.is_none();
+    let (effective_model, effective_reasoning_effort) =
+        if terminal_legacy_aliases_are_observed_effective_identity {
+            // Pre-additive terminal records used the established aliases for the
+            // observed snapshot. Only use that fallback when all explicit identity
+            // fields are absent: a current terminal item's unknown effective
+            // identity must remain unknown even if it has request provenance.
+            (model.as_deref(), reasoning_effort.as_ref())
+        } else {
+            (
+                effective_model.as_deref(),
+                effective_reasoning_effort.as_ref(),
+            )
+        };
 
     match tool {
         CollabAgentTool::SpawnAgent => {
@@ -422,6 +472,8 @@ pub(crate) fn tool_call_history_cell(
                 first_receiver,
                 prompt,
                 spawn_request,
+                effective_model,
+                effective_reasoning_effort,
                 &mut agent_metadata,
             ))
         }
@@ -562,16 +614,30 @@ fn spawn_end(
     new_thread_id: Option<ThreadId>,
     prompt: &str,
     spawn_request: Option<&SpawnRequestSummary>,
+    effective_model: Option<&str>,
+    effective_reasoning_effort: Option<&ReasoningEffortConfig>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
     let title = match new_thread_id {
-        Some(thread_id) => title_with_primitive(
-            "Spawned",
+        Some(thread_id) => {
+            let metadata = agent_metadata(thread_id);
+            title_with_primitive_spawn_details(
+                "Spawned",
+                "spawn_agent",
+                Some(agent_label(thread_id, &metadata)),
+                effective_model,
+                effective_reasoning_effort,
+                spawn_request,
+            )
+        }
+        None => title_with_primitive_spawn_details(
+            "Agent spawn failed",
             "spawn_agent",
-            Some(agent_label(thread_id, &agent_metadata(thread_id))),
+            /*agent*/ None,
+            effective_model,
+            effective_reasoning_effort,
             spawn_request,
         ),
-        None => title_text("Agent spawn failed"),
     };
 
     let mut details = Vec::new();
@@ -748,7 +814,11 @@ fn title_with_agent(
 ) -> Line<'static> {
     let mut spans = vec![Span::from(format!("{prefix} ")).bold()];
     spans.extend(agent_label_spans(agent));
-    spans.extend(spawn_request_spans(spawn_request));
+    spans.extend(spawn_request_spans(
+        spawn_request,
+        /*effective_model*/ None,
+        /*effective_reasoning_effort*/ None,
+    ));
     title_spans_line(spans)
 }
 
@@ -763,7 +833,11 @@ fn title_with_primitive(
         spans.push(Span::from(" · ").dim());
         spans.extend(agent_label_spans(agent));
     }
-    spans.extend(spawn_request_spans(spawn_request));
+    spans.extend(spawn_request_spans(
+        spawn_request,
+        /*effective_model*/ None,
+        /*effective_reasoning_effort*/ None,
+    ));
     title_spans_line(spans)
 }
 
@@ -781,6 +855,35 @@ fn title_with_primitive_agent_details(
     title_spans_line(spans)
 }
 
+fn title_with_primitive_spawn_details(
+    action: &str,
+    primitive: &str,
+    agent: Option<AgentLabel<'_>>,
+    effective_model: Option<&str>,
+    effective_reasoning_effort: Option<&ReasoningEffortConfig>,
+    spawn_request: Option<&SpawnRequestSummary>,
+) -> Line<'static> {
+    let mut spans = primitive_title_prefix(action, primitive);
+    if let Some(agent) = agent {
+        spans.push(Span::from(" · ").dim());
+        spans.extend(agent_label_spans(agent));
+    }
+    let request_matches_effective = spawn_request.is_some_and(|spawn_request| {
+        spawn_request_matches_effective(spawn_request, effective_model, effective_reasoning_effort)
+    });
+    spans.extend(model_reasoning_spans_with_label(
+        (!request_matches_effective && spawn_request.is_some()).then_some("effective"),
+        effective_model,
+        effective_reasoning_effort,
+    ));
+    spans.extend(spawn_request_spans(
+        spawn_request,
+        effective_model,
+        effective_reasoning_effort,
+    ));
+    title_spans_line(spans)
+}
+
 fn title_with_primitive_text(
     action: &str,
     primitive: &str,
@@ -792,7 +895,11 @@ fn title_with_primitive_text(
         spans.push(Span::from(" · ").dim());
         spans.push(Span::from(detail).cyan());
     }
-    spans.extend(spawn_request_spans(spawn_request));
+    spans.extend(spawn_request_spans(
+        spawn_request,
+        /*effective_model*/ None,
+        /*effective_reasoning_effort*/ None,
+    ));
     title_spans_line(spans)
 }
 
@@ -893,13 +1000,24 @@ fn model_reasoning_spans(
     model: Option<&str>,
     reasoning_effort: Option<&ReasoningEffortConfig>,
 ) -> Vec<Span<'static>> {
+    model_reasoning_spans_with_label(/*label*/ None, model, reasoning_effort)
+}
+
+fn model_reasoning_spans_with_label(
+    label: Option<&str>,
+    model: Option<&str>,
+    reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Vec<Span<'static>> {
     let model = model.map(str::trim).filter(|model| !model.is_empty());
     if model.is_none() && reasoning_effort.is_none() {
         return Vec::new();
     }
 
     let has_model = model.is_some();
-    let mut details = String::from(" (");
+    let mut details = match label {
+        Some(label) => format!(" ({label}: "),
+        None => String::from(" ("),
+    };
     if let Some(model) = model {
         details.push_str(model);
     }
@@ -913,23 +1031,54 @@ fn model_reasoning_spans(
     vec![Span::from(details).magenta()]
 }
 
-fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<'static>> {
+fn spawn_request_spans(
+    spawn_request: Option<&SpawnRequestSummary>,
+    effective_model: Option<&str>,
+    effective_reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Vec<Span<'static>> {
     let Some(spawn_request) = spawn_request else {
         return Vec::new();
     };
 
-    let model = spawn_request.model.trim();
-    if model.is_empty() && spawn_request.reasoning_effort == ReasoningEffortConfig::default() {
+    if spawn_request_matches_effective(spawn_request, effective_model, effective_reasoning_effort) {
         return Vec::new();
     }
 
-    let details = if model.is_empty() {
-        format!("({})", spawn_request.reasoning_effort)
-    } else {
-        format!("({model} {})", spawn_request.reasoning_effort)
+    let requested_model = spawn_request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    let requested_reasoning_effort = spawn_request.reasoning_effort.as_ref();
+    let details = match (requested_model, requested_reasoning_effort) {
+        (Some(model), Some(reasoning_effort)) => {
+            format!("(requested: {model} {reasoning_effort})")
+        }
+        (Some(model), None) => format!("(requested: {model})"),
+        (None, Some(reasoning_effort)) => format!("(requested: {reasoning_effort})"),
+        (None, None) => return Vec::new(),
     };
 
     vec![Span::from(" ").dim(), Span::from(details).magenta()]
+}
+
+fn spawn_request_matches_effective(
+    spawn_request: &SpawnRequestSummary,
+    effective_model: Option<&str>,
+    effective_reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> bool {
+    let requested_model = spawn_request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    requested_model.is_some()
+        && spawn_request.reasoning_effort.is_some()
+        && requested_model
+            == effective_model
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+        && spawn_request.reasoning_effort.as_ref() == effective_reasoning_effort
 }
 
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
@@ -1370,6 +1519,10 @@ mod tests {
                 prompt: Some("Compute 11! and reply with just the integer result.".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: Some("gpt-5".to_string()),
+                effective_reasoning_effort: Some(ReasoningEffortConfig::High),
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1390,6 +1543,10 @@ mod tests {
                 prompt: Some("Please continue and return the answer only.".to_string()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Running, /*message*/ None),
@@ -1410,6 +1567,10 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
             /*cached_spawn_request*/ None,
@@ -1427,6 +1588,10 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
@@ -1453,6 +1618,10 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Completed, Some("39916800")),
@@ -1469,6 +1638,116 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
+    }
+
+    #[test]
+    fn in_progress_spawn_keeps_partial_requested_identity() {
+        let model_only = spawn_item(
+            CollabAgentToolCallStatus::InProgress,
+            Some("gpt-legacy"),
+            Some(ReasoningEffortConfig::High),
+            Some("gpt-requested"),
+            /*requested_reasoning_effort*/ None,
+        );
+        assert_eq!(
+            spawn_request_summary(&model_only),
+            Some(SpawnRequestSummary {
+                model: Some("gpt-requested".to_string()),
+                reasoning_effort: None,
+            })
+        );
+        let rendered = cell_to_text(
+            &tool_call_history_cell(
+                &model_only,
+                /*cached_spawn_request*/ None,
+                |_| AgentMetadata::default(),
+            )
+            .expect("model-only spawn renders"),
+        );
+        assert!(rendered.contains("requested: gpt-requested"));
+        assert!(
+            !rendered.contains("high"),
+            "a model-only request must not inherit the legacy reasoning effort: {rendered}"
+        );
+
+        let effort_only = spawn_item(
+            CollabAgentToolCallStatus::InProgress,
+            Some("gpt-legacy"),
+            Some(ReasoningEffortConfig::Low),
+            /*requested_model*/ None,
+            Some(ReasoningEffortConfig::High),
+        );
+        assert_eq!(
+            spawn_request_summary(&effort_only),
+            Some(SpawnRequestSummary {
+                model: None,
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+            })
+        );
+        let rendered = cell_to_text(
+            &tool_call_history_cell(
+                &effort_only,
+                /*cached_spawn_request*/ None,
+                |_| AgentMetadata::default(),
+            )
+            .expect("effort-only spawn renders"),
+        );
+        assert!(rendered.contains("requested: high"));
+        assert!(
+            !rendered.contains("gpt-legacy"),
+            "an effort-only request must not inherit the legacy model: {rendered}"
+        );
+    }
+
+    #[test]
+    fn spawn_request_summary_preserves_full_none_and_legacy_cases() {
+        let both = spawn_item(
+            CollabAgentToolCallStatus::InProgress,
+            Some("gpt-legacy"),
+            Some(ReasoningEffortConfig::Low),
+            Some("gpt-requested"),
+            Some(ReasoningEffortConfig::Ultra),
+        );
+        assert_eq!(
+            spawn_request_summary(&both),
+            Some(SpawnRequestSummary {
+                model: Some("gpt-requested".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::Ultra),
+            })
+        );
+
+        let no_identity = spawn_item(
+            CollabAgentToolCallStatus::InProgress,
+            /*model*/ None,
+            /*reasoning_effort*/ None,
+            /*requested_model*/ None,
+            /*requested_reasoning_effort*/ None,
+        );
+        assert_eq!(spawn_request_summary(&no_identity), None);
+        let rendered = cell_to_text(
+            &tool_call_history_cell(
+                &no_identity,
+                /*cached_spawn_request*/ None,
+                |_| AgentMetadata::default(),
+            )
+            .expect("empty spawn renders"),
+        );
+        assert!(!rendered.contains("requested:"));
+
+        let legacy = spawn_item(
+            CollabAgentToolCallStatus::InProgress,
+            Some("gpt-legacy"),
+            Some(ReasoningEffortConfig::Medium),
+            /*requested_model*/ None,
+            /*requested_reasoning_effort*/ None,
+        );
+        assert_eq!(
+            spawn_request_summary(&legacy),
+            Some(SpawnRequestSummary {
+                model: Some("gpt-legacy".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+            })
+        );
     }
 
     #[test]
@@ -1595,6 +1874,10 @@ mod tests {
                 prompt: Some(String::new()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: Some("gpt-5".to_string()),
+                effective_reasoning_effort: Some(ReasoningEffortConfig::High),
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::PendingInit, /*message*/ None),
@@ -1636,6 +1919,10 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     robie_id.to_string(),
                     agent_state(CollabAgentStatus::Interrupted, /*message*/ None),
@@ -1653,6 +1940,30 @@ mod tests {
         CollabAgentState {
             status,
             message: message.map(str::to_string),
+        }
+    }
+
+    fn spawn_item(
+        status: CollabAgentToolCallStatus,
+        model: Option<&str>,
+        reasoning_effort: Option<ReasoningEffortConfig>,
+        requested_model: Option<&str>,
+        requested_reasoning_effort: Option<ReasoningEffortConfig>,
+    ) -> ThreadItem {
+        ThreadItem::CollabAgentToolCall {
+            id: "call-spawn".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: model.map(str::to_string),
+            reasoning_effort,
+            requested_model: requested_model.map(str::to_string),
+            requested_reasoning_effort,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
         }
     }
 

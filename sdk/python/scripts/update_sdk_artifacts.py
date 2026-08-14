@@ -643,6 +643,8 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_chatgpt_account_email(out_path)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
+    _require_nullable_collab_spawn_identity_fields(out_path)
+    _preserve_collab_spawn_identity_contract(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
 
@@ -694,6 +696,45 @@ def _require_nullable_chatgpt_account_email(out_path: Path) -> None:
         "    email: str | None",
         1,
     )
+    out_path.write_text(source[:class_start] + class_source + source[class_end:])
+
+
+def _require_nullable_collab_spawn_identity_fields(out_path: Path) -> None:
+    """Keep current collab spawn identity fields required while accepting null."""
+    source = out_path.read_text()
+    class_start = source.find("class CollabAgentToolCallThreadItem(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError("Generated SDK is missing CollabAgentToolCallThreadItem")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    for field_name in (
+        "requested_model",
+        "requested_reasoning_effort",
+        "effective_model",
+        "effective_reasoning_effort",
+    ):
+        field_start = class_source.find(f"    {field_name}:")
+        if field_start == -1:
+            raise RuntimeError(f"Generated CollabAgentToolCallThreadItem is missing {field_name}")
+        next_field = re.search(r"\n    [a-z_][A-Za-z0-9_]*:", class_source[field_start + 1 :])
+        field_end = (
+            field_start + 1 + next_field.start() if next_field is not None else len(class_source)
+        )
+        field_source = class_source[field_start:field_end]
+        if field_source.count("] = None") != 1:
+            raise RuntimeError(
+                "Generated CollabAgentToolCallThreadItem "
+                f"{field_name} did not have the expected nullable shape"
+            )
+        class_source = (
+            class_source[:field_start]
+            + field_source.replace("] = None", "]", 1)
+            + class_source[field_end:]
+        )
+
     out_path.write_text(source[:class_start] + class_source + source[class_end:])
 
 
@@ -755,6 +796,39 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
         return member
 """
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
+
+
+def _preserve_collab_spawn_identity_contract(out_path: Path) -> None:
+    """Reject regenerated artifacts that collapse requested and effective spawn identity."""
+    source = out_path.read_text()
+    class_start = source.find("class CollabAgentToolCallThreadItem(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError("Generated SDK is missing CollabAgentToolCallThreadItem")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+    class_source = source[class_start:class_end]
+
+    required_fragments = (
+        'description="Established model alias for a spawned-agent lifecycle item.\\n\\nOn spawn start, this is the caller-requested model. On a terminal spawn item, this is the observed effective model. An unknown terminal effective model is null."',
+        'description="Established reasoning-effort alias for a spawned-agent lifecycle item.\\n\\nOn spawn start, this is the caller-requested effort. On a terminal spawn item, this is the observed effective effort. An unknown terminal effective effort is null."',
+        "requested_model:",
+        'alias="requestedModel"',
+        'description="Additive explicit provenance for the requested model.\\n\\nThis remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable."',
+        "requested_reasoning_effort:",
+        'alias="requestedReasoningEffort"',
+        'description="Additive explicit provenance for the requested reasoning effort.\\n\\nThis remains available on terminal spawn items even though the legacy `reasoningEffort` alias then represents the observed effective effort. This required nullable field is null when request provenance is unavailable."',
+        "effective_model:",
+        'alias="effectiveModel"',
+        'description="Effective model observed for a spawned agent at terminal lifecycle time.\\n\\nThis required nullable field is null when unknown and must not be filled from thread metadata or a request."',
+        "effective_reasoning_effort:",
+        'alias="effectiveReasoningEffort"',
+        'description="Effective reasoning effort observed for a spawned agent at terminal lifecycle time.\\n\\nThis required nullable field is null when unknown and must not be filled from thread metadata or a request."',
+    )
+    if not all(fragment in class_source for fragment in required_fragments):
+        raise RuntimeError(
+            "Generated CollabAgentToolCallThreadItem did not preserve the requested/effective identity contract"
+        )
 
 
 def _notification_specs(schema_dir: Path) -> list[tuple[str, str]]:

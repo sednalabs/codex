@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from openai_codex.client import CodexClient, _params_dict
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
+    CollabAgentToolCallThreadItem,
+    ItemCompletedNotification,
     ReasoningEffort,
     ReasoningEffortOption,
     ThreadForkParams,
     ThreadListParams,
+    ThreadReadResponse,
     ThreadResumeResponse,
     ThreadStartParams,
     ThreadTokenUsageUpdatedNotification,
@@ -22,6 +28,46 @@ from openai_codex.models import Notification, UnknownNotification
 from openai_codex.types import ThreadSource
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _legacy_collab_agent_tool_call() -> dict[str, object]:
+    return {
+        "agentsStates": {},
+        "id": "spawn-legacy",
+        "model": "gpt-effective",
+        "reasoningEffort": "medium",
+        "receiverThreadIds": ["child-1"],
+        "senderThreadId": "parent",
+        "status": "completed",
+        "tool": "spawnAgent",
+        "type": "collabAgentToolCall",
+    }
+
+
+def _thread_read_result(item: dict[str, object]) -> dict[str, object]:
+    return {
+        "thread": {
+            "cliVersion": "1.0.0",
+            "createdAt": 1,
+            "cwd": "/tmp",
+            "ephemeral": False,
+            "id": "thread-1",
+            "modelProvider": "openai",
+            "preview": "",
+            "sessionId": "session-1",
+            "source": "cli",
+            "status": {"type": "idle"},
+            "turns": [{"id": "turn-1", "items": [item], "status": "completed"}],
+            "updatedAt": 1,
+        }
+    }
+
+
+def _assert_null_collab_identity(item: CollabAgentToolCallThreadItem) -> None:
+    assert item.requested_model is None
+    assert item.requested_reasoning_effort is None
+    assert item.effective_model is None
+    assert item.effective_reasoning_effort is None
 
 
 def test_generated_params_models_are_snake_case_and_dump_by_alias() -> None:
@@ -62,6 +108,177 @@ def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -
         "future_option": "ultra",
         "turn_effort": "medium",
     }
+
+
+def test_collab_spawn_identity_is_phase_compatible_and_uses_camel_case_wire_names() -> None:
+    item = CollabAgentToolCallThreadItem.model_validate(
+        {
+            "agentsStates": {},
+            "id": "spawn-1",
+            "model": "gpt-effective",
+            "reasoningEffort": "medium",
+            "requestedModel": "gpt-requested",
+            "requestedReasoningEffort": "high",
+            "effectiveModel": "gpt-effective",
+            "effectiveReasoningEffort": "medium",
+            "receiverThreadIds": ["child-1"],
+            "senderThreadId": "parent",
+            "status": "completed",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+    )
+    assert item.model_dump(by_alias=True, exclude_none=True) == {
+        "agentsStates": {},
+        "id": "spawn-1",
+        "effectiveModel": "gpt-effective",
+        "effectiveReasoningEffort": "medium",
+        "model": "gpt-effective",
+        "reasoningEffort": "medium",
+        "requestedModel": "gpt-requested",
+        "requestedReasoningEffort": "high",
+        "receiverThreadIds": ["child-1"],
+        "senderThreadId": "parent",
+        "status": "completed",
+        "tool": "spawnAgent",
+        "type": "collabAgentToolCall",
+    }
+    unknown_terminal = CollabAgentToolCallThreadItem.model_validate(
+        {
+            "agentsStates": {},
+            "effectiveModel": None,
+            "effectiveReasoningEffort": None,
+            "id": "spawn-unknown-terminal",
+            "requestedModel": "gpt-requested",
+            "requestedReasoningEffort": "high",
+            "receiverThreadIds": [],
+            "senderThreadId": "parent",
+            "status": "failed",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+    )
+    assert unknown_terminal.model is None
+    assert unknown_terminal.reasoning_effort is None
+    assert unknown_terminal.requested_model == "gpt-requested"
+    assert unknown_terminal.requested_reasoning_effort == "high"
+    assert unknown_terminal.effective_model is None
+    assert unknown_terminal.effective_reasoning_effort is None
+
+    with pytest.raises(ValidationError) as exc_info:
+        CollabAgentToolCallThreadItem.model_validate(
+            {
+                "agentsStates": {},
+                "id": "historic-spawn",
+                "model": "gpt-effective",
+                "reasoningEffort": "medium",
+                "receiverThreadIds": [],
+                "senderThreadId": "parent",
+                "status": "completed",
+                "tool": "spawnAgent",
+                "type": "collabAgentToolCall",
+            }
+        )
+
+    assert {error["loc"][0] for error in exc_info.value.errors()} == {
+        "requestedModel",
+        "requestedReasoningEffort",
+        "effectiveModel",
+        "effectiveReasoningEffort",
+    }
+
+
+def test_thread_read_response_normalizes_only_legacy_collab_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_item = _legacy_collab_agent_tool_call()
+    response = _thread_read_result(legacy_item)
+    client = CodexClient()
+    monkeypatch.setattr(client, "_request_raw", lambda _method, _params: response)
+
+    parsed = client.request("thread/read", {}, response_model=ThreadReadResponse)
+    item = parsed.thread.turns[0].items[0].root
+
+    assert isinstance(item, CollabAgentToolCallThreadItem)
+    _assert_null_collab_identity(item)
+    assert all(
+        wire_name not in legacy_item
+        for wire_name in (
+            "requestedModel",
+            "requestedReasoningEffort",
+            "effectiveModel",
+            "effectiveReasoningEffort",
+        )
+    )
+
+
+def test_item_notification_normalizes_legacy_collab_identity_without_mutating_params() -> None:
+    legacy_item = _legacy_collab_agent_tool_call()
+    params = {
+        "completedAtMs": 2,
+        "item": legacy_item,
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+    }
+
+    event = CodexClient()._coerce_notification("item/completed", params)
+
+    assert isinstance(event.payload, ItemCompletedNotification)
+    item = event.payload.item.root
+    assert isinstance(item, CollabAgentToolCallThreadItem)
+    _assert_null_collab_identity(item)
+    assert item.model == "gpt-effective"
+    assert all(
+        wire_name not in params["item"]
+        for wire_name in (
+            "requestedModel",
+            "requestedReasoningEffort",
+            "effectiveModel",
+            "effectiveReasoningEffort",
+        )
+    )
+
+
+def test_collab_identity_transport_keeps_current_and_partial_shapes_strict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_item = _legacy_collab_agent_tool_call()
+    current_item.update(
+        {
+            "requestedModel": None,
+            "requestedReasoningEffort": None,
+            "effectiveModel": None,
+            "effectiveReasoningEffort": None,
+        }
+    )
+
+    direct = CollabAgentToolCallThreadItem.model_validate(current_item)
+    _assert_null_collab_identity(direct)
+
+    partial_item = dict(current_item)
+    del partial_item["effectiveModel"]
+    with pytest.raises(ValidationError):
+        CollabAgentToolCallThreadItem.model_validate(partial_item)
+
+    client = CodexClient()
+    monkeypatch.setattr(
+        client,
+        "_request_raw",
+        lambda _method, _params: _thread_read_result(partial_item),
+    )
+    with pytest.raises(ValidationError):
+        client.request("thread/read", {}, response_model=ThreadReadResponse)
+
+    event = client._coerce_notification(
+        "item/completed",
+        {
+            "completedAtMs": 2,
+            "item": partial_item,
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+        },
+    )
+    assert isinstance(event.payload, UnknownNotification)
 
 
 def test_thread_source_preserves_enum_constants_and_accepts_future_values() -> None:

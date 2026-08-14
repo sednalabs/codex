@@ -148,12 +148,10 @@ async fn handle_spawn_agent(
         .or(spawned_agent.metadata.agent_nickname);
     let effective_model = agent_snapshot
         .as_ref()
-        .map(|snapshot| snapshot.model.clone())
-        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        .map(|snapshot| snapshot.model.clone());
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
-        .map(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or_else(|| args.reasoning_effort.clone());
+        .and_then(|snapshot| snapshot.reasoning_effort.clone());
     // `spawn_agent_with_communication` only returns `Ok` after winning publication. A child
     // that finished its first turn quickly is still a real published child and must retain the
     // same V2 Started activity as a running child; cancellation-owned spawns return `Err` above
@@ -165,7 +163,7 @@ async fn handle_spawn_agent(
             id: call_id,
             agent_thread_id: new_thread_id,
             agent_path: new_agent_path.clone(),
-            model: Some(effective_model.clone()),
+            model: effective_model.clone(),
             reasoning_effort: effective_reasoning_effort.clone(),
             kind: SubAgentActivityKind::Started,
         },
@@ -187,11 +185,12 @@ async fn handle_spawn_agent(
             nickname: None,
             requested_model: args.model.clone(),
             requested_reasoning_effort: args.reasoning_effort.clone(),
-            effective_model: Some(effective_model.clone()),
+            effective_model: effective_model.clone(),
             requested_model_honored: args
                 .model
                 .as_ref()
-                .map(|requested_model| requested_model == &effective_model),
+                .zip(effective_model.as_ref())
+                .map(|(requested_model, effective_model)| requested_model == effective_model),
             effective_reasoning_effort: effective_reasoning_effort.clone(),
         })
     } else {
@@ -201,11 +200,12 @@ async fn handle_spawn_agent(
             nickname,
             requested_model: args.model.clone(),
             requested_reasoning_effort: args.reasoning_effort.clone(),
-            effective_model: Some(effective_model.clone()),
+            effective_model: effective_model.clone(),
             requested_model_honored: args
                 .model
                 .as_ref()
-                .map(|requested_model| requested_model == &effective_model),
+                .zip(effective_model.as_ref())
+                .map(|(requested_model, effective_model)| requested_model == effective_model),
             effective_reasoning_effort,
         })
     }

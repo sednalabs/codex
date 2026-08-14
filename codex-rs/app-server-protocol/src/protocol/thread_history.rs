@@ -1,3 +1,4 @@
+use crate::protocol::collab_agent_lifecycle::merge_collab_agent_lifecycle;
 use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::build_file_change_approval_request_item;
@@ -882,6 +883,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentSpawnBeginEvent,
     ) {
+        let (requested_model, requested_reasoning_effort) = payload.canonical_requested_identity();
         let item = ThreadItem::CollabAgentToolCall {
             id: payload.call_id.clone(),
             tool: CollabAgentTool::SpawnAgent,
@@ -889,8 +891,12 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(payload.prompt.clone()),
-            model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort.clone()),
+            model: requested_model.clone(),
+            reasoning_effort: requested_reasoning_effort.clone(),
+            requested_model,
+            requested_reasoning_effort,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -900,6 +906,7 @@ impl ThreadHistoryBuilder {
         &mut self,
         payload: &codex_protocol::protocol::CollabAgentSpawnEndEvent,
     ) {
+        let (effective_model, effective_reasoning_effort) = payload.canonical_effective_identity();
         let has_receiver = payload.new_thread_id.is_some();
         let status = match &payload.status {
             AgentStatus::Errored(_) | AgentStatus::NotFound => CollabAgentToolCallStatus::Failed,
@@ -924,8 +931,15 @@ impl ThreadHistoryBuilder {
             sender_thread_id: payload.sender_thread_id.to_string(),
             receiver_thread_ids,
             prompt: Some(payload.prompt.clone()),
-            model: Some(payload.model.clone()),
-            reasoning_effort: Some(payload.reasoning_effort.clone()),
+            // SpawnEnd legacy fields are the established observed terminal aliases.
+            // This event has no request provenance; lifecycle merging restores
+            // requested* only from a matching start item.
+            model: effective_model.clone(),
+            reasoning_effort: effective_reasoning_effort.clone(),
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model,
+            effective_reasoning_effort,
             agents_states,
         });
     }
@@ -943,6 +957,10 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -967,6 +985,10 @@ impl ThreadHistoryBuilder {
             prompt: Some(payload.prompt.clone()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
         });
     }
@@ -1002,6 +1024,10 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1037,6 +1063,10 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states,
         });
     }
@@ -1054,6 +1084,10 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1080,6 +1114,10 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states,
         });
     }
@@ -1097,6 +1135,10 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: HashMap::new(),
         };
         self.upsert_item_in_current_turn(item);
@@ -1126,6 +1168,10 @@ impl ThreadHistoryBuilder {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states,
         });
     }
@@ -1531,7 +1577,8 @@ fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) -> &ThreadIte
         .iter()
         .position(|existing_item| existing_item.id() == item.id())
     {
-        items[existing_item_index] = item;
+        let merged_item = merge_collab_agent_lifecycle(&items[existing_item_index], item);
+        items[existing_item_index] = merged_item;
         return &items[existing_item_index];
     }
     let inserted_item_index = items.len();
@@ -1607,11 +1654,15 @@ impl From<&PendingTurn> for Turn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::common::ServerNotification;
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
     use codex_protocol::ThreadId;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
+    use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
+    use codex_protocol::items::CollabAgentToolCallItem as CoreCollabAgentToolCallItem;
+    use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
     use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
     use codex_protocol::items::EnteredReviewModeItem as CoreEnteredReviewModeItem;
@@ -1630,12 +1681,19 @@ mod tests {
     use codex_protocol::protocol::AgentReasoningRawContentEvent;
     use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
     use codex_protocol::protocol::CodexErrorInfo;
+    use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
+    use codex_protocol::protocol::CollabAgentSpawnEndEvent;
+    use codex_protocol::protocol::CollabResumeBeginEvent;
+    use codex_protocol::protocol::CollabResumeEndEvent;
+    use codex_protocol::protocol::CollabWaitingBeginEvent;
+    use codex_protocol::protocol::CollabWaitingEndEvent;
     use codex_protocol::protocol::CompactedItem;
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::EnteredReviewModeEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExitedReviewModeEvent;
+    use codex_protocol::protocol::HasLegacyEvent;
     use codex_protocol::protocol::ItemStartedEvent;
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::McpToolCallEndEvent;
@@ -1652,6 +1710,7 @@ mod tests {
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
@@ -3870,6 +3929,646 @@ mod tests {
     }
 
     #[test]
+    fn legacy_and_canonical_collab_lifecycles_have_whole_turn_parity() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let child = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid child thread id");
+        let waiting_child = ThreadId::try_from("00000000-0000-0000-0000-000000000003")
+            .expect("valid waiting child thread id");
+        let turn_id = "turn-collab";
+        let spawn_request_model = "gpt-requested";
+        let spawn_effective_model = "gpt-effective";
+
+        let legacy = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::CollabAgentSpawnBegin(
+                CollabAgentSpawnBeginEvent {
+                    call_id: "spawn-1".to_string(),
+                    started_at_ms: 1,
+                    sender_thread_id: sender,
+                    prompt: "inspect the repository".to_string(),
+                    model: spawn_request_model.to_string(),
+                    reasoning_effort: codex_protocol::openai_models::ReasoningEffort::High,
+                    requested_reasoning_effort_present: None,
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                call_id: "spawn-1".to_string(),
+                completed_at_ms: 2,
+                sender_thread_id: sender,
+                new_thread_id: Some(child),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect the repository".to_string(),
+                model: spawn_effective_model.to_string(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                effective_reasoning_effort_present: None,
+                status: AgentStatus::Running,
+            })),
+            RolloutItem::EventMsg(EventMsg::CollabWaitingBegin(CollabWaitingBeginEvent {
+                started_at_ms: 3,
+                sender_thread_id: sender,
+                receiver_thread_ids: vec![child, waiting_child],
+                receiver_agents: Vec::new(),
+                call_id: "wait-1".to_string(),
+            })),
+            RolloutItem::EventMsg(EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+                sender_thread_id: sender,
+                call_id: "wait-1".to_string(),
+                completed_at_ms: 4,
+                agent_statuses: Vec::new(),
+                statuses: [(child, AgentStatus::Completed(Some("waited".to_string())))]
+                    .into_iter()
+                    .collect(),
+            })),
+            RolloutItem::EventMsg(EventMsg::CollabResumeBegin(CollabResumeBeginEvent {
+                call_id: "resume-1".to_string(),
+                started_at_ms: 5,
+                sender_thread_id: sender,
+                receiver_thread_id: child,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::CollabResumeEnd(CollabResumeEndEvent {
+                call_id: "resume-1".to_string(),
+                completed_at_ms: 6,
+                sender_thread_id: sender,
+                receiver_thread_id: child,
+                receiver_agent_nickname: None,
+                receiver_agent_role: None,
+                status: AgentStatus::Completed(Some("resumed".to_string())),
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_id.to_string(),
+                started_at: None,
+                last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let canonical = vec![
+            legacy[0].clone(),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "spawn-1".to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: Some("inspect the repository".to_string()),
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: Some(spawn_request_model.to_string()),
+                    requested_reasoning_effort: Some(
+                        codex_protocol::openai_models::ReasoningEffort::High,
+                    ),
+                    agents_states: HashMap::new(),
+                },
+                true,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "spawn-1".to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![child],
+                    receiver_agents: Vec::new(),
+                    prompt: Some("inspect the repository".to_string()),
+                    model: Some(spawn_effective_model.to_string()),
+                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: [(child, AgentStatus::Running)].into_iter().collect(),
+                },
+                false,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "wait-1".to_string(),
+                    tool: CoreCollabAgentTool::Wait,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![child, waiting_child],
+                    receiver_agents: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+                true,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "wait-1".to_string(),
+                    tool: CoreCollabAgentTool::Wait,
+                    status: CoreCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: [(child, AgentStatus::Completed(Some("waited".to_string())))]
+                        .into_iter()
+                        .collect(),
+                },
+                false,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "resume-1".to_string(),
+                    tool: CoreCollabAgentTool::ResumeAgent,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![child],
+                    receiver_agents: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+                true,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "resume-1".to_string(),
+                    tool: CoreCollabAgentTool::ResumeAgent,
+                    status: CoreCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: None,
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: [(child, AgentStatus::Completed(Some("resumed".to_string())))]
+                        .into_iter()
+                        .collect(),
+                },
+                false,
+            ),
+            legacy
+                .last()
+                .expect("legacy history has completion")
+                .clone(),
+        ];
+
+        let legacy_turns = build_turns_from_rollout_items(&legacy);
+        let canonical_turns = build_turns_from_rollout_items(&canonical);
+
+        assert_eq!(legacy_turns, canonical_turns);
+        let spawn = legacy_turns[0]
+            .items
+            .iter()
+            .find(|item| {
+                matches!(
+                    item,
+                    ThreadItem::CollabAgentToolCall {
+                        id,
+                        tool: CollabAgentTool::SpawnAgent,
+                        ..
+                    } if id == "spawn-1"
+                )
+            })
+            .expect("replay materializes the spawn lifecycle");
+        let ThreadItem::CollabAgentToolCall {
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            effective_model,
+            effective_reasoning_effort,
+            ..
+        } = spawn
+        else {
+            unreachable!("spawn lookup must return the spawn lifecycle item");
+        };
+        assert_eq!(model.as_deref(), Some(spawn_effective_model));
+        assert_eq!(
+            reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(requested_model.as_deref(), Some(spawn_request_model));
+        assert_eq!(
+            requested_reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+        assert_eq!(effective_model.as_deref(), Some(spawn_effective_model));
+        assert_eq!(
+            effective_reasoning_effort,
+            &Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+    }
+
+    #[test]
+    fn current_v1_explicit_medium_request_survives_json_replay_and_terminal_merge() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let child = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid child thread id");
+        let turn_id = "turn-explicit-medium";
+        let current_started = ItemStartedEvent {
+            thread_id: sender,
+            turn_id: turn_id.to_string(),
+            started_at_ms: 1,
+            item: CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
+                id: "spawn-explicit-medium".to_string(),
+                tool: CoreCollabAgentTool::SpawnAgent,
+                status: CoreCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some("inspect the repository".to_string()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::Medium,
+                ),
+                agents_states: HashMap::new(),
+            }),
+        };
+        let legacy_started = current_started
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            .into_iter()
+            .next()
+            .expect("current spawn start emits one legacy event");
+        assert!(matches!(
+            &legacy_started,
+            EventMsg::CollabAgentSpawnBegin(event)
+                if event.requested_reasoning_effort_present == Some(true)
+        ));
+        let serialized =
+            serde_json::to_value(&legacy_started).expect("serialize current legacy spawn start");
+        assert_eq!(
+            serialized["requested_reasoning_effort_present"],
+            serde_json::Value::Bool(true)
+        );
+        let replayed: EventMsg =
+            serde_json::from_value(serialized).expect("deserialize current legacy spawn start");
+
+        let turns = build_turns_from_rollout_items(&[
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(replayed),
+            RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                call_id: "spawn-explicit-medium".to_string(),
+                completed_at_ms: 2,
+                sender_thread_id: sender,
+                new_thread_id: Some(child),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect the repository".to_string(),
+                model: "gpt-effective".to_string(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Low,
+                effective_reasoning_effort_present: Some(true),
+                status: AgentStatus::Running,
+            })),
+        ]);
+
+        let [ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+            panic!("replay should materialize the merged spawn lifecycle");
+        };
+        assert_eq!(spawn.status, CollabAgentToolCallStatus::Completed);
+        assert_eq!(spawn.model.as_deref(), Some("gpt-effective"));
+        assert_eq!(
+            spawn.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Low)
+        );
+        assert_eq!(spawn.requested_model, None);
+        assert_eq!(
+            spawn.requested_reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(spawn.effective_model.as_deref(), Some("gpt-effective"));
+        assert_eq!(
+            spawn.effective_reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Low)
+        );
+    }
+
+    #[test]
+    fn pre_additive_spawn_request_low_and_high_survive_legacy_json_mapping_and_replay() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let turn_id = "turn-pre-additive";
+
+        for (call_id, reasoning_effort) in [
+            (
+                "spawn-pre-additive-low",
+                codex_protocol::openai_models::ReasoningEffort::Low,
+            ),
+            (
+                "spawn-pre-additive-high",
+                codex_protocol::openai_models::ReasoningEffort::High,
+            ),
+        ] {
+            let pre_additive_started = ItemStartedEvent {
+                thread_id: sender,
+                turn_id: turn_id.to_string(),
+                started_at_ms: 1,
+                item: CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
+                    id: call_id.to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: Some("inspect the repository".to_string()),
+                    model: Some("gpt-pre-additive-request".to_string()),
+                    reasoning_effort: Some(reasoning_effort.clone()),
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                }),
+            };
+            let legacy_started = pre_additive_started
+                .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+                .into_iter()
+                .next()
+                .expect("pre-additive spawn start emits one legacy event");
+            assert!(matches!(
+                &legacy_started,
+                EventMsg::CollabAgentSpawnBegin(event)
+                    if event.requested_reasoning_effort_present.is_none()
+            ));
+            let serialized = serde_json::to_value(&legacy_started)
+                .expect("serialize pre-additive legacy spawn start");
+            assert!(
+                serialized
+                    .get("requested_reasoning_effort_present")
+                    .is_none()
+            );
+            let replayed: EventMsg = serde_json::from_value(serialized)
+                .expect("deserialize pre-additive legacy spawn start");
+
+            let expected_item = ThreadItem::CollabAgentToolCall {
+                id: call_id.to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("inspect the repository".to_string()),
+                model: Some("gpt-pre-additive-request".to_string()),
+                reasoning_effort: Some(reasoning_effort.clone()),
+                requested_model: Some("gpt-pre-additive-request".to_string()),
+                requested_reasoning_effort: Some(reasoning_effort.clone()),
+                effective_model: None,
+                effective_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            };
+            let Some(ServerNotification::ItemStarted(mapped_started)) =
+                crate::protocol::event_mapping::item_event_to_server_notification(
+                    replayed.clone(),
+                    "thread-1",
+                    turn_id,
+                )
+            else {
+                panic!("pre-additive legacy spawn start should map to a canonical item start");
+            };
+            assert_eq!(mapped_started.item, expected_item.clone());
+
+            let turns = build_turns_from_rollout_items(&[
+                RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                    turn_id: turn_id.to_string(),
+                    trace_id: None,
+                    started_at: None,
+                    model_context_window: None,
+                    collaboration_mode_kind: Default::default(),
+                })),
+                RolloutItem::EventMsg(replayed),
+            ]);
+            assert_eq!(turns.len(), 1);
+            assert_eq!(turns[0].items, vec![expected_item]);
+        }
+    }
+
+    #[test]
+    fn replay_keeps_terminal_spawn_snapshot_when_a_stale_start_arrives_late() {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let child = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid child thread id");
+        let turn_id = "turn-terminal-first";
+        let events = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "spawn-1".to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![child],
+                    receiver_agents: Vec::new(),
+                    prompt: Some("terminal prompt".to_string()),
+                    model: Some("gpt-effective".to_string()),
+                    reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                    requested_model: None,
+                    requested_reasoning_effort: None,
+                    agents_states: [(child, AgentStatus::Running)].into_iter().collect(),
+                },
+                false,
+            ),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "spawn-1".to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: Some("stale prompt".to_string()),
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: Some("gpt-requested".to_string()),
+                    requested_reasoning_effort: Some(
+                        codex_protocol::openai_models::ReasoningEffort::High,
+                    ),
+                    agents_states: HashMap::new(),
+                },
+                true,
+            ),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: turn_id.to_string(),
+                started_at: None,
+                last_agent_message: None,
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&events);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::CollabAgentToolCall {
+                id: "spawn-1".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender.to_string(),
+                receiver_thread_ids: vec![child.to_string()],
+                prompt: Some("terminal prompt".to_string()),
+                model: Some("gpt-effective".to_string()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::High,
+                ),
+                effective_model: Some("gpt-effective".to_string()),
+                effective_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::Medium,
+                ),
+                agents_states: [(
+                    child.to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Running,
+                        message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }]
+        );
+    }
+
+    #[test]
+    fn v1_terminal_compatibility_replay_preserves_requested_and_known_effective_spawn_identity() {
+        let turns = replay_v1_spawn_terminal_compatibility(
+            Some("gpt-effective"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            "gpt-effective",
+            codex_protocol::openai_models::ReasoningEffort::Medium,
+        );
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::CollabAgentToolCall {
+                id: "spawn-v1-compatibility".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
+                prompt: Some("inspect the repository".to_string()),
+                model: Some("gpt-effective".to_string()),
+                reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::High,
+                ),
+                effective_model: Some("gpt-effective".to_string()),
+                effective_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::Medium,
+                ),
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Running,
+                        message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }]
+        );
+    }
+
+    #[test]
+    fn v1_terminal_compatibility_replay_preserves_requested_and_unknown_effective_spawn_identity() {
+        let turns = replay_v1_spawn_terminal_compatibility(
+            None,
+            None,
+            "",
+            codex_protocol::openai_models::ReasoningEffort::Medium,
+        );
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].items,
+            vec![ThreadItem::CollabAgentToolCall {
+                id: "spawn-v1-compatibility".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".to_string(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".to_string()],
+                prompt: Some("inspect the repository".to_string()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::High,
+                ),
+                effective_model: None,
+                effective_reasoning_effort: None,
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Running,
+                        message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }]
+        );
+    }
+
+    #[test]
     fn reconstructs_collab_resume_end_item() {
         let events = vec![
             EventMsg::UserMessage(UserMessageEvent {
@@ -3911,6 +4610,10 @@ mod tests {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
@@ -3930,15 +4633,7 @@ mod tests {
             .expect("valid sender thread id");
         let spawned_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
             .expect("valid receiver thread id");
-        let events = vec![
-            EventMsg::UserMessage(UserMessageEvent {
-                client_id: None,
-                message: "spawn agent".into(),
-                images: None,
-                text_elements: Vec::new(),
-                local_images: Vec::new(),
-                ..Default::default()
-            }),
+        let legacy_event =
             EventMsg::CollabAgentSpawnEnd(codex_protocol::protocol::CollabAgentSpawnEndEvent {
                 call_id: "spawn-1".into(),
                 completed_at_ms: 0,
@@ -3949,8 +4644,27 @@ mod tests {
                 prompt: "inspect the repo".into(),
                 model: "gpt-5.4-mini".into(),
                 reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                effective_reasoning_effort_present: None,
                 status: AgentStatus::Running,
+            });
+        let serialized = serde_json::to_value(legacy_event).expect("serialize historic event");
+        assert!(
+            serialized
+                .get("effective_reasoning_effort_present")
+                .is_none()
+        );
+        let legacy_event: EventMsg =
+            serde_json::from_value(serialized).expect("deserialize historic event");
+        let events = vec![
+            EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "spawn agent".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
             }),
+            legacy_event,
         ];
 
         let items = events
@@ -3971,11 +4685,166 @@ mod tests {
                 prompt: Some("inspect the repo".into()),
                 model: Some("gpt-5.4-mini".into()),
                 reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: Some("gpt-5.4-mini".into()),
+                effective_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::Medium,
+                ),
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Running,
                         message: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn current_model_only_spawn_end_replays_through_legacy_json_without_effort() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let spawned_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let current_terminal = ItemCompletedEvent {
+            thread_id: sender_thread_id,
+            turn_id: "turn-model-only".into(),
+            completed_at_ms: 0,
+            item: CoreTurnItem::CollabAgentToolCall(CoreCollabAgentToolCallItem {
+                id: "spawn-model-only".into(),
+                tool: CoreCollabAgentTool::SpawnAgent,
+                status: CoreCollabAgentToolCallStatus::Failed,
+                sender_thread_id,
+                receiver_thread_ids: vec![spawned_thread_id],
+                receiver_agents: Vec::new(),
+                prompt: Some("inspect the repo".into()),
+                model: Some("gpt-5.4-mini".into()),
+                reasoning_effort: None,
+                requested_model: Some("gpt-requested".into()),
+                requested_reasoning_effort: Some(
+                    codex_protocol::openai_models::ReasoningEffort::High,
+                ),
+                agents_states: [(
+                    spawned_thread_id,
+                    AgentStatus::Errored("spawn failed".into()),
+                )]
+                .into_iter()
+                .collect(),
+            }),
+        };
+
+        let legacy_event = current_terminal
+            .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+            .into_iter()
+            .next()
+            .expect("failed spawn emits one legacy terminal event");
+        let serialized = serde_json::to_value(legacy_event).expect("serialize current event");
+        assert_eq!(
+            serialized["effective_reasoning_effort_present"],
+            serde_json::Value::Bool(false)
+        );
+        let legacy_event: EventMsg =
+            serde_json::from_value(serialized).expect("deserialize current event");
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "spawn agent".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::EventMsg(legacy_event),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "spawn-model-only".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Failed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                prompt: Some("inspect the repo".into()),
+                model: Some("gpt-5.4-mini".into()),
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: Some("gpt-5.4-mini".into()),
+                effective_reasoning_effort: None,
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Failed,
+                        message: Some("spawn failed".into()),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            }
+        );
+    }
+
+    #[test]
+    fn reconstructs_legacy_collab_spawn_end_sentinels_as_unknown_effective_identity() {
+        let sender_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let spawned_thread_id = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "spawn agent".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                call_id: "spawn-unknown".into(),
+                completed_at_ms: 0,
+                sender_thread_id,
+                new_thread_id: Some(spawned_thread_id),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect the repo".into(),
+                model: String::new(),
+                reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
+                effective_reasoning_effort_present: None,
+                status: AgentStatus::Errored("historic failure".into()),
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CollabAgentToolCall {
+                id: "spawn-unknown".into(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Failed,
+                sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
+                receiver_thread_ids: vec!["00000000-0000-0000-0000-000000000002".into()],
+                prompt: Some("inspect the repo".into()),
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
+                agents_states: [(
+                    "00000000-0000-0000-0000-000000000002".into(),
+                    CollabAgentState {
+                        status: crate::protocol::v2::CollabAgentStatus::Failed,
+                        message: Some("historic failure".into()),
                     },
                 )]
                 .into_iter()
@@ -4043,6 +4912,10 @@ mod tests {
                 prompt: Some("new task".into()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: [(
                     receiver.to_string(),
                     CollabAgentState {
@@ -4650,5 +5523,124 @@ mod tests {
                 removed_turn_ids: vec!["turn-a".into()],
             }
         );
+    }
+
+    fn canonical_collab_lifecycle_item(
+        thread_id: ThreadId,
+        turn_id: &str,
+        item: CoreCollabAgentToolCallItem,
+        started: bool,
+    ) -> RolloutItem {
+        if started {
+            RolloutItem::EventMsg(EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: CoreTurnItem::CollabAgentToolCall(item),
+                started_at_ms: 0,
+            }))
+        } else {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: CoreTurnItem::CollabAgentToolCall(item),
+                completed_at_ms: 0,
+            }))
+        }
+    }
+
+    fn replay_v1_spawn_terminal_compatibility(
+        canonical_effective_model: Option<&str>,
+        canonical_effective_reasoning_effort: Option<
+            codex_protocol::openai_models::ReasoningEffort,
+        >,
+        legacy_effective_model: &str,
+        legacy_effective_reasoning_effort: codex_protocol::openai_models::ReasoningEffort,
+    ) -> Vec<Turn> {
+        let sender = ThreadId::try_from("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let child = ThreadId::try_from("00000000-0000-0000-0000-000000000002")
+            .expect("valid child thread id");
+        let turn_id = "turn-v1-compatibility";
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: turn_id.to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        }));
+
+        let events = [
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "spawn-v1-compatibility".to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::InProgress,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: Vec::new(),
+                    receiver_agents: Vec::new(),
+                    prompt: Some("inspect the repository".to_string()),
+                    model: None,
+                    reasoning_effort: None,
+                    requested_model: Some("gpt-requested".to_string()),
+                    requested_reasoning_effort: Some(
+                        codex_protocol::openai_models::ReasoningEffort::High,
+                    ),
+                    agents_states: HashMap::new(),
+                },
+                true,
+            ),
+            RolloutItem::EventMsg(EventMsg::CollabAgentSpawnBegin(
+                CollabAgentSpawnBeginEvent {
+                    call_id: "spawn-v1-compatibility".to_string(),
+                    started_at_ms: 1,
+                    sender_thread_id: sender,
+                    prompt: "inspect the repository".to_string(),
+                    model: "gpt-requested".to_string(),
+                    reasoning_effort: codex_protocol::openai_models::ReasoningEffort::High,
+                    requested_reasoning_effort_present: None,
+                },
+            )),
+            canonical_collab_lifecycle_item(
+                sender,
+                turn_id,
+                CoreCollabAgentToolCallItem {
+                    id: "spawn-v1-compatibility".to_string(),
+                    tool: CoreCollabAgentTool::SpawnAgent,
+                    status: CoreCollabAgentToolCallStatus::Completed,
+                    sender_thread_id: sender,
+                    receiver_thread_ids: vec![child],
+                    receiver_agents: Vec::new(),
+                    prompt: Some("inspect the repository".to_string()),
+                    model: canonical_effective_model.map(str::to_string),
+                    reasoning_effort: canonical_effective_reasoning_effort,
+                    requested_model: Some("gpt-requested".to_string()),
+                    requested_reasoning_effort: Some(
+                        codex_protocol::openai_models::ReasoningEffort::High,
+                    ),
+                    agents_states: [(child, AgentStatus::Running)].into_iter().collect(),
+                },
+                false,
+            ),
+            RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                call_id: "spawn-v1-compatibility".to_string(),
+                completed_at_ms: 2,
+                sender_thread_id: sender,
+                new_thread_id: Some(child),
+                new_agent_nickname: None,
+                new_agent_role: None,
+                prompt: "inspect the repository".to_string(),
+                model: legacy_effective_model.to_string(),
+                reasoning_effort: legacy_effective_reasoning_effort,
+                effective_reasoning_effort_present: None,
+                status: AgentStatus::Running,
+            })),
+        ];
+        for event in &events {
+            builder.handle_rollout_item(event);
+        }
+        builder.finish()
     }
 }

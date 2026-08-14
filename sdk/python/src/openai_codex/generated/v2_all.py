@@ -7210,9 +7210,26 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Last known status of the target agents, when available.",
         ),
     ]
+    effective_model: Annotated[
+        str | None,
+        Field(
+            alias="effectiveModel",
+            description="Effective model observed for a spawned agent at terminal lifecycle time.\n\nThis required nullable field is null when unknown and must not be filled from thread metadata or a request.",
+        ),
+    ]
+    effective_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="effectiveReasoningEffort",
+            description="Effective reasoning effort observed for a spawned agent at terminal lifecycle time.\n\nThis required nullable field is null when unknown and must not be filled from thread metadata or a request.",
+        ),
+    ]
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
     model: Annotated[
-        str | None, Field(description="Model requested for the spawned agent, when applicable.")
+        str | None,
+        Field(
+            description="Established model alias for a spawned-agent lifecycle item.\n\nOn spawn start, this is the caller-requested model. On a terminal spawn item, this is the observed effective model. An unknown terminal effective model is null."
+        ),
     ] = None
     prompt: Annotated[
         str | None,
@@ -7222,7 +7239,7 @@ class CollabAgentToolCallThreadItem(BaseModel):
         ReasoningEffort | None,
         Field(
             alias="reasoningEffort",
-            description="Reasoning effort requested for the spawned agent, when applicable.",
+            description="Established reasoning-effort alias for a spawned-agent lifecycle item.\n\nOn spawn start, this is the caller-requested effort. On a terminal spawn item, this is the observed effective effort. An unknown terminal effective effort is null.",
         ),
     ] = None
     receiver_thread_ids: Annotated[
@@ -7230,6 +7247,20 @@ class CollabAgentToolCallThreadItem(BaseModel):
         Field(
             alias="receiverThreadIds",
             description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
+        ),
+    ]
+    requested_model: Annotated[
+        str | None,
+        Field(
+            alias="requestedModel",
+            description="Additive explicit provenance for the requested model.\n\nThis remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable.",
+        ),
+    ]
+    requested_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="requestedReasoningEffort",
+            description="Additive explicit provenance for the requested reasoning effort.\n\nThis remains available on terminal spawn items even though the legacy `reasoningEffort` alias then represents the observed effective effort. This required nullable field is null when request provenance is unavailable.",
         ),
     ]
     sender_thread_id: Annotated[

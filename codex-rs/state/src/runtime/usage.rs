@@ -31,8 +31,8 @@ struct TurnSnapshot {
 #[derive(Clone, Debug)]
 struct SpawnRequestState {
     parent_thread_id: ThreadId,
-    _requested_model: String,
-    _requested_reasoning_effort: String,
+    _requested_model: Option<String>,
+    _requested_reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -314,15 +314,22 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 }
             }
             EventMsg::CollabAgentSpawnBegin(begin) => {
+                let (requested_model, requested_reasoning_effort) =
+                    begin.canonical_requested_identity();
+                let requested_reasoning_effort =
+                    requested_reasoning_effort.map(std::string::ToString::to_string);
                 self.spawn_requests.insert(
                     begin.call_id.clone(),
                     SpawnRequestState {
                         parent_thread_id: begin.sender_thread_id,
-                        _requested_model: begin.model.clone(),
-                        _requested_reasoning_effort: begin.reasoning_effort.to_string(),
+                        _requested_model: requested_model.clone(),
+                        _requested_reasoning_effort: requested_reasoning_effort.clone(),
                     },
                 );
-                if let Err(err) = self.insert_spawn_request(begin).await {
+                if let Err(err) = self
+                    .insert_spawn_request(begin, requested_model, requested_reasoning_effort)
+                    .await
+                {
                     warn!("usage spawn begin: {err}");
                 }
             }
@@ -617,7 +624,12 @@ WHERE provider_call_id = ?
         Ok(())
     }
 
-    async fn insert_spawn_request(&self, begin: &CollabAgentSpawnBeginEvent) -> anyhow::Result<()> {
+    async fn insert_spawn_request(
+        &self,
+        begin: &CollabAgentSpawnBeginEvent,
+        requested_model: Option<String>,
+        requested_reasoning_effort: Option<String>,
+    ) -> anyhow::Result<()> {
         sqlx::query(
             r#"INSERT INTO usage_spawn_requests (
             spawn_request_id,
@@ -631,8 +643,8 @@ WHERE provider_call_id = ?
         )
         .bind(begin.call_id.clone())
         .bind(begin.sender_thread_id.to_string())
-        .bind(begin.model.clone())
-        .bind(begin.reasoning_effort.to_string())
+        .bind(requested_model)
+        .bind(requested_reasoning_effort)
         .bind("pending")
         .bind(Utc::now().to_rfc3339())
         .execute(self.pool.as_ref())
@@ -2764,6 +2776,7 @@ WHERE tool_call_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                requested_reasoning_effort_present: Some(true),
                 started_at_ms: 0,
             }),
         };
@@ -2780,6 +2793,7 @@ WHERE tool_call_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                effective_reasoning_effort_present: Some(true),
                 status: AgentStatus::Completed(None),
                 completed_at_ms: 0,
             }),
@@ -2858,6 +2872,119 @@ WHERE child_thread_id = ?
                 parent_cumulative_total_tokens: Some(16),
             }
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_preserves_optional_spawn_request_identity() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        for (
+            call_id,
+            model,
+            reasoning_effort,
+            requested_reasoning_effort_present,
+            expected_model,
+            expected_reasoning_effort,
+        ) in [
+            (
+                "current-omitted",
+                "",
+                ReasoningEffortConfig::Medium,
+                Some(false),
+                None,
+                None,
+            ),
+            (
+                "current-model-only",
+                "gpt-model-only",
+                ReasoningEffortConfig::Medium,
+                Some(false),
+                Some("gpt-model-only"),
+                None,
+            ),
+            (
+                "current-effort-only",
+                "",
+                ReasoningEffortConfig::Medium,
+                Some(true),
+                None,
+                Some("medium"),
+            ),
+            (
+                "current-explicit-medium",
+                "gpt-explicit-medium",
+                ReasoningEffortConfig::Medium,
+                Some(true),
+                Some("gpt-explicit-medium"),
+                Some("medium"),
+            ),
+            (
+                "pre-additive-low",
+                "gpt-pre-additive-low",
+                ReasoningEffortConfig::Low,
+                None,
+                Some("gpt-pre-additive-low"),
+                Some("low"),
+            ),
+            (
+                "pre-additive-high",
+                "gpt-pre-additive-high",
+                ReasoningEffortConfig::High,
+                None,
+                Some("gpt-pre-additive-high"),
+                Some("high"),
+            ),
+        ] {
+            logger
+                .record_event(&Event {
+                    id: format!("turn-{call_id}"),
+                    msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                        call_id: call_id.to_string(),
+                        sender_thread_id: thread_id,
+                        prompt: String::new(),
+                        model: model.to_string(),
+                        reasoning_effort: reasoning_effort.clone(),
+                        requested_reasoning_effort_present,
+                        started_at_ms: 0,
+                    }),
+                })
+                .await;
+
+            let pool_arc = runtime.usage_pool();
+            let pool: &SqlitePool = pool_arc.as_ref();
+            let stored: (Option<String>, Option<String>) = sqlx::query_as(
+                r#"
+SELECT
+  requested_model,
+  requested_reasoning_effort
+FROM usage_spawn_requests
+WHERE spawn_request_id = ?
+"#,
+            )
+            .bind(call_id)
+            .fetch_one(pool)
+            .await?;
+            assert_eq!(
+                stored,
+                (
+                    expected_model.map(str::to_string),
+                    expected_reasoning_effort.map(str::to_string),
+                ),
+                "usage spawn request should retain the canonical optional identity for {call_id}"
+            );
+        }
 
         Ok(())
     }
@@ -2952,6 +3079,7 @@ WHERE child_thread_id = ?
                     prompt: String::new(),
                     model: "spawn-model".to_string(),
                     reasoning_effort: ReasoningEffortConfig::default(),
+                    requested_reasoning_effort_present: Some(true),
                     started_at_ms: 0,
                 }),
             })
@@ -2968,6 +3096,7 @@ WHERE child_thread_id = ?
                     prompt: String::new(),
                     model: "spawn-model".to_string(),
                     reasoning_effort: ReasoningEffortConfig::default(),
+                    effective_reasoning_effort_present: Some(true),
                     status: AgentStatus::Completed(None),
                     completed_at_ms: 0,
                 }),
@@ -3331,6 +3460,7 @@ WHERE thread_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                requested_reasoning_effort_present: Some(true),
                 started_at_ms: 0,
             }),
         };
@@ -3347,6 +3477,7 @@ WHERE thread_id = ?
                 prompt: String::new(),
                 model: "spawn-model".to_string(),
                 reasoning_effort: ReasoningEffortConfig::default(),
+                effective_reasoning_effort_present: Some(true),
                 status: AgentStatus::Completed(None),
                 completed_at_ms: 0,
             }),

@@ -6,6 +6,7 @@ import threading
 import uuid
 from _thread import LockType
 from collections import deque
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +67,33 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 ApprovalHandler = Callable[[str, JsonObject | None], JsonObject]
 RUNTIME_PKG_NAME = "openai-codex-cli-bin"
 _GOAL_START_TIMEOUT_S = 30.0
+_COLLAB_AGENT_TOOL_CALL_IDENTITY_FIELDS = (
+    ("requestedModel", "requested_model"),
+    ("requestedReasoningEffort", "requested_reasoning_effort"),
+    ("effectiveModel", "effective_model"),
+    ("effectiveReasoningEffort", "effective_reasoning_effort"),
+)
+
+
+def _normalize_legacy_collab_agent_tool_call_identity(payload: JsonValue) -> JsonValue:
+    """Materialize only the fully absent legacy collab identity shape for inbound parsing."""
+    if isinstance(payload, list):
+        return [_normalize_legacy_collab_agent_tool_call_identity(item) for item in payload]
+    if not isinstance(payload, Mapping):
+        return payload
+
+    normalized = {
+        key: _normalize_legacy_collab_agent_tool_call_identity(value)
+        for key, value in payload.items()
+    }
+    if payload.get("type") == "collabAgentToolCall" and all(
+        wire_name not in payload and python_name not in payload
+        for wire_name, python_name in _COLLAB_AGENT_TOOL_CALL_IDENTITY_FIELDS
+    ):
+        normalized.update(
+            {wire_name: None for wire_name, _python_name in _COLLAB_AGENT_TOOL_CALL_IDENTITY_FIELDS}
+        )
+    return normalized
 
 
 @dataclass(slots=True)
@@ -318,7 +346,9 @@ class CodexClient:
         result = self._request_raw(method, params)
         if not isinstance(result, dict):
             raise CodexError(f"{method} response must be a JSON object")
-        return response_model.model_validate(result)
+        return response_model.model_validate(
+            _normalize_legacy_collab_agent_tool_call_identity(result)
+        )
 
     def _request_raw(self, method: str, params: JsonObject | None = None) -> JsonValue:
         """Send a JSON-RPC request and wait for the reader thread to route its response."""
@@ -755,7 +785,9 @@ class CodexClient:
             return Notification(method=method, payload=UnknownNotification(params=params_dict))
 
         try:
-            payload = model.model_validate(params_dict)
+            payload = model.model_validate(
+                _normalize_legacy_collab_agent_tool_call_identity(params_dict)
+            )
         except Exception:  # noqa: BLE001
             return Notification(method=method, payload=UnknownNotification(params=params_dict))
         return Notification(method=method, payload=payload)
