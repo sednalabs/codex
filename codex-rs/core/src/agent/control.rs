@@ -731,13 +731,12 @@ impl AgentControl {
                 builder.note_omitted(1 + agents.len());
                 break;
             }
-            let reference = metadata
-                .agent_path
-                .as_ref()
-                .map(|agent_path| agent_path.name().to_string())
-                .unwrap_or_else(|| thread_id.to_string());
-            let row =
-                SubagentContextRow::new(reference.as_str(), metadata.agent_nickname.as_deref());
+            let row = if let Some(agent_path) = metadata.agent_path.as_ref() {
+                SubagentContextRow::new(agent_path.name(), metadata.agent_nickname.as_deref())
+            } else {
+                let reference = thread_id.to_string();
+                SubagentContextRow::new(reference.as_str(), metadata.agent_nickname.as_deref())
+            };
             if !builder.push(row) {
                 builder.note_omitted(1 + agents.len());
                 break;

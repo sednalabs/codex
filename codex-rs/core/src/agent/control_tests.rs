@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::config::ConfigBuilder;
 use crate::context::ContextualUserFragment;
 use crate::context::SubagentNotification;
+use crate::context::world_state::SUBAGENT_CONTEXT_MAX_ROWS;
 use crate::init_state_db;
 use crate::thread_manager::RemoveThreadIfSameResult;
 use crate::thread_manager::StartThreadOptions;
@@ -363,6 +364,69 @@ async fn wait_for_live_thread_spawn_children(
     })
     .await
     .expect("expected persisted child tree");
+}
+
+#[tokio::test]
+async fn format_environment_context_subagents_bounds_live_metadata() {
+    let (home, config) = test_config_with_cli_overrides(vec![(
+        "agents.max_threads".to_string(),
+        TomlValue::Integer(32),
+    )])
+    .await;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+    let long_name = format!("agent_{}", "x".repeat(260));
+    let long_path = AgentPath::root()
+        .join(long_name.as_str())
+        .expect("long agent path should be valid");
+
+    for index in 0..=SUBAGENT_CONTEXT_MAX_ROWS {
+        let (agent_path, agent_nickname) = if index == 0 {
+            (long_path.clone(), Some("nick<&\"\u{1}".to_string()))
+        } else {
+            (
+                AgentPath::root()
+                    .join(format!("worker_{index}").as_str())
+                    .expect("worker path should be valid"),
+                Some(format!("worker-nickname-{index}")),
+            )
+        };
+        harness
+            .control
+            .spawn_agent_with_metadata(
+                harness.config.clone(),
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path),
+                    agent_nickname,
+                    agent_role: None,
+                })),
+                SpawnAgentOptions::default(),
+            )
+            .await
+            .expect("child spawn should succeed");
+    }
+
+    let rendered = harness
+        .control
+        .format_environment_context_subagents(parent_thread_id)
+        .await;
+    let expected_reference = format!("{}...", &long_name[..189]);
+    let rendered = rendered.as_str();
+
+    assert!(rendered.starts_with(format!("- {expected_reference}: ").as_str()));
+    assert!(rendered.contains("nick&lt;&amp;&quot;\u{FFFD}"));
+    assert_eq!(
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .count(),
+        16
+    );
+    assert!(rendered.ends_with("<omitted count=\"1\" />"));
+    assert!(!rendered.contains(long_name.as_str()));
 }
 
 #[tokio::test]
