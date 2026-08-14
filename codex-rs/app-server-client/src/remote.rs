@@ -148,6 +148,62 @@ enum RemoteClientCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerRequestDisposition {
+    Pending,
+    ResponseAttempted,
+}
+
+#[derive(Debug, Default)]
+struct ServerRequestLedger {
+    dispositions: HashMap<RequestId, ServerRequestDisposition>,
+    order: VecDeque<RequestId>,
+}
+
+impl ServerRequestLedger {
+    fn register(&mut self, request_id: RequestId) -> bool {
+        if self.dispositions.contains_key(&request_id) {
+            return false;
+        }
+        self.dispositions
+            .insert(request_id.clone(), ServerRequestDisposition::Pending);
+        self.order.push_back(request_id);
+        true
+    }
+
+    fn begin_response(&mut self, request_id: &RequestId) -> bool {
+        let Some(disposition) = self.dispositions.get_mut(request_id) else {
+            return false;
+        };
+        if *disposition == ServerRequestDisposition::ResponseAttempted {
+            return false;
+        }
+        // A failed socket write might still have reached the peer. Retain the
+        // attempted disposition so terminal cleanup never answers it twice.
+        *disposition = ServerRequestDisposition::ResponseAttempted;
+        true
+    }
+
+    fn complete_response(&mut self, request_id: &RequestId) {
+        if self.dispositions.remove(request_id).is_some() {
+            self.order
+                .retain(|pending_request_id| pending_request_id != request_id);
+        }
+    }
+
+    fn take_unanswered(&mut self) -> Vec<RequestId> {
+        let mut unanswered = Vec::new();
+        while let Some(request_id) = self.order.pop_front() {
+            match self.dispositions.remove(&request_id) {
+                Some(ServerRequestDisposition::Pending) => unanswered.push(request_id),
+                Some(ServerRequestDisposition::ResponseAttempted) | None => {}
+            }
+        }
+        debug_assert!(self.dispositions.is_empty());
+        unanswered
+    }
+}
+
 pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
     event_rx: mpsc::Receiver<AppServerEvent>,
@@ -212,6 +268,12 @@ impl RemoteAppServerClient {
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
+        let mut server_requests = ServerRequestLedger::default();
+        for event in &pending_events {
+            if let AppServerEvent::ServerRequest(request) = event {
+                server_requests.register(request.id().clone());
+            }
+        }
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
@@ -221,6 +283,15 @@ impl RemoteAppServerClient {
                 tokio::select! {
                     command = command_rx.recv() => {
                         let Some(command) = command else {
+                            if let Err(err) = reject_unanswered_server_requests(
+                                &mut stream,
+                                &endpoint,
+                                server_requests.take_unanswered(),
+                            )
+                            .await
+                            {
+                                warn!(%err, "failed to reject unanswered remote app-server server request");
+                            }
                             let _ = stream.close(None).await;
                             break;
                         };
@@ -280,15 +351,25 @@ impl RemoteAppServerClient {
                                 result,
                                 response_tx,
                             } => {
+                                if !server_requests.begin_response(&request_id) {
+                                    let _ = response_tx.send(Err(IoError::new(
+                                        ErrorKind::InvalidInput,
+                                        format!("remote app-server server request id `{request_id}` is not pending"),
+                                    )));
+                                    continue;
+                                }
                                 let result = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Response(JSONRPCResponse {
-                                        id: request_id,
+                                        id: request_id.clone(),
                                         result,
                                     }),
                                     &endpoint,
                                 )
                                 .await;
+                                if result.is_ok() {
+                                    server_requests.complete_response(&request_id);
+                                }
                                 let _ = response_tx.send(result);
                             }
                             RemoteClientCommand::RejectServerRequest {
@@ -296,18 +377,34 @@ impl RemoteAppServerClient {
                                 error,
                                 response_tx,
                             } => {
+                                if !server_requests.begin_response(&request_id) {
+                                    let _ = response_tx.send(Err(IoError::new(
+                                        ErrorKind::InvalidInput,
+                                        format!("remote app-server server request id `{request_id}` is not pending"),
+                                    )));
+                                    continue;
+                                }
                                 let result = write_jsonrpc_message(
                                     &mut stream,
                                     JSONRPCMessage::Error(JSONRPCError {
                                         error,
-                                        id: request_id,
+                                        id: request_id.clone(),
                                     }),
                                     &endpoint,
                                 )
                                 .await;
+                                if result.is_ok() {
+                                    server_requests.complete_response(&request_id);
+                                }
                                 let _ = response_tx.send(result);
                             }
                             RemoteClientCommand::Shutdown { response_tx } => {
+                                let rejection_result = reject_unanswered_server_requests(
+                                    &mut stream,
+                                    &endpoint,
+                                    server_requests.take_unanswered(),
+                                )
+                                .await;
                                 let close_result = stream.close(None).await.or_else(|err| {
                                     if websocket_close_error_is_already_closed(&err) {
                                         Ok(())
@@ -317,7 +414,7 @@ impl RemoteAppServerClient {
                                         )))
                                     }
                                 });
-                                let _ = response_tx.send(close_result);
+                                let _ = response_tx.send(rejection_result.and(close_result));
                                 break;
                             }
                         }
@@ -347,7 +444,11 @@ impl RemoteAppServerClient {
                                             .await
                                             {
                                                 warn!(%err, "failed to deliver remote app-server event");
-                                                break;
+                                                // The event receiver is dropped before shutdown
+                                                // is queued. Keep servicing commands so shutdown
+                                                // can close the socket and receive an explicit
+                                                // acknowledgement.
+                                                continue;
                                             }
                                     }
                                     Ok(JSONRPCMessage::Request(request)) => {
@@ -355,6 +456,10 @@ impl RemoteAppServerClient {
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
+                                                if !server_requests.register(request_id.clone()) {
+                                                    warn!(%request_id, "ignoring duplicate remote app-server server request");
+                                                    continue;
+                                                }
                                                 if let Err(err) = deliver_event(
                                                     &event_tx,
                                                     &mut skipped_events,
@@ -363,7 +468,11 @@ impl RemoteAppServerClient {
                                                 .await
                                                 {
                                                     warn!(%err, "failed to deliver remote app-server server request");
-                                                    break;
+                                                    // Shutdown drops the event receiver before
+                                                    // queueing its command. Continue so the worker
+                                                    // can reject retained requests, close the
+                                                    // transport, and acknowledge that command.
+                                                    continue;
                                                 }
                                             }
                                             Err(err) => {
@@ -1090,6 +1199,33 @@ where
         })
 }
 
+async fn reject_unanswered_server_requests<S>(
+    stream: &mut WebSocketStream<S>,
+    endpoint: &str,
+    request_ids: Vec<RequestId>,
+) -> IoResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    for request_id in request_ids {
+        write_jsonrpc_message(
+            stream,
+            JSONRPCMessage::Error(JSONRPCError {
+                error: JSONRPCErrorError {
+                    code: -32603,
+                    message: "remote app-server client stopped before answering server request"
+                        .to_string(),
+                    data: None,
+                },
+                id: request_id,
+            }),
+            endpoint,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
     match err {
         TungsteniteError::ConnectionClosed | TungsteniteError::AlreadyClosed => true,
@@ -1103,6 +1239,188 @@ fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn server_request(request_id: i64) -> JSONRPCRequest {
+        JSONRPCRequest {
+            id: RequestId::Integer(request_id),
+            method: "item/tool/requestUserInput".to_string(),
+            params: Some(
+                serde_json::to_value(codex_app_server_protocol::ToolRequestUserInputParams {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: format!("call-{request_id}"),
+                    questions: vec![codex_app_server_protocol::ToolRequestUserInputQuestion {
+                        id: "question-1".to_string(),
+                        header: "Mode".to_string(),
+                        question: "Pick one".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: Some(vec![]),
+                    }],
+                    auto_resolution_ms: None,
+                })
+                .expect("request params should serialize"),
+            ),
+            trace: None,
+        }
+    }
+
+    #[test]
+    fn response_attempt_is_not_rejected_during_shutdown_cleanup() {
+        let request_id = RequestId::Integer(1);
+        let mut ledger = ServerRequestLedger::default();
+        assert!(ledger.register(request_id.clone()));
+        assert!(ledger.begin_response(&request_id));
+        assert!(!ledger.begin_response(&request_id));
+        assert!(ledger.take_unanswered().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_acknowledges_after_required_event_receiver_closes() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server_stream = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let (requests_sent_tx, requests_sent_rx) = oneshot::channel();
+        let server_task = tokio::spawn(async move {
+            let Message::Text(initialize) = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed")
+            else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&initialize)
+                .expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            let response = JSONRPCMessage::Response(JSONRPCResponse {
+                id: initialize.id,
+                result: serde_json::json!({"userAgent": "test-server/1.0"}),
+            });
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&response)
+                        .expect("initialize response should serialize")
+                        .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+            let _initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+
+            for request_id in [1, 2] {
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Request(server_request(request_id)))
+                            .expect("server request should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server request should send");
+            }
+            requests_sent_tx
+                .send(())
+                .expect("request send signal should remain open");
+
+            let mut rejected = Vec::new();
+            while rejected.len() < 2 {
+                let Message::Text(message) = server_stream
+                    .next()
+                    .await
+                    .expect("client should reject each unanswered request")
+                    .expect("rejection frame should succeed")
+                else {
+                    panic!("expected rejection text frame");
+                };
+                let JSONRPCMessage::Error(error) = serde_json::from_str(&message)
+                    .expect("rejection frame should contain JSON-RPC")
+                else {
+                    panic!("expected JSON-RPC error");
+                };
+                rejected.push((error.id, error.error.code));
+            }
+            assert_eq!(
+                rejected,
+                vec![
+                    (RequestId::Integer(1), -32603),
+                    (RequestId::Integer(2), -32603),
+                ]
+            );
+            assert!(matches!(
+                server_stream.next().await,
+                Some(Ok(Message::Close(_))) | None
+            ));
+        });
+
+        let client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory shutdown transport".to_string(),
+            client_stream,
+            InitializeParams {
+                client_info: ClientInfo {
+                    name: "test-client".to_string(),
+                    title: None,
+                    version: "1.0".to_string(),
+                },
+                capabilities: None,
+            },
+        )
+        .await
+        .expect("remote client should initialize");
+        requests_sent_rx
+            .await
+            .expect("server should send both required events");
+        timeout(Duration::from_secs(2), async {
+            while client.event_rx.len() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first required event should fill the consumer queue");
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+
+        let RemoteAppServerClient {
+            command_tx,
+            event_rx,
+            pending_events: _,
+            server_version: _,
+            codex_home: _,
+            worker_handle,
+        } = client;
+        drop(event_rx);
+        let (response_tx, response_rx) = oneshot::channel();
+        command_tx
+            .send(RemoteClientCommand::Shutdown { response_tx })
+            .await
+            .expect("shutdown command should reach the worker");
+        timeout(Duration::from_secs(2), response_rx)
+            .await
+            .expect("shutdown should be acknowledged promptly")
+            .expect("worker should acknowledge shutdown")
+            .expect("remote close should succeed");
+        timeout(Duration::from_secs(2), worker_handle)
+            .await
+            .expect("worker should exit after shutdown")
+            .expect("worker should not panic");
+        server_task.await.expect("server task should not panic");
+    }
 
     #[tokio::test]
     async fn shutdown_tolerates_worker_exit_after_command_is_queued() {
