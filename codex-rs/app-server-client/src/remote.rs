@@ -619,8 +619,7 @@ impl InboundRequestIdBudget {
             used_bytes: AtomicUsize::new(0),
             count_limit: channel_capacity
                 .saturating_mul(4)
-                .min(MAX_ACTIVE_INBOUND_REQUEST_IDS)
-                .max(1),
+                .clamp(1, MAX_ACTIVE_INBOUND_REQUEST_IDS),
         })
     }
 
@@ -982,7 +981,7 @@ impl RemoteEventBacklog {
                     .push_back(RetainedRemoteEvent::peer_with_server_request_id(
                         event,
                         reservation,
-                        server_request_id.clone(),
+                        server_request_id,
                     ));
                 return Ok(());
             }
@@ -2433,11 +2432,14 @@ mod tests {
         let overflow = backlog
             .enqueue(server_request(/*id*/ 3))
             .expect_err("third required server request should overflow");
-        assert_eq!(overflow.server_request_id, Some(inbound_request_id(3)));
+        assert_eq!(
+            overflow.server_request_id,
+            Some(inbound_request_id(/*id*/ 3))
+        );
 
         assert_eq!(
             backlog.take_unanswered_server_request_ids(),
-            vec![inbound_request_id(1), inbound_request_id(2)]
+            vec![inbound_request_id(/*id*/ 1), inbound_request_id(/*id*/ 2)]
         );
     }
 
@@ -2451,9 +2453,9 @@ mod tests {
             .pop_next_for_public()
             .expect("server request should cross the public boundary");
 
-        assert!(backlog.begin_server_request_response(&inbound_request_id(1)));
-        backlog.complete_server_request(&inbound_request_id(1));
-        assert!(!backlog.begin_server_request_response(&inbound_request_id(1)));
+        assert!(backlog.begin_server_request_response(&inbound_request_id(/*id*/ 1)));
+        backlog.complete_server_request(&inbound_request_id(/*id*/ 1));
+        assert!(!backlog.begin_server_request_response(&inbound_request_id(/*id*/ 1)));
     }
 
     #[test]
@@ -2471,7 +2473,10 @@ mod tests {
         let overflow = backlog
             .enqueue(server_request(/*id*/ 3))
             .expect_err("unanswered public requests must not create unbounded ownership");
-        assert_eq!(overflow.server_request_id, Some(inbound_request_id(3)));
+        assert_eq!(
+            overflow.server_request_id,
+            Some(inbound_request_id(/*id*/ 3))
+        );
     }
 
     #[test]
@@ -2490,7 +2495,7 @@ mod tests {
         assert!(!backlog.has_pending_public_event());
         assert_eq!(
             backlog.take_unanswered_server_request_ids(),
-            vec![inbound_request_id(1)]
+            vec![inbound_request_id(/*id*/ 1)]
         );
     }
 
@@ -2501,8 +2506,8 @@ mod tests {
             .enqueue(server_request(/*id*/ 1))
             .expect("server request should fit");
 
-        assert!(backlog.begin_server_request_response(&inbound_request_id(1)));
-        assert!(!backlog.begin_server_request_response(&inbound_request_id(1)));
+        assert!(backlog.begin_server_request_response(&inbound_request_id(/*id*/ 1)));
+        assert!(!backlog.begin_server_request_response(&inbound_request_id(/*id*/ 1)));
         assert!(backlog.take_unanswered_server_request_ids().is_empty());
     }
 
@@ -2592,7 +2597,11 @@ mod tests {
                     .expect("the effective 512-entry count boundary should fit")
             })
             .collect();
-        assert!(budget.try_reserve(&inbound_request_id(513)).is_none());
+        assert!(
+            budget
+                .try_reserve(&inbound_request_id(/*id*/ 513))
+                .is_none()
+        );
         assert_eq!(budget.used().0, MAX_ACTIVE_INBOUND_REQUEST_IDS);
         drop(reservations);
         assert_eq!(budget.used(), (0, 0));
@@ -2628,7 +2637,7 @@ mod tests {
             })
             .collect();
         let mut backlog = RemoteEventBacklog::with_byte_budget(/*capacity*/ 1, budget);
-        let request_id = inbound_request_id(1);
+        let request_id = inbound_request_id(/*id*/ 1);
         assert!(
             backlog
                 .claim_server_request_id(&request_id, /*allow_deferred*/ true)
