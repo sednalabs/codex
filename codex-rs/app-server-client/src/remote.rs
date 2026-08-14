@@ -750,6 +750,7 @@ impl RemoteTerminal {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn remote_worker<S>(
     mut stream: WebSocketStream<S>,
     endpoint: String,
@@ -813,9 +814,14 @@ where
             permit = event_tx.reserve(), if backlog.has_pending_public_event() => {
                 match permit {
                     Ok(permit) => {
-                        let event = backlog
-                            .pop_next_for_public()
-                            .expect("backlog advertised a public event");
+                        let Some(event) = backlog.pop_next_for_public() else {
+                            terminal = Some(RemoteTerminal::new(
+                                ErrorKind::InvalidData,
+                                "remote event backlog was empty after reporting a pending event"
+                                    .to_string(),
+                            ));
+                            continue;
+                        };
                         #[cfg(test)]
                         let server_request_id = match &event {
                             AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
@@ -843,7 +849,12 @@ where
         }
     }
 
-    let terminal = terminal.expect("terminal cause is set before finalization");
+    let Some(terminal) = terminal else {
+        return Err(IoError::new(
+            ErrorKind::InvalidData,
+            "remote worker exited without a terminal cause",
+        ));
+    };
 
     // Close admission and request slots before an await. Command senders and
     // request-capacity waiters then wake instead of remaining blocked behind
