@@ -11,11 +11,13 @@ use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
 use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -954,10 +956,7 @@ impl App {
                 sort_key: Some(ThreadSortKey::UpdatedAt),
                 sort_direction: Some(SortDirection::Desc),
                 model_providers: None,
-                // `None` defaults to interactive sessions and therefore excludes the subagent
-                // rows this relation query exists to page. The broad subagent kind includes
-                // thread-spawn, review, compact, and other persisted descendants.
-                source_kinds: Some(vec![ThreadSourceKind::SubAgent]),
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
                 thread_sources: None,
                 archived: Some(false),
                 is_pinned: None,
@@ -1062,6 +1061,14 @@ impl App {
         let mut scoped_thread_ids = HashSet::new();
         let mut page_scope_proven = true;
         for thread in &threads {
+            if !Self::is_thread_spawn_source(thread) {
+                page_scope_proven = false;
+                tracing::warn!(
+                    thread_id = %thread.id,
+                    "discarding persisted descendant with a non-spawn source"
+                );
+                continue;
+            }
             let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
                 page_scope_proven = false;
                 continue;
@@ -1141,7 +1148,7 @@ impl App {
                 sort_key: Some(ThreadSortKey::UpdatedAt),
                 sort_direction: Some(SortDirection::Desc),
                 model_providers: None,
-                source_kinds: Some(vec![ThreadSourceKind::SubAgent]),
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
                 thread_sources: None,
                 archived: Some(false),
                 is_pinned: None,
@@ -1179,12 +1186,26 @@ impl App {
             .map_err(|_| ())
     }
 
+    fn is_thread_spawn_source(thread: &Thread) -> bool {
+        matches!(
+            &thread.source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        )
+    }
+
     fn register_agent_picker_thread_from_backend(
         &mut self,
         primary_thread_id: ThreadId,
         thread: Thread,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) {
+        if !Self::is_thread_spawn_source(&thread) {
+            tracing::warn!(
+                thread_id = %thread.id,
+                "ignoring persisted descendant with a non-spawn source during subagent backfill"
+            );
+            return;
+        }
         let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
             tracing::warn!(
                 "ignoring persisted descendant with invalid id during subagent backfill"

@@ -20,17 +20,23 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
+#[derive(Clone, Debug)]
+struct RecordedRequest {
+    method: String,
+    params: serde_json::Value,
+}
+
 /// Returns and resets `(thread/loaded/list, thread/read)` request counts.
-fn take_backfill_counts(requests: &Arc<Mutex<Vec<String>>>) -> (usize, usize) {
+fn take_backfill_counts(requests: &Arc<Mutex<Vec<RecordedRequest>>>) -> (usize, usize) {
     let requests = std::mem::take(&mut *requests.lock().expect("request recorder lock"));
     (
         requests
             .iter()
-            .filter(|method| *method == "thread/loaded/list")
+            .filter(|request| request.method == "thread/loaded/list")
             .count(),
         requests
             .iter()
-            .filter(|method| *method == "thread/read")
+            .filter(|request| request.method == "thread/read")
             .count(),
     )
 }
@@ -40,7 +46,7 @@ async fn start_recording_app_server(
     config: &Config,
 ) -> Result<(
     AppServerSession,
-    Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<RecordedRequest>>>,
     JoinHandle<Result<()>>,
 )> {
     start_recording_app_server_with_options(config, RecordingAppServerOptions::default()).await
@@ -49,6 +55,7 @@ async fn start_recording_app_server(
 #[derive(Clone, Copy, Default)]
 struct RecordingAppServerOptions {
     ignore_ancestor_filter: bool,
+    broaden_source_filter: bool,
     fail_thread_list_request: Option<usize>,
     empty_loaded_threads: bool,
 }
@@ -95,12 +102,38 @@ fn create_spawn_rollout(
     Ok(ThreadId::from_string(&thread_id)?)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn create_non_spawn_subagent_rollout(
+    codex_home: &std::path::Path,
+    model_provider: &str,
+    timestamp: &str,
+    created_at: &str,
+    message: &str,
+    source: SubAgentSource,
+    parent_thread_id: ThreadId,
+    root_thread_id: ThreadId,
+) -> Result<ThreadId> {
+    let thread_id = create_fake_parented_rollout_with_source(
+        codex_home,
+        timestamp,
+        created_at,
+        message,
+        Some(model_provider),
+        /*git_info*/ None,
+        RolloutSessionSource::SubAgent(source),
+        parent_thread_id.into(),
+        root_thread_id,
+    )
+    .map_err(test_support_error)?;
+    Ok(ThreadId::from_string(&thread_id)?)
+}
+
 async fn start_recording_app_server_with_options(
     config: &Config,
     options: RecordingAppServerOptions,
 ) -> Result<(
     AppServerSession,
-    Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<RecordedRequest>>>,
     JoinHandle<Result<()>>,
 )> {
     let state_db =
@@ -150,11 +183,18 @@ async fn start_recording_app_server_with_options(
                 }
                 JSONRPCMessage::Request(request) => {
                     let method = request.method.clone();
+                    let request_id = request.id.clone();
+                    let mut request = serde_json::to_value(request)?;
                     request_sink
                         .lock()
                         .expect("request recorder lock")
-                        .push(method.clone());
-                    let request_id = request.id.clone();
+                        .push(RecordedRequest {
+                            method: method.clone(),
+                            params: request
+                                .get("params")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        });
                     if method == "thread/list" {
                         thread_list_request_count += 1;
                     }
@@ -193,12 +233,22 @@ async fn start_recording_app_server_with_options(
                             .await?;
                         continue;
                     }
-                    let mut request = serde_json::to_value(request)?;
                     if options.ignore_ancestor_filter && method == "thread/list" {
                         request
                             .get_mut("params")
                             .and_then(serde_json::Value::as_object_mut)
                             .map(|params| params.remove("ancestorThreadId"));
+                    }
+                    if options.broaden_source_filter && method == "thread/list" {
+                        request
+                            .get_mut("params")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .map(|params| {
+                                params.insert(
+                                    "sourceKinds".to_string(),
+                                    serde_json::json!(["subAgent"]),
+                                )
+                            });
                     }
                     let request = serde_json::from_value::<ClientRequest>(request)?;
                     let response = match embedded.request(request).await? {
@@ -285,7 +335,7 @@ fn fresh_session_applies_requested_name() -> Result<()> {
                         .lock()
                         .expect("request recorder lock")
                         .iter()
-                        .any(|method| method == "thread/name/set"),
+                        .any(|request| request.method == "thread/name/set"),
                     "fresh session should be named through the app server"
                 );
                 let thread = app_server
@@ -522,7 +572,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     )?;
                     child_thread_ids.push(child_thread_id);
                 }
-                let (mut app_server, _requests, proxy) = start_recording_app_server_with_options(
+                let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
                     &app.config,
                     RecordingAppServerOptions {
                         empty_loaded_threads: true,
@@ -558,6 +608,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                         break;
                     }
                 }
+                requests.lock().expect("request recorder lock").clear();
                 // This fixture exercises the modern ancestor-scoped picker pages. The legacy
                 // relationship repair deliberately scans every persisted subagent page and is
                 // covered separately below, so keep it from preloading the continuation here.
@@ -575,6 +626,26 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
 
                 let first_page = app.backfill_loaded_subagent_threads(&mut app_server).await;
                 assert!(first_page.completed);
+                let thread_list_params = requests
+                    .lock()
+                    .expect("request recorder lock")
+                    .iter()
+                    .filter(|request| request.method == "thread/list")
+                    .map(|request| request.params.clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    thread_list_params[0]["sourceKinds"],
+                    serde_json::json!(["subAgentThreadSpawn"]),
+                    "the persisted picker page must request only thread-spawn descendants"
+                );
+                assert_eq!(
+                    thread_list_params[0]["ancestorThreadId"],
+                    root_thread_id.to_string(),
+                    "the persisted picker page must bind the active ancestor"
+                );
+                assert!(thread_list_params.iter().all(|params| {
+                    params["sourceKinds"] == serde_json::json!(["subAgentThreadSpawn"])
+                }));
                 assert_eq!(
                     app.agent_navigation
                         .ordered_path_backed_subagent_threads(Some(root_thread_id))
@@ -606,6 +677,151 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
         })?
         .join()
         .expect("persisted agent picker pagination test thread")
+}
+
+#[test]
+fn agent_picker_rejects_non_spawn_descendants_when_server_broadens_source_filter() -> Result<()> {
+    const UNSAFE_DESCENDANT_COUNT: usize = AGENT_PICKER_PAGE_SIZE as usize;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-source-isolation".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-09T02-00-00",
+                        "2026-01-09T02:00:00Z",
+                        "Source-boundary root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .map_err(test_support_error)?,
+                )?;
+                let mut unsafe_thread_ids = Vec::with_capacity(UNSAFE_DESCENDANT_COUNT);
+                for index in 0..UNSAFE_DESCENDANT_COUNT {
+                    let source = match index % 3 {
+                        0 => SubAgentSource::Review,
+                        1 => SubAgentSource::Compact,
+                        _ => SubAgentSource::Other(format!("source-boundary-{index}")),
+                    };
+                    unsafe_thread_ids.push(create_non_spawn_subagent_rollout(
+                        codex_home.path(),
+                        app.config.model_provider_id.as_str(),
+                        &format!("2026-01-09T02-00-{:02}", index + 1),
+                        &format!("2026-01-09T02:00:{:02}Z", index + 1),
+                        &format!("Unsafe descendant {index}"),
+                        source,
+                        root_thread_id,
+                        root_thread_id,
+                    )?);
+                }
+                let valid_thread_id = create_spawn_rollout(
+                    codex_home.path(),
+                    app.config.model_provider_id.as_str(),
+                    "2026-01-09T02-01-00",
+                    "2026-01-09T02:01:00Z",
+                    "Valid spawned descendant",
+                    root_thread_id,
+                    root_thread_id,
+                    "/root/valid_spawn",
+                )?;
+
+                let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+                    &app.config,
+                    RecordingAppServerOptions {
+                        broaden_source_filter: true,
+                        empty_loaded_threads: true,
+                        ..RecordingAppServerOptions::default()
+                    },
+                )
+                .await?;
+                let mut repair_cursor = None;
+                loop {
+                    let page = app_server
+                        .thread_list(codex_app_server_protocol::ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(AGENT_PICKER_PAGE_SIZE),
+                            sort_key: Some(codex_app_server_protocol::ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![
+                                codex_app_server_protocol::ThreadSourceKind::SubAgent,
+                            ]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+                requests.lock().expect("request recorder lock").clear();
+                app.agent_navigation.mark_legacy_relation_fallback_checked();
+
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                let completed = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(completed.completed);
+                assert!(app.agent_navigation.get(&valid_thread_id).is_some());
+                for unsafe_thread_id in unsafe_thread_ids {
+                    assert!(
+                        app.agent_navigation.get(&unsafe_thread_id).is_none(),
+                        "an ancestry-valid non-spawn row must not enter picker state"
+                    );
+                }
+                assert_eq!(
+                    app.agent_navigation.next_picker_page_cursor(),
+                    None,
+                    "a cursor from a source-corrupted page must be discarded"
+                );
+                let thread_list_requests = requests
+                    .lock()
+                    .expect("request recorder lock")
+                    .iter()
+                    .filter(|request| request.method == "thread/list")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(thread_list_requests.len(), 1);
+                assert_eq!(
+                    thread_list_requests[0].params["sourceKinds"],
+                    serde_json::json!(["subAgentThreadSpawn"])
+                );
+                assert_eq!(
+                    thread_list_requests[0].params["ancestorThreadId"],
+                    root_thread_id.to_string()
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("agent picker source isolation test thread")
 }
 
 #[test]
@@ -703,7 +919,7 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
                         .lock()
                         .expect("request recorder lock")
                         .iter()
-                        .filter(|method| *method == "thread/list")
+                        .filter(|request| request.method == "thread/list")
                         .count(),
                     3,
                     "modern lookup plus two legacy pages must be attempted"
@@ -725,7 +941,7 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
                         .lock()
                         .expect("request recorder lock")
                         .iter()
-                        .filter(|method| *method == "thread/list")
+                        .filter(|request| request.method == "thread/list")
                         .count(),
                     3,
                     "the successful retry must consume both legacy pages"
