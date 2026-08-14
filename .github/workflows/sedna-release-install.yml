@@ -17,6 +17,15 @@ on:
         required: false
         default: false
         type: boolean
+      macos_release_mode:
+        description: Intel macOS asset kind expected on the release
+        required: true
+        default: off
+        type: choice
+        options:
+          - off
+          - preview
+          - notarized
 
 permissions:
   contents: read
@@ -26,18 +35,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    name: Select release verification platforms
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Build verification matrix
+        id: matrix
+        shell: bash
+        env:
+          MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+        run: |
+          set -euo pipefail
+          matrix='[{"platform":"Linux x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]'
+          if [[ "${MACOS_RELEASE_MODE}" != "off" ]]; then
+            matrix="$(
+              jq -cn \
+                --argjson linux "${matrix}" \
+                '$linux + [{"platform":"Intel macOS x64","runner":"macos-15-intel","target":"x86_64-apple-darwin"}]'
+            )"
+          fi
+          echo "matrix=${matrix}" >> "${GITHUB_OUTPUT}"
+
   install:
     name: Verify published Sedna release assets (${{ matrix.platform }})
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: Linux x64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - platform: Intel macOS x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
 
@@ -88,6 +116,7 @@ jobs:
           RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
           DRY_RUN: ${{ steps.request.outputs.dry_run }}
           ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
+          MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
         run: |
           set -euo pipefail
 
@@ -96,11 +125,17 @@ jobs:
             allow_prerelease_arg+=(--allow-prerelease)
           fi
 
+          macos_preview_arg=()
+          if [[ "${MACOS_RELEASE_MODE}" == "preview" ]]; then
+            macos_preview_arg+=(--macos-preview)
+          fi
+
           scripts/install_sedna_release_asset \
             --repository "${GITHUB_REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --dry-run \
-            "${allow_prerelease_arg[@]}"
+            "${allow_prerelease_arg[@]}" \
+            "${macos_preview_arg[@]}"
 
       - name: Summarize
         if: ${{ always() }}
@@ -109,6 +144,7 @@ jobs:
           RELEASE_TAG: ${{ steps.request.outputs.release_tag }}
           DRY_RUN: ${{ steps.request.outputs.dry_run }}
           ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
+          MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
           PLATFORM: ${{ matrix.platform }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -120,5 +156,6 @@ jobs:
             echo "- Platform: ${PLATFORM}"
             echo "- Target: ${TARGET}"
             echo "- Allow prerelease: ${ALLOW_PRERELEASE:-unknown}"
+            echo "- Intel macOS mode: ${MACOS_RELEASE_MODE:-off}"
             echo "- Host-local install: external deployment path"
           } >> "$GITHUB_STEP_SUMMARY"
