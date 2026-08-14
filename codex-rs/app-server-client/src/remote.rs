@@ -997,13 +997,14 @@ impl RemoteEventBacklog {
         }
 
         if required {
+            let retained_server_request_id = server_request_id.clone();
             return Err(RequiredEventOverflow {
                 server_request_id,
                 event: reservation.map(|reservation| {
                     RetainedRemoteEvent::peer_with_server_request_id(
                         event,
                         reservation,
-                        server_request_id.clone(),
+                        retained_server_request_id,
                     )
                 }),
             });
@@ -1789,7 +1790,7 @@ fn enqueue_remote_event(
             if let Some(request_id) = server_request_id {
                 record_remote_worker_test_event(
                     endpoint,
-                    RemoteWorkerTestEvent::ServerRequestQueued(request_id),
+                    RemoteWorkerTestEvent::ServerRequestQueued(request_id.to_request_id()),
                 );
             }
             None
@@ -2585,12 +2586,9 @@ mod tests {
         .expect("the exact inbound string boundary should be accepted");
         let reservations: Vec<_> = (0..MAX_ACTIVE_INBOUND_REQUEST_IDS)
             .map(|id| {
+                let request_id = inbound_request_id(id as i64);
                 budget
-                    .try_reserve(if id == 0 {
-                        &max_length_id
-                    } else {
-                        &inbound_request_id(id as i64)
-                    })
+                    .try_reserve(if id == 0 { &max_length_id } else { &request_id })
                     .expect("the effective 512-entry count boundary should fit")
             })
             .collect();
