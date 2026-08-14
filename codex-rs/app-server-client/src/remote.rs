@@ -468,10 +468,9 @@ impl RemoteAppServerClient {
                     permit = event_tx.reserve(), if !pending_required_events.is_empty() => {
                         match permit {
                             Ok(permit) => {
-                                let event = pending_required_events
-                                    .pop_front()
-                                    .expect("pending required event should exist");
-                                permit.send(event);
+                                if let Some(event) = pending_required_events.pop_front() {
+                                    permit.send(event);
+                                }
                             }
                             Err(_) => {
                                 pending_required_events.clear();
