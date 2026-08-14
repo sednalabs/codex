@@ -334,7 +334,10 @@ pub async fn apply_hunks(
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> Result<AppliedPatchDelta, ApplyPatchFailure> {
-    apply_hunks_with_context(hunks, None, cwd, stdout, stderr, fs, sandbox).await
+    apply_hunks_with_context(
+        hunks, /*parsed_context*/ None, cwd, stdout, stderr, fs, sandbox,
+    )
+    .await
 }
 
 async fn apply_hunks_with_context(
@@ -900,7 +903,7 @@ pub async fn unified_diff_from_chunks_with_context(
     let AppliedPatch {
         original_contents,
         new_contents,
-    } = derive_new_contents_from_chunks(path, chunks, None, fs, sandbox).await?;
+    } = derive_new_contents_from_chunks(path, chunks, /*parsed_context*/ None, fs, sandbox).await?;
     let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
     let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
     Ok(ApplyPatchFileUpdate {
