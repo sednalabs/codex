@@ -415,6 +415,20 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     )?;
                     child_thread_ids.push(child_thread_id);
                 }
+                let non_agent_thread_id = ThreadId::from_string(
+                    &create_fake_parented_rollout_with_source(
+                        codex_home.path(),
+                        "2026-01-09T00-00-52",
+                        "2026-01-09T00:00:52Z",
+                        "Saved exec child message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                        RolloutSessionSource::Exec,
+                        root_thread_id.into(),
+                        root_thread_id,
+                    )
+                    .expect("create non-agent child rollout"),
+                )?;
 
                 let (mut app_server, _requests, proxy) =
                     start_recording_app_server(&app.config).await?;
@@ -431,6 +445,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                             model_providers: None,
                             source_kinds: Some(vec![
                                 codex_app_server_protocol::ThreadSourceKind::SubAgent,
+                                codex_app_server_protocol::ThreadSourceKind::Exec,
                             ]),
                             thread_sources: None,
                             archived: Some(false),
@@ -467,8 +482,11 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     })
                     .await?;
                 assert!(
-                    default_source_page.data.is_empty(),
-                    "the default interactive filter must not be mistaken for all sources"
+                    default_source_page
+                        .data
+                        .iter()
+                        .any(|thread| thread.id == non_agent_thread_id.to_string()),
+                    "relation-scoped queries without an explicit source filter span sources"
                 );
 
                 let root = app_server
@@ -490,6 +508,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     AGENT_PICKER_PAGE_SIZE as usize
                 );
                 assert!(app.agent_navigation.next_picker_page_cursor().is_some());
+                assert!(app.agent_navigation.get(&non_agent_thread_id).is_none());
 
                 Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
 
@@ -506,6 +525,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     "the continuation must expose descendants beyond the first bounded page"
                 );
                 assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+                assert!(app.agent_navigation.get(&non_agent_thread_id).is_none());
 
                 app_server.shutdown().await?;
                 proxy.await??;
