@@ -361,9 +361,11 @@ async fn start_recording_app_server_with_options(
                             })
                             .flatten();
                         if let Some(thread) = oversized_page_thread {
-                            result["data"] = serde_json::Value::Array(
-                                vec![thread.clone(); LEGACY_AGENT_PICKER_MAX_THREADS + 1],
-                            );
+                            result["data"] = serde_json::Value::Array(vec![
+                                thread.clone();
+                                LEGACY_AGENT_PICKER_MAX_THREADS
+                                    + 1
+                            ]);
                         }
                     }
                     websocket
@@ -846,9 +848,7 @@ async fn assert_picker_cursor_fault_fails_closed(
             sort_key: Some(codex_app_server_protocol::ThreadSortKey::UpdatedAt),
             sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
             model_providers: None,
-            source_kinds: Some(vec![
-                codex_app_server_protocol::ThreadSourceKind::SubAgent,
-            ]),
+            source_kinds: Some(vec![codex_app_server_protocol::ThreadSourceKind::SubAgent]),
             thread_sources: None,
             archived: Some(false),
             is_pinned: None,
@@ -1285,8 +1285,7 @@ async fn assert_legacy_relation_budget_fails_closed(
         .iter()
         .filter(|request| {
             request.method == "thread/list"
-                && request.params["sourceKinds"]
-                    == serde_json::json!(["subAgentThreadSpawn"])
+                && request.params["sourceKinds"] == serde_json::json!(["subAgentThreadSpawn"])
                 && !request.params["ancestorThreadId"].is_string()
         })
         .count();
@@ -1316,8 +1315,7 @@ fn legacy_agent_picker_scan_enforces_page_and_thread_budgets() -> Result<()> {
                 )
                 .await?;
                 assert_legacy_relation_budget_fails_closed(
-                    /*legacy_unique_cursors*/ false,
-                    /*legacy_oversized_page*/ true,
+                    /*legacy_unique_cursors*/ false, /*legacy_oversized_page*/ true,
                     /*expected_legacy_requests*/ 1,
                 )
                 .await
