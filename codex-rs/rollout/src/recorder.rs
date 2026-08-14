@@ -1819,6 +1819,7 @@ fn precompute_log_file_info(
     })
 }
 
+#[cfg(test)]
 fn open_log_file(path: &Path) -> std::io::Result<File> {
     open_log_file_with_authority(path, RolloutMutationAuthority::new())
 }
@@ -2255,6 +2256,10 @@ impl JsonlWriter {
         }
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the owned continuation deliberately holds the file lock for the complete repair transaction"
+    )]
     async fn repair_to_offset(&mut self, offset: u64) -> std::io::Result<()> {
         let custody = self
             .mutation_authority
@@ -2291,6 +2296,10 @@ impl JsonlWriter {
         };
         self.write_line(&line).await
     }
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the owned continuation deliberately holds the file lock through append and rollback"
+    )]
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
