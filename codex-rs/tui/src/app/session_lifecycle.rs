@@ -23,6 +23,10 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub(super) const AGENT_PICKER_PAGE_SIZE: u32 = 50;
+pub(super) const AGENT_PICKER_CURSOR_BUDGET: usize = 128;
+pub(super) const LEGACY_AGENT_PICKER_MAX_PAGES: usize = AGENT_PICKER_CURSOR_BUDGET;
+pub(super) const LEGACY_AGENT_PICKER_MAX_THREADS: usize =
+    LEGACY_AGENT_PICKER_MAX_PAGES * AGENT_PICKER_PAGE_SIZE as usize;
 const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
@@ -1340,7 +1344,17 @@ impl App {
         let mut cursor = None;
         let mut seen_cursors = HashSet::new();
         let mut scanned_threads = Vec::new();
+        let mut page_count = 0;
+        let mut scanned_thread_count = 0;
         loop {
+            if page_count >= LEGACY_AGENT_PICKER_MAX_PAGES {
+                tracing::warn!(
+                    max_pages = LEGACY_AGENT_PICKER_MAX_PAGES,
+                    "legacy subagent relation repair exceeded its page budget"
+                );
+                return false;
+            }
+            page_count += 1;
             let response = match app_server
                 .thread_list(ThreadListParams {
                     cursor,
@@ -1366,7 +1380,26 @@ impl App {
                     return false;
                 }
             };
-            scanned_threads.extend(response.data);
+            let Some(next_scanned_thread_count) =
+                scanned_thread_count.checked_add(response.data.len())
+            else {
+                tracing::warn!("legacy subagent relation repair thread count overflowed");
+                return false;
+            };
+            if next_scanned_thread_count > LEGACY_AGENT_PICKER_MAX_THREADS {
+                tracing::warn!(
+                    max_threads = LEGACY_AGENT_PICKER_MAX_THREADS,
+                    "legacy subagent relation repair exceeded its thread budget"
+                );
+                return false;
+            }
+            scanned_thread_count = next_scanned_thread_count;
+            scanned_threads.extend(
+                response
+                    .data
+                    .into_iter()
+                    .filter(Self::is_thread_spawn_source),
+            );
             let Some(next_cursor) = response.next_cursor else {
                 break;
             };
