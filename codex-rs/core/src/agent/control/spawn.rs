@@ -1030,15 +1030,17 @@ impl AgentControl {
         child_thread: &Arc<CodexThread>,
         mut cleanup_error: Option<CodexErr>,
     ) -> UnpublishedSpawnCleanupAttempt {
-        if let Err(error) = child_thread.session.try_ensure_rollout_materialized().await {
-            if cleanup_error.is_none() && !is_benign_unpublished_spawn_persistence_error(&error) {
-                cleanup_error = Some(CodexErr::Io(error));
-            }
+        if let Err(error) = child_thread.session.try_ensure_rollout_materialized().await
+            && cleanup_error.is_none()
+            && !is_benign_unpublished_spawn_persistence_error(&error)
+        {
+            cleanup_error = Some(CodexErr::Io(error));
         }
-        if let Err(error) = child_thread.flush_rollout().await {
-            if cleanup_error.is_none() && !is_benign_unpublished_spawn_persistence_error(&error) {
-                cleanup_error = Some(CodexErr::Io(error));
-            }
+        if let Err(error) = child_thread.flush_rollout().await
+            && cleanup_error.is_none()
+            && !is_benign_unpublished_spawn_persistence_error(&error)
+        {
+            cleanup_error = Some(CodexErr::Io(error));
         }
 
         let removal = state
