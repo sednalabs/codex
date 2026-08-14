@@ -4505,7 +4505,6 @@ version = "0.0.0"
 dependencies = [
  "dirs",
  "dunce",
- "libc",
  "pretty_assertions",
  "schemars 1.2.1",
  "serde",
@@ -4615,6 +4614,7 @@ version = "0.0.0"
 dependencies = [
  "codex-utils-absolute-path",
  "dunce",
+ "libc",
  "pretty_assertions",
  "tempfile",
 ]
