@@ -427,10 +427,66 @@ fn spawn_child_command(
 }
 
 #[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct WindowsFsHelperRequestFile {
+    path: std::path::PathBuf,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsFsHelperRequestFile {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    fn cleanup(mut self) -> std::io::Result<()> {
+        let result = remove_windows_fs_helper_request_file(&self.path);
+        if result.is_ok() {
+            self.path.clear();
+        }
+        result
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsFsHelperRequestFile {
+    fn drop(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        if let Err(err) = remove_windows_fs_helper_request_file(&self.path) {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %err,
+                "failed to clean up windows fs sandbox helper request file"
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn remove_windows_fs_helper_request_file(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn write_windows_fs_helper_request_file(
     helper_program: &str,
     request_json: &[u8],
-) -> Result<std::path::PathBuf, JSONRPCErrorError> {
+) -> Result<WindowsFsHelperRequestFile, JSONRPCErrorError> {
+    write_windows_fs_helper_request_file_with(helper_program, |file| {
+        std::io::Write::write_all(file, request_json)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn write_windows_fs_helper_request_file_with(
+    helper_program: &str,
+    write_request: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<WindowsFsHelperRequestFile, JSONRPCErrorError> {
     let helper_dir = std::path::Path::new(helper_program)
         .parent()
         .ok_or_else(|| {
@@ -450,13 +506,23 @@ fn write_windows_fs_helper_request_file(
                 path.display()
             ))
         })?;
-    std::io::Write::write_all(&mut file, request_json).map_err(|err| {
-        internal_error(format!(
-            "failed to write windows fs sandbox helper request file {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(path)
+    let request_file = WindowsFsHelperRequestFile { path };
+    if let Err(write_err) = write_request(&mut file) {
+        drop(file);
+        let path = request_file.path().display().to_string();
+        let cleanup_result = request_file.cleanup();
+        return Err(internal_error(match cleanup_result {
+            Ok(()) => format!(
+                "failed to write windows fs sandbox helper request file {path}: {write_err}"
+            ),
+            Err(cleanup_err) => format!(
+                "failed to write windows fs sandbox helper request file {path}: {write_err}; \
+                 cleanup also failed: {cleanup_err}"
+            ),
+        }));
+    }
+    drop(file);
+    Ok(request_file)
 }
 
 #[cfg(target_os = "windows")]
@@ -482,7 +548,7 @@ async fn run_windows_sandbox_command(
         ))
     })?;
     let request_file = write_windows_fs_helper_request_file(&command[0], &request_json)?;
-    command.push(request_file.to_string_lossy().into_owned());
+    command.push(request_file.path().to_string_lossy().into_owned());
     let cwd = cwd.to_abs_path().map_err(io_error)?;
     let empty_paths: &[AbsolutePathBuf] = &[];
     let spawned = codex_windows_sandbox::spawn_windows_sandbox_session_for_level(
@@ -517,7 +583,6 @@ async fn run_windows_sandbox_command(
     } = match spawned {
         Ok(spawned) => spawned,
         Err(err) => {
-            let _ = std::fs::remove_file(&request_file);
             return Err(internal_error(format!(
                 "windows fs sandbox helper failed to run: {err}"
             )));
@@ -538,7 +603,11 @@ async fn run_windows_sandbox_command(
         stderr
     });
     let exit_code = exit_rx.await.unwrap_or(-1);
-    let _ = std::fs::remove_file(&request_file);
+    request_file.cleanup().map_err(|err| {
+        internal_error(format!(
+            "failed to clean up windows fs sandbox helper request file: {err}"
+        ))
+    })?;
     let stdout = stdout_task
         .await
         .map_err(|err| internal_error(format!("windows fs helper stdout task failed: {err}")))?;
@@ -900,18 +969,109 @@ mod tests {
         std::fs::write(&helper, b"helper").expect("write helper");
         let request_json = br#"{"operation":"fs/readFile"}"#;
 
-        let path = write_windows_fs_helper_request_file(
+        let request_file = write_windows_fs_helper_request_file(
             helper.to_str().expect("utf-8 helper path"),
             request_json,
         )
         .expect("request file");
 
         assert_eq!(
-            std::fs::read(&path).expect("read request file"),
+            std::fs::read(request_file.path()).expect("read request file"),
             request_json
         );
-        let _ = std::fs::remove_file(&path);
+        let path = request_file.path().to_owned();
+        request_file.cleanup().expect("clean up request file");
         assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_request_file_cleans_up_after_partial_write_failure() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let helper = root.path().join("codex.exe");
+        std::fs::write(&helper, b"helper").expect("write helper");
+
+        let err = write_windows_fs_helper_request_file_with(
+            helper.to_str().expect("utf-8 helper path"),
+            |file| {
+                std::io::Write::write_all(file, b"sensitive request prefix")?;
+                Err(std::io::Error::other("injected write failure"))
+            },
+        )
+        .expect_err("partial write should fail");
+
+        assert!(err.message.contains("injected write failure"));
+        assert!(windows_request_files(root.path()).is_empty());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_request_file_cleans_up_after_setup_failure() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let helper = root.path().join("codex.exe");
+        std::fs::write(&helper, b"helper").expect("write helper");
+        let mut request_path = None;
+
+        let setup_result: Result<(), JSONRPCErrorError> = (|| {
+            let request_file = write_windows_fs_helper_request_file(
+                helper.to_str().expect("utf-8 helper path"),
+                b"sensitive request",
+            )?;
+            request_path = Some(request_file.path().to_owned());
+            Err(internal_error("injected setup failure".to_string()))
+        })();
+
+        assert_eq!(
+            setup_result.expect_err("setup should fail").message,
+            "injected setup failure"
+        );
+        assert!(!request_path.expect("request path").exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn windows_request_file_cleans_up_when_owning_future_is_cancelled() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let helper = root.path().join("codex.exe");
+        std::fs::write(&helper, b"helper").expect("write helper");
+        let (path_tx, path_rx) = tokio::sync::oneshot::channel();
+
+        let task = tokio::spawn(async move {
+            let request_file = write_windows_fs_helper_request_file(
+                helper.to_str().expect("utf-8 helper path"),
+                b"sensitive request",
+            )
+            .expect("request file");
+            path_tx
+                .send(request_file.path().to_owned())
+                .expect("send request path");
+            std::future::pending::<()>().await;
+            drop(request_file);
+        });
+        let request_path = path_rx.await.expect("receive request path");
+        assert!(request_path.exists());
+
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("task should be cancelled")
+                .is_cancelled()
+        );
+        assert!(!request_path.exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_request_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .expect("read request directory")
+            .filter_map(|entry| {
+                let path = entry.expect("request directory entry").path();
+                path.file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|name| name.starts_with(".codex-fs-helper-request-"))
+                    .then_some(path)
+            })
+            .collect()
     }
 
     fn restricted_policy(entries: Vec<FileSystemSandboxEntry>) -> FileSystemSandboxPolicy {
