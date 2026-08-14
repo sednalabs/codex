@@ -2283,7 +2283,7 @@ mod tests {
         })
         .await;
         let mut worker_hooks = crate::remote::install_remote_worker_test_hooks(&websocket_url);
-        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+        let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
             channel_capacity: 1,
             ..test_remote_connect_args(websocket_url)
         })
