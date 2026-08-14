@@ -3,6 +3,8 @@ use crate::ThreadManager;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
+use crate::agent_communication::AgentCommunicationContext;
+use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
@@ -132,6 +134,128 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     assert_eq!(
         control.get_status(first.thread_id).await,
         AgentStatus::Completed(Some("reloaded turn complete".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start V2 root thread");
+    let control = root.thread.session.services.agent_control.clone();
+    control.state.release_spawned_thread(root.thread_id);
+    assert!(control.state.agent_metadata_for_thread(root.thread_id).is_none());
+    let injected_item = assistant_output("root injection");
+
+    manager
+        .inject_response_items(config, root.thread_id, vec![injected_item.clone()])
+        .await
+        .expect("loaded V2 root injection should not require subagent metadata");
+
+    assert!(
+        root.thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .contains(&injected_item)
+    );
+}
+
+#[tokio::test]
+async fn oversized_injection_is_rejected_without_reloading_cold_agent() {
+    let (_home, config, manager, control, first, _metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 25, /*ephemeral*/ false, /*sqlite*/ true,
+    )
+    .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("done".to_string())),
+    )
+    .await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
+    let cold_status = control
+        .state
+        .cold_status(first.thread_id, /*live_thread*/ None);
+
+    let error = manager
+        .inject_response_items(
+            config,
+            first.thread_id,
+            vec![assistant_output(&"x".repeat(40_001))],
+        )
+        .await
+        .expect_err("oversized cold injection should be rejected");
+
+    assert_matches::assert_matches!(
+        error.details(),
+        CodexErrorDetails::InvalidRequest(message)
+            if message == "items[0] must not exceed 10000 estimated model-visible tokens"
+    );
+    assert!(manager.get_thread(first.thread_id).await.is_err());
+    assert_eq!(
+        control
+            .state
+            .cold_status(first.thread_id, /*live_thread*/ None),
+        cold_status
+    );
+}
+
+#[tokio::test]
+async fn prepared_v2_delivery_rejects_current_but_shutdown_runtime() {
+    let (_home, config, manager, control, first, _metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ false,
+    )
+    .await;
+    first
+        .thread
+        .shutdown_and_wait()
+        .await
+        .expect("shut down runtime while manager still owns its Arc");
+    let context = AgentCommunicationContext::new(AgentCommunicationKind::Message, ThreadId::new());
+
+    let submission_error = control
+        .prepare_v2_agent_delivery(first.thread_id)
+        .await
+        .expect("registered shutdown runtime remains addressable")
+        .send(
+            test_communication(
+                "must not reach shutdown runtime",
+                /*trigger_turn*/ false,
+            ),
+            context,
+            /*interrupt*/ false,
+        )
+        .await
+        .expect_err("submission to shutdown runtime should fail");
+    assert_matches::assert_matches!(
+        submission_error.details(),
+        CodexErrorDetails::InternalAgentDied
+    );
+
+    let injection_error = manager
+        .inject_response_items(
+            config,
+            first.thread_id,
+            vec![assistant_output("must not enter shutdown runtime history")],
+        )
+        .await
+        .expect_err("app-server manager injection into shutdown runtime should fail");
+    assert_matches::assert_matches!(
+        injection_error.details(),
+        CodexErrorDetails::InternalAgentDied
     );
 }
 
@@ -304,6 +428,18 @@ fn test_communication(text: &str, trigger_turn: bool) -> InterAgentCommunication
         text.to_string(),
         trigger_turn,
     )
+}
+
+fn assistant_output(text: &str) -> ResponseItem {
+    ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: text.to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    }
 }
 
 async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) {

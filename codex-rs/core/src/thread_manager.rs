@@ -662,6 +662,19 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    /// Verify that response-item injection can address this thread without waking a cold agent.
+    pub async fn ensure_response_item_injection_target(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<()> {
+        for control in self.state.resident_agent_controls().await {
+            if control.uses_v2_lifecycle(thread_id) {
+                return Ok(());
+            }
+        }
+        self.get_thread(thread_id).await.map(|_| ())
+    }
+
     /// Inject response items through the manager so cold V2 agents are reloaded before mutation.
     pub async fn inject_response_items(
         &self,
@@ -670,7 +683,8 @@ impl ThreadManager {
         items: Vec<ResponseItem>,
     ) -> CodexResult<()> {
         for control in self.state.resident_agent_controls().await {
-            if control.uses_v2_lifecycle(&self.state, thread_id).await {
+            if control.uses_v2_lifecycle(thread_id) {
+                crate::codex_thread::validate_injected_response_items(&items)?;
                 return control
                     .prepare_v2_agent_delivery_with_reload(config, thread_id)
                     .await?

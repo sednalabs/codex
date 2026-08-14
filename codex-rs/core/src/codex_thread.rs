@@ -1,5 +1,6 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
+use crate::context_manager::estimate_item_token_count;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
@@ -60,6 +61,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use codex_rollout::state_db::StateDbHandle;
+
+pub(crate) const INJECTED_RESPONSE_ITEM_MAX_TOKENS: i64 = 10_000;
+pub(crate) const INJECTED_RESPONSE_ITEMS_MAX_TOKENS: i64 = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -581,11 +585,7 @@ impl CodexThread {
         &self,
         items: Vec<ResponseItem>,
     ) -> CodexResult<()> {
-        if items.is_empty() {
-            return Err(CodexErr::InvalidRequest(
-                "items must not be empty".to_string(),
-            ));
-        }
+        validate_injected_response_items(&items)?;
 
         let turn_context = self.session.new_default_turn().await;
         if self.session.reference_context_item().await.is_none() {
@@ -811,4 +811,30 @@ impl CodexThread {
         }
         Ok(elicitations.count)
     }
+}
+
+pub(crate) fn validate_injected_response_items(items: &[ResponseItem]) -> CodexResult<()> {
+    if items.is_empty() {
+        return Err(CodexErr::InvalidRequest(
+            "items must not be empty".to_string(),
+        ));
+    }
+
+    let mut total_tokens = 0_i64;
+    for (index, item) in items.iter().enumerate() {
+        let item_tokens = estimate_item_token_count(item);
+        if item_tokens > INJECTED_RESPONSE_ITEM_MAX_TOKENS {
+            return Err(CodexErr::InvalidRequest(format!(
+                "items[{index}] must not exceed {INJECTED_RESPONSE_ITEM_MAX_TOKENS} estimated model-visible tokens"
+            )));
+        }
+        total_tokens = total_tokens.saturating_add(item_tokens);
+        if total_tokens > INJECTED_RESPONSE_ITEMS_MAX_TOKENS {
+            return Err(CodexErr::InvalidRequest(format!(
+                "items must not exceed {INJECTED_RESPONSE_ITEMS_MAX_TOKENS} estimated model-visible tokens in total"
+            )));
+        }
+    }
+
+    Ok(())
 }

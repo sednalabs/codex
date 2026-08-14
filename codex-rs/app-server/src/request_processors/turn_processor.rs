@@ -877,6 +877,16 @@ impl TurnRequestProcessor {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
+        self.thread_manager
+            .ensure_response_item_injection_target(thread_id)
+            .await
+            .map_err(|err| match err.details() {
+                CodexErrorDetails::ThreadNotFound(thread_id) => {
+                    invalid_request(format!("thread not found: {thread_id}"))
+                }
+                _ => internal_error(format!("failed to resolve injection target: {err}")),
+            })?;
+
         let items = params
             .items
             .into_iter()
@@ -898,6 +908,9 @@ impl TurnRequestProcessor {
         .await
         .map_err(|err| match err.details() {
             CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),
+            CodexErrorDetails::ThreadNotFound(thread_id) => {
+                invalid_request(format!("thread not found: {thread_id}"))
+            }
             _ => internal_error(format!("failed to inject response items: {err}")),
         })?;
         Ok(ThreadInjectItemsResponse {})
