@@ -18,8 +18,6 @@ codex-analytics = { workspace = true }
 codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-core-plugins = { workspace = true }
-codex-core-skills = { workspace = true }
-codex-exec-server = { workspace = true }
 codex-hooks = { workspace = true }
 codex-memories-write = { workspace = true }
 codex-otel = { workspace = true }
@@ -28,13 +26,11 @@ codex-protocol = { workspace = true }
 codex-rollout = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-output-truncation = { workspace = true }
-codex-utils-plugins = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
