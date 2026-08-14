@@ -400,12 +400,15 @@ impl AgentRegistry {
                 .active_agents
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let removed_key = active_agents.agent_tree.iter().find_map(|(key, metadata)| {
-                (metadata.agent_id == Some(thread_id)
-                    && Arc::ptr_eq(&metadata.generation, &expected.generation))
-                .then_some(key)
-            })
-            .cloned();
+            let removed_key = active_agents
+                .agent_tree
+                .iter()
+                .find_map(|(key, metadata)| {
+                    (metadata.agent_id == Some(thread_id)
+                        && Arc::ptr_eq(&metadata.generation, &expected.generation))
+                    .then_some(key)
+                })
+                .cloned();
             removed_key
                 .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
                 .is_some_and(|metadata| {
