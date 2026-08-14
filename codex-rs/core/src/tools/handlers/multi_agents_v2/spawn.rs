@@ -130,6 +130,7 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    spawn_call_id: Some(call_id.clone()),
                 },
             ),
     )
@@ -153,6 +154,10 @@ async fn handle_spawn_agent(
         .as_ref()
         .map(|snapshot| snapshot.reasoning_effort.clone())
         .unwrap_or_else(|| args.reasoning_effort.clone());
+    // `spawn_agent_with_communication` only returns `Ok` after winning publication. A child
+    // that finished its first turn quickly is still a real published child and must retain the
+    // same V2 Started activity as a running child; cancellation-owned spawns return `Err` above
+    // and therefore remain invisible.
     emit_sub_agent_activity(
         &session,
         &turn,
@@ -209,6 +214,12 @@ async fn handle_spawn_agent(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        // See the V1 handler: publication and cancellation share a control-plane decision, and
+        // the runtime must keep this future alive until a cancellation-owned child is reconciled.
+        true
     }
 }
 

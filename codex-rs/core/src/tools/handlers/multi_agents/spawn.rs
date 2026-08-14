@@ -68,23 +68,6 @@ async fn handle_spawn_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
-    session
-        .emit_turn_item_started(
-            &turn,
-            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                id: call_id.clone(),
-                tool: CollabAgentTool::SpawnAgent,
-                status: CollabAgentToolCallStatus::InProgress,
-                sender_thread_id: session.thread_id,
-                receiver_thread_ids: Vec::new(),
-                receiver_agents: Vec::new(),
-                prompt: Some(prompt.clone()),
-                model: Some(args.model.clone().unwrap_or_default()),
-                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
-                agents_states: Default::default(),
-            }),
-        )
-        .await;
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
     if let Some(service_tier) = args.service_tier.as_ref() {
@@ -113,6 +96,27 @@ async fn handle_spawn_agent(
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
 
+    // A spawn is an operation before it has a child identity. Emitting this before awaiting
+    // AgentControl preserves truthful in-progress visibility for slow creation without exposing
+    // a cancellation-owned provisional child through receiver fields.
+    session
+        .emit_turn_item_started(
+            &turn,
+            &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+                id: call_id.clone(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: session.thread_id,
+                receiver_thread_ids: Vec::new(),
+                receiver_agents: Vec::new(),
+                prompt: Some(prompt.clone()),
+                model: Some(args.model.clone().unwrap_or_default()),
+                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                agents_states: Default::default(),
+            }),
+        )
+        .await;
+
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
         input_items,
@@ -128,10 +132,11 @@ async fn handle_spawn_agent(
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
+            spawn_call_id: Some(call_id.clone()),
         },
     ))
-    .await
-    .map_err(collab_spawn_error);
+    .await;
+    let result = result.map_err(collab_spawn_error);
     let (new_thread_id, new_agent_metadata, status) = match &result {
         Ok(spawned_agent) => (
             Some(spawned_agent.thread_id),
@@ -219,6 +224,13 @@ async fn handle_spawn_agent(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        // The tool runtime must wait while AgentControl reconciles a cancellation-owned
+        // provisional child. Returning an aborted result before that cleanup could leave an
+        // unseen child running after the parent believes the spawn failed.
+        true
     }
 }
 
