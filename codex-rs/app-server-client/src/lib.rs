@@ -1896,8 +1896,10 @@ mod tests {
                     &mut websocket,
                     JSONRPCMessage::Notification(
                         serde_json::from_value(
-                            serde_json::to_value(command_execution_output_delta_notification(delta))
-                                .expect("notification should serialize"),
+                            serde_json::to_value(command_execution_output_delta_notification(
+                                delta,
+                            ))
+                            .expect("notification should serialize"),
                         )
                         .expect("notification should convert to JSON-RPC"),
                     ),
@@ -2029,7 +2031,9 @@ mod tests {
                         break;
                     }
                     JSONRPCMessage::Notification(_) => {}
-                    message => panic!("unexpected command while loading remote worker: {message:?}"),
+                    message => {
+                        panic!("unexpected command while loading remote worker: {message:?}")
+                    }
                 }
             }
             let _ = done_rx.await;
@@ -2055,7 +2059,9 @@ mod tests {
         };
         let (response, ()) = tokio::join!(request, command_load);
         assert_eq!(
-            response.expect("response should not be starved by command load").account,
+            response
+                .expect("response should not be starved by command load")
+                .account,
             None
         );
 
@@ -2101,8 +2107,7 @@ mod tests {
                     read_websocket_message(&mut websocket),
                 )
                 .await
-                .expect("every unanswered server request should be rejected")
-                else {
+                .expect("every unanswered server request should be rejected") else {
                     panic!("terminal cleanup should only send JSON-RPC errors");
                 };
                 rejected.push((error.id, error.error.code));
@@ -2169,13 +2174,11 @@ mod tests {
         );
 
         for request_id in [RequestId::Integer(0), RequestId::Integer(1)] {
-            let AppServerEvent::ServerRequest(request) = timeout(
-                Duration::from_secs(2),
-                client.next_event(),
-            )
-            .await
-            .expect("retained public request should arrive before terminal")
-            .expect("event stream should stay open until disconnect")
+            let AppServerEvent::ServerRequest(request) =
+                timeout(Duration::from_secs(2), client.next_event())
+                    .await
+                    .expect("retained public request should arrive before terminal")
+                    .expect("event stream should stay open until disconnect")
             else {
                 panic!("expected retained server request before disconnect");
             };
@@ -2189,7 +2192,10 @@ mod tests {
         ));
         assert!(client.next_event().await.is_none());
 
-        client.shutdown().await.expect("terminal shutdown should complete");
+        client
+            .shutdown()
+            .await
+            .expect("terminal shutdown should complete");
     }
 
     #[tokio::test]
@@ -2208,8 +2214,7 @@ mod tests {
                 read_websocket_message(&mut websocket),
             )
             .await
-            .expect("shutdown should reject the unanswered server request")
-            else {
+            .expect("shutdown should reject the unanswered server request") else {
                 panic!("shutdown should send a JSON-RPC error response");
             };
             rejection_tx
@@ -2226,13 +2231,11 @@ mod tests {
             .await
             .expect("remote client should connect");
 
-        let AppServerEvent::ServerRequest(request) = timeout(
-            Duration::from_secs(2),
-            client.next_event(),
-        )
-        .await
-        .expect("server request should arrive before shutdown")
-        .expect("event stream should stay open before shutdown")
+        let AppServerEvent::ServerRequest(request) =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("server request should arrive before shutdown")
+                .expect("event stream should stay open before shutdown")
         else {
             panic!("expected server request before shutdown");
         };
@@ -2302,7 +2305,10 @@ mod tests {
             first_request_seen_tx
                 .send(request.id)
                 .expect("first request should be observed");
-            websocket.close(None).await.expect("peer close should succeed");
+            websocket
+                .close(None)
+                .await
+                .expect("peer close should succeed");
         })
         .await;
         let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
@@ -2385,9 +2391,9 @@ mod tests {
 
             match websocket.next().await {
                 Some(Ok(Message::Close(_))) | None => {}
-                frame => panic!(
-                    "resolved server request must not receive a second response: {frame:?}"
-                ),
+                frame => {
+                    panic!("resolved server request must not receive a second response: {frame:?}")
+                }
             }
         })
         .await;
