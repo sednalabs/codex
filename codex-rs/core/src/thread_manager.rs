@@ -669,13 +669,14 @@ impl ThreadManager {
         thread_id: ThreadId,
         items: Vec<ResponseItem>,
     ) -> CodexResult<()> {
-        let control = self.agent_control();
-        if control.uses_v2_lifecycle(&self.state, thread_id).await {
-            return control
-                .prepare_v2_agent_delivery_with_reload(config, thread_id)
-                .await?
-                .inject_response_items(items)
-                .await;
+        for control in self.state.resident_agent_controls().await {
+            if control.uses_v2_lifecycle(&self.state, thread_id).await {
+                return control
+                    .prepare_v2_agent_delivery_with_reload(config, thread_id)
+                    .await?
+                    .inject_response_items(items)
+                    .await;
+            }
         }
         self.get_thread(thread_id)
             .await?
@@ -1291,6 +1292,15 @@ impl ThreadManager {
 }
 
 impl ThreadManagerState {
+    async fn resident_agent_controls(&self) -> Vec<AgentControl> {
+        self.threads
+            .read()
+            .await
+            .values()
+            .map(|thread| thread.session.services.agent_control.clone())
+            .collect()
+    }
+
     pub(crate) fn agent_graph_store(&self) -> Option<Arc<dyn AgentGraphStore>> {
         self.agent_graph_store.clone()
     }

@@ -259,7 +259,7 @@ async fn terminal_idle_test_agent(
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("start root thread");
-    let control = manager.agent_control();
+    let control = root.thread.session.services.agent_control.clone();
     let state = control.upgrade().expect("thread manager should be live");
     let residency_slot = control
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
