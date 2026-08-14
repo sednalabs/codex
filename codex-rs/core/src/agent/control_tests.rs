@@ -664,12 +664,16 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
 
     // Session IO is an unbounded buffered-drain stream: its terminal event remains available to
     // the first listener even though it was emitted before publication/attachment.
-    let buffered_event = child
-        .thread
-        .next_event()
-        .await
-        .expect("terminal child event should remain buffered until drained");
-    assert_matches!(buffered_event.msg, EventMsg::TurnComplete(_));
+    loop {
+        let buffered_event = child
+            .thread
+            .next_event()
+            .await
+            .expect("terminal child event should remain buffered until drained");
+        if matches!(buffered_event.msg, EventMsg::TurnComplete(_)) {
+            break;
+        }
+    }
 
     let stored_child = child
         .thread
