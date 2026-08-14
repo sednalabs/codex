@@ -40,14 +40,8 @@ use codex_analytics::AnalyticsEventsClient;
 use codex_core::config::Config;
 use codex_core_plugins::PluginsManager;
 use codex_core_plugins::marketplace::MarketplacePluginInstallPolicy;
-use codex_core_skills::loader::SkillRoot;
-use codex_core_skills::loader::load_skills_from_roots;
-use codex_exec_server::LOCAL_FS;
 use codex_protocol::protocol::Product;
-use codex_protocol::protocol::SkillScope;
 use codex_rollout::StateDbHandle;
-use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_plugins::SkillDiscoveryMode;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -56,8 +50,6 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 use toml::Value as TomlValue;
 
 #[cfg(test)]
@@ -66,6 +58,46 @@ const EXTERNAL_AGENT_DIR: &str = crate::ClaSource::CONFIG_DIR;
 const EXTERNAL_AGENT_CONFIG_MD: &str = crate::ClaSource::CONFIG_MD;
 
 const EXTERNAL_AGENT_CONFIG_IMPORT_METRIC: &str = "codex.external_agent_config.import";
+
+fn validate_skill_import_root(source_skills: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(source_skills)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let skill_file = entry.path().join("SKILL.md");
+        let contents = fs::read_to_string(&skill_file)?;
+        let Some(frontmatter) = contents
+            .strip_prefix("---\n")
+            .and_then(|contents| contents.split_once("\n---").map(|(frontmatter, _)| frontmatter))
+        else {
+            return Err(invalid_data_error(format!(
+                "invalid skill {}: missing YAML frontmatter delimited by ---",
+                skill_file.display()
+            )));
+        };
+        let metadata: serde_yaml::Value = serde_yaml::from_str(frontmatter).map_err(|err| {
+            invalid_data_error(format!(
+                "invalid skill {}: invalid YAML frontmatter: {err}",
+                skill_file.display()
+            ))
+        })?;
+        for field in ["name", "description"] {
+            let present = metadata
+                .as_mapping()
+                .and_then(|mapping| mapping.get(&serde_yaml::Value::from(field)))
+                .and_then(serde_yaml::Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty());
+            if !present {
+                return Err(invalid_data_error(format!(
+                    "invalid skill {}: missing non-empty `{field}` frontmatter field",
+                    skill_file.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct ExternalAgentConfigService {
@@ -191,19 +223,18 @@ impl ExternalAgentConfigService {
                     );
                     Ok(())
                 })(),
-                ExternalAgentConfigMigrationItemType::Skills => self
-                    .import_skills(migration_item.cwd.as_deref())
-                    .await
-                    .map(|imported_skills| {
-                        emit_migration_metric(
-                            EXTERNAL_AGENT_CONFIG_IMPORT_METRIC,
-                            ExternalAgentConfigMigrationItemType::Skills,
-                            Some(imported_skills.len()),
-                        );
-                        for skill_name in imported_skills {
-                            item_result.record_success(Some(skill_name.clone()), Some(skill_name));
-                        }
-                    }),
+                ExternalAgentConfigMigrationItemType::Skills => (|| {
+                    let imported_skills = self.import_skills(migration_item.cwd.as_deref())?;
+                    emit_migration_metric(
+                        EXTERNAL_AGENT_CONFIG_IMPORT_METRIC,
+                        ExternalAgentConfigMigrationItemType::Skills,
+                        Some(imported_skills.len()),
+                    );
+                    for skill_name in imported_skills {
+                        item_result.record_success(Some(skill_name.clone()), Some(skill_name));
+                    }
+                    Ok(())
+                })(),
                 ExternalAgentConfigMigrationItemType::AgentsMd => (|| {
                     if let Some((source, target)) =
                         self.import_agents_md(migration_item.cwd.as_deref())?
@@ -704,7 +735,7 @@ impl ExternalAgentConfigService {
             .import_commands(&source_commands, &target_skills)
     }
 
-    async fn import_skills(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
+    fn import_skills(&self, cwd: Option<&Path>) -> io::Result<Vec<String>> {
         let Some(scope) = MigrationScope::from_cwd(cwd)? else {
             return Ok(Vec::new());
         };
@@ -724,36 +755,7 @@ impl ExternalAgentConfigService {
             return Ok(Vec::new());
         }
 
-        let source_skills_root = AbsolutePathBuf::from_absolute_path_checked(&source_skills)
-            .map_err(|err| {
-                invalid_data_error(format!(
-                    "invalid skills root {}: {err}",
-                    source_skills.display()
-                ))
-            })?;
-        let outcome = load_skills_from_roots(
-            [SkillRoot {
-                path: source_skills_root,
-                scope: SkillScope::User,
-                file_system: Arc::clone(&LOCAL_FS),
-                plugin_identity: None,
-                plugin_namespace: None,
-                plugin_root: None,
-                discovery_mode: SkillDiscoveryMode::Recursive,
-            }],
-            /*plugin_skill_snapshots*/ None,
-            Arc::new(Semaphore::new(1)),
-        )
-        .await;
-        if !outcome.errors.is_empty() {
-            let details = outcome
-                .errors
-                .iter()
-                .map(|error| format!("{}: {}", error.path.display(), error.message))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(invalid_data_error(format!("invalid skills: {details}")));
-        }
+        validate_skill_import_root(&source_skills)?;
 
         fs::create_dir_all(&target_skills)?;
         let mut copied_names = Vec::new();
