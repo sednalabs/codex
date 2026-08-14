@@ -119,6 +119,7 @@ async fn restricted_token_fs_helper_rejects_read_only_write() -> Result<()> {
     let writable_dir = workspace.join("writable");
     std::fs::create_dir_all(&writable_dir)?;
     let blocked_path = workspace.join("blocked.txt");
+    let blocked_uri = PathUri::from_abs_path(&blocked_path);
     let sandbox = read_only_sandbox_with_write_elsewhere(
         workspace,
         writable_dir,
@@ -127,7 +128,7 @@ async fn restricted_token_fs_helper_rejects_read_only_write() -> Result<()> {
 
     let error = sandboxed
         .file_system
-        .write_file(&blocked_path, b"blocked".to_vec(), Some(&sandbox))
+        .write_file(&blocked_uri, b"blocked".to_vec(), Some(&sandbox))
         .await
         .expect_err("read-only sandboxed helper should reject writes");
     assert!(
