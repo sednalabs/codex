@@ -173,9 +173,11 @@ pub(crate) fn spawn_exit_watcher(
 ) {
     let exit_token = process.cancellation_token();
     let interaction_lock = process.interaction_lock();
+    session_ref.input_queue.register_terminal_finalizer();
 
     tokio::spawn(async move {
         exit_token.cancelled().await;
+        let _residency_transition = session_ref.input_queue.begin_residency_activity().await;
         process.wait_for_output_completion().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until
@@ -250,6 +252,7 @@ pub(crate) fn spawn_exit_watcher(
                     .await;
             }
         }
+        session_ref.input_queue.finish_terminal_finalizer();
     });
 }
 
