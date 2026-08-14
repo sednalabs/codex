@@ -67,10 +67,11 @@ fn validate_skill_import_root(source_skills: &Path) -> io::Result<()> {
         }
         let skill_file = entry.path().join("SKILL.md");
         let contents = fs::read_to_string(&skill_file)?;
-        let Some(frontmatter) = contents
-            .strip_prefix("---\n")
-            .and_then(|contents| contents.split_once("\n---").map(|(frontmatter, _)| frontmatter))
-        else {
+        let Some(frontmatter) = contents.strip_prefix("---\n").and_then(|contents| {
+            contents
+                .split_once("\n---")
+                .map(|(frontmatter, _)| frontmatter)
+        }) else {
             return Err(invalid_data_error(format!(
                 "invalid skill {}: missing YAML frontmatter delimited by ---",
                 skill_file.display()
