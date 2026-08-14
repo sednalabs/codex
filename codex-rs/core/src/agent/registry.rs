@@ -403,7 +403,7 @@ impl AgentRegistry {
             let removed_key = active_agents.agent_tree.iter().find_map(|(key, metadata)| {
                 (metadata.agent_id == Some(thread_id)
                     && Arc::ptr_eq(&metadata.generation, &expected.generation))
-                    .then_some(key)
+                .then_some(key)
             });
             removed_key
                 .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
