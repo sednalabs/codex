@@ -7,6 +7,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_thread_store::ThreadStoreError;
 use tokio::time::Duration;
 
 /// A failed shutdown must not turn a live unpublished child into an untracked runtime. Retry a
@@ -69,6 +70,12 @@ fn is_benign_unpublished_spawn_cleanup_source(source: &(dyn std::error::Error + 
             CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
         )
     {
+        return true;
+    }
+    if matches!(
+        source.downcast_ref::<ThreadStoreError>(),
+        Some(ThreadStoreError::ThreadNotFound { .. })
+    ) {
         return true;
     }
     source
