@@ -50,6 +50,7 @@ async fn start_recording_app_server(
 struct RecordingAppServerOptions {
     ignore_ancestor_filter: bool,
     fail_thread_list_request: Option<usize>,
+    empty_loaded_threads: bool,
 }
 
 fn test_support_error(error: impl std::fmt::Display) -> color_eyre::eyre::Report {
@@ -150,6 +151,21 @@ async fn start_recording_app_server_with_options(
                     let request_id = request.id.clone();
                     if method == "thread/list" {
                         thread_list_request_count += 1;
+                    }
+                    if options.empty_loaded_threads && method == "thread/loaded/list" {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                                    id: request_id,
+                                    result: serde_json::json!({
+                                        "data": [],
+                                        "nextCursor": null,
+                                    }),
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
                     }
                     if options.fail_thread_list_request == Some(thread_list_request_count)
                         && method == "thread/list"
@@ -498,8 +514,14 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     )?;
                     child_thread_ids.push(child_thread_id);
                 }
-                let (mut app_server, _requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
+                let (mut app_server, _requests, proxy) = start_recording_app_server_with_options(
+                    &app.config,
+                    RecordingAppServerOptions {
+                        empty_loaded_threads: true,
+                        ..RecordingAppServerOptions::default()
+                    },
+                )
+                .await?;
                 // Populate the relationship index as modern sessions do.
                 let mut repair_cursor = None;
                 loop {
@@ -528,14 +550,6 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                         break;
                     }
                 }
-
-                // The relationship-index repair above loads every discovered rollout into the
-                // embedded server. Restart it so this test measures the bounded persisted page,
-                // not the separate priority path for descendants that are already loaded.
-                app_server.shutdown().await?;
-                proxy.await??;
-                let (mut app_server, _requests, proxy) =
-                    start_recording_app_server(&app.config).await?;
 
                 let root = app_server
                     .resume_thread(
