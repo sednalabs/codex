@@ -64,6 +64,7 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Error as TungsteniteError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -549,6 +550,7 @@ enum ServerRequestResponseDisposition {
 
 #[derive(Debug)]
 struct RequiredEventOverflow {
+    event: AppServerEvent,
     server_request_id: Option<RequestId>,
 }
 
@@ -583,8 +585,10 @@ impl RemoteEventBacklog {
             // that retained ownership so a fast event consumer that never
             // answers prompts cannot turn it into an unbounded side queue.
             if self.server_request_dispositions.len() >= self.capacity.saturating_mul(2) {
+                let request_id = request_id.clone();
                 return Err(RequiredEventOverflow {
-                    server_request_id: Some(request_id.clone()),
+                    server_request_id: Some(request_id),
+                    event,
                 });
             }
         }
@@ -602,11 +606,13 @@ impl RemoteEventBacklog {
         }
 
         if remote_event_requires_delivery(&event) {
+            let server_request_id = match &event {
+                AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
+                _ => None,
+            };
             return Err(RequiredEventOverflow {
-                server_request_id: match event {
-                    AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
-                    _ => None,
-                },
+                server_request_id,
+                event,
             });
         }
 
@@ -617,6 +623,21 @@ impl RemoteEventBacklog {
     fn record_best_effort_skip(&mut self) {
         self.skipped_events = self.skipped_events.saturating_add(1);
         self.lagged_after.get_or_insert(self.events.len());
+    }
+
+    fn can_accept_deferred(&self, event: &AppServerEvent) -> bool {
+        match event {
+            AppServerEvent::ServerRequest(request)
+                if self.server_request_dispositions.contains_key(request.id()) =>
+            {
+                true
+            }
+            AppServerEvent::ServerRequest(_) => {
+                self.events.len() < self.capacity
+                    && self.server_request_dispositions.len() < self.capacity.saturating_mul(2)
+            }
+            _ => self.events.len() < self.capacity,
+        }
     }
 
     fn has_pending_public_event(&self) -> bool {
@@ -674,9 +695,16 @@ impl RemoteEventBacklog {
         unanswered
     }
 
-    fn finalize(mut self, message: String) -> VecDeque<AppServerEvent> {
+    fn finalize(
+        mut self,
+        deferred_event: Option<AppServerEvent>,
+        message: String,
+    ) -> VecDeque<AppServerEvent> {
         let mut terminal_events = VecDeque::new();
         while let Some(event) = self.pop_next_for_public() {
+            terminal_events.push_back(event);
+        }
+        if let Some(event) = deferred_event {
             terminal_events.push_back(event);
         }
         terminal_events.push_back(AppServerEvent::Disconnected { message });
@@ -765,8 +793,23 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut pending_requests = HashMap::<RequestId, PendingRemoteRequest>::new();
+    let mut deferred_event = None;
 
     while terminal.is_none() {
+        if deferred_event
+            .as_ref()
+            .is_some_and(|event| backlog.can_accept_deferred(event))
+        {
+            let Some(event) = deferred_event.take() else {
+                continue;
+            };
+            terminal =
+                enqueue_remote_worker_event(&mut backlog, &endpoint, event, &mut deferred_event);
+            if terminal.is_some() {
+                continue;
+            }
+        }
+
         // This intentionally uses Tokio's fair (non-biased) selection. Each
         // command branch handles exactly one command, so a command producer
         // cannot starve responses or websocket lifecycle messages.
@@ -801,13 +844,14 @@ where
                     )),
                 };
             }
-            message = stream.next() => {
+            message = stream.next(), if deferred_event.is_none() => {
                 terminal = handle_remote_message(
                     message,
                     &mut stream,
                     &endpoint,
                     &mut pending_requests,
                     &mut backlog,
+                    &mut deferred_event,
                 )
                 .await;
             }
@@ -870,7 +914,10 @@ where
 
     let mut reject_request_ids = backlog.take_unanswered_server_request_ids();
     reject_request_ids.extend(terminal.overflowed_server_request_ids.iter().cloned());
-    let terminal_events = backlog.finalize(terminal.message.clone());
+    if let Some(AppServerEvent::ServerRequest(request)) = &deferred_event {
+        reject_request_ids.push(request.id().clone());
+    }
+    let terminal_events = backlog.finalize(deferred_event, terminal.message.clone());
 
     // Event publication is independent from socket cleanup. In particular, a
     // peer that stalls request rejections or the close handshake cannot delay
@@ -1014,6 +1061,7 @@ async fn handle_remote_message<S>(
     endpoint: &str,
     pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
     backlog: &mut RemoteEventBacklog,
+    deferred_event: &mut Option<AppServerEvent>,
 ) -> Option<RemoteTerminal>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1033,17 +1081,19 @@ where
                 None
             }
             Ok(JSONRPCMessage::Notification(notification)) => {
-                app_server_event_from_notification(notification)
-                    .and_then(|event| enqueue_remote_event(backlog, endpoint, event))
+                app_server_event_from_notification(notification).and_then(|event| {
+                    enqueue_remote_worker_event(backlog, endpoint, event, deferred_event)
+                })
             }
             Ok(JSONRPCMessage::Request(request)) => {
                 let request_id = request.id.clone();
                 let method = request.method.clone();
                 match ServerRequest::try_from(request) {
-                    Ok(request) => enqueue_remote_event(
+                    Ok(request) => enqueue_remote_worker_event(
                         backlog,
                         endpoint,
                         AppServerEvent::ServerRequest(request),
+                        deferred_event,
                     ),
                     Err(err) => {
                         warn!(%err, method, "rejecting unknown remote app-server request");
@@ -1095,6 +1145,44 @@ where
             ErrorKind::UnexpectedEof,
             format!("remote app server at `{endpoint}` closed the connection"),
         )),
+    }
+}
+
+fn enqueue_remote_worker_event(
+    backlog: &mut RemoteEventBacklog,
+    endpoint: &str,
+    event: AppServerEvent,
+    deferred_event: &mut Option<AppServerEvent>,
+) -> Option<RemoteTerminal> {
+    #[cfg(test)]
+    let server_request_id = match &event {
+        AppServerEvent::ServerRequest(request) => Some(request.id().clone()),
+        AppServerEvent::Lagged { .. }
+        | AppServerEvent::ServerNotification(_)
+        | AppServerEvent::Disconnected { .. } => None,
+    };
+    match backlog.enqueue(event) {
+        Ok(()) => {
+            #[cfg(test)]
+            if let Some(request_id) = server_request_id {
+                record_remote_worker_test_event(
+                    endpoint,
+                    RemoteWorkerTestEvent::ServerRequestQueued(request_id),
+                );
+            }
+            None
+        }
+        Err(overflow) => {
+            let server_request_id = overflow.server_request_id.clone();
+            if deferred_event.replace(overflow.event).is_some() {
+                Some(RemoteTerminal::required_event_overflow(
+                    endpoint,
+                    server_request_id,
+                ))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -1582,6 +1670,7 @@ where
 fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
     match err {
         TungsteniteError::ConnectionClosed | TungsteniteError::AlreadyClosed => true,
+        TungsteniteError::Protocol(ProtocolError::SendAfterClosing) => true,
         TungsteniteError::Io(err) => matches!(
             err.kind(),
             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::NotConnected
@@ -1615,7 +1704,7 @@ mod tests {
             .enqueue(AppServerEvent::Lagged { skipped: 12 })
             .expect("best-effort overflow should remain accounted for");
 
-        let events = backlog.finalize("terminal".to_string());
+        let events = backlog.finalize(None, "terminal".to_string());
         assert!(matches!(events[0], AppServerEvent::Lagged { skipped: 10 }));
         assert!(matches!(events[1], AppServerEvent::Lagged { skipped: 2 }));
         assert!(matches!(
@@ -1782,7 +1871,7 @@ mod tests {
             .enqueue(AppServerEvent::Lagged { skipped: 8 })
             .expect("best-effort event should be accounted for");
 
-        let events = backlog.finalize("terminal".to_string());
+        let events = backlog.finalize(None, "terminal".to_string());
         assert!(matches!(
             events[0],
             AppServerEvent::ServerRequest(ref request) if request.id() == &RequestId::Integer(1)
