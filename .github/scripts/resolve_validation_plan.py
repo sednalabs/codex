@@ -371,11 +371,7 @@ def validate_catalog(catalog: dict, *, repo_root: Path | None = None) -> None:
         route_id = route.get("route_id")
         if not isinstance(route_id, str) or not route_id:
             raise SystemExit("validation catalog follow-up routes must set route_id")
-        priority = route.get("priority", DEFAULT_FOLLOWUP_ROUTE_PRIORITY)
-        if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
-            raise SystemExit(
-                f"follow-up route {route_id} must set priority to a non-negative integer"
-            )
+        followup_route_priority(route)
 
 
 def validate_safe_nextest_archive_field(lane_id: str, field_name: str, value: object) -> str:
@@ -571,11 +567,14 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     if not matching_routes:
         return []
 
-    highest_priority = max(followup_route_priority(route) for route in matching_routes)
+    routes_with_priority = [
+        (route, followup_route_priority(route)) for route in matching_routes
+    ]
+    highest_priority = max(priority for _, priority in routes_with_priority)
     highest_priority_routes = [
         route
-        for route in matching_routes
-        if followup_route_priority(route) == highest_priority
+        for route, priority in routes_with_priority
+        if priority == highest_priority
     ]
     if len(highest_priority_routes) != 1:
         return []

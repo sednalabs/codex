@@ -1072,13 +1072,20 @@ fn spawn_request_matches_effective(
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty());
-    requested_model.is_some()
-        && spawn_request.reasoning_effort.is_some()
-        && requested_model
+    let requested_reasoning_effort = spawn_request.reasoning_effort.as_ref();
+    let has_explicit_request = requested_model.is_some() || requested_reasoning_effort.is_some();
+    let model_matches = requested_model.is_none_or(|requested_model| {
+        Some(requested_model)
             == effective_model
                 .map(str::trim)
                 .filter(|model| !model.is_empty())
-        && spawn_request.reasoning_effort.as_ref() == effective_reasoning_effort
+    });
+    let reasoning_effort_matches =
+        requested_reasoning_effort.is_none_or(|requested_reasoning_effort| {
+            Some(requested_reasoning_effort) == effective_reasoning_effort
+        });
+
+    has_explicit_request && model_matches && reasoning_effort_matches
 }
 
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
@@ -1697,6 +1704,39 @@ mod tests {
             !rendered.contains("gpt-legacy"),
             "an effort-only request must not inherit the legacy model: {rendered}"
         );
+    }
+
+    #[test]
+    fn partial_spawn_request_matches_only_its_explicit_effective_field() {
+        let model_only = SpawnRequestSummary {
+            model: Some("gpt-requested".to_string()),
+            reasoning_effort: None,
+        };
+        assert!(spawn_request_matches_effective(
+            &model_only,
+            Some("gpt-requested"),
+            Some(&ReasoningEffortConfig::High),
+        ));
+        assert!(!spawn_request_matches_effective(
+            &model_only,
+            Some("gpt-effective"),
+            Some(&ReasoningEffortConfig::High),
+        ));
+
+        let effort_only = SpawnRequestSummary {
+            model: None,
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+        };
+        assert!(spawn_request_matches_effective(
+            &effort_only,
+            Some("gpt-effective"),
+            Some(&ReasoningEffortConfig::High),
+        ));
+        assert!(!spawn_request_matches_effective(
+            &effort_only,
+            Some("gpt-effective"),
+            Some(&ReasoningEffortConfig::Low),
+        ));
     }
 
     #[test]

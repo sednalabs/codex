@@ -119,9 +119,11 @@ pub(crate) fn merge_collab_agent_lifecycle(
         prompt.clone_from(previous_prompt);
     }
 
-    let mut merged_agents_states = previous_agents_states.clone();
-    merged_agents_states.extend(agents_states.drain());
-    *agents_states = merged_agents_states;
+    for (thread_id, state) in previous_agents_states {
+        agents_states
+            .entry(thread_id.clone())
+            .or_insert_with(|| state.clone());
+    }
 
     match tool {
         CollabAgentTool::SpawnAgent => {

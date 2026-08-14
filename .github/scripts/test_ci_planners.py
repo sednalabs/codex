@@ -2652,26 +2652,19 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "app-server-collab-spawn-identity-targeted",
                 "rust_integration",
                 [
-                    "suite::v2::turn_start::"
-                    "turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2",
-                    "suite::v2::turn_start::"
-                    "turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2",
+                    "suite::v2::turn_start::turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2",
+                    "suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2",
                 ],
             ),
             "codex.tui-collab-spawn-identity-targeted": (
                 "tui-collab-spawn-identity-targeted",
                 "rust_minimal",
                 [
-                    "chatwidget::tests::history_replay::"
-                    "replayed_collab_spawn_terminal_uses_only_explicit_effective_identity",
-                    "chatwidget::tests::history_replay::"
-                    "replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective",
-                    "chatwidget::tests::history_replay::"
-                    "replayed_failed_collab_spawn_without_receiver_keeps_requested_identity",
-                    "chatwidget::tests::app_server::"
-                    "live_app_server_collab_spawn_completed_renders_requested_model_and_effort",
-                    "chatwidget::tests::app_server::"
-                    "live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata",
+                    "chatwidget::tests::history_replay::replayed_collab_spawn_terminal_uses_only_explicit_effective_identity",
+                    "chatwidget::tests::history_replay::replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective",
+                    "chatwidget::tests::history_replay::replayed_failed_collab_spawn_without_receiver_keeps_requested_identity",
+                    "chatwidget::tests::app_server::live_app_server_collab_spawn_completed_renders_requested_model_and_effort",
+                    "chatwidget::tests::app_server::live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata",
                 ],
             ),
         }
