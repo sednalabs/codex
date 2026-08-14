@@ -692,8 +692,8 @@ async fn import_plugins_supports_project_relative_external_agent_plugin_marketpl
     assert!(config.contains("enabled = true"));
 }
 
-#[test]
-fn import_skills_returns_only_new_skill_directory_names() {
+#[tokio::test]
+async fn import_skills_returns_only_new_skill_directory_names() {
     let (_root, external_agent_home, codex_home) = fixture_paths();
     let agents_skills = codex_home
         .parent()
@@ -703,10 +703,27 @@ fn import_skills_returns_only_new_skill_directory_names() {
         .expect("create source a");
     fs::create_dir_all(external_agent_home.join("skills").join("skill-b"))
         .expect("create source b");
+    fs::write(
+        external_agent_home
+            .join("skills")
+            .join("skill-a")
+            .join("SKILL.md"),
+        "---\nname: skill-a\ndescription: source a\n---\n",
+    )
+    .expect("write source a skill");
+    fs::write(
+        external_agent_home
+            .join("skills")
+            .join("skill-b")
+            .join("SKILL.md"),
+        "---\nname: skill-b\ndescription: source b\n---\n",
+    )
+    .expect("write source b skill");
     fs::create_dir_all(agents_skills.join("skill-a")).expect("create existing target");
 
     let copied_names = service_for_paths(external_agent_home, codex_home)
         .import_skills(/*cwd*/ None)
+        .await
         .expect("import skills");
 
     assert_eq!(copied_names, vec!["skill-b".to_string()]);
