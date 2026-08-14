@@ -953,7 +953,10 @@ impl App {
                 sort_key: Some(ThreadSortKey::UpdatedAt),
                 sort_direction: Some(SortDirection::Desc),
                 model_providers: None,
-                source_kinds: None,
+                // `None` defaults to interactive sessions and therefore excludes the subagent
+                // rows this relation query exists to page. The broad subagent kind includes
+                // thread-spawn, review, compact, and other persisted descendants.
+                source_kinds: Some(vec![ThreadSourceKind::SubAgent]),
                 thread_sources: None,
                 archived: Some(false),
                 is_pinned: None,
