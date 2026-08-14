@@ -62,6 +62,9 @@ struct GatedThreadStore {
     release_gated_append: Notify,
     persist_completed: Notify,
     second_metadata_applied: Notify,
+    gate_second_metadata: AtomicBool,
+    second_metadata_persisted: Notify,
+    release_second_metadata: Notify,
     partial_once: AtomicBool,
 }
 
@@ -77,6 +80,9 @@ impl GatedThreadStore {
             release_gated_append: Notify::new(),
             persist_completed: Notify::new(),
             second_metadata_applied: Notify::new(),
+            gate_second_metadata: AtomicBool::new(false),
+            second_metadata_persisted: Notify::new(),
+            release_second_metadata: Notify::new(),
             partial_once: AtomicBool::new(false),
         }
     }
@@ -185,6 +191,10 @@ impl ThreadStore for GatedThreadStore {
             let applies_second_settings = params.patch.model.as_deref() == Some(SECOND_MODEL);
             let thread = ThreadStore::update_thread_metadata(self.inner.as_ref(), params).await?;
             self.metadata_update_count.fetch_add(1, Ordering::SeqCst);
+            if applies_second_settings && self.gate_second_metadata.swap(false, Ordering::SeqCst) {
+                self.second_metadata_persisted.notify_one();
+                self.release_second_metadata.notified().await;
+            }
             if applies_second_settings {
                 self.second_metadata_applied.notify_one();
             }
@@ -354,6 +364,111 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
         !second_overtook_first,
         "later append reached persistence before the first append transaction completed"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_append_finishes_and_same_batch_retry_uses_lost_receipt() {
+    let home = TempDir::new().expect("temp dir");
+    let config = LocalThreadStoreConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        default_model_provider_id: "test-provider".to_string(),
+    };
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .expect("state db should initialize");
+    let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
+    let gated_store = Arc::new(GatedThreadStore::new(local_store, 0));
+    let thread_id = ThreadId::new();
+    let live_thread = LiveThread::create(
+        gated_store.clone(),
+        create_thread_params(thread_id, home.path()),
+    )
+    .await
+    .expect("create live thread");
+    let batch = vec![user_message_item("cancelled append marker")];
+
+    let cancelled_live_thread = live_thread.clone();
+    let cancelled_batch = batch.clone();
+    let append =
+        tokio::spawn(async move { cancelled_live_thread.append_items(&cancelled_batch).await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        gated_store.gated_append_persisted.notified(),
+    )
+    .await
+    .expect("append should finish before acknowledgement");
+    append.abort();
+    append.await.expect_err("outer append should be cancelled");
+    gated_store.release_gated_append.notify_one();
+
+    live_thread
+        .append_items(&batch)
+        .await
+        .expect("same batch retry should observe lost receipt");
+    assert_eq!(
+        gated_store.append_count.load(Ordering::SeqCst),
+        1,
+        "retry must not append the batch twice"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_metadata_projection_finishes_and_retry_does_not_duplicate_append() {
+    let home = TempDir::new().expect("temp dir");
+    let config = LocalThreadStoreConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        default_model_provider_id: "test-provider".to_string(),
+    };
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .expect("state db should initialize");
+    let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
+    let gated_store = Arc::new(GatedThreadStore::new(local_store, usize::MAX));
+    gated_store
+        .gate_second_metadata
+        .store(true, Ordering::SeqCst);
+    let thread_id = ThreadId::new();
+    let live_thread = LiveThread::create(
+        gated_store.clone(),
+        create_thread_params(thread_id, home.path()),
+    )
+    .await
+    .expect("create live thread");
+    let batch = vec![thread_settings_item(
+        SECOND_MODEL,
+        ReasoningEffort::High,
+        "second-provider",
+        home.path(),
+    )];
+
+    let cancelled_live_thread = live_thread.clone();
+    let cancelled_batch = batch.clone();
+    let append =
+        tokio::spawn(async move { cancelled_live_thread.append_items(&cancelled_batch).await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        gated_store.second_metadata_persisted.notified(),
+    )
+    .await
+    .expect("metadata projection should reach its acknowledgement gate");
+    append.abort();
+    append.await.expect_err("outer append should be cancelled");
+    gated_store.release_second_metadata.notify_one();
+
+    live_thread
+        .append_items(&batch)
+        .await
+        .expect("retry should observe completed append and projection");
+    assert_eq!(gated_store.append_count.load(Ordering::SeqCst), 1);
+    assert_eq!(gated_store.metadata_update_count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
