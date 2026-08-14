@@ -57,6 +57,8 @@ uuid = { workspace = true, features = ["v4"] }
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+codex-utils-home-dir = { workspace = true }
+codex-windows-sandbox = { workspace = true }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
