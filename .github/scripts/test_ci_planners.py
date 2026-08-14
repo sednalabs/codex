@@ -1711,112 +1711,99 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
         input_ref: str = "",
         pr_head_sha: str = "",
         pr_head_ref: str = "",
-        merge_group_sha: str = "",
+        resolved_sha: str = "",
+        cat_file_success: bool = False,
+        fetch_success: bool = True,
     ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
         script = workflow_checkout_identity_script(self.workflow_path)
-        command = (
-            "set -euo pipefail\n"
-            f"{script}\n"
-            'printf \'checkout_ref=%s\\ncheckout_sha=%s\\n\' "${checkout_ref}" "${checkout_sha}"\n'
-        )
-        env = {
-            **os.environ,
-            "GITHUB_EVENT_NAME": event_name,
-            "CHECKOUT_REF": checkout_ref,
-            "DISPLAY_REF": "main",
-            "INPUT_REF": input_ref,
-            "PR_HEAD_SHA": pr_head_sha,
-            "PR_HEAD_REF": pr_head_ref,
-            "MERGE_GROUP_SHA": merge_group_sha,
-        }
-        proc = subprocess.run(
-            ["nice", "-n", "19", "ionice", "-c", "3", "bash", "-c", command],
-            cwd=repo.root,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        outputs: dict[str, str] = {}
-        for line in proc.stdout.splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                outputs[key] = value
-        return proc, outputs
+        command = f"set -euo pipefail\n{script}\n"
+        with tempfile.TemporaryDirectory(prefix="ci-planner-git-") as tmpdir:
+            fake_git = Path(tmpdir) / "git"
+            fake_git.write_text(
+                """#!/bin/bash
+set -euo pipefail
+case "${1:-}" in
+  cat-file)
+    [[ "${GIT_CAT_FILE_SUCCESS}" == "true" ]]
+    ;;
+  fetch)
+    [[ "${GIT_FETCH_SUCCESS}" == "true" ]]
+    ;;
+  rev-parse)
+    [[ -n "${GIT_RESOLVED_SHA}" ]]
+    printf '%s\\n' "${GIT_RESOLVED_SHA}"
+    ;;
+  *)
+    echo "unexpected fake git command: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            fake_git.chmod(0o755)
+            output_path = Path(tmpdir) / "github-output.txt"
+            output_path.write_text("", encoding="utf-8")
+            env = {
+                **os.environ,
+                "PATH": f"{tmpdir}:{os.environ['PATH']}",
+                "GITHUB_EVENT_NAME": event_name,
+                "GITHUB_OUTPUT": str(output_path),
+                "CHECKOUT_REF": checkout_ref,
+                "DISPLAY_REF": "main",
+                "INPUT_REF": input_ref,
+                "PR_HEAD_SHA": pr_head_sha,
+                "PR_HEAD_REF": pr_head_ref,
+                "GIT_RESOLVED_SHA": resolved_sha,
+                "GIT_CAT_FILE_SUCCESS": str(cat_file_success).lower(),
+                "GIT_FETCH_SUCCESS": str(fetch_success).lower(),
+            }
+            proc = subprocess.run(
+                ["nice", "-n", "19", "ionice", "-c", "3", "bash", "-c", command],
+                cwd=repo.root,
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            return proc, parse_github_output_file(output_path)
 
     def _fixture_repo(self) -> tuple[TempGitRepo, str]:
         repo = TempGitRepo()
         commit = repo.commit("fixture", {"payload.txt": "fixture\n"})
-        repo._git("tag", "lightweight")
-        repo._git("tag", "-a", "annotated", "-m", "annotated fixture")
-        origin_tmpdir = tempfile.TemporaryDirectory(prefix="ci-planner-origin-")
-        origin = Path(origin_tmpdir.name) / "origin.git"
-        repo._git("clone", "--bare", str(repo.root), str(origin))
-        repo._git("remote", "add", "origin", str(origin))
-        repo._origin_tmpdir = origin_tmpdir
         return repo, commit
 
-    def _cleanup_fixture_repo(self, repo: TempGitRepo) -> None:
-        repo.cleanup()
-        origin_tmpdir = getattr(repo, "_origin_tmpdir", None)
-        if origin_tmpdir is not None:
-            origin_tmpdir.cleanup()
-
-    def test_identity_binds_event_defaults_and_manual_refs_to_resolved_commits(self) -> None:
+    def test_complete_output_boundary_binds_supported_events_and_manual_refs(self) -> None:
         repo, commit = self._fixture_repo()
         try:
             workflow_sha = "c" * 40
             pr_head_sha = "a" * 40
-            merge_group_sha = "b" * 40
             cases = [
                 (
                     "pull_request",
                     "",
                     pr_head_sha,
                     "feature/head",
-                    "",
                     pr_head_sha,
                     pr_head_sha,
+                    False,
+                    True,
                 ),
-                (
-                    "merge_group",
-                    "",
-                    "",
-                    "",
-                    merge_group_sha,
-                    merge_group_sha,
-                    merge_group_sha,
-                ),
-                (
-                    "workflow_dispatch",
-                    "",
-                    "",
-                    "",
-                    "",
-                    workflow_sha,
-                    workflow_sha,
-                ),
-                (
-                    "workflow_dispatch",
-                    "d" * 40,
-                    "",
-                    "",
-                    "",
-                    "d" * 40,
-                    "d" * 40,
-                ),
-                ("workflow_dispatch", "main", "", "", "", "main", commit),
-                ("workflow_dispatch", "lightweight", "", "", "", "lightweight", commit),
-                ("workflow_dispatch", "annotated", "", "", "", "annotated", commit),
+                ("workflow_dispatch", "", "", "", workflow_sha, workflow_sha, False, True),
+                ("workflow_dispatch", commit, "", "", commit, commit, True, True),
+                ("workflow_dispatch", "main", "", "", commit, commit, False, True),
+                ("workflow_dispatch", "lightweight", "", "", commit, commit, False, True),
+                ("workflow_dispatch", "annotated", "", "", commit, commit, False, True),
             ]
             for (
                 event_name,
                 input_ref,
                 pr_head,
                 pr_ref,
-                merge_sha,
-                expected_ref,
+                resolved_sha,
                 expected_sha,
+                cat_file_success,
+                fetch_success,
             ) in cases:
                 with self.subTest(event_name=event_name, input_ref=input_ref):
                     proc, outputs = self._run_identity_fixture(
@@ -1826,27 +1813,34 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
                         input_ref=input_ref,
                         pr_head_sha=pr_head,
                         pr_head_ref=pr_ref,
-                        merge_group_sha=merge_sha,
+                        resolved_sha=resolved_sha,
+                        cat_file_success=cat_file_success,
+                        fetch_success=fetch_success,
                     )
                     self.assertEqual(proc.returncode, 0, proc.stderr)
-                    self.assertEqual(outputs.get("checkout_ref"), expected_ref)
+                    self.assertEqual(outputs.get("checkout_ref"), expected_sha)
                     self.assertEqual(outputs.get("checkout_sha"), expected_sha)
+                    self.assertEqual(outputs.get("display_ref"), pr_ref or input_ref or "main")
         finally:
-            self._cleanup_fixture_repo(repo)
+            repo.cleanup()
 
-    def test_identity_fails_closed_when_a_manual_ref_does_not_resolve_to_a_commit(self) -> None:
+    def test_full_sha_manual_input_fails_closed_when_commit_is_missing(self) -> None:
         repo, _ = self._fixture_repo()
         try:
-            proc, _ = self._run_identity_fixture(
+            proc, outputs = self._run_identity_fixture(
                 repo,
                 event_name="workflow_dispatch",
                 checkout_ref="c" * 40,
-                input_ref="does-not-exist",
+                input_ref="e" * 40,
+                resolved_sha="",
+                cat_file_success=False,
+                fetch_success=False,
             )
             self.assertNotEqual(proc.returncode, 0)
-            self.assertIn("does-not-exist", proc.stderr)
+            self.assertEqual(outputs, {})
+            self.assertIn("unable to fetch checkout ref", proc.stderr)
         finally:
-            self._cleanup_fixture_repo(repo)
+            repo.cleanup()
 
 
 class ValidationPlanScriptTests(unittest.TestCase):
@@ -3362,12 +3356,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "Compute checkout ref",
         )
         env = metadata_step.get("env") or {}
-        self.assertEqual(env.get("CHECKOUT_REF"), "${{ github.workflow_sha || github.sha }}")
+        self.assertEqual(env.get("CHECKOUT_REF"), "${{ github.sha }}")
         self.assertEqual(env.get("DISPLAY_REF"), "${{ github.ref_name }}")
         self.assertEqual(env.get("INPUT_REF"), "${{ inputs.ref }}")
         self.assertEqual(env.get("PR_HEAD_SHA"), "${{ github.event.pull_request.head.sha }}")
         self.assertEqual(env.get("PR_HEAD_REF"), "${{ github.event.pull_request.head.ref }}")
-        self.assertEqual(env.get("MERGE_GROUP_SHA"), "${{ github.sha }}")
         self.assertEqual(env.get("REQUESTED_LANE"), "${{ inputs.lane }}")
         self.assertEqual(env.get("INPUT_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}")
         self.assertEqual(
@@ -3378,6 +3371,10 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("# BEGIN checkout identity", run_script)
         self.assertIn("resolve_checkout_identity", run_script)
         self.assertIn("FETCH_HEAD^{commit}", run_script)
+        self.assertIn('echo "checkout_ref=${checkout_ref}"', run_script)
+        self.assertIn('echo "checkout_sha=${checkout_sha}"', run_script)
+        self.assertIn('echo "display_ref=${display_ref}"', run_script)
+        self.assertNotIn('checkout_sha="$(git rev-parse FETCH_HEAD)', run_script)
         self.assertIn('checkout_ref="${CHECKOUT_REF}"', run_script)
         self.assertIn('checkout_ref="${PR_HEAD_SHA}"', run_script)
         self.assertIn('checkout_sha="${PR_HEAD_SHA}"', run_script)

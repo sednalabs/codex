@@ -194,12 +194,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          CHECKOUT_REF: ${{ github.workflow_sha || github.sha }}
+          CHECKOUT_REF: ${{ github.sha }}
           DISPLAY_REF: ${{ github.ref_name }}
           INPUT_REF: ${{ inputs.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          MERGE_GROUP_SHA: ${{ github.sha }}
           REQUESTED_LANE: ${{ inputs.lane }}
           INPUT_RUST_BATCHING: ${{ inputs.rust_batching || 'auto' }}
           INPUT_RUST_BATCHING_OVERRIDE: ${{ vars.SEDNA_HEAVY_RUST_BATCHING }}
@@ -218,10 +217,6 @@ jobs:
                 checkout_sha="${PR_HEAD_SHA}"
                 display_ref="${PR_HEAD_REF}"
                 ;;
-              merge_group)
-                checkout_ref="${MERGE_GROUP_SHA}"
-                checkout_sha="${MERGE_GROUP_SHA}"
-                ;;
               workflow_dispatch)
                 if [[ -n "${INPUT_REF}" ]]; then
                   checkout_ref="${INPUT_REF}"
@@ -230,20 +225,45 @@ jobs:
                 ;;
             esac
 
-            if [[ "${checkout_ref}" =~ ^[0-9a-fA-F]{40}$ ]]; then
-              checkout_sha="${checkout_ref}"
-            else
-              git fetch --no-tags --depth=1 origin "${checkout_ref}"
-              resolved_checkout_sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_REF}" ]]; then
+              if [[ "${checkout_ref}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+                if ! resolved_checkout_sha="$(git rev-parse --verify "${checkout_ref}^{commit}" 2>/dev/null)"; then
+                  if ! git fetch --no-tags --depth=1 origin "${checkout_ref}"; then
+                    echo "unable to fetch checkout ref: ${checkout_ref}" >&2
+                    return 1
+                  fi
+                  if ! resolved_checkout_sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null)"; then
+                    echo "unable to resolve checkout ref to a commit: ${checkout_ref}" >&2
+                    return 1
+                  fi
+                fi
+              else
+                if ! git fetch --no-tags --depth=1 origin "${checkout_ref}"; then
+                  echo "unable to fetch checkout ref: ${checkout_ref}" >&2
+                  return 1
+                fi
+                if ! resolved_checkout_sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}' 2>/dev/null)"; then
+                  echo "unable to resolve checkout ref to a commit: ${checkout_ref}" >&2
+                  return 1
+                fi
+              fi
               if [[ ! "${resolved_checkout_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
                 echo "unable to resolve checkout ref to a commit: ${checkout_ref}" >&2
                 return 1
               fi
               checkout_sha="${resolved_checkout_sha}"
+              checkout_ref="${resolved_checkout_sha}"
+            else
+              checkout_ref="${checkout_sha}"
             fi
           }
 
           resolve_checkout_identity
+          {
+            echo "checkout_ref=${checkout_ref}"
+            echo "checkout_sha=${checkout_sha}"
+            echo "display_ref=${display_ref}"
+          } >> "$GITHUB_OUTPUT"
           # END checkout identity
 
           run_all_lanes=false
@@ -450,9 +470,6 @@ jobs:
           fi
 
           {
-            echo "checkout_ref=${checkout_ref}"
-            echo "checkout_sha=${checkout_sha}"
-            echo "display_ref=${display_ref}"
             echo "planner_fingerprint=${planner_fingerprint}"
             echo "dedupe_reason=${dedupe_reason}"
             echo "smoke_gate_kind=${smoke_gate_kind}"
