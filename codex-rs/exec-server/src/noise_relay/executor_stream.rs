@@ -7,7 +7,35 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use codex_exec_server_protocol::CAPABILITY_ROOTS_DISCOVER_METHOD;
+use codex_exec_server_protocol::ENVIRONMENT_INFO_METHOD;
+use codex_exec_server_protocol::ENVIRONMENT_STATUS_METHOD;
+use codex_exec_server_protocol::EXEC_CLOSED_METHOD;
+use codex_exec_server_protocol::EXEC_EXITED_METHOD;
+use codex_exec_server_protocol::EXEC_METHOD;
+use codex_exec_server_protocol::EXEC_OUTPUT_DELTA_METHOD;
+use codex_exec_server_protocol::EXEC_READ_METHOD;
+use codex_exec_server_protocol::EXEC_SIGNAL_METHOD;
+use codex_exec_server_protocol::EXEC_TERMINATE_METHOD;
+use codex_exec_server_protocol::EXEC_WRITE_METHOD;
+use codex_exec_server_protocol::FS_CANONICALIZE_METHOD;
+use codex_exec_server_protocol::FS_CLOSE_METHOD;
+use codex_exec_server_protocol::FS_COPY_METHOD;
+use codex_exec_server_protocol::FS_CREATE_DIRECTORY_METHOD;
+use codex_exec_server_protocol::FS_GET_METADATA_METHOD;
+use codex_exec_server_protocol::FS_OPEN_METHOD;
+use codex_exec_server_protocol::FS_READ_BLOCK_METHOD;
+use codex_exec_server_protocol::FS_READ_DIRECTORY_METHOD;
+use codex_exec_server_protocol::FS_READ_FILE_METHOD;
+use codex_exec_server_protocol::FS_REMOVE_METHOD;
+use codex_exec_server_protocol::FS_WALK_METHOD;
+use codex_exec_server_protocol::FS_WRITE_FILE_METHOD;
+use codex_exec_server_protocol::HTTP_REQUEST_BODY_DELTA_METHOD;
+use codex_exec_server_protocol::HTTP_REQUEST_METHOD;
+use codex_exec_server_protocol::INITIALIZE_METHOD;
+use codex_exec_server_protocol::INITIALIZED_METHOD;
 use codex_exec_server_protocol::JSONRPCMessage;
+use codex_exec_server_protocol::NETWORK_POLICY_REQUEST_METHOD;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::Instrument;
@@ -184,9 +212,9 @@ fn outbound_message_span(
     trace_context: &Mutex<NoiseTraceContext>,
 ) -> Span {
     let (message_kind, method) = match message {
-        JSONRPCMessage::Request(request) => ("request", request.method.as_str()),
+        JSONRPCMessage::Request(request) => ("request", protocol_method_label(&request.method)),
         JSONRPCMessage::Notification(notification) => {
-            ("notification", notification.method.as_str())
+            ("notification", protocol_method_label(&notification.method))
         }
         JSONRPCMessage::Response(_) => ("response", ""),
         JSONRPCMessage::Error(_) => ("error", ""),
@@ -200,6 +228,40 @@ fn outbound_message_span(
         let _ = codex_otel::set_parent_from_w3c_trace_context(&span, trace);
     }
     span
+}
+
+fn protocol_method_label(method: &str) -> &'static str {
+    match method {
+        INITIALIZE_METHOD => INITIALIZE_METHOD,
+        INITIALIZED_METHOD => INITIALIZED_METHOD,
+        EXEC_METHOD => EXEC_METHOD,
+        EXEC_READ_METHOD => EXEC_READ_METHOD,
+        EXEC_WRITE_METHOD => EXEC_WRITE_METHOD,
+        EXEC_SIGNAL_METHOD => EXEC_SIGNAL_METHOD,
+        EXEC_TERMINATE_METHOD => EXEC_TERMINATE_METHOD,
+        EXEC_OUTPUT_DELTA_METHOD => EXEC_OUTPUT_DELTA_METHOD,
+        EXEC_EXITED_METHOD => EXEC_EXITED_METHOD,
+        EXEC_CLOSED_METHOD => EXEC_CLOSED_METHOD,
+        ENVIRONMENT_INFO_METHOD => ENVIRONMENT_INFO_METHOD,
+        ENVIRONMENT_STATUS_METHOD => ENVIRONMENT_STATUS_METHOD,
+        FS_READ_FILE_METHOD => FS_READ_FILE_METHOD,
+        FS_OPEN_METHOD => FS_OPEN_METHOD,
+        FS_READ_BLOCK_METHOD => FS_READ_BLOCK_METHOD,
+        FS_CLOSE_METHOD => FS_CLOSE_METHOD,
+        FS_WRITE_FILE_METHOD => FS_WRITE_FILE_METHOD,
+        FS_CREATE_DIRECTORY_METHOD => FS_CREATE_DIRECTORY_METHOD,
+        FS_GET_METADATA_METHOD => FS_GET_METADATA_METHOD,
+        FS_CANONICALIZE_METHOD => FS_CANONICALIZE_METHOD,
+        FS_READ_DIRECTORY_METHOD => FS_READ_DIRECTORY_METHOD,
+        FS_WALK_METHOD => FS_WALK_METHOD,
+        FS_REMOVE_METHOD => FS_REMOVE_METHOD,
+        FS_COPY_METHOD => FS_COPY_METHOD,
+        CAPABILITY_ROOTS_DISCOVER_METHOD => CAPABILITY_ROOTS_DISCOVER_METHOD,
+        HTTP_REQUEST_METHOD => HTTP_REQUEST_METHOD,
+        HTTP_REQUEST_BODY_DELTA_METHOD => HTTP_REQUEST_BODY_DELTA_METHOD,
+        NETWORK_POLICY_REQUEST_METHOD => NETWORK_POLICY_REQUEST_METHOD,
+        _ => "unknown",
+    }
 }
 
 async fn send_outbound_message(

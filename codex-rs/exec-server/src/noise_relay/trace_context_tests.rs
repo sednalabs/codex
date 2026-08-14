@@ -7,6 +7,7 @@ use codex_exec_server_protocol::JSONRPCResponse;
 use codex_exec_server_protocol::RequestId;
 use codex_protocol::protocol::W3cTraceContext;
 
+use super::MAX_TRACE_CONTEXT_ENTRIES;
 use super::NoiseTraceContext;
 
 fn trace_context() -> W3cTraceContext {
@@ -44,4 +45,33 @@ fn correlates_response_and_terminal_notification_with_request_trace() {
     });
     assert_eq!(context.return_trace(&closed), Some(trace));
     assert_eq!(context.return_trace(&closed), None);
+}
+
+#[test]
+fn unfinished_peer_ids_cannot_grow_trace_state_without_bound() {
+    let trace = trace_context();
+    let mut context = NoiseTraceContext::default();
+    for index in 0..(MAX_TRACE_CONTEXT_ENTRIES + 64) {
+        context.observe_request(&JSONRPCMessage::Request(JSONRPCRequest {
+            id: RequestId::Integer(index as i64),
+            method: EXEC_METHOD.to_string(),
+            params: Some(serde_json::json!({"processId": format!("process-{index}")})),
+            trace: Some(trace.clone()),
+        }));
+    }
+
+    assert_eq!(
+        context.state_sizes(),
+        (MAX_TRACE_CONTEXT_ENTRIES, MAX_TRACE_CONTEXT_ENTRIES)
+    );
+    let evicted_response = JSONRPCMessage::Response(JSONRPCResponse {
+        id: RequestId::Integer(0),
+        result: serde_json::Value::Null,
+    });
+    assert_eq!(context.return_trace(&evicted_response), None);
+    let newest_response = JSONRPCMessage::Response(JSONRPCResponse {
+        id: RequestId::Integer((MAX_TRACE_CONTEXT_ENTRIES + 63) as i64),
+        result: serde_json::Value::Null,
+    });
+    assert_eq!(context.return_trace(&newest_response), Some(trace));
 }
