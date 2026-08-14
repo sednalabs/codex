@@ -2263,7 +2263,8 @@
       "surface": [
         "repository-scoped external-agent import",
         "migration target symlink handling",
-        "home-scoped memory import destinations"
+        "home-scoped memory import destinations",
+        "external-agent skill manifest validation"
       ],
       "files": [
         ".github/scripts/test_ci_planners.py",
@@ -2306,6 +2307,9 @@
           "detect_repo_rejects_symlinked_local_settings",
           "import_repo_hooks_rejects_symlinked_target_parent"
         ],
+        "codex-rs/external-agent-migration/src/service_tests/general/config_import.rs": [
+          "import_skills_rejects_invalid_skill_without_copying"
+        ],
         "codex-rs/external-agent-migration/src/memory_import_tests.rs": [
           "projects_needing_import_rejects_symlinked_stale_memory_project",
           "projects_needing_import_rejects_symlinked_stale_project_scope"
@@ -2317,7 +2321,7 @@
           "external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation"
         ]
       },
-      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, every resource entry, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them. Only directories with a regular non-symlink scope.json marker are managed; ordinary metadata and unmarked directories are ignored.",
+      "behavior": "Repository-scoped external-agent detection and import canonicalize the project selected by the trusted local app-server client, reject static symlinked source and destination components before file-backed migration work, and treat dangling target symlinks as existing protected entries. Exact settings, MCP configuration, hook-script, source-root, and destination-root paths are checked. Home- and repository-scoped skill imports validate every source SKILL.md manifest and require non-empty YAML frontmatter name and description fields before creating or copying into the destination. Home-scoped memory import additionally requires each client-selected project key to be one normal path component and preflights its memory workspace roots, every resource entry, project roots, scope files, resource leaves, and instructions file beneath CODEX_HOME before reading, removing, creating, or writing them. Only directories with a regular non-symlink scope.json marker are managed; ordinary metadata and unmarked directories are ignored.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": "c61390d3acc273e711b0e90feaa9dadd43b5a792",
@@ -2336,6 +2340,7 @@
         "import_repo_hooks_rejects_symlinked_script_root",
         "import_repo_skills_rejects_symlinked_source_root",
         "import_repo_skills_rejects_symlinked_destination_root",
+        "import_skills_rejects_invalid_skill_without_copying",
         "import_repo_hooks_rejects_symlinked_target_file",
         "import_repo_hooks_rejects_symlinked_target_parent",
         "subagent_import_skips_dangling_symlink_target",
@@ -2350,7 +2355,7 @@
         "removes_project_resources_when_the_source_project_disappears"
       ],
       "owner": "downstream",
-      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. Marker-based ownership affects future detection; one-time backfill of unchanged pre-marker imports is tracked separately and is not an automatic sync mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
+      "notes": "The boundary is enforced before repository-scoped detection and import reads, then again at selected leaf-copy/write helpers. Skill manifest validation completes before destination mutation so a malformed source set cannot be partially imported. Memory destination checks reuse the same root-relative static-symlink policy and reject absolute, parent-relative, or multi-component project selections before mutation. Marker-based ownership affects future detection; one-time backfill of unchanged pre-marker imports is tracked separately and is not an automatic sync mutation. It protects against static redirected paths, not concurrent path replacement or arbitrary-root authorization; app-server clients retain their existing trusted-local-operator model. Drop this carry only after upstream rejects malformed skill manifests before copying, exact source leaves, source roots, destination roots, dangling target leaves, unsafe memory project keys, and redirected memory destinations with equivalent regression coverage.",
       "upstreamability_tier": "upstream-pr",
       "boundary_type": "filesystem-containment",
       "hotspot_files": [
