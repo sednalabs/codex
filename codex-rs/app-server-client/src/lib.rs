@@ -2044,7 +2044,7 @@ mod tests {
                 session_id: "search".to_string(),
             },
         );
-        {
+        let (lag, delivered) = {
             let delivery = forward_in_process_event(
                 &event_tx,
                 &mut skipped_events,
@@ -2065,18 +2065,25 @@ mod tests {
                     ServerNotification::CommandExecutionOutputDelta(_)
                 ))
             ));
-            assert!(matches!(
-                event_rx.recv().await,
-                Some(InProcessServerEvent::Lagged { skipped: 1 })
-            ));
-            assert_eq!(delivery.as_mut().await, ForwardEventResult::Continue);
-        }
+            let receive_events = async {
+                let lag = event_rx.recv().await.expect("lag marker should arrive");
+                let delivered = event_rx
+                    .recv()
+                    .await
+                    .expect("completion event should arrive");
+                (lag, delivered)
+            };
+            let (delivery_result, received) = tokio::join!(delivery.as_mut(), receive_events);
+            assert_eq!(delivery_result, ForwardEventResult::Continue);
+            received
+        };
         assert_eq!(skipped_events, 0);
+        assert!(matches!(lag, InProcessServerEvent::Lagged { skipped: 1 }));
         assert!(matches!(
-            event_rx.recv().await,
-            Some(InProcessServerEvent::ServerNotification(
+            delivered,
+            InProcessServerEvent::ServerNotification(
                 ServerNotification::FuzzyFileSearchSessionCompleted(_)
-            ))
+            )
         ));
     }
 
