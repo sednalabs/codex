@@ -308,7 +308,7 @@ pub async fn process_exec_tool_call(
     use_legacy_landlock: bool,
     stdout_stream: Option<StdoutStream>,
 ) -> Result<ExecToolCallOutput> {
-    let exec_req = build_exec_request(
+    let mut exec_req = build_exec_request(
         params,
         permission_profile,
         sandbox_cwd,
@@ -316,6 +316,7 @@ pub async fn process_exec_tool_call(
         codex_linux_sandbox_exe,
         use_legacy_landlock,
     )?;
+    exec_req.allow_detached_children_in_linux_sandbox();
 
     // Route through the sandboxing module for a single, unified execution path.
     crate::sandboxing::execute_env(exec_req, stdout_stream).await
