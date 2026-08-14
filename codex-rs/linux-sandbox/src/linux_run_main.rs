@@ -9,6 +9,7 @@ use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -657,8 +658,21 @@ impl ProtectedCreateMonitor {
             let watcher = ProtectedCreateWatcher::new(&targets);
             while !monitor_stop.load(Ordering::SeqCst) {
                 for target in &targets {
-                    if remove_protected_create_target_best_effort(target).is_some() {
-                        monitor_violation.store(true, Ordering::SeqCst);
+                    match remove_protected_create_target_with_retries(target) {
+                        Ok(Some(_)) => monitor_violation.store(true, Ordering::SeqCst),
+                        Ok(None) => {}
+                        Err(err) => {
+                            monitor_violation.store(true, Ordering::SeqCst);
+                            let pid = BWRAP_CHILD_PID.load(Ordering::SeqCst);
+                            if pid > 0 {
+                                send_signal_to_bwrap_child(pid, libc::SIGKILL);
+                            }
+                            eprintln!(
+                                "failed to remove protected create target {}: {err}",
+                                target.path().display()
+                            );
+                            return;
+                        }
                     }
                 }
                 if let Some(watcher) = &watcher {
@@ -750,6 +764,27 @@ impl BwrapNamespaceInit {
                 std::ptr::null::<libc::siginfo_t>(),
                 0,
             );
+        }
+    }
+
+    fn wait_for_exit(&self) {
+        let mut poll_fd = libc::pollfd {
+            fd: self.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            let result = unsafe { libc::poll(&mut poll_fd, 1, -1) };
+            if result > 0 {
+                return;
+            }
+            if result == 0 {
+                continue;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                panic!("failed waiting for bubblewrap namespace init exit: {err}");
+            }
         }
     }
 }
@@ -876,7 +911,14 @@ fn monitor_protected_create_targets_until_namespace_exit(
 ) -> ! {
     let watcher = ProtectedCreateWatcher::new(targets);
     for target in targets {
-        remove_protected_create_target_best_effort(target);
+        if let Err(err) = remove_protected_create_target_with_retries(target) {
+            terminate_namespace_and_cleanup_protected_targets(
+                &namespace_init,
+                registrations,
+                target,
+                err,
+            );
+        }
     }
     let ready = [1_u8];
     unsafe {
@@ -886,7 +928,14 @@ fn monitor_protected_create_targets_until_namespace_exit(
     let never_stop = AtomicBool::new(false);
     while !namespace_init.has_exited() {
         for target in targets {
-            remove_protected_create_target_best_effort(target);
+            if let Err(err) = remove_protected_create_target_with_retries(target) {
+                terminate_namespace_and_cleanup_protected_targets(
+                    &namespace_init,
+                    registrations,
+                    target,
+                    err,
+                );
+            }
         }
         if let Some(watcher) = &watcher {
             watcher.wait_for_create_event(&never_stop);
@@ -894,8 +943,24 @@ fn monitor_protected_create_targets_until_namespace_exit(
             thread::sleep(Duration::from_millis(1));
         }
     }
-    cleanup_protected_create_targets(registrations);
+    cleanup_detached_protected_create_targets(registrations);
     unsafe { libc::_exit(0) }
+}
+
+fn terminate_namespace_and_cleanup_protected_targets(
+    namespace_init: &BwrapNamespaceInit,
+    registrations: &[ProtectedCreateTargetRegistration],
+    failed_target: &crate::bwrap::ProtectedCreateTarget,
+    err: std::io::Error,
+) -> ! {
+    namespace_init.kill();
+    namespace_init.wait_for_exit();
+    eprintln!(
+        "terminating detached sandbox after protected create cleanup failed for {}: {err}",
+        failed_target.path().display()
+    );
+    cleanup_detached_protected_create_targets(registrations);
+    unsafe { libc::_exit(1) }
 }
 
 fn redirect_standard_streams_to_dev_null() {
@@ -1418,6 +1483,67 @@ fn cleanup_protected_create_targets(targets: &[ProtectedCreateTargetRegistration
     })
 }
 
+fn cleanup_detached_protected_create_targets(
+    targets: &[ProtectedCreateTargetRegistration],
+) -> bool {
+    with_synthetic_mount_registry_lock(|| {
+        let mut violation = false;
+        for target in targets.iter().rev() {
+            violation |= remove_protected_create_target_after_namespace_exit(&target.target);
+            match fs::remove_file(&target.marker_file) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => panic!(
+                    "failed to unregister protected create target {}: {err}",
+                    target.target.path().display()
+                ),
+            }
+            match fs::remove_dir(&target.marker_dir) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {}
+                Err(err) => panic!(
+                    "failed to remove protected create marker directory {}: {err}",
+                    target.marker_dir.display()
+                ),
+            }
+        }
+        violation
+    })
+}
+
+fn remove_protected_create_target_after_namespace_exit(
+    target: &crate::bwrap::ProtectedCreateTarget,
+) -> bool {
+    match remove_protected_create_target_with_retries(target) {
+        Ok(removal) => removal.is_some(),
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            let path = target.path();
+            let metadata = fs::symlink_metadata(path).unwrap_or_else(|inspect_err| {
+                panic!(
+                    "failed to inspect protected create target {} after namespace termination: {inspect_err}",
+                    path.display()
+                )
+            });
+            if metadata.is_dir() {
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(permissions.mode() | 0o700);
+                fs::set_permissions(path, permissions).unwrap_or_else(|permission_err| {
+                    panic!(
+                        "failed to restore removal access for protected create target {}: {permission_err}",
+                        path.display()
+                    )
+                });
+            }
+            remove_protected_create_target(target)
+        }
+        Err(err) => panic!(
+            "failed to remove protected create target {} after namespace termination: {err}",
+            target.path().display()
+        ),
+    }
+}
+
 fn remove_protected_create_target(target: &crate::bwrap::ProtectedCreateTarget) -> bool {
     for attempt in 0..100 {
         match try_remove_protected_create_target(target) {
@@ -1436,19 +1562,19 @@ fn remove_protected_create_target(target: &crate::bwrap::ProtectedCreateTarget) 
     unreachable!("protected create removal retry loop should return or panic")
 }
 
-fn remove_protected_create_target_best_effort(
+fn remove_protected_create_target_with_retries(
     target: &crate::bwrap::ProtectedCreateTarget,
-) -> Option<ProtectedCreateRemoval> {
-    for _ in 0..100 {
+) -> std::io::Result<Option<ProtectedCreateRemoval>> {
+    for attempt in 0..100 {
         match try_remove_protected_create_target(target) {
-            Ok(removal) => return removal,
-            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+            Ok(removal) => return Ok(removal),
+            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempt < 99 => {
                 thread::sleep(Duration::from_millis(1));
             }
-            Err(_) => return Some(ProtectedCreateRemoval::Other),
+            Err(err) => return Err(err),
         }
     }
-    Some(ProtectedCreateRemoval::Other)
+    unreachable!("protected create removal retry loop should return")
 }
 
 fn try_remove_protected_create_target(

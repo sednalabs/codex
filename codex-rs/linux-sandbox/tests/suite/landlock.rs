@@ -517,9 +517,72 @@ async fn detached_children_survive_parent_exit_under_bwrap() {
     .expect("sandboxed command should execute");
 
     assert_eq!(output.exit_code, 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !log_path.exists() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("detached child should report parent exit");
     assert_eq!(
         std::fs::read_to_string(&log_path).expect("detached child should report parent exit"),
         "survived",
+    );
+}
+
+#[tokio::test]
+async fn detached_protected_metadata_cleanup_failure_terminates_namespace() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repository = tempdir.path().join("repository");
+    let workspace = repository.join("workspace");
+    std::fs::create_dir_all(repository.join(".git")).expect("create parent git metadata");
+    std::fs::write(repository.join(".git/HEAD"), "ref: refs/heads/main\n")
+        .expect("write parent git HEAD");
+    std::fs::create_dir(&workspace).expect("create writable workspace");
+    let protected_path = workspace.join(".git");
+    let staged_path = workspace.join("staged-metadata");
+    let attack_ready_path = workspace.join("attack-ready.txt");
+    let survived_path = workspace.join("detached-survived.txt");
+    let command = format!(
+        "nohup sh -c 'mkdir \"{staged}\"; printf hostile > \"{staged}/config\"; \
+         chmod 000 \"{staged}\"; printf ready > \"{ready}\"; \
+         mv \"{staged}\" \"{protected}\"; sleep 2; \
+         printf survived > \"{survived}\"' >/dev/null 2>&1 </dev/null &",
+        staged = staged_path.to_string_lossy(),
+        protected = protected_path.to_string_lossy(),
+        ready = attack_ready_path.to_string_lossy(),
+        survived = survived_path.to_string_lossy(),
+    );
+
+    let output = run_cmd_result_with_writable_roots(
+        &["bash", "-lc", &command],
+        &[workspace],
+        LONG_TIMEOUT_MS,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
+    )
+    .await
+    .expect("sandboxed command should execute");
+    assert_eq!(output.exit_code, 0);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !attack_ready_path.exists() || protected_path.exists() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("monitor should terminate the namespace and remove protected metadata");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!protected_path.exists());
+    assert!(
+        !survived_path.exists(),
+        "detached namespace should be terminated after cleanup failure"
     );
 }
 
