@@ -63,7 +63,7 @@ fn proxy_flag_takes_precedence_over_legacy_landlock() {
 }
 
 #[test]
-fn permission_profile_flag_is_included() {
+fn permission_profile_args_keep_parent_tied_lifetime_by_default() {
     let command = vec!["/bin/true".to_string()];
     let command_cwd = Path::new("/tmp/link");
     let cwd = Path::new("/tmp");
@@ -89,7 +89,7 @@ fn permission_profile_flag_is_included() {
         true
     );
     assert_eq!(args.contains(&"--use-legacy-landlock".to_string()), true);
-    assert!(args.contains(&"--allow-detached-children".to_string()));
+    assert!(!args.contains(&"--allow-detached-children".to_string()));
 }
 
 #[test]
