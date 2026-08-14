@@ -115,8 +115,7 @@ impl SubagentContextBuilder {
             if !rendered.is_empty() {
                 rendered.push('\n');
             }
-            write!(&mut rendered, "<omitted count=\"{}\" />", self.omitted_count)
-                .expect("writing to a String cannot fail");
+            let _ = write!(rendered, "<omitted count=\"{}\" />", self.omitted_count);
         }
         debug_assert!(
             subagent_context_rendered_bytes(rendered.as_str())
