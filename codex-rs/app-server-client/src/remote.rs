@@ -619,12 +619,15 @@ struct RemoteEventReservation {
 
 impl Drop for RemoteEventReservation {
     fn drop(&mut self) {
-        self.byte_budget
-            .used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_sub(self.bytes)
-            })
-            .expect("remote event byte budget reservation must not underflow");
+        assert!(
+            self.byte_budget
+                .used
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                    used.checked_sub(self.bytes)
+                })
+                .is_ok(),
+            "remote event byte budget reservation must not underflow"
+        );
     }
 }
 
@@ -697,8 +700,8 @@ impl RemoteEventBacklog {
             lagged_after: None,
             capacity,
             byte_budget,
-            server_request_dispositions: HashMap::with_capacity(capacity.saturating_mul(2)),
-            server_request_order: VecDeque::with_capacity(capacity.saturating_mul(2)),
+            server_request_dispositions: HashMap::with_capacity(capacity.saturating_mul(4)),
+            server_request_order: VecDeque::with_capacity(capacity.saturating_mul(4)),
         }
     }
 
@@ -732,7 +735,7 @@ impl RemoteEventBacklog {
         if self.server_request_dispositions.contains_key(request_id) {
             return Ok(false);
         }
-        if self.server_request_dispositions.len() >= self.capacity.saturating_mul(2) {
+        if self.server_request_dispositions.len() >= self.max_pending_server_requests() {
             return Err(());
         }
         self.server_request_dispositions.insert(
@@ -794,18 +797,21 @@ impl RemoteEventBacklog {
             }
             AppServerEvent::ServerRequest(_) => {
                 self.events.len() < self.capacity
-                    && self.server_request_dispositions.len() < self.capacity.saturating_mul(2)
+                    && self.server_request_dispositions.len() < self.max_pending_server_requests()
             }
             _ => self.events.len() < self.capacity,
         }
     }
 
-    fn contains_server_request_id(&self, request_id: &RequestId) -> bool {
-        self.server_request_dispositions.contains_key(request_id)
-    }
-
     fn deferred_capacity(&self) -> usize {
         self.capacity.saturating_mul(2).max(1)
+    }
+
+    fn max_pending_server_requests(&self) -> usize {
+        self.capacity
+            .saturating_add(self.capacity)
+            .saturating_add(self.deferred_capacity())
+            .max(1)
     }
 
     fn has_pending_public_event(&self) -> bool {
@@ -2203,7 +2209,7 @@ mod tests {
             .try_reserve(chunk)
             .expect("the aggregate boundary should fit exactly");
         assert_eq!(budget.used(), REMOTE_EVENT_AGGREGATE_RETAINED_BYTES);
-        assert!(budget.try_reserve(1).is_none());
+        assert!(budget.try_reserve(/*bytes*/ 1).is_none());
         drop(fourth);
         drop(third);
         drop(second);
