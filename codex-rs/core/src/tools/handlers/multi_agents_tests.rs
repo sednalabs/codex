@@ -865,10 +865,11 @@ async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity()
     );
     resume_spawn.notify_one();
 
-    let error = spawn
-        .await
-        .expect("V1 spawn task should join")
-        .expect_err("a cancellation-owned V1 spawn should fail before publication");
+    let spawn_result = spawn.await.expect("V1 spawn task should join");
+    let error = match spawn_result {
+        Err(error) => error,
+        Ok(_) => panic!("a cancellation-owned V1 spawn should fail before publication"),
+    };
     let FunctionCallError::RespondToModel(message) = &error else {
         panic!("cancellation should return a model-visible tool error: {error:?}");
     };
