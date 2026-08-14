@@ -8,6 +8,7 @@ use codex_git_utils::collect_git_info;
 use codex_git_utils::get_git_repo_root;
 use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
@@ -36,6 +37,7 @@ pub(crate) struct ThreadMetadataSync {
     preview_seen: bool,
     first_user_message_seen: bool,
     title_seen: bool,
+    configured_identity: Option<ConfiguredMetadataIdentity>,
     pending_update: Option<ThreadMetadataPatch>,
     pending_update_generation: u64,
     last_touch_persisted_at: Option<Instant>,
@@ -46,6 +48,21 @@ pub(crate) struct ThreadMetadataSync {
 pub(crate) struct PendingThreadMetadataPatch {
     pub(crate) patch: ThreadMetadataPatch,
     generation: u64,
+}
+
+#[derive(Clone)]
+struct ConfiguredMetadataIdentity {
+    model: String,
+    model_provider: String,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl ConfiguredMetadataIdentity {
+    fn apply_to(&self, update: &mut ThreadMetadataPatch) {
+        update.model = Some(self.model.clone());
+        update.model_provider = Some(self.model_provider.clone());
+        update.reasoning_effort = Some(self.reasoning_effort.clone());
+    }
 }
 
 impl ThreadMetadataSync {
@@ -82,6 +99,7 @@ impl ThreadMetadataSync {
             preview_seen: false,
             first_user_message_seen: false,
             title_seen: false,
+            configured_identity: None,
             pending_update: Some(update),
             pending_update_generation: 1,
             last_touch_persisted_at: None,
@@ -101,6 +119,7 @@ impl ThreadMetadataSync {
             preview_seen: false,
             first_user_message_seen: false,
             title_seen: false,
+            configured_identity: None,
             pending_update: None,
             pending_update_generation: 0,
             last_touch_persisted_at: None,
@@ -251,8 +270,13 @@ impl ThreadMetadataSync {
                         self.cwd_seen = true;
                         update.cwd = Some(turn_ctx.cwd.clone().into_path_buf());
                     }
-                    update.model = Some(turn_ctx.model.clone());
-                    update.reasoning_effort = Some(turn_ctx.effort.clone());
+                    match self.configured_identity.as_ref() {
+                        Some(configured_identity) => configured_identity.apply_to(&mut update),
+                        None => {
+                            update.model = Some(turn_ctx.model.clone());
+                            update.reasoning_effort = Some(turn_ctx.effort.clone());
+                        }
+                    }
                     update.approval_mode = Some(turn_ctx.approval_policy);
                     update.permission_profile = Some(turn_ctx.permission_profile());
                 }
@@ -283,10 +307,14 @@ impl ThreadMetadataSync {
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
                     let settings = &event.thread_settings;
+                    let configured_identity = ConfiguredMetadataIdentity {
+                        model: settings.model.clone(),
+                        model_provider: settings.model_provider_id.clone(),
+                        reasoning_effort: settings.reasoning_effort.clone(),
+                    };
+                    configured_identity.apply_to(&mut update);
+                    self.configured_identity = Some(configured_identity);
                     self.cwd_seen = true;
-                    update.model = Some(settings.model.clone());
-                    update.model_provider = Some(settings.model_provider_id.clone());
-                    update.reasoning_effort = Some(settings.reasoning_effort.clone());
                     update.cwd = Some(settings.cwd.clone().into_path_buf());
                     update.approval_mode = Some(settings.approval_policy);
                     update.permission_profile = Some(settings.permission_profile.clone());
@@ -407,6 +435,7 @@ mod tests {
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::CompactedItem;
     use codex_protocol::protocol::ItemCompletedEvent;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
@@ -415,6 +444,7 @@ mod tests {
     use codex_protocol::protocol::ThreadGoalUpdatedEvent;
     use codex_protocol::protocol::ThreadSettingsAppliedEvent;
     use codex_protocol::protocol::ThreadSettingsSnapshot;
+    use codex_protocol::protocol::TurnContextItem;
     use codex_protocol::protocol::TurnStartedEvent;
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::user_input::UserInput;
@@ -634,6 +664,43 @@ mod tests {
         assert_eq!(update.patch.cwd, Some(cwd));
         assert_eq!(update.patch.approval_mode, Some(AskForApproval::Never));
         assert_eq!(update.patch.permission_profile, Some(permission_profile));
+
+        sync.mark_pending_update_applied(&update);
+        let request_effective = RolloutItem::TurnContext(TurnContextItem {
+            turn_id: Some("request-turn".to_string()),
+            cwd: cwd.clone().try_into().expect("absolute request cwd"),
+            workspace_roots: None,
+            current_date: None,
+            timezone: None,
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
+            network: None,
+            file_system_sandbox_policy: None,
+            model: "request-effective-model".to_string(),
+            comp_hash: None,
+            personality: None,
+            collaboration_mode: None,
+            multi_agent_version: None,
+            multi_agent_mode: None,
+            realtime_active: None,
+            effort: Some(ReasoningEffort::Low),
+            summary: ReasoningSummary::Auto,
+        });
+        let update = sync
+            .observe_appended_items(&[request_effective])
+            .expect("request-effective metadata update");
+        assert_eq!(update.patch.model.as_deref(), Some("gpt-5.2-codex"));
+        assert_eq!(
+            update.patch.model_provider.as_deref(),
+            Some("updated-provider")
+        );
+        assert_eq!(
+            update.patch.reasoning_effort,
+            Some(Some(ReasoningEffort::Ultra)),
+            "request-effective turn metadata must not replace configured identity"
+        );
 
         let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &mut item else {
             panic!("thread settings applied item");
