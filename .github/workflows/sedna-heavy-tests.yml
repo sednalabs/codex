@@ -240,9 +240,17 @@ jobs:
             esac
 
             if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_REF}" ]]; then
+              if [[ "${INPUT_REF}" == -* || "${INPUT_REF}" =~ [[:cntrl:]] ]]; then
+                echo "unsafe checkout ref input rejected" >&2
+                return 1
+              fi
+              if [[ ! "${INPUT_REF}" =~ ^[0-9a-fA-F]{40}$ ]] && ! git check-ref-format --allow-onelevel "${INPUT_REF}" 2>/dev/null; then
+                echo "invalid checkout ref input rejected" >&2
+                return 1
+              fi
               if [[ "${checkout_ref}" =~ ^[0-9a-fA-F]{40}$ ]]; then
                 if ! resolved_checkout_sha="$(git rev-parse --verify "${checkout_ref}^{commit}" 2>/dev/null)"; then
-                  if ! git fetch --no-tags --depth=1 origin "${checkout_ref}"; then
+                  if ! git fetch --no-tags --depth=1 origin -- "${checkout_ref}"; then
                     echo "unable to fetch checkout ref: ${checkout_ref}" >&2
                     return 1
                   fi
@@ -252,7 +260,7 @@ jobs:
                   fi
                 fi
               else
-                if ! git fetch --no-tags --depth=1 origin "${checkout_ref}"; then
+                if ! git fetch --no-tags --depth=1 origin -- "${checkout_ref}"; then
                   echo "unable to fetch checkout ref: ${checkout_ref}" >&2
                   return 1
                 fi

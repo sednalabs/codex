@@ -1729,7 +1729,7 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
                 "PR_HEAD_REF": pr_head_ref,
             }
             proc = subprocess.run(
-                ["nice", "-n", "19", "ionice", "-c", "3", "bash", "-c", command],
+                ["bash", "-c", command],
                 cwd=repo_root,
                 check=False,
                 capture_output=True,
@@ -1780,7 +1780,7 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             ("-C", str(checkout), "checkout", "-B", "main", "origin/main"),
         ):
             subprocess.run(
-                ["nice", "-n", "19", "ionice", "-c", "3", "git", *args],
+                ["git", *args],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1826,17 +1826,11 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
         ) = self._fixture_repo()
         try:
             pr_head_sha = "a" * 40
-            symbolic_outputs: dict[str, dict[str, str]] = {}
+            captured_outputs: dict[str, dict[str, str]] = {}
             workflow_sha = moved_sha
             self.assertNotEqual(
                 subprocess.run(
                     [
-                        "nice",
-                        "-n",
-                        "19",
-                        "ionice",
-                        "-c",
-                        "3",
                         "git",
                         "-C",
                         str(checkout),
@@ -1859,8 +1853,10 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
                     pr_head_sha,
                 ),
                 ("workflow_dispatch", "", "", "", workflow_sha),
+                ("workflow_dispatch", moved_sha, "", "", moved_sha),
                 ("workflow_dispatch", resolved_sha, "", "", resolved_sha),
                 ("workflow_dispatch", "mutable", "", "", resolved_sha),
+                ("workflow_dispatch", "refs/heads/mutable", "", "", resolved_sha),
                 ("workflow_dispatch", "lightweight", "", "", resolved_sha),
                 ("workflow_dispatch", "annotated", "", "", resolved_sha),
             ]
@@ -1889,15 +1885,47 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
                         outputs.get("display_ref"),
                         pr_ref or input_ref or "main",
                     )
-                    if input_ref in {"mutable", "lightweight", "annotated"}:
-                        symbolic_outputs[input_ref] = outputs
+                    if event_name == "workflow_dispatch":
+                        captured_outputs[input_ref or "<default>"] = outputs
 
             self._move_fixture_refs(source, origin_tmpdir, moved_sha)
             source._git("fetch", "origin", "mutable")
             self.assertEqual(source.rev_parse("origin/mutable"), moved_sha)
-            for input_ref, outputs in symbolic_outputs.items():
-                self.assertEqual(outputs.get("checkout_ref"), resolved_sha, input_ref)
-                self.assertEqual(outputs.get("checkout_sha"), resolved_sha, input_ref)
+            for input_ref, outputs in captured_outputs.items():
+                captured_sha = outputs.get("checkout_sha")
+                self.assertIsNotNone(captured_sha, input_ref)
+                resolved = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(checkout),
+                        "rev-parse",
+                        "--verify",
+                        f"{captured_sha}^{{commit}}",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(resolved.returncode, 0, input_ref)
+                self.assertEqual(resolved.stdout.strip(), captured_sha, input_ref)
+                self.assertEqual(
+                    subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(checkout),
+                            "cat-file",
+                            "-e",
+                            f"{captured_sha}^{{commit}}",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    ).returncode,
+                    0,
+                    input_ref,
+                )
             self.assertEqual(resolved_sha, source.rev_parse(resolved_sha))
             self.assertNotEqual(resolved_sha, moved_sha)
         finally:
@@ -1933,6 +1961,28 @@ class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0)
             self.assertEqual(outputs, {})
             self.assertIn("unable to fetch checkout ref", proc.stderr)
+        finally:
+            source.cleanup()
+            origin_tmpdir.cleanup()
+            checkout_tmpdir.cleanup()
+
+    def test_unsafe_manual_ref_inputs_fail_before_fetch_or_identity_output(self) -> None:
+        source, origin_tmpdir, checkout_tmpdir, checkout, base_sha, _, _ = self._fixture_repo()
+        try:
+            fetch_head = checkout / ".git" / "FETCH_HEAD"
+            initial_fetch_head = fetch_head.read_bytes()
+            for input_ref in ("--upload-pack=evil", "bad\nref"):
+                with self.subTest(input_ref=repr(input_ref)):
+                    proc, outputs = self._run_identity_fixture(
+                        checkout,
+                        event_name="workflow_dispatch",
+                        checkout_ref=base_sha,
+                        input_ref=input_ref,
+                    )
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertEqual(outputs, {})
+                    self.assertIn("unsafe checkout ref input rejected", proc.stderr)
+                    self.assertEqual(fetch_head.read_bytes(), initial_fetch_head)
         finally:
             source.cleanup()
             origin_tmpdir.cleanup()
