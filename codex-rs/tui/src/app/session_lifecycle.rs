@@ -1345,7 +1345,7 @@ impl App {
         let mut seen_cursors = HashSet::new();
         let mut scanned_threads = Vec::new();
         let mut page_count = 0;
-        let mut scanned_thread_count = 0;
+        let mut scanned_thread_count: usize = 0;
         loop {
             if page_count >= LEGACY_AGENT_PICKER_MAX_PAGES {
                 tracing::warn!(
