@@ -2253,14 +2253,16 @@ async fn failed_spawn_keeps_requested_identity_separate_from_terminal_effective_
     else {
         panic!("legacy spawn start should map to a canonical item start");
     };
-    let AppServerThreadItem::CollabAgentToolCall(mapped_started) = mapped_started.item else {
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = mapped_started.item
+    else {
         panic!("legacy spawn start should map to a collab tool item");
     };
-    assert_eq!(mapped_started.requested_model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(
-        mapped_started.requested_reasoning_effort,
-        Some(ReasoningEffort::Medium)
-    );
+    assert_eq!(requested_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(requested_reasoning_effort, Some(ReasoningEffort::Medium));
 
     let completed = timeout(Duration::from_secs(1), rx.recv())
         .await

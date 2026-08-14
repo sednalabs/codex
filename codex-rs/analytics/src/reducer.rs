@@ -143,6 +143,7 @@ use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionG
 use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
 use sha1::Digest;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -155,6 +156,7 @@ pub(crate) struct AnalyticsReducer {
     tool_item_lifecycles: HashMap<ToolItemKey, ToolItemLifecycleState>,
     pending_reviews: HashMap<RequestId, PendingReviewState>,
     item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
+    terminal_turns: HashSet<(String, String)>,
 }
 
 struct ConnectionState {
@@ -1377,6 +1379,8 @@ impl AnalyticsReducer {
                 });
                 let turn_id = notification.turn.id;
                 self.maybe_emit_turn_event(&turn_id, out).await;
+                self.terminal_turns
+                    .insert((thread_id.clone(), turn_id.clone()));
                 self.clear_terminal_turn_item_state(&thread_id, &turn_id);
             }
             _ => {}
@@ -1595,10 +1599,13 @@ impl AnalyticsReducer {
         out: &mut Vec<TrackEventRequest>,
     ) {
         if let Some(item_key) = item_review_summary_key(&pending_review)
-            && self.tool_item_lifecycles.contains_key(&item_key)
+            && !self
+                .terminal_turns
+                .contains(&(item_key.thread_id.clone(), item_key.turn_id.clone()))
         {
-            // Review events can arrive after a terminal turn, but only a live
-            // tool lifecycle can consume their denormalized summary.
+            // A review may precede its item-start notification. Retain that
+            // summary unless the turn is already terminal; late reviews still
+            // emit their own event but cannot leak into a reused item ID.
             self.record_item_review_summary(
                 item_key,
                 reviewer,

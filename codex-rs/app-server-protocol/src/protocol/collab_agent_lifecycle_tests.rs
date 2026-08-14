@@ -367,6 +367,7 @@ fn collab_item(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_item(
     id: &str,
     status: CollabAgentToolCallStatus,
