@@ -1915,6 +1915,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_shutdown_rejects_unanswered_server_requests() {
+        let (rejection_tx, rejection_rx) = tokio::sync::oneshot::channel();
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            let request_id = RequestId::Integer(7);
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Request(JSONRPCRequest {
+                    id: request_id.clone(),
+                    method: "item/tool/requestUserInput".to_string(),
+                    params: Some(
+                        serde_json::to_value(ToolRequestUserInputParams {
+                            thread_id: "thread-1".to_string(),
+                            turn_id: "turn-1".to_string(),
+                            item_id: "call-1".to_string(),
+                            questions: vec![ToolRequestUserInputQuestion {
+                                id: "question-1".to_string(),
+                                header: "Mode".to_string(),
+                                question: "Pick one".to_string(),
+                                is_other: false,
+                                is_secret: false,
+                                options: Some(vec![]),
+                            }],
+                            auto_resolution_ms: None,
+                        })
+                        .expect("params should serialize"),
+                    ),
+                    trace: None,
+                }),
+            )
+            .await;
+
+            let JSONRPCMessage::Error(error) = read_websocket_message(&mut websocket).await else {
+                panic!("shutdown should reject the unanswered request");
+            };
+            rejection_tx
+                .send((error.id, error.error))
+                .expect("shutdown rejection should be observed");
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+
+        let AppServerEvent::ServerRequest(request) =
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("server request should arrive before shutdown")
+                .expect("event stream should stay open before shutdown")
+        else {
+            panic!("expected server request before shutdown");
+        };
+        assert_eq!(request.id(), &RequestId::Integer(7));
+
+        client.shutdown().await.expect("shutdown should complete");
+
+        let (request_id, error) = timeout(Duration::from_secs(2), rejection_rx)
+            .await
+            .expect("server should observe the shutdown rejection")
+            .expect("shutdown rejection should be delivered");
+        assert_eq!(request_id, RequestId::Integer(7));
+        assert_eq!(error.code, -32603);
+        assert!(error.message.contains("stopped before answering"));
+    }
+
+    #[tokio::test]
     async fn remote_server_request_received_during_initialize_is_delivered() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
