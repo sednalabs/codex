@@ -24,6 +24,7 @@ use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -1098,6 +1099,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    repair_offset: None,
                     mutation_authority: mutation_authority.clone(),
                 }
             }
@@ -1116,6 +1118,7 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    repair_offset: None,
                     mutation_authority: mutation_authority.clone(),
                 }
             }
@@ -1170,9 +1173,11 @@ impl RolloutRecorder {
         Ok(())
     }
 
-    /// Append canonical items and report the exact leading prefix made durable before return.
+    /// Append canonical items and report the exact leading prefix committed before return.
     ///
-    /// On error, `committed` is still updated. Callers may safely retry only the remaining suffix.
+    /// Here committed means that the line was written and flushed for process-visible consistency;
+    /// it does not promise survival of an OS crash or power loss. On error, `committed` is still
+    /// updated. Callers may safely retry only the remaining suffix.
     pub async fn record_canonical_items_committed(
         &self,
         items: &[RolloutItem],
@@ -1864,6 +1869,10 @@ struct RolloutWriterState {
     rollout_path: PathBuf,
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
+    /// Byte boundary before an append whose immediate rollback failed.
+    ///
+    /// No subsequent item may be retried until reopening has restored this boundary.
+    repair_offset: Option<u64>,
     mutation_authority: RolloutMutationAuthority,
 }
 
@@ -1948,6 +1957,12 @@ impl RolloutWriterState {
     }
 
     fn enter_recovery_mode(&mut self, err: &IoError) {
+        if let Some(repair) = err
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<RolloutAppendRepair>())
+        {
+            self.repair_offset = Some(repair.offset);
+        }
         let message = err.to_string();
         if self.last_logged_error.as_ref() != Some(&message) {
             error!(
@@ -1973,10 +1988,15 @@ impl RolloutWriterState {
             .map(|info| info.path.as_path())
             .unwrap_or(self.rollout_path.as_path());
         let file = open_log_file_with_authority(path, self.mutation_authority.clone())?;
-        self.writer = Some(JsonlWriter::new(
+        let mut writer = JsonlWriter::new(
             tokio::fs::File::from_std(file),
             self.mutation_authority.clone(),
-        ));
+        );
+        if let Some(offset) = self.repair_offset {
+            writer.repair_to_offset(offset).await?;
+            self.repair_offset = None;
+        }
+        self.writer = Some(writer);
         self.deferred_log_file_info = None;
         Ok(())
     }
@@ -2177,6 +2197,8 @@ struct JsonlWriter {
     mutation_authority: RolloutMutationAuthority,
     #[cfg(test)]
     write_gate: Option<JsonlWriteGate>,
+    #[cfg(test)]
+    write_fault: Option<JsonlWriteFault>,
 }
 
 #[cfg(test)]
@@ -2185,6 +2207,32 @@ struct JsonlWriteGate {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum JsonlWriteFault {
+    PartialWriteThenError(usize),
+    FlushErrorAfterWrite,
+}
+
+#[derive(Debug)]
+struct RolloutAppendRepair {
+    offset: u64,
+    append_error: String,
+    repair_error: String,
+}
+
+impl std::fmt::Display for RolloutAppendRepair {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "rollout append failed at byte {} ({}) and rollback failed ({})",
+            self.offset, self.append_error, self.repair_error
+        )
+    }
+}
+
+impl std::error::Error for RolloutAppendRepair {}
 
 #[derive(serde::Serialize)]
 struct RolloutLineRef<'a> {
@@ -2202,7 +2250,26 @@ impl JsonlWriter {
             mutation_authority,
             #[cfg(test)]
             write_gate: None,
+            #[cfg(test)]
+            write_fault: None,
         }
+    }
+
+    async fn repair_to_offset(&mut self, offset: u64) -> std::io::Result<()> {
+        let custody = self
+            .mutation_authority
+            .admit()
+            .map_err(|err| IoError::other(format!("rollout mutation admission failed: {err:?}")))?;
+        let file = Arc::clone(&self.file);
+        tokio::spawn(async move {
+            let _custody = custody;
+            let mut file = file.lock().await;
+            file.set_len(offset).await?;
+            file.seek(SeekFrom::End(0)).await?;
+            file.flush().await
+        })
+        .await
+        .map_err(|err| IoError::other(format!("rollout repair task failed: {err}")))?
     }
 
     async fn write_rollout_item(
@@ -2234,6 +2301,8 @@ impl JsonlWriter {
         let file = Arc::clone(&self.file);
         #[cfg(test)]
         let write_gate = self.write_gate.clone();
+        #[cfg(test)]
+        let write_fault = self.write_fault.take();
         tokio::spawn(async move {
             // This owned continuation retains both filesystem and mutation custody if the outer
             // caller is cancelled. Revocation therefore waits for the exact admitted write.
@@ -2244,8 +2313,49 @@ impl JsonlWriter {
                 write_gate.release.notified().await;
             }
             let mut file = file.lock().await;
-            file.write_all(json.as_bytes()).await?;
-            file.flush().await
+            let offset = file.seek(SeekFrom::End(0)).await?;
+            let append_result = async {
+                #[cfg(test)]
+                if let Some(JsonlWriteFault::PartialWriteThenError(byte_count)) = write_fault {
+                    let byte_count = byte_count.min(json.len());
+                    file.write_all(&json.as_bytes()[..byte_count]).await?;
+                    return Err(IoError::other("scripted partial rollout append"));
+                }
+                file.write_all(json.as_bytes()).await?;
+                #[cfg(test)]
+                if matches!(write_fault, Some(JsonlWriteFault::FlushErrorAfterWrite)) {
+                    return Err(IoError::other("scripted rollout flush failure"));
+                }
+                // `flush` makes a successful append visible to this process. It deliberately does
+                // not claim power-loss durability; callers requiring that contract need sync_data
+                // or sync_all at a separately specified persistence boundary.
+                file.flush().await
+            }
+            .await;
+            let Err(append_error) = append_result else {
+                return Ok(());
+            };
+
+            // Retrying an unchanged item is safe only after restoring its exact byte boundary.
+            // This also removes a complete line when the only failed step was `flush`, preventing
+            // an acknowledgement-loss retry from duplicating the line.
+            let repair_result = async {
+                file.set_len(offset).await?;
+                file.seek(SeekFrom::End(0)).await?;
+                file.flush().await
+            }
+            .await;
+            match repair_result {
+                Ok(()) => Err(append_error),
+                Err(repair_error) => Err(IoError::new(
+                    append_error.kind(),
+                    RolloutAppendRepair {
+                        offset,
+                        append_error: append_error.to_string(),
+                        repair_error: repair_error.to_string(),
+                    },
+                )),
+            }
         })
         .await
         .map_err(|err| IoError::other(format!("rollout append task failed: {err}")))?

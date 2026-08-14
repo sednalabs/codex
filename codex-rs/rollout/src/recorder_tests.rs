@@ -336,6 +336,59 @@ async fn failed_async_write_releases_mutation_custody_for_retry() {
 }
 
 #[tokio::test]
+async fn partial_line_failure_rolls_back_before_retry_and_reports_one_commit() {
+    assert_scripted_line_failure_is_retried_once(JsonlWriteFault::PartialWriteThenError(17)).await;
+}
+
+#[tokio::test]
+async fn flush_failure_rolls_back_complete_line_before_retry_and_reports_one_commit() {
+    assert_scripted_line_failure_is_retried_once(JsonlWriteFault::FlushErrorAfterWrite).await;
+}
+
+async fn assert_scripted_line_failure_is_retried_once(write_fault: JsonlWriteFault) {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(&rollout_path)
+        .expect("open rollout");
+    let mutation_authority = RolloutMutationAuthority::new();
+    let mut writer = JsonlWriter::new(tokio::fs::File::from_std(file), mutation_authority.clone());
+    writer.write_fault = Some(write_fault);
+    let mut state = RolloutWriterState {
+        writer: Some(writer),
+        deferred_log_file_info: None,
+        pending_items: Vec::new(),
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Legacy,
+        last_logged_error: None,
+        repair_offset: None,
+        mutation_authority,
+    };
+
+    let marker = "transactional-line-marker";
+    let (result, committed) = state
+        .append_items_committed(vec![agent_message_item(marker)])
+        .await;
+    result.expect("reopened retry should succeed");
+    assert_eq!(committed, 1);
+    drop(state);
+
+    let text = fs::read_to_string(rollout_path).expect("read rollout");
+    assert_eq!(
+        text.matches(marker).count(),
+        1,
+        "item must not be duplicated"
+    );
+    assert_eq!(text.lines().count(), 1, "partial JSONL must be removed");
+    serde_json::from_str::<serde_json::Value>(&text).expect("line must remain valid JSON");
+}
+
+#[tokio::test]
 async fn failed_shutdown_drain_keeps_authority_open_until_successful_retry() {
     let home = TempDir::new().expect("temp dir");
     let blocker = home.path().join("not-a-directory");
@@ -360,6 +413,7 @@ async fn failed_shutdown_drain_keeps_authority_open_until_successful_retry() {
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        repair_offset: None,
         mutation_authority: mutation_authority.clone(),
     };
 
@@ -1155,6 +1209,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        repair_offset: None,
         mutation_authority,
     };
     state.add_items(vec![RolloutItem::EventMsg(EventMsg::AgentMessage(
