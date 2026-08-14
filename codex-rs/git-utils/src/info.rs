@@ -402,6 +402,7 @@ impl crate::FsmonitorProbeRunner for LocalFsmonitorProbeRunner<'_> {
         // worktree or index, so do not reduce the requested command's timeout.
         let mut command = Command::new(self.git);
         command
+            .envs(crate::local_only_git_env())
             .args(args)
             .current_dir(self.cwd)
             .stdin(Stdio::null())
@@ -426,6 +427,7 @@ async fn run_git_command_with_timeout_from(
 ) -> Option<std::process::Output> {
     let mut command = Command::new(git);
     command
+        .envs(crate::local_only_git_env())
         .env("GIT_OPTIONAL_LOCKS", "0")
         // Keep internal Git commands independent of repository-selected hooks
         // and fsmonitor helpers while preserving built-in fsmonitor acceleration.
