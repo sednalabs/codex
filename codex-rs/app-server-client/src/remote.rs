@@ -1464,7 +1464,7 @@ mod tests {
         let request_id = RequestId::Integer(1);
         let mut ledger = ServerRequestLedger::default();
         assert_eq!(
-            ledger.register(request_id.clone(), 1),
+            ledger.register(request_id.clone(), /*request_bytes*/ 1),
             ServerRequestRegistration::Registered
         );
         assert!(ledger.begin_response(&request_id));
@@ -1477,12 +1477,18 @@ mod tests {
         let mut ledger = ServerRequestLedger::default();
         for request_id in 0..MAX_UNANSWERED_SERVER_REQUESTS {
             assert_eq!(
-                ledger.register(RequestId::Integer(request_id as i64), 1),
+                ledger.register(
+                    RequestId::Integer(request_id as i64),
+                    /*request_bytes*/ 1,
+                ),
                 ServerRequestRegistration::Registered
             );
         }
         assert_eq!(
-            ledger.register(RequestId::Integer(MAX_UNANSWERED_SERVER_REQUESTS as i64), 1,),
+            ledger.register(
+                RequestId::Integer(MAX_UNANSWERED_SERVER_REQUESTS as i64),
+                /*request_bytes*/ 1,
+            ),
             ServerRequestRegistration::CapacityExceeded
         );
         assert_eq!(
@@ -1505,14 +1511,15 @@ mod tests {
             ServerRequestRegistration::Registered
         );
         assert_eq!(
-            ledger.register(RequestId::Integer(2), 1),
+            ledger.register(RequestId::Integer(2), /*request_bytes*/ 1),
             ServerRequestRegistration::CapacityExceeded
         );
 
         assert!(ledger.begin_response(&first_request_id));
+        ledger.complete_response(&first_request_id);
         assert_eq!(ledger.request_bytes, 0);
         assert_eq!(
-            ledger.register(RequestId::Integer(2), 1),
+            ledger.register(RequestId::Integer(2), /*request_bytes*/ 1),
             ServerRequestRegistration::Registered
         );
     }
@@ -1522,11 +1529,11 @@ mod tests {
         let mut ledger = ServerRequestLedger::default();
         let nearly_full = "a".repeat(MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES - 1);
         assert_eq!(
-            ledger.register(RequestId::String(nearly_full), 1),
+            ledger.register(RequestId::String(nearly_full), /*request_bytes*/ 1),
             ServerRequestRegistration::Registered
         );
         assert_eq!(
-            ledger.register(RequestId::String("é".to_string()), 1),
+            ledger.register(RequestId::String("é".to_string()), /*request_bytes*/ 1,),
             ServerRequestRegistration::CapacityExceeded
         );
     }
@@ -1633,7 +1640,7 @@ mod tests {
         let mut client_stream = WebSocketStream::from_raw_socket(
             client_io,
             tokio_tungstenite::tungstenite::protocol::Role::Client,
-            None,
+            Some(remote_websocket_config()),
         )
         .await;
         let mut server_stream = WebSocketStream::from_raw_socket(
@@ -1659,7 +1666,7 @@ mod tests {
             server_stream
                 .send(Message::Text(
                     serde_json::to_string(&JSONRPCMessage::Request(dynamic_tool_request(
-                        7,
+                        /*request_id*/ 7,
                         MAX_UNANSWERED_SERVER_REQUEST_BYTES,
                     )))
                     .expect("dynamic tool request should serialize")
