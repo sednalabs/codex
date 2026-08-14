@@ -560,11 +560,13 @@ enum ServerRequestResponseDisposition {
     ResponseAttempted,
 }
 
+#[derive(Debug)]
 struct RequiredEventOverflow {
     event: Option<RetainedRemoteEvent>,
     server_request_id: Option<RequestId>,
 }
 
+#[derive(Debug)]
 struct RemoteEventByteBudget {
     used: AtomicUsize,
 }
@@ -609,6 +611,7 @@ impl RemoteEventByteBudget {
     }
 }
 
+#[derive(Debug)]
 struct RemoteEventReservation {
     byte_budget: Arc<RemoteEventByteBudget>,
     bytes: usize,
@@ -625,6 +628,7 @@ impl Drop for RemoteEventReservation {
     }
 }
 
+#[derive(Debug)]
 struct RetainedRemoteEvent {
     event: AppServerEvent,
     _reservation: Option<RemoteEventReservation>,
