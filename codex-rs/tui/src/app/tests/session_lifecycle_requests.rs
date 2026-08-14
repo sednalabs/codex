@@ -52,6 +52,10 @@ struct RecordingAppServerOptions {
     fail_thread_list_request: Option<usize>,
 }
 
+fn test_support_error(error: impl std::fmt::Display) -> color_eyre::eyre::Report {
+    color_eyre::eyre::eyre!(error.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_spawn_rollout(
     codex_home: &std::path::Path,
@@ -79,7 +83,8 @@ fn create_spawn_rollout(
         }),
         root_thread_id.into(),
         root_thread_id,
-    )?;
+    )
+    .map_err(test_support_error)?;
     Ok(ThreadId::from_string(&thread_id)?)
 }
 
@@ -586,14 +591,17 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
-                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
-                    codex_home.path(),
-                    "2026-01-09T00-00-00",
-                    "2026-01-09T00:00:00Z",
-                    "Primary root",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                )?)?;
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-09T00-00-00",
+                        "2026-01-09T00:00:00Z",
+                        "Primary root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .map_err(test_support_error)?,
+                )?;
                 let target_thread_id = create_spawn_rollout(
                     codex_home.path(),
                     app.config.model_provider_id.as_str(),
@@ -604,14 +612,17 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
                     root_thread_id,
                     "/root/legacy_target",
                 )?;
-                let unrelated_root_thread_id = ThreadId::from_string(&create_fake_rollout(
-                    codex_home.path(),
-                    "2026-01-09T00-00-02",
-                    "2026-01-09T00:00:02Z",
-                    "Unrelated root",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                )?)?;
+                let unrelated_root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-09T00-00-02",
+                        "2026-01-09T00:00:02Z",
+                        "Unrelated root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .map_err(test_support_error)?,
+                )?;
                 for index in 0..UNRELATED_COUNT {
                     let seconds_from_start = index + 3;
                     let minute = seconds_from_start / 60;
@@ -716,22 +727,28 @@ fn agent_picker_rejects_mixed_roots_when_server_ignores_ancestor_filter() -> Res
                 let codex_home = tempdir()?;
                 app.config.codex_home = codex_home.path().to_path_buf().abs();
                 app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
-                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
-                    codex_home.path(),
-                    "2026-01-10T00-00-00",
-                    "2026-01-10T00:00:00Z",
-                    "Primary root",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                )?)?;
-                let foreign_root_thread_id = ThreadId::from_string(&create_fake_rollout(
-                    codex_home.path(),
-                    "2026-01-10T00-00-01",
-                    "2026-01-10T00:00:01Z",
-                    "Foreign root",
-                    Some(app.config.model_provider_id.as_str()),
-                    /*git_info*/ None,
-                )?)?;
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-10T00-00-00",
+                        "2026-01-10T00:00:00Z",
+                        "Primary root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .map_err(test_support_error)?,
+                )?;
+                let foreign_root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-10T00-00-01",
+                        "2026-01-10T00:00:01Z",
+                        "Foreign root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .map_err(test_support_error)?,
+                )?;
                 let mut own_child_thread_ids = Vec::with_capacity(OWN_COUNT);
                 for index in 0..OWN_COUNT {
                     let seconds_from_start = index + 60;
