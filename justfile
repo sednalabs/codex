@@ -609,6 +609,8 @@ core-ledger-smoke:
     cargo nextest run -p codex-state --no-fail-fast -- runtime::tests::init_removes_legacy_logs_and_usage_db_files runtime::usage::tests::usage_logger_records_requested_model_and_quota_snapshot runtime::usage::tests::usage_logger_tracks_tool_call_lifecycle runtime::usage::tests::usage_logger_captures_spawn_request_and_fork_snapshot runtime::usage::tests::usage_logger_resolves_root_thread_from_parent_or_fork runtime::usage::tests::usage_logger_clears_turn_snapshot_after_turn_complete runtime::usage::tests::usage_logger_resolves_root_thread_from_persisted_lineage_after_restart --exact
     cargo test -p codex-thread-store live_thread_tests::concurrent_appends_keep_sqlite_metadata_in_canonical_history_order --lib -- --exact --test-threads=1
     cargo test -p codex-thread-store live_thread_tests::persist_waits_for_append_observation_before_flushing_pending_metadata --lib -- --exact --test-threads=1
+    cargo test -p codex-thread-store live_thread_tests::local_store_reports_durable_prefix_and_retries_without_duplicate_jsonl_records --lib -- --exact --test-threads=1
+    cargo test -p codex-rollout recorder::tests::cancelling_committed_shutdown_reopens_after_retryable_writer_error --lib -- --exact --test-threads=1
 
 # Fast smoke checks for fragile codex-core integration buckets that still fit
 

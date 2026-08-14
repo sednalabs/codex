@@ -120,6 +120,10 @@ pub enum RolloutRecorderParams {
 
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
+    AppendItemsCommitted {
+        items: Vec<RolloutItem>,
+        ack: oneshot::Sender<(std::io::Result<()>, usize)>,
+    },
     Persist {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
@@ -191,7 +195,7 @@ impl RolloutWriterTask {
     }
 
     /// Reserve bounded-channel capacity before transferring shutdown ownership to the writer.
-    async fn reserve_shutdown(&self, tx: &Sender<RolloutCmd>) -> TerminalCommandOutcome {
+    async fn reserve_shutdown(self: &Arc<Self>, tx: &Sender<RolloutCmd>) -> TerminalCommandOutcome {
         let terminal_admission = match self.command_admission.acquire_terminal().await {
             Ok(admission) => admission,
             Err(RolloutCommandAdmissionError::Terminal) => {
@@ -223,18 +227,39 @@ impl RolloutWriterTask {
         };
 
         let (ack, ack_rx) = oneshot::channel();
-        let (continuing, mut continuing_rx) = oneshot::channel();
+        let (continuing, continuing_rx) = oneshot::channel();
         let transition = terminal_admission.commit(|| {
             permit.send(RolloutCmd::Shutdown { ack, continuing });
         });
 
-        let Some(mut custody) = self.take_handle() else {
+        let Some(custody) = self.take_handle() else {
             return self.sealed_terminal_outcome(
                 transition,
                 Err(IoError::other("rollout writer task handle is unavailable")),
                 Ok(()),
             );
         };
+        let owner = Arc::clone(self);
+        tokio::spawn(async move {
+            owner
+                .finish_shutdown(transition, custody, ack_rx, continuing_rx)
+                .await
+        })
+        .await
+        .unwrap_or_else(|err| {
+            TerminalCommandOutcome::Terminated(Err(IoError::other(format!(
+                "rollout shutdown ownership task failed: {err}"
+            ))))
+        })
+    }
+
+    async fn finish_shutdown(
+        self: Arc<Self>,
+        transition: crate::command_admission::RolloutTerminalTransition,
+        mut custody: WriterHandleCustody,
+        ack_rx: oneshot::Receiver<std::io::Result<()>>,
+        mut continuing_rx: oneshot::Receiver<()>,
+    ) -> TerminalCommandOutcome {
         match ack_rx.await {
             Ok(Ok(())) => self.sealed_terminal_outcome(transition, Ok(()), custody.wait().await),
             Ok(Err(err)) => {
@@ -283,13 +308,13 @@ impl RolloutWriterTask {
         }
     }
 
-    fn take_handle(&self) -> Option<WriterHandleCustody<'_>> {
+    fn take_handle(self: &Arc<Self>) -> Option<WriterHandleCustody> {
         let mut guard = self
             .handle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.take().map(|handle| WriterHandleCustody {
-            owner: self,
+            owner: Arc::clone(self),
             handle: Some(handle),
         })
     }
@@ -336,12 +361,12 @@ impl RolloutWriterTask {
     }
 }
 
-struct WriterHandleCustody<'a> {
-    owner: &'a RolloutWriterTask,
+struct WriterHandleCustody {
+    owner: Arc<RolloutWriterTask>,
     handle: Option<JoinHandle<()>>,
 }
 
-impl WriterHandleCustody<'_> {
+impl WriterHandleCustody {
     async fn wait(mut self) -> std::io::Result<()> {
         let result = match self.handle.as_mut() {
             Some(handle) => writer_join_result(handle.await),
@@ -352,7 +377,7 @@ impl WriterHandleCustody<'_> {
     }
 }
 
-impl Drop for WriterHandleCustody<'_> {
+impl Drop for WriterHandleCustody {
     fn drop(&mut self) {
         let Some(handle) = self.handle.take() else {
             return;
@@ -1145,6 +1170,34 @@ impl RolloutRecorder {
         Ok(())
     }
 
+    /// Append canonical items and report the exact leading prefix made durable before return.
+    ///
+    /// On error, `committed` is still updated. Callers may safely retry only the remaining suffix.
+    pub async fn record_canonical_items_committed(
+        &self,
+        items: &[RolloutItem],
+        committed: &mut usize,
+    ) -> std::io::Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let (ack, ack_rx) = oneshot::channel();
+        let (admission, permit) = self.writer_task.reserve_data(&self.tx).await?;
+        admission.commit(|| {
+            permit.send(RolloutCmd::AppendItemsCommitted {
+                items: items.to_vec(),
+                ack,
+            });
+        });
+        let (result, durable_count) = ack_rx.await.map_err(|err| {
+            self.writer_task.terminal_failure().unwrap_or_else(|| {
+                IoError::other(format!("failed waiting for rollout append: {err}"))
+            })
+        })?;
+        *committed = durable_count;
+        result
+    }
+
     /// Materialize the rollout file and persist all buffered items.
     ///
     /// This is idempotent. If materialization fails, the recorder keeps all pending items in memory
@@ -1819,6 +1872,21 @@ impl RolloutWriterState {
         self.pending_items.extend(items);
     }
 
+    async fn append_items_committed(
+        &mut self,
+        items: Vec<RolloutItem>,
+    ) -> (std::io::Result<()>, usize) {
+        let pending_before = self.pending_items.len();
+        let item_count = items.len();
+        self.add_items(items);
+        let result = self.write_pending_with_recovery("append").await;
+        let written_total = pending_before
+            .saturating_add(item_count)
+            .saturating_sub(self.pending_items.len());
+        let committed = written_total.saturating_sub(pending_before).min(item_count);
+        (result, committed)
+    }
+
     async fn flush_if_materialized(&mut self) {
         if self.is_deferred() {
             return;
@@ -1979,6 +2047,9 @@ async fn rollout_writer(
             RolloutCmd::AddItems(items) => {
                 state.add_items(items);
                 state.flush_if_materialized().await;
+            }
+            RolloutCmd::AppendItemsCommitted { items, ack } => {
+                let _ = ack.send(state.append_items_committed(items).await);
             }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
