@@ -9,6 +9,7 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
@@ -35,6 +36,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -59,6 +62,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -557,6 +561,495 @@ async fn multi_agent_v2_spawn_accepts_child_model_without_backend_assignment() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5.4");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn, mut events) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test should own its turn context"),
+        config.clone(),
+    );
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session_mut = Arc::get_mut(&mut session).expect("test should own its session");
+    session_mut.services.agent_control = manager.agent_control();
+    session_mut.thread_id = root.thread_id;
+    let (initial_delivery_finished, resume_spawn) = session
+        .services
+        .agent_control
+        .pause_spawn_after_initial_delivery_for_test();
+    let mut created_threads = manager.subscribe_thread_created();
+
+    let spawn = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            let handler = SpawnAgentHandlerV2::default();
+            handler
+                .handle(invocation(
+                    session,
+                    turn,
+                    "spawn_agent",
+                    function_payload(json!({
+                        "message": "finish quickly",
+                        "task_name": "fast_worker",
+                        "fork_turns": "none"
+                    })),
+                ))
+                .await
+        }
+    });
+    let child_thread_id = timeout(Duration::from_secs(5), initial_delivery_finished)
+        .await
+        .expect("V2 spawn should deliver before its publication CAS")
+        .expect("initial-delivery hook should identify the child");
+    assert!(
+        session
+            .services
+            .agent_control
+            .get_agent_metadata(child_thread_id)
+            .is_none(),
+        "initial V2 delivery must use private metadata before registry publication"
+    );
+    assert!(
+        created_threads.try_recv().is_err(),
+        "initial V2 delivery must not notify a parent-visible child before publication"
+    );
+
+    let child = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("provisional V2 child should remain manager-owned");
+    let terminal_turn = child.session.new_default_turn().await;
+    child
+        .session
+        .send_event(
+            terminal_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: terminal_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("finished before publication".to_string()),
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    resume_spawn.notify_one();
+
+    let output = spawn
+        .await
+        .expect("V2 spawn task should join")
+        .expect("V2 spawn should publish after initial delivery completes");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(parse_agent_id(&result.agent_id), child_thread_id);
+
+    assert!(
+        session
+            .services
+            .agent_control
+            .get_agent_metadata(child_thread_id)
+            .is_some(),
+        "a successful spawn must register its child only after the publication CAS"
+    );
+    assert_eq!(
+        session.services.agent_control.v2_resident_count_for_test(),
+        1,
+        "a published V2 child must consume one residency slot"
+    );
+    assert_eq!(
+        created_threads
+            .recv()
+            .await
+            .expect("published V2 child should notify once"),
+        child_thread_id
+    );
+    assert!(
+        created_threads.try_recv().is_err(),
+        "a published V2 child should not emit duplicate creation notifications"
+    );
+
+    let initial_delivery_count = manager
+        .captured_ops()
+        .into_iter()
+        .filter(|(thread_id, op)| {
+            *thread_id == child_thread_id
+                && matches!(
+                    op,
+                    Op::InterAgentCommunication { communication }
+                        if communication.encrypted_content.as_deref() == Some("finish quickly")
+                            && communication.trigger_turn
+                )
+        })
+        .count();
+    assert_eq!(
+        initial_delivery_count, 1,
+        "the provisional V2 delivery must reach the child exactly once before publication"
+    );
+
+    let activity = events
+        .recv()
+        .await
+        .expect("successful V2 spawn should report a Started activity");
+    assert!(matches!(
+        activity.msg,
+        EventMsg::ItemCompleted(item_completed)
+            if matches!(
+                item_completed.item,
+                TurnItem::SubAgentActivity(ref item)
+                    if item.id == "call-1"
+                        && item.kind == SubAgentActivityKind::Started
+                        && item.agent_thread_id == child_thread_id
+            )
+    ));
+    child.session.ensure_rollout_materialized().await;
+    child
+        .flush_rollout()
+        .await
+        .expect("quick terminal child history should flush");
+    let stored_child = child
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("quick terminal child history should remain readable");
+    assert!(
+        stored_child
+            .history
+            .expect("quick terminal child should retain history")
+            .items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnComplete(_)))),
+        "publication must preserve a terminal event produced after initial delivery"
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_live_hint() {
+    let (mut session, mut turn, mut events) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test should own its turn context"),
+        config,
+    );
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let session_mut = Arc::get_mut(&mut session).expect("test should own its session");
+    session_mut.services.agent_control = manager.agent_control();
+    session_mut.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .begin_tool_spawn_publication(root.thread_id, "call-1");
+    assert_eq!(
+        session
+            .services
+            .agent_control
+            .cancel_tool_spawn_publication(root.thread_id, "call-1"),
+        crate::agent::SpawnPublicationDecision::CancellationOwned
+    );
+
+    let error = match SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "must not reach a child",
+                "task_name": "cancelled_worker",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a cancellation-owned spawn should fail before publication"),
+    };
+    let FunctionCallError::RespondToModel(message) = &error else {
+        panic!("cancellation should return a model-visible tool error: {error:?}");
+    };
+    assert!(
+        message.contains("turn aborted"),
+        "the tool result must describe cancellation rather than a child identifier: {message}"
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "a cancelled pre-publication child must not emit a V2 Started activity"
+    );
+    assert!(
+        manager.captured_ops().is_empty(),
+        "the child must not receive an initial delivery operation"
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity() {
+    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let session_mut = Arc::get_mut(&mut session).expect("test should own its session");
+    session_mut.services.agent_control = manager.agent_control();
+    session_mut.thread_id = root.thread_id;
+    let (child_created, resume_spawn) = session
+        .services
+        .agent_control
+        .pause_spawn_after_new_thread_for_test();
+    session
+        .services
+        .agent_control
+        .begin_tool_spawn_publication(root.thread_id, "call-1");
+    let spawn = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            let handler = SpawnAgentHandler::default();
+            handler
+                .handle(invocation(
+                    session,
+                    turn,
+                    "spawn_agent",
+                    function_payload(json!({"message": "must not reach a child"})),
+                ))
+                .await
+        }
+    });
+    let child_thread_id = timeout(Duration::from_secs(5), child_created)
+        .await
+        .expect("V1 spawn should reach its unpublished post-NewThread boundary")
+        .expect("V1 post-NewThread hook should identify the child");
+    assert_eq!(
+        session
+            .services
+            .agent_control
+            .cancel_tool_spawn_publication(root.thread_id, "call-1"),
+        crate::agent::SpawnPublicationDecision::CancellationOwned
+    );
+    resume_spawn.notify_one();
+
+    let spawn_result = spawn.await.expect("V1 spawn task should join");
+    let error = match spawn_result {
+        Err(error) => error,
+        Ok(_) => panic!("a cancellation-owned V1 spawn should fail before publication"),
+    };
+    let FunctionCallError::RespondToModel(message) = &error else {
+        panic!("cancellation should return a model-visible tool error: {error:?}");
+    };
+    assert!(
+        message.contains("turn aborted"),
+        "the tool result must describe cancellation rather than a child identifier: {message}"
+    );
+    assert!(
+        matches!(
+            events
+                .recv()
+                .await
+                .expect("cancelled V1 spawn should emit an operation start")
+                .msg,
+            EventMsg::ItemStarted(item_started)
+                if matches!(
+                    item_started.item,
+                    TurnItem::CollabAgentToolCall(ref item)
+                        if item.tool == CollabAgentTool::SpawnAgent
+                            && item.status == CollabAgentToolCallStatus::InProgress
+                            && item.receiver_thread_ids.is_empty()
+                            && item.receiver_agents.is_empty()
+                )
+        ),
+        "a cancelled V1 spawn must expose only an operation-level in-progress item"
+    );
+    let completed = timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events
+                .recv()
+                .await
+                .expect("cancelled V1 spawn should terminalize its operation");
+            if matches!(
+                &event.msg,
+                EventMsg::ItemCompleted(item_completed)
+                    if matches!(
+                        &item_completed.item,
+                        TurnItem::CollabAgentToolCall(item)
+                            if item.id == "call-1"
+                    )
+            ) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("cancelled V1 spawn should emit its terminal operation item");
+    assert!(
+        matches!(
+            completed.msg,
+            EventMsg::ItemCompleted(item_completed)
+                if matches!(
+                    item_completed.item,
+                    TurnItem::CollabAgentToolCall(ref item)
+                        if item.tool == CollabAgentTool::SpawnAgent
+                            && item.status == CollabAgentToolCallStatus::Failed
+                            && item.receiver_thread_ids.is_empty()
+                            && item.receiver_agents.is_empty()
+                            && item.agents_states.is_empty()
+                )
+        ),
+        "a cancelled V1 spawn must terminalize as a failed operation without inventing a child"
+    );
+    assert!(
+        manager.captured_ops().is_empty(),
+        "the child must not receive an initial delivery operation"
+    );
+    assert!(
+        manager.get_thread(child_thread_id).await.is_err(),
+        "a cancellation-owned V1 child must be reconciled instead of becoming public"
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
+    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let session_mut = Arc::get_mut(&mut session).expect("test should own its session");
+    session_mut.services.agent_control = manager.agent_control();
+    session_mut.thread_id = root.thread_id;
+    let (child_created, resume_spawn) = session
+        .services
+        .agent_control
+        .pause_spawn_after_new_thread_for_test();
+    let mut created_threads = manager.subscribe_thread_created();
+
+    let spawn = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        async move {
+            let handler = SpawnAgentHandler::default();
+            handler
+                .handle(invocation(
+                    session,
+                    turn,
+                    "spawn_agent",
+                    function_payload(json!({"message": "slow child task"})),
+                ))
+                .await
+        }
+    });
+
+    let child_thread_id = timeout(Duration::from_secs(5), child_created)
+        .await
+        .expect("spawn should reach the post-NewThread publication boundary")
+        .expect("spawn hook should identify the child");
+    let started = events
+        .recv()
+        .await
+        .expect("slow spawn should immediately expose an operation item");
+    assert!(matches!(
+        started.msg,
+        EventMsg::ItemStarted(item_started)
+            if matches!(
+                item_started.item,
+                TurnItem::CollabAgentToolCall(ref item)
+                    if item.tool == CollabAgentTool::SpawnAgent
+                        && item.status == CollabAgentToolCallStatus::InProgress
+                        && item.receiver_thread_ids.is_empty()
+                        && item.receiver_agents.is_empty()
+                        && item.agents_states.is_empty()
+            )
+    ));
+    assert!(
+        created_threads.try_recv().is_err(),
+        "the child must remain unpublished while the operation is in progress"
+    );
+
+    resume_spawn.notify_one();
+    spawn
+        .await
+        .expect("spawn task should join")
+        .expect("slow spawn should complete after publication");
+
+    let completed = timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events
+                .recv()
+                .await
+                .expect("successful spawn should terminalize its operation item");
+            if matches!(
+                &event.msg,
+                EventMsg::ItemCompleted(item_completed)
+                    if matches!(
+                        &item_completed.item,
+                        TurnItem::CollabAgentToolCall(item)
+                            if item.id == "call-1"
+                    )
+            ) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("successful spawn should emit its terminal operation item");
+    assert!(matches!(
+        completed.msg,
+        EventMsg::ItemCompleted(item_completed)
+            if matches!(
+                item_completed.item,
+                TurnItem::CollabAgentToolCall(ref item)
+                    if item.tool == CollabAgentTool::SpawnAgent
+                        && item.status == CollabAgentToolCallStatus::Completed
+                        && item.receiver_thread_ids == vec![child_thread_id]
+                        && item.receiver_agents.len() == 1
+                        && item.receiver_agents[0].thread_id == child_thread_id
+                        && item.agents_states.contains_key(&child_thread_id)
+            )
+    ));
+    assert_eq!(
+        created_threads
+            .recv()
+            .await
+            .expect("published child should notify exactly once"),
+        child_thread_id
+    );
+    assert!(
+        created_threads.try_recv().is_err(),
+        "successful publication should emit one thread-created notification"
+    );
 }
 
 #[tokio::test]

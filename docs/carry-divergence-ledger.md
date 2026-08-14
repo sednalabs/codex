@@ -111,6 +111,23 @@ decisions.
   runs both on GitHub-hosted validation. Remove this carry when upstream makes
   the same state-clearing transition explicit.
 
+### Cancellation-Atomic Sub-Agent Publication
+
+- The retained spawn lifecycle carries manager, reservation, and residency
+  ownership through bounded cleanup until an unpublished child reaches a
+  terminal state. Initial delivery claims ownership before the first input is
+  submitted, late publication is rejected after cancellation is recorded, and
+  a cancelled owner cannot remove a same-ID replacement.
+- The current port is the r0-r5 successor chain (`58d9c95ce4`,
+  `aaf2e01a0a`, `8626d877d6`, `6c243de2d9`, `5597d2cd6`) applied to the live
+  downstream base. Focused tests cover both V1 and configured V2 spawn
+  cancellation, terminal taxonomy, buffered history, capacity retention, and
+  replacement protection.
+- Keep `codex.core-multi-agent-orchestration-targeted` and
+  `codex.core-subagent-surface-targeted` as the hosted proof lanes. Remove this
+  carry when upstream provides an equivalent publication and retained-cleanup
+  contract.
+
 ## Latest Upstream-Owned Integration
 
 ### Remote Plugins, Image Eligibility, App Metadata, And Sleeping Agent Mail
