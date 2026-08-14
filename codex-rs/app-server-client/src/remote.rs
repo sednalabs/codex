@@ -11,7 +11,6 @@ higher-level session logic.
 */
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
@@ -561,8 +560,8 @@ impl RemoteEventBacklog {
             skipped_events: 0,
             lagged_after: None,
             capacity,
-            server_request_dispositions: HashMap::new(),
-            server_request_order: VecDeque::new(),
+            server_request_dispositions: HashMap::with_capacity(capacity.saturating_mul(2)),
+            server_request_order: VecDeque::with_capacity(capacity.saturating_mul(2)),
         }
     }
 
@@ -1157,11 +1156,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     timeout(SHUTDOWN_TIMEOUT, async {
-        let mut rejected_request_ids = HashSet::new();
         for request_id in reject_request_ids {
-            if !rejected_request_ids.insert(request_id.clone()) {
-                continue;
-            }
             if let Err(err) = write_jsonrpc_message_unbounded(
                 stream,
                 JSONRPCMessage::Error(JSONRPCError {
