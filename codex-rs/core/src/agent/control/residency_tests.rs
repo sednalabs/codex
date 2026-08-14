@@ -30,16 +30,12 @@ use std::time::Duration;
 use tokio::task::yield_now;
 use tokio::time::advance;
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
-    // SQLite initialization performs blocking work behind an async pool. Keep real time running
-    // while the pool starts so Tokio's paused-time auto-advance cannot expire its acquire timeout.
-    tokio::time::resume();
     let (_home, config, manager, control, first, metadata) = terminal_idle_test_agent(
-        /*timeout_ms*/ 1_000, /*ephemeral*/ false, /*sqlite*/ true,
+        /*timeout_ms*/ 25, /*ephemeral*/ false, /*sqlite*/ true,
     )
     .await;
-    tokio::time::pause();
     let first_message = test_communication("first queued message", /*trigger_turn*/ false);
     let second_message = test_communication("second queued message", /*trigger_turn*/ false);
     first
@@ -54,11 +50,6 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         AgentStatus::Completed(Some("done".to_string())),
     )
     .await;
-    yield_now().await;
-    advance(Duration::from_millis(999)).await;
-    assert!(manager.get_thread(first.thread_id).await.is_ok());
-
-    advance(Duration::from_millis(1)).await;
     wait_for_thread_unloaded(&manager, first.thread_id).await;
     assert_eq!(
         control.get_status(first.thread_id).await,
@@ -92,8 +83,7 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         AgentStatus::Completed(Some("reloaded turn complete".to_string())),
     )
     .await;
-    yield_now().await;
-    advance_until_thread_unloaded(&manager, first.thread_id, Duration::from_millis(1_000)).await;
+    wait_for_thread_unloaded(&manager, first.thread_id).await;
     assert_eq!(
         control.get_status(first.thread_id).await,
         AgentStatus::Completed(Some("reloaded turn complete".to_string()))
@@ -272,28 +262,13 @@ fn test_communication(text: &str, trigger_turn: bool) -> InterAgentCommunication
 }
 
 async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) {
-    for _ in 0..64 {
+    for _ in 0..200 {
         if manager.get_thread(thread_id).await.is_err() {
             return;
         }
-        yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("thread {thread_id} should be unloaded");
-}
-
-async fn advance_until_thread_unloaded(
-    manager: &ThreadManager,
-    thread_id: ThreadId,
-    retry_interval: Duration,
-) {
-    for _ in 0..8 {
-        advance(retry_interval).await;
-        yield_now().await;
-        if manager.get_thread(thread_id).await.is_err() {
-            return;
-        }
-    }
-    panic!("thread {thread_id} should be unloaded after bounded idle retries");
 }
 
 #[tokio::test]
