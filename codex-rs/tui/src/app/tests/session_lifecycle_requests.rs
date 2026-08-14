@@ -352,3 +352,164 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
         .join()
         .expect("session lifecycle request test thread")
 }
+
+#[test]
+fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Result<()> {
+    const DESCENDANT_COUNT: usize = 51;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-persisted-pages".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-01-09T00-00-00",
+                        "2026-01-09T00:00:00Z",
+                        "Saved user message",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .expect("create root rollout"),
+                )?;
+                let mut child_thread_ids = Vec::with_capacity(DESCENDANT_COUNT);
+                for index in 0..DESCENDANT_COUNT {
+                    let seconds_from_start = index + 1;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    let timestamp = format!("2026-01-09T00-{minute:02}-{second:02}");
+                    let created_at = format!("2026-01-09T00:{minute:02}:{second:02}Z");
+                    let child_thread_id = ThreadId::from_string(
+                        &create_fake_parented_rollout_with_source(
+                            codex_home.path(),
+                            &timestamp,
+                            &created_at,
+                            &format!("Saved child message {index}"),
+                            Some(app.config.model_provider_id.as_str()),
+                            /*git_info*/ None,
+                            RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                                parent_thread_id: root_thread_id,
+                                depth: 1,
+                                agent_path: Some(
+                                    AgentPath::try_from(format!("/root/worker-{index}"))
+                                        .expect("valid agent path"),
+                                ),
+                                agent_nickname: Some(format!("worker-{index}")),
+                                agent_role: Some("worker".to_string()),
+                            }),
+                            root_thread_id.into(),
+                            root_thread_id,
+                        )
+                        .expect("create child rollout"),
+                    )?;
+                    child_thread_ids.push(child_thread_id);
+                }
+
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                // Populate the relationship index as modern sessions do while retaining a
+                // direct assertion for the source-filter contract that regressed here.
+                let mut repair_cursor = None;
+                loop {
+                    let repair_page = app_server
+                        .thread_list(codex_app_server_protocol::ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(AGENT_PICKER_PAGE_SIZE),
+                            sort_key: Some(codex_app_server_protocol::ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![
+                                codex_app_server_protocol::ThreadSourceKind::SubAgent,
+                            ]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = repair_page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+
+                let default_source_page = app_server
+                    .thread_list(codex_app_server_protocol::ThreadListParams {
+                        cursor: None,
+                        limit: Some(AGENT_PICKER_PAGE_SIZE),
+                        sort_key: Some(codex_app_server_protocol::ThreadSortKey::UpdatedAt),
+                        sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
+                        model_providers: None,
+                        source_kinds: None,
+                        thread_sources: None,
+                        archived: Some(false),
+                        is_pinned: None,
+                        cwd: None,
+                        use_state_db_only: true,
+                        search_term: None,
+                        parent_thread_id: None,
+                        ancestor_thread_id: Some(root_thread_id.to_string()),
+                    })
+                    .await?;
+                assert!(
+                    default_source_page.data.is_empty(),
+                    "the default interactive filter must not be mistaken for all sources"
+                );
+
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                let first_page = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(first_page.completed);
+                assert_eq!(
+                    app.agent_navigation
+                        .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                        .len(),
+                    AGENT_PICKER_PAGE_SIZE as usize
+                );
+                assert!(app.agent_navigation.next_picker_page_cursor().is_some());
+
+                Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
+
+                assert_eq!(
+                    app.agent_navigation
+                        .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                        .len(),
+                    DESCENDANT_COUNT
+                );
+                assert!(
+                    app.agent_navigation
+                        .get(child_thread_ids.last().expect("last child"))
+                        .is_some(),
+                    "the continuation must expose descendants beyond the first bounded page"
+                );
+                assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("persisted agent picker pagination test thread")
+}
