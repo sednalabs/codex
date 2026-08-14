@@ -11,6 +11,7 @@ use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 pub(crate) const SUBAGENT_CONTEXT_MAX_ROWS: usize = 16;
 pub(crate) const SUBAGENT_CONTEXT_MAX_RENDERED_BYTES: usize = 4 * 1024;
@@ -103,15 +104,20 @@ impl SubagentContextBuilder {
         if self.rows.is_empty() && self.omitted_count == 0 {
             return SubagentContext::default();
         }
-        let mut rows = self
-            .rows
-            .into_iter()
-            .map(|row| row.rendered)
-            .collect::<Vec<_>>();
-        if self.omitted_count > 0 {
-            rows.push(format!("<omitted count=\"{}\" />", self.omitted_count));
+        let mut rendered = String::new();
+        for row in self.rows {
+            if !rendered.is_empty() {
+                rendered.push('\n');
+            }
+            rendered.push_str(&row.rendered);
         }
-        let rendered = rows.join("\n");
+        if self.omitted_count > 0 {
+            if !rendered.is_empty() {
+                rendered.push('\n');
+            }
+            write!(&mut rendered, "<omitted count=\"{}\" />", self.omitted_count)
+                .expect("writing to a String cannot fail");
+        }
         debug_assert!(
             subagent_context_rendered_bytes(rendered.as_str())
                 <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
@@ -145,13 +151,14 @@ fn bounded_xml_text(value: &str, max_escaped_bytes: usize) -> String {
             pending_space = !rendered.is_empty();
             continue;
         }
+        let mut encoded = [0; 4];
         let escaped = match ch {
-            '&' => "&amp;".to_string(),
-            '<' => "&lt;".to_string(),
-            '>' => "&gt;".to_string(),
-            '"' => "&quot;".to_string(),
-            '\'' => "&apos;".to_string(),
-            _ => ch.to_string(),
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&apos;",
+            _ => ch.encode_utf8(&mut encoded),
         };
         let separator_bytes = usize::from(pending_space);
         if rendered
