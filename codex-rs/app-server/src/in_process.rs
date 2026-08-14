@@ -631,14 +631,15 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                 permit.send(InProcessServerEvent::Lagged {
                                     skipped: std::mem::take(&mut skipped_events),
                                 });
-                            } else {
-                                let pending = pending_authoritative_notification
-                                    .take()
-                                    .expect("pending authoritative notification should exist");
+                            } else if let Some(pending) =
+                                pending_authoritative_notification.take()
+                            {
                                 permit.send(pending.event);
                                 if let Some(write_complete_tx) = pending.write_complete_tx {
                                     let _ = write_complete_tx.send(());
                                 }
+                            } else {
+                                continue;
                             }
                         }
                         Err(_) => break,

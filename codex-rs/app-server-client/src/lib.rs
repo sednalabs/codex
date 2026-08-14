@@ -532,12 +532,10 @@ impl InProcessAppServerClient {
                                     permit.send(InProcessServerEvent::Lagged {
                                         skipped: std::mem::take(&mut skipped_events),
                                     });
+                                } else if let Some(event) = pending_required_event.take() {
+                                    permit.send(event);
                                 } else {
-                                    permit.send(
-                                        pending_required_event
-                                            .take()
-                                            .expect("pending required event should exist"),
-                                    );
+                                    continue;
                                 }
                             }
                             Err(_) => {
@@ -2046,32 +2044,33 @@ mod tests {
                 session_id: "search".to_string(),
             },
         );
-        let delivery = forward_in_process_event(
-            &event_tx,
-            &mut skipped_events,
-            InProcessServerEvent::ServerNotification(completion),
-            |_| {},
-        );
-        tokio::pin!(delivery);
-        assert!(
-            timeout(Duration::from_millis(20), &mut delivery)
-                .await
-                .is_err(),
-            "completion should wait while the facade queue is saturated"
-        );
+        {
+            let delivery = forward_in_process_event(
+                &event_tx,
+                &mut skipped_events,
+                InProcessServerEvent::ServerNotification(completion),
+                |_| {},
+            );
+            tokio::pin!(delivery);
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "completion should wait while the facade queue is saturated"
+            );
 
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(InProcessServerEvent::ServerNotification(
-                ServerNotification::CommandExecutionOutputDelta(_)
-            ))
-        ));
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(InProcessServerEvent::Lagged { skipped: 1 })
-        ));
-        assert_eq!(delivery.await, ForwardEventResult::Continue);
-        drop(delivery);
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(InProcessServerEvent::ServerNotification(
+                    ServerNotification::CommandExecutionOutputDelta(_)
+                ))
+            ));
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(InProcessServerEvent::Lagged { skipped: 1 })
+            ));
+            assert_eq!(delivery.as_mut().await, ForwardEventResult::Continue);
+        }
         assert_eq!(skipped_events, 0);
         assert!(matches!(
             event_rx.recv().await,
@@ -2094,26 +2093,27 @@ mod tests {
                 .await
                 .expect("initial event should enqueue");
             let mut skipped_events = 0usize;
-            let delivery = forward_in_process_event(
-                &event_tx,
-                &mut skipped_events,
-                InProcessServerEvent::ServerNotification(notification),
-                |_| {},
-            );
-            tokio::pin!(delivery);
+            {
+                let delivery = forward_in_process_event(
+                    &event_tx,
+                    &mut skipped_events,
+                    InProcessServerEvent::ServerNotification(notification),
+                    |_| {},
+                );
+                tokio::pin!(delivery);
 
-            assert!(
-                timeout(Duration::from_millis(20), &mut delivery)
-                    .await
-                    .is_err(),
-                "required notification must block rather than be dropped"
-            );
-            assert!(matches!(
-                event_rx.recv().await,
-                Some(InProcessServerEvent::Lagged { skipped: 1 })
-            ));
-            assert_eq!(delivery.await, ForwardEventResult::Continue);
-            drop(delivery);
+                assert!(
+                    timeout(Duration::from_millis(20), &mut delivery)
+                        .await
+                        .is_err(),
+                    "required notification must block rather than be dropped"
+                );
+                assert!(matches!(
+                    event_rx.recv().await,
+                    Some(InProcessServerEvent::Lagged { skipped: 1 })
+                ));
+                assert_eq!(delivery.as_mut().await, ForwardEventResult::Continue);
+            }
             assert_eq!(skipped_events, 0);
             let delivered = event_rx.recv().await.expect("required event should arrive");
             let InProcessServerEvent::ServerNotification(delivered) = delivered else {
