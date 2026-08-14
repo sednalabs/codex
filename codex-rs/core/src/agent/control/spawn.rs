@@ -572,10 +572,13 @@ impl AgentControl {
                 agent_role,
                 ..
             })) => {
+                let reservation = reservation.as_mut().ok_or_else(|| {
+                    CodexErr::Fatal(
+                        "spawn reservation was lost before publication preparation".to_string(),
+                    )
+                })?;
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
-                    reservation
-                        .as_mut()
-                        .expect("spawn reservation should exist before publication"),
+                    reservation,
                     &config,
                     parent_thread_id,
                     depth,
@@ -826,10 +829,10 @@ impl AgentControl {
         // Capacity and residency reservations remain private until the publication CAS above
         // wins, so `/agents` cannot observe a child while cancellation still owns the outcome.
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        reservation
-            .take()
-            .expect("spawn reservation should exist until publication")
-            .commit(agent_metadata.clone());
+        let reservation = reservation.take().ok_or_else(|| {
+            CodexErr::Fatal("spawn reservation was lost before publication commit".to_string())
+        })?;
+        reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot.take() {
             residency_slot.commit(new_thread.thread_id);
         }
@@ -908,7 +911,7 @@ impl AgentControl {
     /// would make capacity and a requested agent path reusable even though the manager still owns
     /// the runtime. The caller retains its original cancellation or initial-delivery error; a
     /// cleanup failure is logged and handed to a bounded, explicit cleanup owner instead.
-    async fn reconcile_unpublished_spawn(
+    pub(crate) async fn reconcile_unpublished_spawn(
         &self,
         state: &Arc<ThreadManagerState>,
         child_thread_id: ThreadId,
@@ -924,11 +927,16 @@ impl AgentControl {
                 cleanup_error.map_or(Ok(()), Err)
             }
             UnpublishedSpawnCleanupAttempt::StillLive { cleanup_error } => {
+                let reservation = reservation.take().ok_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "unpublished child {child_thread_id} lost its spawn reservation before cleanup ownership transfer"
+                    ))
+                })?;
                 self.retain_unpublished_spawn_cleanup(
                     Arc::clone(state),
                     child_thread_id,
                     Arc::clone(child_thread),
-                    reservation.take(),
+                    reservation,
                     residency_slot.take(),
                     /*shutdown_exact_child*/ true,
                 );
@@ -940,11 +948,16 @@ impl AgentControl {
                         "unpublished child {child_thread_id} was replaced before cleanup could remove its exact manager instance"
                     ))
                 });
+                let reservation = reservation.take().ok_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "replaced unpublished child {child_thread_id} lost its spawn reservation before cleanup ownership transfer"
+                    ))
+                })?;
                 self.retain_unpublished_spawn_cleanup(
                     Arc::clone(state),
                     child_thread_id,
                     Arc::clone(child_thread),
-                    reservation.take(),
+                    reservation,
                     residency_slot.take(),
                     /*shutdown_exact_child*/ false,
                 );
@@ -1049,12 +1062,10 @@ impl AgentControl {
         state: Arc<ThreadManagerState>,
         child_thread_id: ThreadId,
         child_thread: Arc<CodexThread>,
-        reservation: Option<crate::agent::registry::SpawnReservation>,
+        reservation: crate::agent::registry::SpawnReservation,
         residency_slot: Option<V2ResidencySlot>,
         shutdown_exact_child: bool,
     ) {
-        let reservation =
-            reservation.expect("unpublished cleanup must retain its spawn reservation");
         let control = self.clone();
         std::mem::drop(tokio::spawn(async move {
             let _retained = RetainedUnpublishedSpawnCleanup {
