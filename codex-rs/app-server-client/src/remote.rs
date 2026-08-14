@@ -235,24 +235,18 @@ impl RemoteAppServerClient {
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
             let mut terminal_state = None::<RemoteTerminalState>;
             let mut event_delivery_enabled = true;
-            let mut skipped_events = 0usize;
-            let mut pending_required_event = None::<AppServerEvent>;
+            let mut pending_events = RemoteEventBacklog::new(channel_capacity);
             loop {
                 tokio::select! {
                     permit = event_tx.reserve(), if event_delivery_enabled && (
-                        skipped_events > 0
-                            || pending_required_event.is_some()
+                        pending_events.has_pending()
                             || terminal_state
                                 .as_ref()
                                 .is_some_and(|state| state.disconnected_pending)
                     ) => {
                         match permit {
                             Ok(permit) => {
-                                if skipped_events > 0 {
-                                    permit.send(AppServerEvent::Lagged {
-                                        skipped: std::mem::take(&mut skipped_events),
-                                    });
-                                } else if let Some(event) = pending_required_event.take() {
+                                if let Some(event) = pending_events.pop_next() {
                                     permit.send(event);
                                 } else if let Some(state) = terminal_state.as_mut() {
                                     permit.send(AppServerEvent::Disconnected {
@@ -264,8 +258,7 @@ impl RemoteAppServerClient {
                                 }
                             }
                             Err(_) => {
-                                skipped_events = 0;
-                                pending_required_event = None;
+                                pending_events.clear();
                                 disable_remote_event_delivery(
                                     &mut terminal_state,
                                     &mut pending_requests,
@@ -410,9 +403,12 @@ impl RemoteAppServerClient {
                             }
                         }
                     }
+                    // Responses and errors for admitted requests must remain
+                    // readable while required events wait for caller capacity.
+                    // The private event backlog keeps notification custody
+                    // bounded and FIFO without applying that backpressure to
+                    // the multiplexed response stream.
                     message = stream.next(), if event_delivery_enabled
-                        && skipped_events == 0
-                        && pending_required_event.is_none()
                         && terminal_state.is_none() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
@@ -431,8 +427,7 @@ impl RemoteAppServerClient {
                                         if let Some(event) = app_server_event_from_notification(notification) {
                                             let delivery = try_deliver_event(
                                                 &event_tx,
-                                                &mut skipped_events,
-                                                &mut pending_required_event,
+                                                &mut pending_events,
                                                 event,
                                             );
                                             match delivery {
@@ -444,6 +439,17 @@ impl RemoteAppServerClient {
                                                 RemoteEventForwardResult::DroppedBestEffort => {
                                                     #[cfg(test)]
                                                     worker_test_pending_lag.notify_one();
+                                                }
+                                                RemoteEventForwardResult::RequiredOverflow => {
+                                                    enter_remote_terminal_state(
+                                                        &mut terminal_state,
+                                                        &mut pending_requests,
+                                                        ErrorKind::WouldBlock,
+                                                        format!(
+                                                            "remote app server at `{endpoint}` exceeded the bounded required-event backlog"
+                                                        ),
+                                                        RemoteDisconnectedDelivery::Pending,
+                                                    );
                                                 }
                                                 RemoteEventForwardResult::Closed => {
                                                     disable_remote_event_delivery(
@@ -462,8 +468,7 @@ impl RemoteAppServerClient {
                                             Ok(request) => {
                                                 let delivery = try_deliver_event(
                                                     &event_tx,
-                                                    &mut skipped_events,
-                                                    &mut pending_required_event,
+                                                    &mut pending_events,
                                                     AppServerEvent::ServerRequest(request),
                                                 );
                                                 match delivery {
@@ -476,6 +481,17 @@ impl RemoteAppServerClient {
                                                     RemoteEventForwardResult::DroppedBestEffort => {
                                                         unreachable!(
                                                             "remote server requests require delivery"
+                                                        );
+                                                    }
+                                                    RemoteEventForwardResult::RequiredOverflow => {
+                                                        enter_remote_terminal_state(
+                                                            &mut terminal_state,
+                                                            &mut pending_requests,
+                                                            ErrorKind::WouldBlock,
+                                                            format!(
+                                                                "remote app server at `{endpoint}` exceeded the bounded required-event backlog"
+                                                            ),
+                                                            RemoteDisconnectedDelivery::Pending,
                                                         );
                                                     }
                                                     RemoteEventForwardResult::Closed => {
@@ -1096,7 +1112,69 @@ enum RemoteEventForwardResult {
     Forwarded,
     Pending,
     DroppedBestEffort,
+    RequiredOverflow,
     Closed,
+}
+
+struct RemoteEventBacklog {
+    events: VecDeque<AppServerEvent>,
+    skipped_events: usize,
+    lagged_after: Option<usize>,
+    capacity: usize,
+}
+
+impl RemoteEventBacklog {
+    fn new(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.max(1)),
+            skipped_events: 0,
+            lagged_after: None,
+            capacity: capacity.max(1),
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.events.is_empty() || self.skipped_events > 0
+    }
+
+    fn enqueue(&mut self, event: AppServerEvent) -> RemoteEventForwardResult {
+        if self.events.len() < self.capacity {
+            self.events.push_back(event);
+            return RemoteEventForwardResult::Pending;
+        }
+        if remote_event_requires_delivery(&event) {
+            return RemoteEventForwardResult::RequiredOverflow;
+        }
+        self.skipped_events = self.skipped_events.saturating_add(1);
+        self.lagged_after.get_or_insert(self.events.len());
+        RemoteEventForwardResult::DroppedBestEffort
+    }
+
+    fn record_best_effort_skip(&mut self) -> RemoteEventForwardResult {
+        self.skipped_events = self.skipped_events.saturating_add(1);
+        self.lagged_after.get_or_insert(self.events.len());
+        RemoteEventForwardResult::DroppedBestEffort
+    }
+
+    fn pop_next(&mut self) -> Option<AppServerEvent> {
+        if self.lagged_after == Some(0) {
+            self.lagged_after = None;
+            return Some(AppServerEvent::Lagged {
+                skipped: std::mem::take(&mut self.skipped_events),
+            });
+        }
+        let event = self.events.pop_front()?;
+        if let Some(remaining) = &mut self.lagged_after {
+            *remaining = remaining.saturating_sub(1);
+        }
+        Some(event)
+    }
+
+    fn clear(&mut self) {
+        self.events.clear();
+        self.skipped_events = 0;
+        self.lagged_after = None;
+    }
 }
 
 struct RemoteTerminalState {
@@ -1182,35 +1260,34 @@ fn finish_remote_control_write(
 
 /// Attempts to deliver one remote event without waiting for consumer capacity.
 ///
-/// The worker retains at most one required event in `pending_event`. Best-effort
-/// notification loss is represented by `skipped_events`; the worker's permit
-/// branch emits that lag count before polling the WebSocket again.
+/// Required events wait in a bounded FIFO while best-effort loss is represented
+/// by an ordered lag marker. Response routing continues on the multiplexed
+/// WebSocket independently of caller event capacity.
 fn try_deliver_event(
     event_tx: &mpsc::Sender<AppServerEvent>,
-    skipped_events: &mut usize,
-    pending_event: &mut Option<AppServerEvent>,
+    pending_events: &mut RemoteEventBacklog,
     event: AppServerEvent,
 ) -> RemoteEventForwardResult {
+    if pending_events.has_pending() {
+        return if remote_event_requires_delivery(&event) {
+            pending_events.enqueue(event)
+        } else {
+            pending_events.record_best_effort_skip()
+        };
+    }
     if remote_event_requires_delivery(&event) {
         match event_tx.try_send(event) {
             Ok(()) => RemoteEventForwardResult::Forwarded,
-            Err(mpsc::error::TrySendError::Full(event)) => {
-                debug_assert!(
-                    pending_event.is_none(),
-                    "worker must stop polling the WebSocket while required custody is occupied"
-                );
-                *pending_event = Some(event);
-                RemoteEventForwardResult::Pending
-            }
+            Err(mpsc::error::TrySendError::Full(event)) => pending_events.enqueue(event),
             Err(mpsc::error::TrySendError::Closed(_)) => RemoteEventForwardResult::Closed,
         }
     } else {
         match event_tx.try_send(event) {
             Ok(()) => RemoteEventForwardResult::Forwarded,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                *skipped_events = skipped_events.saturating_add(1);
+                let result = pending_events.record_best_effort_skip();
                 warn!("dropping remote app-server event because consumer queue is full");
-                RemoteEventForwardResult::DroppedBestEffort
+                result
             }
             Err(mpsc::error::TrySendError::Closed(_)) => RemoteEventForwardResult::Closed,
         }
