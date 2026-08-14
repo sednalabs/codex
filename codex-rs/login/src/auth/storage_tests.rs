@@ -9,6 +9,8 @@ use codex_secrets::SecretsManager;
 use codex_secrets::compute_keyring_account;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::mpsc;
 use tempfile::tempdir;
 
 use codex_keyring_store::tests::MockKeyringStore;
@@ -60,6 +62,43 @@ async fn file_storage_save_persists_auth_dot_json() -> anyhow::Result<()> {
         .try_read_auth_json(&file)
         .context("failed to read auth file after save")?;
     assert_eq!(auth_dot_json, same_auth_dot_json);
+    Ok(())
+}
+
+#[test]
+fn conditional_delete_cannot_erase_concurrent_replacement() -> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let storage = Arc::new(FileAuthStorage::new(codex_home.path().to_path_buf()));
+    let rejected = auth_with_prefix("rejected");
+    let replacement = auth_with_prefix("replacement");
+    storage.save(&rejected)?;
+
+    let (compared_tx, compared_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let delete_storage = Arc::clone(&storage);
+    let rejected_for_delete = rejected.clone();
+    let delete_thread = std::thread::spawn(move || {
+        delete_storage.delete_if(&|current| {
+            compared_tx.send(()).expect("signal comparison");
+            release_rx.recv().expect("release conditional delete");
+            current == &rejected_for_delete
+        })
+    });
+
+    compared_rx.recv().expect("conditional delete compared auth");
+    let (saving_tx, saving_rx) = mpsc::channel();
+    let save_storage = Arc::clone(&storage);
+    let replacement_for_save = replacement.clone();
+    let save_thread = std::thread::spawn(move || {
+        saving_tx.send(()).expect("signal replacement save");
+        save_storage.save(&replacement_for_save)
+    });
+    saving_rx.recv().expect("replacement save attempted");
+    release_tx.send(()).expect("release conditional delete");
+
+    assert!(delete_thread.join().expect("conditional delete thread")?);
+    save_thread.join().expect("replacement save thread")?;
+    assert_eq!(storage.load()?, Some(replacement));
     Ok(())
 }
 

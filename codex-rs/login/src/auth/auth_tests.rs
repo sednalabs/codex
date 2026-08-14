@@ -1108,6 +1108,33 @@ impl ExternalAuth for StaticExternalAuth {
     }
 }
 
+#[derive(Clone)]
+struct RefreshingExternalAuth {
+    initial: CodexAuth,
+    refreshed: CodexAuth,
+}
+
+impl ExternalAuth for RefreshingExternalAuth {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.initial.clone()) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.refreshed.clone()) })
+    }
+}
+
+fn external_chatgpt_auth(account_id: &str, plan_type: &str) -> CodexAuth {
+    let token = fake_jwt_for_auth_file_params(&AuthFileParams {
+        openai_api_key: None,
+        chatgpt_plan_type: Some(plan_type.to_string()),
+        chatgpt_account_id: Some(account_id.to_string()),
+    })
+    .expect("external token");
+    CodexAuth::from_external_chatgpt_tokens(&token, account_id, Some(plan_type))
+        .expect("external auth")
+}
+
 #[tokio::test]
 #[serial(codex_auth_env)]
 async fn rejected_external_chatgpt_auth_preserves_distinct_managed_auth() {
@@ -1187,6 +1214,222 @@ async fn rejected_external_chatgpt_auth_preserves_distinct_managed_auth() {
             .and_then(|auth| auth.get_current_auth_json()),
         Some(managed_auth)
     );
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn restricted_rejection_after_external_refresh_removes_refreshed_auth_only() {
+    let _access_token_guard = remove_access_token_env_var();
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed managed auth");
+    let managed_auth = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("load managed auth")
+    .expect("managed auth should exist");
+    let initial = external_chatgpt_auth(WORKSPACE_ID_DISALLOWED, "team");
+    let refreshed = external_chatgpt_auth(WORKSPACE_ID_DISALLOWED, "enterprise");
+    let manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    manager
+        .set_external_auth(Arc::new(RefreshingExternalAuth {
+            initial,
+            refreshed: refreshed.clone(),
+        }))
+        .await
+        .expect("install external auth");
+    let mut recovery = manager.unauthorized_recovery();
+
+    recovery.next().await.expect("refresh external auth");
+    assert_eq!(manager.auth_cached(), Some(refreshed));
+    assert!(
+        recovery
+            .force_logout_due_to_server_auth_rejection()
+            .await
+            .expect("clear refreshed external auth")
+    );
+
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load ephemeral auth"),
+        None
+    );
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("reload managed auth"),
+        Some(managed_auth.clone())
+    );
+    assert_eq!(
+        manager
+            .auth_cached()
+            .and_then(|auth| auth.get_current_auth_json()),
+        Some(managed_auth)
+    );
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn restricted_rejection_preserves_replaced_external_provider() {
+    let _access_token_guard = remove_access_token_env_var();
+    let codex_home = tempdir().expect("tempdir");
+    let rejected = external_chatgpt_auth(WORKSPACE_ID_ALLOWED, "pro");
+    let replacement = external_chatgpt_auth(WORKSPACE_ID_SECOND_ALLOWED, "team");
+    let manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    manager
+        .set_external_auth(Arc::new(StaticExternalAuth(rejected)))
+        .await
+        .expect("install rejected external auth");
+    let mut recovery = manager.unauthorized_recovery();
+    manager
+        .set_external_auth(Arc::new(StaticExternalAuth(replacement.clone())))
+        .await
+        .expect("replace external auth");
+
+    assert!(
+        !recovery
+            .force_logout_due_to_server_auth_rejection()
+            .await
+            .expect("preserve replacement external auth")
+    );
+    assert_eq!(manager.auth_cached(), Some(replacement.clone()));
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load replacement external auth"),
+        replacement.get_current_auth_json()
+    );
+}
+
+#[tokio::test]
+#[serial(codex_auth_env)]
+async fn restricted_rejection_after_managed_reload_removes_reloaded_auth_only() {
+    let _access_token_guard = remove_access_token_env_var();
+    let codex_home = tempdir().expect("tempdir");
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some(WORKSPACE_ID_ALLOWED.to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed managed auth");
+    let mut initial = load_auth_dot_json(
+        codex_home.path(),
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("load initial managed auth")
+    .expect("initial managed auth should exist");
+    initial.tokens.as_mut().expect("initial tokens").account_id =
+        Some(WORKSPACE_ID_ALLOWED.to_string());
+    save_auth(
+        codex_home.path(),
+        &initial,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("persist initial managed auth");
+    let manager = AuthManager::shared(
+        codex_home.path().to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        AuthCredentialsStoreMode::File,
+        /*forced_chatgpt_workspace_id*/ None,
+        /*chatgpt_base_url*/ None,
+        AuthKeyringBackendKind::default(),
+        crate::test_support::transport_default_auth_route_config(),
+    )
+    .await;
+    let mut recovery = manager.unauthorized_recovery();
+
+    let mut refreshed = initial.clone();
+    let refreshed_tokens = refreshed.tokens.as_mut().expect("refreshed tokens");
+    refreshed_tokens.access_token = "refreshed-access-token".to_string();
+    refreshed_tokens.refresh_token = "refreshed-refresh-token".to_string();
+    save_auth(
+        codex_home.path(),
+        &refreshed,
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("persist refreshed managed auth");
+    let recovery_result = recovery.next().await.expect("reload refreshed auth");
+    assert_eq!(recovery_result.auth_state_changed(), Some(true));
+
+    let unrelated = external_chatgpt_auth(WORKSPACE_ID_SECOND_ALLOWED, "team");
+    save_auth(
+        codex_home.path(),
+        &unrelated
+            .get_current_auth_json()
+            .expect("unrelated external auth state"),
+        AuthCredentialsStoreMode::Ephemeral,
+        AuthKeyringBackendKind::default(),
+    )
+    .expect("persist unrelated ephemeral auth");
+    assert!(
+        recovery
+            .force_logout_due_to_server_auth_rejection()
+            .await
+            .expect("clear refreshed managed auth")
+    );
+
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load managed auth"),
+        None
+    );
+    assert_eq!(
+        load_auth_dot_json(
+            codex_home.path(),
+            AuthCredentialsStoreMode::Ephemeral,
+            AuthKeyringBackendKind::default(),
+        )
+        .expect("load unrelated ephemeral auth"),
+        unrelated.get_current_auth_json()
+    );
+    assert_eq!(manager.auth_cached(), Some(unrelated));
 }
 
 #[tokio::test]
