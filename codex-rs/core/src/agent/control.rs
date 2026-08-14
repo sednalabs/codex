@@ -588,18 +588,20 @@ impl AgentControl {
             && let Some(expected_thread) = expected_thread
         {
             let registry = Arc::clone(&self.state);
+            let registered_metadata = registry.agent_metadata_for_thread(agent_id);
             let removal = state
                 .remove_thread_if_same(&agent_id, expected_thread, || {
                     if registry
                         .cold_status(agent_id, Some(expected_thread))
                         .is_none()
+                        && let Some(metadata) = registered_metadata.as_ref()
                     {
-                        registry.release_spawned_thread(agent_id);
+                        registry.release_spawned_thread_if_current(agent_id, metadata);
                     }
                 })
                 .await;
             if removal == RemoveThreadIfSameResult::Removed {
-                self.forget_v2_residency(agent_id);
+                self.forget_v2_residency_if_same(agent_id, expected_thread);
             }
         }
         result
