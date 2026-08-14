@@ -6,6 +6,7 @@ use app_test_support::rollout_path;
 use codex_app_server_protocol::ClientNotification;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_protocol::AgentPath;
@@ -42,6 +43,54 @@ async fn start_recording_app_server(
     Arc<Mutex<Vec<String>>>,
     JoinHandle<Result<()>>,
 )> {
+    start_recording_app_server_with_options(config, RecordingAppServerOptions::default()).await
+}
+
+#[derive(Clone, Copy, Default)]
+struct RecordingAppServerOptions {
+    ignore_ancestor_filter: bool,
+    fail_thread_list_request: Option<usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_spawn_rollout(
+    codex_home: &std::path::Path,
+    model_provider: &str,
+    timestamp: &str,
+    created_at: &str,
+    message: &str,
+    parent_thread_id: ThreadId,
+    root_thread_id: ThreadId,
+    agent_path: &str,
+) -> Result<ThreadId> {
+    let thread_id = create_fake_parented_rollout_with_source(
+        codex_home,
+        timestamp,
+        created_at,
+        message,
+        Some(model_provider),
+        /*git_info*/ None,
+        RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: Some(AgentPath::try_from(agent_path).expect("valid agent path")),
+            agent_nickname: Some(agent_path.rsplit('/').next().unwrap_or(agent_path).to_string()),
+            agent_role: Some("worker".to_string()),
+        }),
+        root_thread_id.into(),
+        root_thread_id,
+    )?;
+    Ok(ThreadId::from_string(&thread_id)?)
+}
+
+async fn start_recording_app_server_with_options(
+    config: &Config,
+    options: RecordingAppServerOptions,
+) -> Result<(
+    AppServerSession,
+    Arc<Mutex<Vec<String>>>,
+    JoinHandle<Result<()>>,
+)> {
     let state_db =
         crate::init_state_db_for_app_server_target(config, &crate::AppServerTarget::Embedded)
             .await?;
@@ -66,6 +115,7 @@ async fn start_recording_app_server(
     let proxy = tokio::spawn(async move {
         let (stream, _) = listener.accept().await?;
         let mut websocket = accept_async(stream).await?;
+        let mut thread_list_request_count = 0;
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
@@ -87,13 +137,41 @@ async fn start_recording_app_server(
                         .await?;
                 }
                 JSONRPCMessage::Request(request) => {
+                    let method = request.method.clone();
                     request_sink
                         .lock()
                         .expect("request recorder lock")
-                        .push(request.method.clone());
+                        .push(method.clone());
                     let request_id = request.id.clone();
-                    let request =
-                        serde_json::from_value::<ClientRequest>(serde_json::to_value(request)?)?;
+                    if method == "thread/list" {
+                        thread_list_request_count += 1;
+                    }
+                    if options.fail_thread_list_request == Some(thread_list_request_count)
+                        && method == "thread/list"
+                    {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Error(JSONRPCError {
+                                    id: request_id,
+                                    error: JSONRPCErrorError {
+                                        code: -32603,
+                                        message: "injected thread/list failure".to_string(),
+                                        data: None,
+                                    },
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
+                    let mut request = serde_json::to_value(request)?;
+                    if options.ignore_ancestor_filter && method == "thread/list" {
+                        request
+                            .get_mut("params")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .map(|params| params.remove("ancestorThreadId"));
+                    }
+                    let request = serde_json::from_value::<ClientRequest>(request)?;
                     let response = match embedded.request(request).await? {
                         Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
                             id: request_id,
@@ -489,4 +567,279 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
         })?
         .join()
         .expect("persisted agent picker pagination test thread")
+}
+
+#[test]
+fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Result<()> {
+    const UNRELATED_COUNT: usize = 51;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-legacy-repair-pages".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
+                    codex_home.path(),
+                    "2026-01-09T00-00-00",
+                    "2026-01-09T00:00:00Z",
+                    "Primary root",
+                    Some(app.config.model_provider_id.as_str()),
+                    /*git_info*/ None,
+                )?)?;
+                let target_thread_id = create_spawn_rollout(
+                    codex_home.path(),
+                    app.config.model_provider_id.as_str(),
+                    "2026-01-09T00-00-01",
+                    "2026-01-09T00:00:01Z",
+                    "Legacy target beyond the first page",
+                    root_thread_id,
+                    root_thread_id,
+                    "/root/legacy_target",
+                )?;
+                let unrelated_root_thread_id = ThreadId::from_string(&create_fake_rollout(
+                    codex_home.path(),
+                    "2026-01-09T00-00-02",
+                    "2026-01-09T00:00:02Z",
+                    "Unrelated root",
+                    Some(app.config.model_provider_id.as_str()),
+                    /*git_info*/ None,
+                )?)?;
+                for index in 0..UNRELATED_COUNT {
+                    let seconds_from_start = index + 3;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    create_spawn_rollout(
+                        codex_home.path(),
+                        app.config.model_provider_id.as_str(),
+                        &format!("2026-01-09T00-{minute:02}-{second:02}"),
+                        &format!("2026-01-09T00:{minute:02}:{second:02}Z"),
+                        &format!("Unrelated child {index}"),
+                        unrelated_root_thread_id,
+                        unrelated_root_thread_id,
+                        &format!("/root/unrelated_{index}"),
+                    )?;
+                }
+
+                let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+                    &app.config,
+                    RecordingAppServerOptions {
+                        fail_thread_list_request: Some(3),
+                        ..RecordingAppServerOptions::default()
+                    },
+                )
+                .await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+
+                let incomplete = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(!incomplete.completed);
+                assert!(
+                    app.agent_navigation
+                        .needs_legacy_relation_fallback_check(),
+                    "a partial legacy scan must remain retryable"
+                );
+                assert!(app.agent_navigation.get(&target_thread_id).is_none());
+                assert_eq!(
+                    requests
+                        .lock()
+                        .expect("request recorder lock")
+                        .iter()
+                        .filter(|method| *method == "thread/list")
+                        .count(),
+                    3,
+                    "modern lookup plus two legacy pages must be attempted"
+                );
+                app_server.shutdown().await?;
+                proxy.await??;
+
+                let (mut app_server, requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+                let completed = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(completed.completed);
+                assert!(
+                    !app
+                        .agent_navigation
+                        .needs_legacy_relation_fallback_check(),
+                    "the legacy fallback may be marked complete only after cursor exhaustion"
+                );
+                assert!(app.agent_navigation.get(&target_thread_id).is_some());
+                assert_eq!(
+                    requests
+                        .lock()
+                        .expect("request recorder lock")
+                        .iter()
+                        .filter(|method| *method == "thread/list")
+                        .count(),
+                    3,
+                    "the successful retry must consume both legacy pages"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("legacy relation repair pagination test thread")
+}
+
+#[test]
+fn agent_picker_rejects_mixed_roots_when_server_ignores_ancestor_filter() -> Result<()> {
+    const OWN_COUNT: usize = AGENT_PICKER_PAGE_SIZE as usize;
+    const FOREIGN_COUNT: usize = 2;
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-mixed-root-isolation".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(&create_fake_rollout(
+                    codex_home.path(),
+                    "2026-01-10T00-00-00",
+                    "2026-01-10T00:00:00Z",
+                    "Primary root",
+                    Some(app.config.model_provider_id.as_str()),
+                    /*git_info*/ None,
+                )?)?;
+                let foreign_root_thread_id = ThreadId::from_string(&create_fake_rollout(
+                    codex_home.path(),
+                    "2026-01-10T00-00-01",
+                    "2026-01-10T00:00:01Z",
+                    "Foreign root",
+                    Some(app.config.model_provider_id.as_str()),
+                    /*git_info*/ None,
+                )?)?;
+                let mut own_child_thread_ids = Vec::with_capacity(OWN_COUNT);
+                for index in 0..OWN_COUNT {
+                    let seconds_from_start = index + 60;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    own_child_thread_ids.push(create_spawn_rollout(
+                        codex_home.path(),
+                        app.config.model_provider_id.as_str(),
+                        &format!("2026-01-10T00-{minute:02}-{second:02}"),
+                        &format!("2026-01-10T00:{minute:02}:{second:02}Z"),
+                        &format!("Own child {index}"),
+                        root_thread_id,
+                        root_thread_id,
+                        &format!("/root/own_child_{index}"),
+                    )?);
+                }
+                let mut foreign_thread_ids = Vec::with_capacity(FOREIGN_COUNT);
+                for index in 0..FOREIGN_COUNT {
+                    let seconds_from_start = index + 2;
+                    let minute = seconds_from_start / 60;
+                    let second = seconds_from_start % 60;
+                    foreign_thread_ids.push(create_spawn_rollout(
+                        codex_home.path(),
+                        app.config.model_provider_id.as_str(),
+                        &format!("2026-01-10T00-{minute:02}-{second:02}"),
+                        &format!("2026-01-10T00:{minute:02}:{second:02}Z"),
+                        &format!("Foreign child {index}"),
+                        foreign_root_thread_id,
+                        foreign_root_thread_id,
+                        &format!("/root/foreign_{index}"),
+                    )?);
+                }
+
+                let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+                    &app.config,
+                    RecordingAppServerOptions {
+                        ignore_ancestor_filter: true,
+                        ..RecordingAppServerOptions::default()
+                    },
+                )
+                .await?;
+                let mut repair_cursor = None;
+                loop {
+                    let page = app_server
+                        .thread_list(codex_app_server_protocol::ThreadListParams {
+                            cursor: repair_cursor,
+                            limit: Some(AGENT_PICKER_PAGE_SIZE),
+                            sort_key: Some(codex_app_server_protocol::ThreadSortKey::UpdatedAt),
+                            sort_direction: Some(codex_app_server_protocol::SortDirection::Desc),
+                            model_providers: None,
+                            source_kinds: Some(vec![
+                                codex_app_server_protocol::ThreadSourceKind::SubAgent,
+                            ]),
+                            thread_sources: None,
+                            archived: Some(false),
+                            is_pinned: None,
+                            cwd: None,
+                            use_state_db_only: false,
+                            search_term: None,
+                            parent_thread_id: None,
+                            ancestor_thread_id: None,
+                        })
+                        .await?;
+                    repair_cursor = page.next_cursor;
+                    if repair_cursor.is_none() {
+                        break;
+                    }
+                }
+                requests.lock().expect("request recorder lock").clear();
+
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                let completed = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(completed.completed);
+                for own_child_thread_id in own_child_thread_ids {
+                    assert!(app.agent_navigation.get(&own_child_thread_id).is_some());
+                }
+                for foreign_thread_id in foreign_thread_ids {
+                    assert!(
+                        app.agent_navigation.get(&foreign_thread_id).is_none(),
+                        "a foreign-root row must never enter picker selection state"
+                    );
+                }
+                assert_eq!(
+                    app.agent_navigation.next_picker_page_cursor(),
+                    None,
+                    "a cursor from an unscoped mixed-root page must not be reused"
+                );
+                assert_eq!(
+                    app.agent_navigation
+                        .ordered_path_backed_subagent_threads(Some(root_thread_id))
+                        .len(),
+                    OWN_COUNT,
+                    "only locally verified descendants may be exposed or resumed"
+                );
+
+                app_server.shutdown().await?;
+                proxy.await??;
+                Ok(())
+            })
+        })?
+        .join()
+        .expect("mixed-root isolation test thread")
 }
