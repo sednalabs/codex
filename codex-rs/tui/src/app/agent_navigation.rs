@@ -48,6 +48,10 @@ pub(crate) struct AgentNavigationState {
     stopped_threads: HashSet<ThreadId>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    /// Opaque continuation for the next bounded persisted-subagent page.
+    next_picker_page_cursor: Option<String>,
+    /// Whether this session completed the bounded legacy relation repair fallback.
+    legacy_relation_fallback_checked: bool,
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -294,6 +298,24 @@ impl AgentNavigationState {
         self.order.clear();
         self.stopped_threads.clear();
         self.parent_owned_threads.clear();
+        self.next_picker_page_cursor = None;
+        self.legacy_relation_fallback_checked = false;
+    }
+
+    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) {
+        self.next_picker_page_cursor = next_cursor;
+    }
+
+    pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {
+        self.next_picker_page_cursor.clone()
+    }
+
+    pub(crate) fn needs_legacy_relation_fallback_check(&self) -> bool {
+        !self.legacy_relation_fallback_checked
+    }
+
+    pub(crate) fn mark_legacy_relation_fallback_checked(&mut self) {
+        self.legacy_relation_fallback_checked = true;
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
@@ -785,6 +807,18 @@ mod tests {
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
             Some("Main [default]".to_string())
         );
+    }
+
+    #[test]
+    fn clear_drops_picker_page_cursor_and_reenables_legacy_fallback() {
+        let mut state = AgentNavigationState::default();
+        state.set_next_picker_page_cursor(Some("opaque-cursor".to_string()));
+        state.mark_legacy_relation_fallback_checked();
+
+        state.clear();
+
+        assert_eq!(state.next_picker_page_cursor(), None);
+        assert!(state.needs_legacy_relation_fallback_check());
     }
 
     #[test]
