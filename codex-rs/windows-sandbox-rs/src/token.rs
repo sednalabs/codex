@@ -472,13 +472,20 @@ fn build_restricted_sid_entries(
 
 fn build_default_dacl_sids(
     psid_capabilities: &[*mut c_void],
+    extra_restricting_sids: &[*mut c_void],
     psid_logon: *mut c_void,
     psid_everyone: *mut c_void,
 ) -> Vec<*mut c_void> {
-    let mut dacl_sids = Vec::with_capacity(psid_capabilities.len() + 2);
+    let mut dacl_sids =
+        Vec::with_capacity(psid_capabilities.len() + extra_restricting_sids.len() + 2);
     dacl_sids.push(psid_logon);
     dacl_sids.push(psid_everyone);
     dacl_sids.extend_from_slice(psid_capabilities);
+    for sid in extra_restricting_sids {
+        if !dacl_sids.contains(sid) {
+            dacl_sids.push(*sid);
+        }
+    }
     dacl_sids
 }
 
@@ -516,9 +523,14 @@ unsafe fn create_token_with_caps_from(
         return Err(anyhow!("CreateRestrictedToken failed: {}", GetLastError()));
     }
 
-    // Additional restricting SIDs are identity markers, not capabilities. Deliberately exclude
-    // them from the default DACL so possessing a route identity cannot grant object access.
-    let dacl_sids = build_default_dacl_sids(psid_capabilities, psid_logon, psid_everyone);
+    // Restricting identity SIDs also need default-DACL entries so child-created objects remain
+    // accessible to the identity represented by the restricted token.
+    let dacl_sids = build_default_dacl_sids(
+        psid_capabilities,
+        extra_restricting_sids,
+        psid_logon,
+        psid_everyone,
+    );
     set_default_dacl(new_token, &dacl_sids)?;
 
     enable_single_privilege(new_token, "SeChangeNotifyPrivilege")?;
