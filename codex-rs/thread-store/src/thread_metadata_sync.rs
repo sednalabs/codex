@@ -661,7 +661,7 @@ mod tests {
             update.patch.reasoning_effort,
             Some(Some(ReasoningEffort::Ultra))
         );
-        assert_eq!(update.patch.cwd, Some(cwd));
+        assert_eq!(update.patch.cwd, Some(cwd.clone()));
         assert_eq!(update.patch.approval_mode, Some(AskForApproval::Never));
         assert_eq!(update.patch.permission_profile, Some(permission_profile));
 
@@ -701,6 +701,7 @@ mod tests {
             Some(Some(ReasoningEffort::Ultra)),
             "request-effective turn metadata must not replace configured identity"
         );
+        sync.mark_pending_update_applied(&update);
 
         let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &mut item else {
             panic!("thread settings applied item");
