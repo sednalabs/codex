@@ -373,6 +373,7 @@ fn ensure_legacy_landlock_mode_supports_policy(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_bwrap_with_proc_fallback(
     sandbox_policy_cwd: &Path,
     command_cwd: Option<&Path>,
