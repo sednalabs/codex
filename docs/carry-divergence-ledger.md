@@ -3243,6 +3243,10 @@ decisions.
   avoid overwriting symlink entries in either scope. It does not claim
   handle-relative protection against concurrent replacement of an already
   checked repository path.
+- Home- and repository-scoped skill imports validate every source `SKILL.md`
+  before destination mutation. Each manifest must contain YAML frontmatter
+  with non-empty `name` and `description` fields; an invalid source set fails
+  before any target directory is created or any skill is copied.
 - Upstream MEMORY migration remains home-scoped, but its client-selected project
   keys must be exactly one normal path component. Before memory detection or
   import mutates the workspace, the memory root, extension/resource ancestors,
@@ -3265,7 +3269,9 @@ decisions.
   project directory cannot redirect its ownership marker, while
   `external_agent_memory_import_rejects_stale_symlink_before_workspace_mutation`
   proves a rejected stale-project selection cannot initialize or rewrite the
-  memory workspace before the containment error is reported.
+  memory workspace before the containment error is reported. Separately,
+  `import_skills_rejects_invalid_skill_without_copying` proves malformed skill
+  metadata cannot leave a partial destination behind.
 - Recursive copy helpers skip symlink entries and refuse symlinked target
   directories. Empty-text target checks use `symlink_metadata`, so an empty or
   dangling symlink is protected rather than treated as an overwritable file.

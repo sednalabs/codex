@@ -213,8 +213,7 @@ async fn import_skills_rejects_invalid_skill_without_copying() {
         .map(|parent| parent.join(".agents").join("skills"))
         .unwrap_or_else(|| PathBuf::from(".agents").join("skills"));
     fs::create_dir_all(&source_skill).expect("create source skill");
-    fs::write(source_skill.join("SKILL.md"), "missing frontmatter\n")
-        .expect("write invalid skill");
+    fs::write(source_skill.join("SKILL.md"), "missing frontmatter\n").expect("write invalid skill");
 
     let outcome = service_for_paths(external_agent_home, codex_home)
         .import(vec![ExternalAgentConfigMigrationItem {
