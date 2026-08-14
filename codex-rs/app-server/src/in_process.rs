@@ -485,6 +485,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let _ = test_outgoing_message_tx.send(Arc::clone(&outgoing_message_sender));
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
+        let (response_writer_tx, mut response_writer_rx) =
+            mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
         let outbound_experimental_api_enabled = Arc::new(AtomicBool::new(false));
         let outbound_opted_out_notification_methods = Arc::new(RwLock::new(HashSet::new()));
@@ -498,7 +500,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                 Arc::clone(&outbound_experimental_api_enabled),
                 Arc::clone(&outbound_opted_out_notification_methods),
                 /*disconnect_sender*/ None,
-            ),
+            )
+            .with_response_writer(response_writer_tx),
         );
         let mut outbound_handle = tokio::spawn(async move {
             while let Some(envelope) = outgoing_rx.recv().await {
@@ -718,6 +721,40 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
+                queued_message = response_writer_rx.recv() => {
+                    let Some(queued_message) = queued_message else {
+                        break;
+                    };
+                    let write_complete_tx = queued_message.write_complete_tx;
+                    match queued_message.message {
+                        OutgoingMessage::Response(response) => {
+                            if let Some(response_tx) = pending_request_responses.remove(&response.id) {
+                                let _ = response_tx.send(Ok(response.result));
+                            } else {
+                                warn!(
+                                    request_id = ?response.id,
+                                    "dropping unmatched in-process response"
+                                );
+                            }
+                        }
+                        OutgoingMessage::Error(error) => {
+                            if let Some(response_tx) = pending_request_responses.remove(&error.id) {
+                                let _ = response_tx.send(Err(error.error));
+                            } else {
+                                warn!(
+                                    request_id = ?error.id,
+                                    "dropping unmatched in-process error response"
+                                );
+                            }
+                        }
+                        OutgoingMessage::Request(_) | OutgoingMessage::AppServerNotification(_) => {
+                            unreachable!("only responses use the in-process response writer")
+                        }
+                    }
+                    if let Some(write_complete_tx) = write_complete_tx {
+                        let _ = write_complete_tx.send(());
+                    }
+                }
                 queued_message = writer_rx.recv(), if skipped_events == 0 && pending_authoritative_notification.is_none() => {
                     let Some(queued_message) = queued_message else {
                         break;
@@ -817,6 +854,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         // draining dependent tasks so shutdown cannot form a custody cycle.
         drop(pending_authoritative_notification.take());
         drop(writer_rx);
+        drop(response_writer_rx);
         drop(processor_tx);
         outgoing_message_sender
             .cancel_all_requests(Some(internal_error(
@@ -1474,6 +1512,52 @@ mod tests {
             .await
             .expect("a full required event queue must not delay shutdown acknowledgement")
             .expect("runtime should complete orderly shutdown without parent-task abort");
+    }
+
+    #[tokio::test]
+    async fn pending_required_notification_does_not_block_request_response() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let outgoing = Arc::clone(
+            client
+                ._test_outgoing_message_sender
+                .as_ref()
+                .expect("test runtime should expose its outbound sender"),
+        );
+
+        outgoing
+            .send_server_notification_to_connection_and_wait(
+                IN_PROCESS_CONNECTION_ID,
+                thread_goal_updated_notification("queued"),
+            )
+            .await;
+        let pending_observed = client._test_pending_required_notification.notified();
+        outgoing
+            .send_server_notification(thread_goal_updated_notification("pending"))
+            .await;
+        timeout(Duration::from_secs(1), pending_observed)
+            .await
+            .expect("second required notification should become pending");
+
+        let response = timeout(
+            Duration::from_secs(1),
+            client.request(ClientRequest::ConfigRequirementsRead {
+                request_id: RequestId::Integer(91),
+                params: None,
+            }),
+        )
+        .await
+        .expect("request response should not wait for required-event delivery")
+        .expect("request transport should remain open")
+        .expect("request should succeed while the notification remains pending");
+        let _: ConfigRequirementsReadResponse =
+            serde_json::from_value(response).expect("response should match v2 schema");
+
+        drop(outgoing);
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
     }
 
     #[tokio::test]

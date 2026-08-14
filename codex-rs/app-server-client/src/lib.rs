@@ -2702,6 +2702,12 @@ mod tests {
                 if error.id == RequestId::String("synthetic-reject".to_string())
         )));
 
+        timeout(Duration::from_secs(1), request_task)
+            .await
+            .expect("request response should not wait for event delivery")
+            .expect("request task should join")
+            .expect("request should succeed while the required event remains pending");
+
         let first = timeout(Duration::from_secs(1), client.next_event())
             .await
             .expect("queued event should arrive")
@@ -2720,12 +2726,6 @@ mod tests {
             AppServerEvent::ServerNotification(ServerNotification::ThreadClosed(notification))
                 if notification.thread_id == "pending"
         ));
-        timeout(Duration::from_secs(1), request_task)
-            .await
-            .expect("request response should resume after event delivery")
-            .expect("request task should join")
-            .expect("request should succeed");
-
         done_tx.send(()).expect("server should be released");
         client.shutdown().await.expect("shutdown should complete");
     }
