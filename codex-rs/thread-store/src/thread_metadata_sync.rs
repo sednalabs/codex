@@ -668,7 +668,7 @@ mod tests {
         sync.mark_pending_update_applied(&update);
         let request_effective = RolloutItem::TurnContext(TurnContextItem {
             turn_id: Some("request-turn".to_string()),
-            cwd: cwd.clone().try_into().expect("absolute request cwd"),
+            cwd: cwd.try_into().expect("absolute request cwd"),
             workspace_roots: None,
             current_date: None,
             timezone: None,
