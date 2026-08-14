@@ -941,16 +941,19 @@ async fn unauthorized_recovery_reports_mode_and_step_names() {
         step: UnauthorizedRecoveryStep::Reload,
         expected_account_id: None,
         rejected_auth: None,
+        rejected_external_auth: manager.external_auth(),
         mode: UnauthorizedRecoveryMode::Managed,
     };
     assert_eq!(managed.mode_name(), "managed");
     assert_eq!(managed.step_name(), "reload");
 
+    let rejected_external_auth = manager.external_auth();
     let external = UnauthorizedRecovery {
         manager,
         step: UnauthorizedRecoveryStep::ExternalRefresh,
         expected_account_id: None,
         rejected_auth: None,
+        rejected_external_auth,
         mode: UnauthorizedRecoveryMode::External,
     };
     assert_eq!(external.mode_name(), "external");
