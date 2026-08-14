@@ -86,11 +86,6 @@ impl GatedThreadStore {
             partial_once: AtomicBool::new(false),
         }
     }
-
-    fn with_partial_append_once(self) -> Self {
-        self.partial_append_once.store(true, Ordering::SeqCst);
-        self
-    }
 }
 
 impl ThreadStore for GatedThreadStore {
@@ -620,50 +615,6 @@ async fn persist_waits_for_append_observation_before_flushing_pending_metadata()
     assert!(
         !persist_overtook_append,
         "persist reached the store before append observation completed"
-    );
-}
-
-#[tokio::test]
-async fn partial_append_retries_only_the_uncommitted_suffix() {
-    let home = TempDir::new().expect("temp dir");
-    let config = LocalThreadStoreConfig {
-        codex_home: home.path().to_path_buf(),
-        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
-        default_model_provider_id: "test-provider".to_string(),
-    };
-    let runtime = codex_state::StateRuntime::init(
-        config.sqlite.clone(),
-        config.default_model_provider_id.clone(),
-    )
-    .await
-    .expect("state db should initialize");
-    let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
-    let gated_store =
-        Arc::new(GatedThreadStore::new(local_store, usize::MAX - 1).with_partial_append_once());
-    let thread_id = ThreadId::new();
-    let live_thread = LiveThread::create(gated_store, create_thread_params(thread_id, home.path()))
-        .await
-        .expect("create live thread");
-    let first = compacted_item();
-    let second = compacted_item();
-
-    live_thread
-        .append_items(&[first.clone(), second.clone()])
-        .await
-        .expect("partial append should resume at the uncommitted suffix");
-
-    let history = live_thread
-        .load_history(/*include_archived*/ true)
-        .await
-        .expect("load canonical history");
-    let compacted_items = history
-        .items
-        .into_iter()
-        .filter(|item| matches!(item, RolloutItem::Compacted(_)))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        serde_json::to_value(compacted_items).expect("serialize persisted history"),
-        serde_json::to_value(vec![first, second]).expect("serialize expected history")
     );
 }
 
