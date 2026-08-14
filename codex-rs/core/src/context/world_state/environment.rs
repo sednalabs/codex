@@ -244,7 +244,7 @@ impl EnvironmentsState {
             timezone: self.timezone.clone(),
             network: self.network.clone(),
             filesystem: self.filesystem.clone(),
-            subagents: self.subagents.clone(),
+            subagents: self.subagents.clone().map(SubagentsUpdate::Current),
         }
     }
 }
@@ -314,7 +314,12 @@ impl WorldStateSection for EnvironmentsState {
             && updates
                 .values()
                 .all(|update| matches!(update, EnvironmentUpdate::Current(_)));
-        (!updates.is_empty() || turn_context_values_changed).then(|| {
+        let subagents = (current.subagents != previous.subagents).then(|| {
+            self.subagents
+                .clone()
+                .map_or(SubagentsUpdate::Unavailable, SubagentsUpdate::Current)
+        });
+        (!updates.is_empty() || turn_context_values_changed || subagents.is_some()).then(|| {
             Box::new(RenderedEnvironments {
                 updates,
                 legacy_single,
@@ -322,7 +327,7 @@ impl WorldStateSection for EnvironmentsState {
                 timezone: self.timezone.clone(),
                 network: self.network.clone(),
                 filesystem: self.filesystem.clone(),
-                subagents: self.subagents.clone(),
+                subagents,
             }) as Box<dyn ContextualUserFragment>
         })
     }
@@ -353,11 +358,16 @@ struct RenderedEnvironments {
     timezone: Option<String>,
     network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
-    subagents: Option<String>,
+    subagents: Option<SubagentsUpdate>,
 }
 
 enum EnvironmentUpdate {
     Current(EnvironmentState),
+    Unavailable,
+}
+
+enum SubagentsUpdate {
+    Current(String),
     Unavailable,
 }
 
@@ -414,13 +424,20 @@ impl ContextualUserFragment for RenderedEnvironments {
             rendered.push('\n');
         }
         if let Some(subagents) = &self.subagents {
-            rendered.push_str("  <subagents>\n");
-            for line in subagents.lines() {
-                rendered.push_str("    ");
-                rendered.push_str(line);
-                rendered.push('\n');
+            match subagents {
+                SubagentsUpdate::Current(subagents) => {
+                    rendered.push_str("  <subagents>\n");
+                    for line in subagents.lines() {
+                        rendered.push_str("    ");
+                        rendered.push_str(line);
+                        rendered.push('\n');
+                    }
+                    rendered.push_str("  </subagents>\n");
+                }
+                SubagentsUpdate::Unavailable => {
+                    rendered.push_str("  <subagents status=\"unavailable\" />\n");
+                }
             }
-            rendered.push_str("  </subagents>\n");
         }
         rendered
     }
