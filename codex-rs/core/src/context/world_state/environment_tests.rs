@@ -25,16 +25,18 @@ fn subagent_context_escapes_normalizes_and_truncates_dynamic_fields() {
     )));
     let rendered = builder.finish();
 
-    assert!(rendered.as_str().contains("&lt;agent attr=&quot;x&quot;&gt;"));
+    assert!(
+        rendered
+            .as_str()
+            .contains("&lt;agent attr=&quot;x&quot;&gt;")
+    );
     assert!(rendered.as_str().contains("&amp;"));
     assert!(rendered.as_str().contains("&apos;"));
     assert!(!rendered.as_str().contains('\n'));
     assert!(rendered.as_str().ends_with("..."));
     assert!(
         rendered.as_str().len()
-            <= 2 + SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES
-                + 2
-                + SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES
+            <= 2 + SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES + 2 + SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES
     );
 }
 
@@ -81,8 +83,7 @@ fn subagent_context_enforces_row_and_total_byte_caps_with_omitted_count() {
             .contains(&format!("<omitted count=\"{omitted}\" />"))
     );
     assert!(
-        subagent_context_rendered_bytes(subagents.as_str())
-            <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
+        subagent_context_rendered_bytes(subagents.as_str()) <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
     );
 }
 
