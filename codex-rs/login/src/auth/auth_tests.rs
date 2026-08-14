@@ -1179,11 +1179,13 @@ async fn rejected_external_chatgpt_auth_preserves_distinct_managed_auth() {
             AuthKeyringBackendKind::default(),
         )
         .expect("reload managed auth"),
-        Some(managed_auth)
+        Some(managed_auth.clone())
     );
     assert_eq!(
-        manager.auth_cached().and_then(|auth| auth.get_account_id()),
-        Some(WORKSPACE_ID_ALLOWED.to_string())
+        manager
+            .auth_cached()
+            .and_then(|auth| auth.get_current_auth_json()),
+        Some(managed_auth)
     );
 }
 
