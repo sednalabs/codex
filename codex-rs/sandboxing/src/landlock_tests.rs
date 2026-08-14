@@ -89,6 +89,7 @@ fn permission_profile_flag_is_included() {
         true
     );
     assert_eq!(args.contains(&"--use-legacy-landlock".to_string()), true);
+    assert!(args.contains(&"--allow-detached-children".to_string()));
 }
 
 #[test]
