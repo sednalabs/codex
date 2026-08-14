@@ -67,6 +67,7 @@ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
 const MAX_UNANSWERED_SERVER_REQUESTS: usize = 1024;
 const MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES: usize = 256 << 10;
+const MAX_UNANSWERED_SERVER_REQUEST_BYTES: usize = 16 << 20;
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
 // the bytes travel over the Unix socket, not TCP.
 const UDS_WEBSOCKET_HANDSHAKE_URL: &str = "ws://localhost/rpc";
@@ -167,6 +168,7 @@ enum ServerRequestRegistration {
 struct ServerRequestLedgerEntry {
     disposition: ServerRequestDisposition,
     request_id_bytes: usize,
+    request_bytes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -174,10 +176,15 @@ struct ServerRequestLedger {
     entries: HashMap<RequestId, ServerRequestLedgerEntry>,
     order: VecDeque<RequestId>,
     request_id_bytes: usize,
+    request_bytes: usize,
 }
 
 impl ServerRequestLedger {
-    fn register(&mut self, request_id: RequestId) -> ServerRequestRegistration {
+    fn register(
+        &mut self,
+        request_id: RequestId,
+        request_bytes: usize,
+    ) -> ServerRequestRegistration {
         if self.entries.contains_key(&request_id) {
             return ServerRequestRegistration::Duplicate;
         }
@@ -189,8 +196,12 @@ impl ServerRequestLedger {
         else {
             return ServerRequestRegistration::CapacityExceeded;
         };
+        let Some(next_request_bytes) = self.request_bytes.checked_add(request_bytes) else {
+            return ServerRequestRegistration::CapacityExceeded;
+        };
         if self.entries.len() >= MAX_UNANSWERED_SERVER_REQUESTS
             || next_request_id_bytes > MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES
+            || next_request_bytes > MAX_UNANSWERED_SERVER_REQUEST_BYTES
         {
             return ServerRequestRegistration::CapacityExceeded;
         }
@@ -199,10 +210,12 @@ impl ServerRequestLedger {
             ServerRequestLedgerEntry {
                 disposition: ServerRequestDisposition::Pending,
                 request_id_bytes,
+                request_bytes,
             },
         );
         self.order.push_back(request_id);
         self.request_id_bytes = next_request_id_bytes;
+        self.request_bytes = next_request_bytes;
         ServerRequestRegistration::Registered
     }
 
@@ -222,6 +235,7 @@ impl ServerRequestLedger {
     fn complete_response(&mut self, request_id: &RequestId) {
         if let Some(entry) = self.entries.remove(request_id) {
             self.request_id_bytes -= entry.request_id_bytes;
+            self.request_bytes -= entry.request_bytes;
             self.order
                 .retain(|pending_request_id| pending_request_id != request_id);
         }
@@ -243,6 +257,7 @@ impl ServerRequestLedger {
             }
         }
         self.request_id_bytes = 0;
+        self.request_bytes = 0;
         debug_assert!(self.entries.is_empty());
         unanswered
     }
@@ -302,22 +317,18 @@ impl RemoteAppServerClient {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream = stream;
+        let mut server_requests = ServerRequestLedger::default();
         let (pending_events, server_version, codex_home) = initialize_remote_connection(
             &mut stream,
             &endpoint,
             initialize_params,
             INITIALIZE_TIMEOUT,
+            &mut server_requests,
         )
         .await?;
 
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
-        let mut server_requests = ServerRequestLedger::default();
-        for event in &pending_events {
-            if let AppServerEvent::ServerRequest(request) = event {
-                let _ = server_requests.register(request.id().clone());
-            }
-        }
         let worker_handle = tokio::spawn(async move {
             let mut pending_requests =
                 HashMap::<RequestId, oneshot::Sender<IoResult<RequestResult>>>::new();
@@ -480,6 +491,7 @@ impl RemoteAppServerClient {
                     message = stream.next(), if pending_required_events.is_empty() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
+                                let message_bytes = text.len();
                                 match serde_json::from_str::<JSONRPCMessage>(&text) {
                                     Ok(JSONRPCMessage::Response(response)) => {
                                         if let Some(response_tx) = pending_requests.remove(&response.id) {
@@ -515,7 +527,10 @@ impl RemoteAppServerClient {
                                         let method = request.method.clone();
                                         match ServerRequest::try_from(request) {
                                             Ok(request) => {
-                                                match server_requests.register(request_id.clone()) {
+                                                match server_requests.register(
+                                                    request_id.clone(),
+                                                    message_bytes,
+                                                ) {
                                                     ServerRequestRegistration::Registered => {}
                                                     ServerRequestRegistration::Duplicate => {
                                                         warn!(%request_id, "ignoring duplicate remote app-server server request");
@@ -685,6 +700,14 @@ impl RemoteAppServerClient {
                                 break;
                             }
                         }
+                    }
+                }
+            }
+
+            if worker_exit_error.is_some() {
+                while let Some(event) = pending_required_events.pop_front() {
+                    if event_tx.send(event).await.is_err() {
+                        break;
                     }
                 }
             }
@@ -1026,6 +1049,7 @@ async fn initialize_remote_connection<S>(
     endpoint: &str,
     params: InitializeParams,
     initialize_timeout: Duration,
+    server_requests: &mut ServerRequestLedger,
 ) -> IoResult<(Vec<AppServerEvent>, Option<String>, Option<String>)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1050,6 +1074,7 @@ where
         loop {
             match stream.next().await {
                 Some(Ok(Message::Text(text))) => {
+                    let message_bytes = text.len();
                     let message = serde_json::from_str::<JSONRPCMessage>(&text).map_err(|err| {
                         IoError::other(format!(
                             "remote app server at `{endpoint}` sent invalid initialize response: {err}"
@@ -1089,7 +1114,27 @@ where
                             let method = request.method.clone();
                             match ServerRequest::try_from(request) {
                                 Ok(request) => {
-                                    pending_events.push(AppServerEvent::ServerRequest(request));
+                                    match server_requests.register(
+                                        request_id.clone(),
+                                        message_bytes,
+                                    ) {
+                                        ServerRequestRegistration::Registered => {
+                                            pending_events
+                                                .push(AppServerEvent::ServerRequest(request));
+                                        }
+                                        ServerRequestRegistration::Duplicate => {
+                                            warn!(%request_id, "ignoring duplicate remote app-server server request during initialize");
+                                        }
+                                        ServerRequestRegistration::CapacityExceeded => {
+                                            warn!(%request_id, "rejecting remote app-server server request during initialize because the unanswered-request limit was reached");
+                                            reject_server_request_overflow(
+                                                stream,
+                                                endpoint,
+                                                request_id,
+                                            )
+                                            .await?;
+                                        }
+                                    }
                                 }
                                 Err(err) => {
                                     warn!(%err, method, "rejecting unknown remote app-server request during initialize");
@@ -1384,12 +1429,42 @@ mod tests {
         }
     }
 
+    fn dynamic_tool_request(request_id: i64, argument_bytes: usize) -> JSONRPCRequest {
+        JSONRPCRequest {
+            id: RequestId::Integer(request_id),
+            method: "item/tool/call".to_string(),
+            params: Some(
+                serde_json::to_value(codex_app_server_protocol::DynamicToolCallParams {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    call_id: format!("call-{request_id}"),
+                    namespace: None,
+                    tool: "test-tool".to_string(),
+                    arguments: serde_json::json!({"payload": "x".repeat(argument_bytes)}),
+                })
+                .expect("dynamic tool request params should serialize"),
+            ),
+            trace: None,
+        }
+    }
+
+    fn test_initialize_params() -> InitializeParams {
+        InitializeParams {
+            client_info: ClientInfo {
+                name: "test-client".to_string(),
+                title: None,
+                version: "1.0".to_string(),
+            },
+            capabilities: None,
+        }
+    }
+
     #[test]
     fn response_attempt_is_not_rejected_during_shutdown_cleanup() {
         let request_id = RequestId::Integer(1);
         let mut ledger = ServerRequestLedger::default();
         assert_eq!(
-            ledger.register(request_id.clone()),
+            ledger.register(request_id.clone(), 1),
             ServerRequestRegistration::Registered
         );
         assert!(ledger.begin_response(&request_id));
@@ -1402,12 +1477,12 @@ mod tests {
         let mut ledger = ServerRequestLedger::default();
         for request_id in 0..MAX_UNANSWERED_SERVER_REQUESTS {
             assert_eq!(
-                ledger.register(RequestId::Integer(request_id as i64)),
+                ledger.register(RequestId::Integer(request_id as i64), 1),
                 ServerRequestRegistration::Registered
             );
         }
         assert_eq!(
-            ledger.register(RequestId::Integer(MAX_UNANSWERED_SERVER_REQUESTS as i64)),
+            ledger.register(RequestId::Integer(MAX_UNANSWERED_SERVER_REQUESTS as i64), 1,),
             ServerRequestRegistration::CapacityExceeded
         );
         assert_eq!(
@@ -1415,6 +1490,31 @@ mod tests {
             MAX_UNANSWERED_SERVER_REQUESTS
         );
         assert_eq!(ledger.request_id_bytes, 0);
+        assert_eq!(ledger.request_bytes, 0);
+    }
+
+    #[test]
+    fn unanswered_server_request_ledger_limits_payload_bytes() {
+        let mut ledger = ServerRequestLedger::default();
+        let first_request_id = RequestId::Integer(1);
+        assert_eq!(
+            ledger.register(
+                first_request_id.clone(),
+                MAX_UNANSWERED_SERVER_REQUEST_BYTES,
+            ),
+            ServerRequestRegistration::Registered
+        );
+        assert_eq!(
+            ledger.register(RequestId::Integer(2), 1),
+            ServerRequestRegistration::CapacityExceeded
+        );
+
+        assert!(ledger.begin_response(&first_request_id));
+        assert_eq!(ledger.request_bytes, 0);
+        assert_eq!(
+            ledger.register(RequestId::Integer(2), 1),
+            ServerRequestRegistration::Registered
+        );
     }
 
     #[test]
@@ -1422,13 +1522,319 @@ mod tests {
         let mut ledger = ServerRequestLedger::default();
         let nearly_full = "a".repeat(MAX_UNANSWERED_SERVER_REQUEST_ID_BYTES - 1);
         assert_eq!(
-            ledger.register(RequestId::String(nearly_full)),
+            ledger.register(RequestId::String(nearly_full), 1),
             ServerRequestRegistration::Registered
         );
         assert_eq!(
-            ledger.register(RequestId::String("é".to_string())),
+            ledger.register(RequestId::String("é".to_string()), 1),
             ServerRequestRegistration::CapacityExceeded
         );
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_server_requests_beyond_the_count_limit() {
+        let (client_io, server_io) = tokio::io::duplex(4 << 20);
+        let mut client_stream = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server_stream = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let server_task = tokio::spawn(async move {
+            let Message::Text(initialize) = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed")
+            else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&initialize)
+                .expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+
+            for request_id in 0..=MAX_UNANSWERED_SERVER_REQUESTS {
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Request(server_request(
+                            request_id as i64,
+                        )))
+                        .expect("server request should serialize")
+                        .into(),
+                    ))
+                    .await
+                    .expect("server request should send");
+            }
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: initialize.id,
+                        result: serde_json::json!({"userAgent": "test-server/1.0"}),
+                    }))
+                    .expect("initialize response should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let Message::Text(rejection) = server_stream
+                .next()
+                .await
+                .expect("client should reject the overflow request")
+                .expect("rejection frame should succeed")
+            else {
+                panic!("expected rejection text frame");
+            };
+            let JSONRPCMessage::Error(rejection) =
+                serde_json::from_str(&rejection).expect("rejection frame should contain JSON-RPC")
+            else {
+                panic!("expected JSON-RPC error");
+            };
+            assert_eq!(
+                (rejection.id, rejection.error.code),
+                (
+                    RequestId::Integer(MAX_UNANSWERED_SERVER_REQUESTS as i64),
+                    -32603,
+                )
+            );
+            let _initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+        });
+
+        let mut ledger = ServerRequestLedger::default();
+        let (pending_events, _, _) = initialize_remote_connection(
+            &mut client_stream,
+            "in-memory count-limit transport",
+            test_initialize_params(),
+            Duration::from_secs(2),
+            &mut ledger,
+        )
+        .await
+        .expect("remote client should initialize");
+        assert_eq!(pending_events.len(), MAX_UNANSWERED_SERVER_REQUESTS);
+        assert_eq!(ledger.entries.len(), MAX_UNANSWERED_SERVER_REQUESTS);
+        server_task.await.expect("server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_oversized_dynamic_tool_request() {
+        let (client_io, server_io) = tokio::io::duplex(32 << 20);
+        let mut client_stream = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server_stream = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let server_task = tokio::spawn(async move {
+            let Message::Text(initialize) = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed")
+            else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&initialize)
+                .expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Request(dynamic_tool_request(
+                        7,
+                        MAX_UNANSWERED_SERVER_REQUEST_BYTES,
+                    )))
+                    .expect("dynamic tool request should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("dynamic tool request should send");
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: initialize.id,
+                        result: serde_json::json!({"userAgent": "test-server/1.0"}),
+                    }))
+                    .expect("initialize response should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+
+            let Message::Text(rejection) = server_stream
+                .next()
+                .await
+                .expect("client should reject the oversized request")
+                .expect("rejection frame should succeed")
+            else {
+                panic!("expected rejection text frame");
+            };
+            let JSONRPCMessage::Error(rejection) =
+                serde_json::from_str(&rejection).expect("rejection frame should contain JSON-RPC")
+            else {
+                panic!("expected JSON-RPC error");
+            };
+            assert_eq!(
+                (rejection.id, rejection.error.code),
+                (RequestId::Integer(7), -32603)
+            );
+            let _initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+        });
+
+        let mut ledger = ServerRequestLedger::default();
+        let (pending_events, _, _) = initialize_remote_connection(
+            &mut client_stream,
+            "in-memory payload-limit transport",
+            test_initialize_params(),
+            Duration::from_secs(2),
+            &mut ledger,
+        )
+        .await
+        .expect("remote client should initialize");
+        assert!(pending_events.is_empty());
+        assert!(ledger.entries.is_empty());
+        assert_eq!(ledger.request_bytes, 0);
+        server_task.await.expect("server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn preinitialize_server_requests_resolve_and_reject_on_shutdown() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server_stream = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let server_task = tokio::spawn(async move {
+            let Message::Text(initialize) = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed")
+            else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&initialize)
+                .expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            for request_id in [1, 2] {
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Request(server_request(request_id)))
+                            .expect("server request should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server request should send");
+            }
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: initialize.id,
+                        result: serde_json::json!({"userAgent": "test-server/1.0"}),
+                    }))
+                    .expect("initialize response should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+            let _initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+
+            let Message::Text(response) = server_stream
+                .next()
+                .await
+                .expect("client should resolve the admitted request")
+                .expect("response frame should succeed")
+            else {
+                panic!("expected response text frame");
+            };
+            let JSONRPCMessage::Response(response) =
+                serde_json::from_str(&response).expect("response frame should contain JSON-RPC")
+            else {
+                panic!("expected JSON-RPC response");
+            };
+            assert_eq!(response.id, RequestId::Integer(1));
+
+            let Message::Text(rejection) = server_stream
+                .next()
+                .await
+                .expect("shutdown should reject the remaining request")
+                .expect("rejection frame should succeed")
+            else {
+                panic!("expected rejection text frame");
+            };
+            let JSONRPCMessage::Error(rejection) =
+                serde_json::from_str(&rejection).expect("rejection frame should contain JSON-RPC")
+            else {
+                panic!("expected JSON-RPC error");
+            };
+            assert_eq!(
+                (rejection.id, rejection.error.code),
+                (RequestId::Integer(2), -32603)
+            );
+        });
+
+        let mut client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory preinitialize lifecycle transport".to_string(),
+            client_stream,
+            test_initialize_params(),
+        )
+        .await
+        .expect("remote client should initialize");
+        for expected_index in 1..=2 {
+            assert!(
+                matches!(
+                    client.next_event().await,
+                    Some(AppServerEvent::ServerRequest(_))
+                ),
+                "expected preinitialize server request {expected_index}"
+            );
+        }
+        client
+            .resolve_server_request(RequestId::Integer(1), serde_json::json!({}))
+            .await
+            .expect("admitted preinitialize request should resolve");
+        client
+            .shutdown()
+            .await
+            .expect("shutdown should reject the unanswered request");
+        server_task.await.expect("server task should not panic");
     }
 
     #[tokio::test]
@@ -1478,7 +1884,6 @@ mod tests {
                 .await
                 .expect("client should send initialized")
                 .expect("initialized frame should succeed");
-
             for request_id in [1, 2] {
                 server_stream
                     .send(Message::Text(
@@ -1535,14 +1940,7 @@ mod tests {
             /*channel_capacity*/ 1,
             "in-memory shutdown transport".to_string(),
             client_stream,
-            InitializeParams {
-                client_info: ClientInfo {
-                    name: "test-client".to_string(),
-                    title: None,
-                    version: "1.0".to_string(),
-                },
-                capabilities: None,
-            },
+            test_initialize_params(),
         )
         .await
         .expect("remote client should initialize");
@@ -1592,6 +1990,99 @@ mod tests {
             .expect("worker should exit after shutdown")
             .expect("worker should not panic");
         server_task.await.expect("server task should not panic");
+    }
+
+    #[tokio::test]
+    async fn disconnect_is_delivered_after_a_full_required_event_queue_drains() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_stream = WebSocketStream::from_raw_socket(
+            client_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut server_stream = WebSocketStream::from_raw_socket(
+            server_io,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let server_task = tokio::spawn(async move {
+            let Message::Text(initialize) = server_stream
+                .next()
+                .await
+                .expect("client should initialize")
+                .expect("initialize frame should succeed")
+            else {
+                panic!("expected initialize text frame");
+            };
+            let JSONRPCMessage::Request(initialize) = serde_json::from_str(&initialize)
+                .expect("initialize frame should contain JSON-RPC")
+            else {
+                panic!("expected initialize request");
+            };
+            server_stream
+                .send(Message::Text(
+                    serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
+                        id: initialize.id,
+                        result: serde_json::json!({"userAgent": "test-server/1.0"}),
+                    }))
+                    .expect("initialize response should serialize")
+                    .into(),
+                ))
+                .await
+                .expect("server should acknowledge initialize");
+            let _initialized = server_stream
+                .next()
+                .await
+                .expect("client should send initialized")
+                .expect("initialized frame should succeed");
+            for request_id in [1, 2] {
+                server_stream
+                    .send(Message::Text(
+                        serde_json::to_string(&JSONRPCMessage::Request(server_request(request_id)))
+                            .expect("server request should serialize")
+                            .into(),
+                    ))
+                    .await
+                    .expect("server request should send");
+            }
+            server_stream
+                .close(None)
+                .await
+                .expect("server close should send");
+        });
+
+        let mut client = RemoteAppServerClient::connect_with_stream(
+            /*channel_capacity*/ 1,
+            "in-memory disconnect transport".to_string(),
+            client_stream,
+            test_initialize_params(),
+        )
+        .await
+        .expect("remote client should initialize");
+        for expected_index in 1..=2 {
+            assert!(
+                matches!(
+                    timeout(Duration::from_secs(2), client.next_event())
+                        .await
+                        .expect("required event should arrive"),
+                    Some(AppServerEvent::ServerRequest(_))
+                ),
+                "expected server request {expected_index}"
+            );
+        }
+        assert!(matches!(
+            timeout(Duration::from_secs(2), client.next_event())
+                .await
+                .expect("disconnect event should arrive"),
+            Some(AppServerEvent::Disconnected { .. })
+        ));
+        server_task.await.expect("server task should not panic");
+        client
+            .shutdown()
+            .await
+            .expect("shutdown after disconnect should complete");
     }
 
     #[tokio::test]
