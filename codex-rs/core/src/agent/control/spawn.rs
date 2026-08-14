@@ -7,7 +7,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
-use std::error::Error as _;
+use codex_thread_store::ThreadStoreError;
 use tokio::time::Duration;
 
 /// A failed shutdown must not turn a live unpublished child into an untracked runtime. Retry a
@@ -58,16 +58,12 @@ fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
 }
 
 fn is_benign_unpublished_spawn_persistence_error(error: &std::io::Error) -> bool {
-    let mut source = error.source();
-    while let Some(cause) = source {
-        if let Some(error) = cause.downcast_ref::<CodexErr>()
-            && is_benign_unpublished_spawn_cleanup_error(error)
-        {
-            return true;
-        }
-        source = cause.source();
-    }
-    false
+    matches!(
+        error
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<ThreadStoreError>()),
+        Some(ThreadStoreError::ThreadNotFound { .. })
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
