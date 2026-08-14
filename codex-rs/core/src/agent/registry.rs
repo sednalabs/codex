@@ -142,9 +142,7 @@ impl SpawnPublication {
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) | Err(SPAWN_PUBLICATION_CANCELLED) => {
-                SpawnPublicationDecision::CancellationOwned
-            }
+            Ok(_) | Err(SPAWN_PUBLICATION_CANCELLED) => SpawnPublicationDecision::CancellationOwned,
             Err(SPAWN_PUBLICATION_DELIVERY_OWNED) => SpawnPublicationDecision::DeliveryOwned,
             Err(SPAWN_PUBLICATION_PUBLISHED) => SpawnPublicationDecision::Published,
             Err(state) => unreachable!("invalid spawn publication state: {state}"),

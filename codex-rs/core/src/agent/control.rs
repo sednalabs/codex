@@ -283,11 +283,7 @@ impl AgentControl {
         self.rollout_budget.as_ref()
     }
 
-    pub(crate) fn begin_tool_spawn_publication(
-        &self,
-        parent_thread_id: ThreadId,
-        call_id: &str,
-    ) {
+    pub(crate) fn begin_tool_spawn_publication(&self, parent_thread_id: ThreadId, call_id: &str) {
         self.state
             .begin_spawn_publication(SpawnPublicationKey::new(parent_thread_id, call_id));
     }
@@ -301,11 +297,7 @@ impl AgentControl {
             .cancel_spawn_publication(SpawnPublicationKey::new(parent_thread_id, call_id))
     }
 
-    pub(crate) fn finish_tool_spawn_publication(
-        &self,
-        parent_thread_id: ThreadId,
-        call_id: &str,
-    ) {
+    pub(crate) fn finish_tool_spawn_publication(&self, parent_thread_id: ThreadId, call_id: &str) {
         self.state
             .finish_spawn_publication(&SpawnPublicationKey::new(parent_thread_id, call_id));
     }
@@ -340,7 +332,10 @@ impl AgentControl {
     #[cfg(test)]
     pub(crate) fn pause_spawn_after_new_thread_for_test(
         &self,
-    ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
+    ) -> (
+        tokio::sync::oneshot::Receiver<ThreadId>,
+        Arc<tokio::sync::Notify>,
+    ) {
         let (observed_child, child_created) = tokio::sync::oneshot::channel();
         let resume_spawn = Arc::new(tokio::sync::Notify::new());
         *self
@@ -357,7 +352,10 @@ impl AgentControl {
     #[cfg(test)]
     pub(crate) fn pause_spawn_after_initial_delivery_for_test(
         &self,
-    ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
+    ) -> (
+        tokio::sync::oneshot::Receiver<ThreadId>,
+        Arc<tokio::sync::Notify>,
+    ) {
         let (observed_child, initial_delivery_finished) = tokio::sync::oneshot::channel();
         let resume_spawn = Arc::new(tokio::sync::Notify::new());
         *self
@@ -381,7 +379,10 @@ impl AgentControl {
     #[cfg(test)]
     pub(crate) fn pause_retained_unpublished_spawn_cleanup_for_test(
         &self,
-    ) -> (tokio::sync::oneshot::Receiver<ThreadId>, Arc<tokio::sync::Notify>) {
+    ) -> (
+        tokio::sync::oneshot::Receiver<ThreadId>,
+        Arc<tokio::sync::Notify>,
+    ) {
         let (observed_child, cleanup_retained) = tokio::sync::oneshot::channel();
         let resume_cleanup = Arc::new(tokio::sync::Notify::new());
         *self
