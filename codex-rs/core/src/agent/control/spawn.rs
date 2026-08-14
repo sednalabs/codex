@@ -7,6 +7,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use std::error::Error as _;
 use tokio::time::Duration;
 
 /// A failed shutdown must not turn a live unpublished child into an untracked runtime. Retry a
@@ -54,6 +55,19 @@ fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
         error.details(),
         CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
     )
+}
+
+fn is_benign_unpublished_spawn_persistence_error(error: &std::io::Error) -> bool {
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(error) = cause.downcast_ref::<CodexErr>()
+            && is_benign_unpublished_spawn_cleanup_error(error)
+        {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1021,15 +1035,13 @@ impl AgentControl {
         mut cleanup_error: Option<CodexErr>,
     ) -> UnpublishedSpawnCleanupAttempt {
         if let Err(error) = child_thread.session.try_ensure_rollout_materialized().await {
-            let error = CodexErr::Io(error);
-            if cleanup_error.is_none() && !is_benign_unpublished_spawn_cleanup_error(&error) {
-                cleanup_error = Some(error);
+            if cleanup_error.is_none() && !is_benign_unpublished_spawn_persistence_error(&error) {
+                cleanup_error = Some(CodexErr::Io(error));
             }
         }
         if let Err(error) = child_thread.flush_rollout().await {
-            let error = CodexErr::Io(error);
-            if cleanup_error.is_none() && !is_benign_unpublished_spawn_cleanup_error(&error) {
-                cleanup_error = Some(error);
+            if cleanup_error.is_none() && !is_benign_unpublished_spawn_persistence_error(&error) {
+                cleanup_error = Some(CodexErr::Io(error));
             }
         }
 

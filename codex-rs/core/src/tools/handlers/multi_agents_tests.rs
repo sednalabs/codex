@@ -1004,10 +1004,27 @@ async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
         .expect("spawn task should join")
         .expect("slow spawn should complete after publication");
 
-    let completed = events
-        .recv()
-        .await
-        .expect("successful spawn should terminalize its operation item");
+    let completed = timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events
+                .recv()
+                .await
+                .expect("successful spawn should terminalize its operation item");
+            if matches!(
+                &event.msg,
+                EventMsg::ItemCompleted(item_completed)
+                    if matches!(
+                        &item_completed.item,
+                        TurnItem::CollabAgentToolCall(item)
+                            if item.id == "call-1"
+                    )
+            ) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("successful spawn should emit its terminal operation item");
     assert!(matches!(
         completed.msg,
         EventMsg::ItemCompleted(item_completed)
