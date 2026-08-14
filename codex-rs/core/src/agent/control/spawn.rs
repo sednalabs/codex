@@ -54,7 +54,7 @@ fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
         CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied => true,
         CodexErrorDetails::Io(error) => error
             .get_ref()
-            .is_some_and(is_benign_unpublished_spawn_cleanup_source),
+            .is_some_and(|source| is_benign_unpublished_spawn_cleanup_source(source)),
         _ => false,
     }
 }
