@@ -47,14 +47,49 @@ use codex_shell_command::parse_command::shlex_join;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use schemars::JsonSchema;
+use schemars::Schema;
+use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_with::serde_as;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use ts_rs::TS;
+
+struct RequiredNullableStringSchema;
+
+impl JsonSchema for RequiredNullableStringSchema {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "RequiredNullableString".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        Option::<String>::json_schema(generator)
+    }
+}
+
+struct RequiredNullableReasoningEffortSchema;
+
+impl JsonSchema for RequiredNullableReasoningEffortSchema {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "RequiredNullableReasoningEffort".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        Option::<ReasoningEffort>::json_schema(generator)
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -387,25 +422,25 @@ pub enum ThreadItem {
         ///
         /// This remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable.
         #[serde(default)]
-        #[schemars(!default)]
+        #[schemars(with = "RequiredNullableStringSchema", !default)]
         requested_model: Option<String>,
         /// Additive explicit provenance for the requested reasoning effort.
         ///
         /// This remains available on terminal spawn items even though the legacy `reasoningEffort` alias then represents the observed effective effort. This required nullable field is null when request provenance is unavailable.
         #[serde(default)]
-        #[schemars(!default)]
+        #[schemars(with = "RequiredNullableReasoningEffortSchema", !default)]
         requested_reasoning_effort: Option<ReasoningEffort>,
         /// Effective model observed for a spawned agent at terminal lifecycle time.
         ///
         /// This required nullable field is null when unknown and must not be filled from thread metadata or a request.
         #[serde(default)]
-        #[schemars(!default)]
+        #[schemars(with = "RequiredNullableStringSchema", !default)]
         effective_model: Option<String>,
         /// Effective reasoning effort observed for a spawned agent at terminal lifecycle time.
         ///
         /// This required nullable field is null when unknown and must not be filled from thread metadata or a request.
         #[serde(default)]
-        #[schemars(!default)]
+        #[schemars(with = "RequiredNullableReasoningEffortSchema", !default)]
         effective_reasoning_effort: Option<ReasoningEffort>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
