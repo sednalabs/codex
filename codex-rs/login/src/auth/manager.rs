@@ -1237,13 +1237,18 @@ fn logout_store_if(
         codex_home,
         auth_credentials_store_mode,
         keyring_backend_kind,
-    )? else {
+    )?
+    else {
         return Ok(false);
     };
     if !should_logout(&auth) {
         return Ok(false);
     }
-    logout(codex_home, auth_credentials_store_mode, keyring_backend_kind)
+    logout(
+        codex_home,
+        auth_credentials_store_mode,
+        keyring_backend_kind,
+    )
 }
 
 fn auth_dot_json_matches_rejected_auth(auth: &AuthDotJson, rejected: &CodexAuth) -> bool {
@@ -1255,7 +1260,8 @@ fn auth_dot_json_matches_rejected_auth(auth: &AuthDotJson, rejected: &CodexAuth)
             let Some(rejected_auth) = rejected.get_current_auth_json() else {
                 return false;
             };
-            let (Some(tokens), Some(rejected_tokens)) = (&auth.tokens, &rejected_auth.tokens) else {
+            let (Some(tokens), Some(rejected_tokens)) = (&auth.tokens, &rejected_auth.tokens)
+            else {
                 return false;
             };
             tokens.access_token == rejected_tokens.access_token
@@ -1265,9 +1271,9 @@ fn auth_dot_json_matches_rejected_auth(auth: &AuthDotJson, rejected: &CodexAuth)
         }
         CodexAuth::AgentIdentity(rejected) => auth
             .agent_identity
-            .as_deref()
-            .and_then(|jwt| AgentIdentityAuthRecord::from_agent_identity_jwt(jwt).ok())
-            .is_some_and(|record| &record == rejected.record()),
+            .as_ref()
+            .and_then(AgentIdentityStorage::as_record)
+            .is_some_and(|record| record == rejected.record()),
         CodexAuth::PersonalAccessToken(rejected) => {
             auth.personal_access_token.as_deref() == Some(rejected.access_token())
         }
@@ -1781,9 +1787,7 @@ impl UnauthorizedRecovery {
         self.manager.current_auth_uses_codex_backend()
     }
 
-    pub async fn force_logout_due_to_server_auth_rejection(
-        &mut self,
-    ) -> std::io::Result<bool> {
+    pub async fn force_logout_due_to_server_auth_rejection(&mut self) -> std::io::Result<bool> {
         self.step = UnauthorizedRecoveryStep::Done;
         self.manager
             .force_logout_due_to_server_auth_rejection(self.rejected_auth.as_ref())
@@ -2592,7 +2596,7 @@ impl AuthManager {
         }
         let removal_result = self.logout_stores_matching_rejected_auth(rejected_auth);
         self.clear_external_auth();
-        let cache_changed = self.set_cached_auth(self.load_auth_from_storage().await);
+        let cache_changed = self.reload().await;
         let removed = removal_result?;
         Ok(removed || cache_changed)
     }
@@ -2624,16 +2628,17 @@ impl AuthManager {
                 AuthKeyringBackendKind::default(),
                 auth_dot_json_uses_codex_backend,
             )?;
-            let removed_managed = if self.auth_credentials_store_mode == AuthCredentialsStoreMode::File {
-                false
-            } else {
-                logout_store_if(
-                    &self.codex_home,
-                    self.auth_credentials_store_mode,
-                    self.keyring_backend_kind,
-                    auth_dot_json_uses_codex_backend,
-                )?
-            };
+            let removed_managed =
+                if self.auth_credentials_store_mode == AuthCredentialsStoreMode::File {
+                    false
+                } else {
+                    logout_store_if(
+                        &self.codex_home,
+                        self.auth_credentials_store_mode,
+                        self.keyring_backend_kind,
+                        auth_dot_json_uses_codex_backend,
+                    )?
+                };
             return Ok(removed_ephemeral || removed_file || removed_managed);
         }
         let removed_ephemeral = logout_store_matching_rejected_auth(

@@ -54,12 +54,19 @@ impl SubagentRuntimeIdentity {
 }
 
 impl ContextualUserFragment for SubagentRuntimeIdentity {
-    fn role(&self) -> &'static str { "developer" }
+    fn role(&self) -> &'static str {
+        "developer"
+    }
 
-    fn markers(&self) -> (&'static str, &'static str) { Self::type_markers() }
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
 
     fn type_markers() -> (&'static str, &'static str) {
-        ("<subagent_runtime_identity>", "</subagent_runtime_identity>")
+        (
+            "<subagent_runtime_identity>",
+            "</subagent_runtime_identity>",
+        )
     }
 
     fn body(&self) -> String {
@@ -92,9 +99,11 @@ mod tests {
         };
         let item: ResponseItem = identity.into();
         assert!(SubagentRuntimeIdentity::matches_response_item(&item));
-        assert!(serde_json::to_string(&item)
-            .expect("serialize identity")
-            .contains("runtime_configured_request_identity"));
+        assert!(
+            serde_json::to_string(&item)
+                .expect("serialize identity")
+                .contains("runtime_configured_request_identity")
+        );
 
         let spoof = ResponseItem::Message {
             id: None,
