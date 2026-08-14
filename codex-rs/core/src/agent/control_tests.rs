@@ -1225,6 +1225,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
     let (home, mut config) = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     let _ = config.features.enable(Feature::Sqlite);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 1;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_paginated_thread().await;
     let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
@@ -1289,6 +1290,9 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         })
         .await;
     assert_eq!(removal, RemoveThreadIfSameResult::Removed);
+    harness
+        .control
+        .forget_v2_residency(spawned_agent.thread_id);
     assert_eq!(
         harness.control.get_status(spawned_agent.thread_id).await,
         cold_status
@@ -1453,6 +1457,84 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         .into_iter()
         .find(|entry| *entry == expected);
     assert_eq!(captured, Some(expected));
+
+    let (cleanup_retained, resume_cleanup) = harness
+        .control
+        .pause_retained_unpublished_spawn_cleanup_for_test();
+    let mut cleanup_reservation = Some(
+        harness
+            .control
+            .state
+            .reserve_spawn_slot(/*max_threads*/ None)
+            .expect("reserve unpublished cleanup capacity"),
+    );
+    let mut cleanup_residency_slot = None;
+    let cleanup_error = harness
+        .control
+        .reconcile_unpublished_spawn(
+            &manager_state,
+            spawned_agent.thread_id,
+            &child_thread,
+            &mut cleanup_reservation,
+            &mut cleanup_residency_slot,
+        )
+        .await
+        .expect_err("stale unpublished cleanup should observe the replacement");
+    assert_matches!(cleanup_error.details(), CodexErrorDetails::Fatal(_));
+    assert!(cleanup_reservation.is_none());
+    assert!(cleanup_residency_slot.is_none());
+    assert_eq!(
+        timeout(Duration::from_secs(5), cleanup_retained)
+            .await
+            .expect("replacement cleanup owner should retain capacity")
+            .expect("cleanup owner should report the stale child"),
+        spawned_agent.thread_id
+    );
+
+    reloaded_thread
+        .shutdown_and_wait()
+        .await
+        .expect("replacement should terminate before cleanup resumes");
+    resume_cleanup.notify_one();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if harness
+                .manager
+                .get_thread(spawned_agent.thread_id)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("replacement cleanup should remove the exact replacement");
+    assert!(
+        harness
+            .control
+            .get_agent_metadata(spawned_agent.thread_id)
+            .is_none(),
+        "replacement cleanup should release registry ownership"
+    );
+    assert_eq!(
+        harness.control.v2_resident_count_for_test(),
+        0,
+        "replacement cleanup should release V2 residency"
+    );
+    assert!(
+        harness
+            .control
+            .spawn_capacity_and_path_are_available_for_test(1, &agent_path),
+        "replacement cleanup should release capacity and the agent path"
+    );
+    let residency_slot = harness
+        .control
+        .reserve_v2_residency_slot(&manager_state, &harness.config, None)
+        .await
+        .expect("replacement cleanup should release the V2 capacity slot");
+    drop(residency_slot);
 }
 
 #[tokio::test]

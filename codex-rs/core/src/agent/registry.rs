@@ -390,6 +390,33 @@ impl AgentRegistry {
         }
     }
 
+    pub(crate) fn release_spawned_thread_if_current(
+        &self,
+        thread_id: ThreadId,
+        expected: &AgentMetadata,
+    ) -> bool {
+        let removed_counted_agent = {
+            let mut active_agents = self
+                .active_agents
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let removed_key = active_agents.agent_tree.iter().find_map(|(key, metadata)| {
+                (metadata.agent_id == Some(thread_id)
+                    && Arc::ptr_eq(&metadata.generation, &expected.generation))
+                    .then_some(key)
+            });
+            removed_key
+                .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
+                .is_some_and(|metadata| {
+                    !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
+                })
+        };
+        if removed_counted_agent {
+            self.total_count.fetch_sub(1, Ordering::AcqRel);
+        }
+        removed_counted_agent
+    }
+
     pub(crate) fn register_root_thread(&self, thread_id: ThreadId) {
         let mut active_agents = self
             .active_agents

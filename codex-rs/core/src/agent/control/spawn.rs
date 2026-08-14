@@ -521,7 +521,10 @@ impl AgentControl {
         {
             Ok(reloaded_thread) => {
                 metadata.clear_cold_status();
-                residency_slot.commit(reloaded_thread.thread_id);
+                residency_slot.commit_with_thread(
+                    reloaded_thread.thread_id,
+                    &reloaded_thread.thread,
+                );
                 state.notify_thread_created(reloaded_thread.thread_id);
                 self.restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
                     .await
@@ -864,7 +867,7 @@ impl AgentControl {
         })?;
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot.take() {
-            residency_slot.commit(new_thread.thread_id);
+            residency_slot.commit_with_thread(new_thread.thread_id, &new_thread.thread);
         }
 
         if let Some(SessionSource::SubAgent(
@@ -1111,9 +1114,29 @@ impl AgentControl {
             }
         }
 
+        let registered_metadata = self.state.agent_metadata_for_thread(child_thread_id);
         let removal = state
             .remove_thread_if_same(&child_thread_id, child_thread, || {})
             .await;
+
+        if matches!(
+            removal,
+            RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing
+        ) && self
+            .state
+            .cold_status(child_thread_id, Some(child_thread))
+            .is_none()
+            && let Some(metadata) = registered_metadata.as_ref()
+        {
+            self.state
+                .release_spawned_thread_if_current(child_thread_id, metadata);
+        }
+        if matches!(
+            removal,
+            RemoveThreadIfSameResult::Removed | RemoveThreadIfSameResult::Missing
+        ) {
+            self.forget_v2_residency_if_same(child_thread_id, child_thread);
+        }
 
         if matches!(removal, RemoveThreadIfSameResult::Replaced) {
             tracing::warn!(

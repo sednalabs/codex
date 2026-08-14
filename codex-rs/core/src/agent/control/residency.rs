@@ -12,9 +12,11 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use tracing::warn;
 
 #[derive(Default)]
@@ -25,6 +27,7 @@ pub(super) struct V2Residency {
 #[derive(Default)]
 struct V2ResidencyState {
     residents: VecDeque<ThreadId>,
+    resident_sources: HashMap<ThreadId, Weak<CodexThread>>,
     pending_slots: usize,
 }
 
@@ -35,7 +38,17 @@ pub(super) struct V2ResidencySlot {
 
 impl V2ResidencySlot {
     pub(super) fn commit(mut self, thread_id: ThreadId) {
-        self.residency.commit_slot(thread_id);
+        self.residency.commit_slot(thread_id, None);
+        self.active = false;
+    }
+
+    pub(super) fn commit_with_thread(
+        mut self,
+        thread_id: ThreadId,
+        thread: &Arc<CodexThread>,
+    ) {
+        self.residency
+            .commit_slot(thread_id, Some(Arc::downgrade(thread)));
         self.active = false;
     }
 }
@@ -71,12 +84,21 @@ impl AgentControl {
         if let Ok(thread) = state.get_thread(thread_id).await
             && is_resident_candidate(thread.as_ref())
         {
-            self.v2_residency.touch(thread_id);
+            self.v2_residency.touch_with_thread(thread_id, &thread);
         }
     }
 
     pub(super) fn forget_v2_residency(&self, thread_id: ThreadId) {
         self.v2_residency.remove(thread_id);
+    }
+
+    pub(super) fn forget_v2_residency_if_same(
+        &self,
+        thread_id: ThreadId,
+        expected_thread: &Arc<CodexThread>,
+    ) -> bool {
+        self.v2_residency
+            .remove_if_same(thread_id, expected_thread)
     }
 }
 
@@ -290,28 +312,67 @@ impl V2Residency {
     }
 
     fn touch(&self, thread_id: ThreadId) {
+        self.touch_with_source(thread_id, None);
+    }
+
+    fn touch_with_thread(&self, thread_id: ThreadId, thread: &Arc<CodexThread>) {
+        self.touch_with_source(thread_id, Some(Arc::downgrade(thread)));
+    }
+
+    fn touch_with_source(&self, thread_id: ThreadId, source: Option<Weak<CodexThread>>) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         touch_resident(&mut state.residents, thread_id);
+        if let Some(source) = source {
+            state.resident_sources.insert(thread_id, source);
+        }
     }
 
     fn remove(&self, thread_id: ThreadId) {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
             .residents
             .retain(|resident_thread_id| *resident_thread_id != thread_id);
+        state.resident_sources.remove(&thread_id);
     }
 
-    fn commit_slot(&self, thread_id: ThreadId) {
+    fn remove_if_same(&self, thread_id: ThreadId, expected_thread: &Arc<CodexThread>) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let is_same = state
+            .resident_sources
+            .get(&thread_id)
+            .and_then(Weak::upgrade)
+            .is_some_and(|resident_thread| Arc::ptr_eq(&resident_thread, expected_thread));
+        if !is_same {
+            return false;
+        }
+        state
+            .residents
+            .retain(|resident_thread_id| *resident_thread_id != thread_id);
+        state.resident_sources.remove(&thread_id);
+        true
+    }
+
+    fn commit_slot(&self, thread_id: ThreadId, source: Option<Weak<CodexThread>>) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.pending_slots = state.pending_slots.saturating_sub(1);
         touch_resident(&mut state.residents, thread_id);
+        if let Some(source) = source {
+            state.resident_sources.insert(thread_id, source);
+        } else {
+            state.resident_sources.remove(&thread_id);
+        }
     }
 
     fn release_pending_slot(&self) {
