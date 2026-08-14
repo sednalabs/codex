@@ -3210,6 +3210,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         run_script = metadata_step.get("run") or ""
         self.assertIn('checkout_ref="${CHECKOUT_REF}"', run_script)
         self.assertIn('checkout_ref="${PR_HEAD_SHA}"', run_script)
+        self.assertIn('checkout_sha="${PR_HEAD_SHA}"', run_script)
         self.assertIn('display_ref="${DISPLAY_REF}"', run_script)
         self.assertIn('--requested-lane "${REQUESTED_LANE}"', run_script)
         self.assertIn('--rust-batching "${INPUT_RUST_BATCHING}"', run_script)

@@ -221,6 +221,7 @@ jobs:
             display_ref="${INPUT_REF}"
           elif [[ "${GITHUB_EVENT_NAME}" == 'pull_request' ]]; then
             checkout_ref="${PR_HEAD_SHA}"
+            checkout_sha="${PR_HEAD_SHA}"
             display_ref="${PR_HEAD_REF}"
           fi
 
