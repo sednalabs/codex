@@ -643,6 +643,8 @@ def generate_v2_all(schema_dir: Path) -> None:
     _require_nullable_chatgpt_account_email(out_path)
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
+    _preserve_subagent_activity_protocol_contract(out_path)
+    _preserve_current_protocol_fields(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
 
@@ -755,6 +757,294 @@ def _preserve_thread_source_enum(out_path: Path) -> None:
         return member
 """
     out_path.write_text(source[:class_start] + open_enum + source[class_end:])
+
+
+def _preserve_subagent_activity_protocol_contract(out_path: Path) -> None:
+    """Keep sub-agent activity models aligned with the canonical V2 contract."""
+    source = out_path.read_text()
+    class_start = source.find("class SubAgentActivityKind(Enum):")
+    if class_start == -1:
+        raise RuntimeError("Generated SDK is missing SubAgentActivityKind")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    activity_kind = '''class SubAgentActivityKind(Enum):
+    started = "started"
+    interacted = "interacted"
+    interrupted = "interrupted"'''
+    source = source[:class_start] + activity_kind + source[class_end:]
+
+    terminal_class = '''class SubAgentActivityTerminalState(Enum):
+    errored = "errored"'''
+    terminal_start = source.find("class SubAgentActivityTerminalState(Enum):")
+    if terminal_start == -1:
+        kind_end = source.find("\n\nclass ", class_start)
+        if kind_end == -1:
+            kind_end = len(source)
+        source = source[:kind_end] + "\n\n" + terminal_class + source[kind_end:]
+    else:
+        terminal_end = source.find("\n\nclass ", terminal_start)
+        if terminal_end == -1:
+            terminal_end = len(source)
+        source = source[:terminal_start] + terminal_class + source[terminal_end:]
+
+    source = _insert_generated_class_fields_before(
+        source,
+        "SubAgentActivityThreadItem",
+        '    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]',
+        "model",
+        """    model: Annotated[
+        str | None,
+        Field(description="Effective model selected for the affected child, when known."),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "SubAgentActivityThreadItem",
+        '    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]',
+        "reasoning_effort",
+        """    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Effective reasoning effort selected for the affected child, when known.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "SubAgentActivityThreadItem",
+        '    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]',
+        "terminal_state",
+        """    terminal_state: Annotated[
+        SubAgentActivityTerminalState | None,
+        Field(
+            alias="terminalState",
+            description="Additive terminal detail for the affected child, when available.",
+        ),
+    ] = None
+""",
+    )
+    out_path.write_text(source)
+
+
+def _preserve_current_protocol_fields(out_path: Path) -> None:
+    """Keep protocol fields added after the pinned runtime's generated SDK shape."""
+    source = out_path.read_text()
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentState",
+        "    agent_nickname: str | None = None\n",
+        '    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None\n',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentState",
+        "    agent_role: str | None = None\n",
+        '    agent_role: Annotated[str | None, Field(alias="agentRole")] = None\n',
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "CollabAgentState",
+        "    message: str | None = None\n",
+        "agent_nickname",
+        '    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None\n',
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "CollabAgentState",
+        "    message: str | None = None\n",
+        "agent_role",
+        '    agent_role: Annotated[str | None, Field(alias="agentRole")] = None\n',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "ThreadLoadedListParams",
+        'cursor: Annotated[\n        str | None, Field(description="Opaque pagination cursor returned by a previous call.")\n    ] = None',
+        'cursor: Annotated[\n        str | None,\n        Field(description="Opaque pagination cursor returned as `nextCursor` by a previous call."),\n    ] = None',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "ThreadLoadedListParams",
+        'limit: Annotated[\n        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)\n    ] = None',
+        'limit: Annotated[\n        int | None,\n        Field(\n            description="Optional page size. The legacy unfiltered form preserves its original semantics: omitted `limit` returns every loaded thread and supplied values retain their legacy page-size behavior, including treating zero as one, without a server maximum. With `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow `nextCursor` until it is null to continue a filtered result.",\n            ge=0,\n        ),\n    ] = None',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "ThreadLoadedListResponse",
+        'description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return."',
+        'description="Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and page boundary are server-defined. If it is null, there are no more items to return."',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentToolCallThreadItem",
+        'description="Model requested for the spawned agent, when applicable."',
+        'description="Effective model selected for the spawned agent, when available."',
+    )
+    source = _replace_generated_class_text(
+        source,
+        "CollabAgentToolCallThreadItem",
+        'description="Reasoning effort requested for the spawned agent, when applicable."',
+        'description="Effective reasoning effort selected for the spawned agent, when available."',
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadStatusChangedNotification",
+        "    thread_id: Annotated[",
+        "status_revision",
+        """    status_revision: Annotated[
+        int | None,
+        Field(
+            alias="statusRevision",
+            description="Monotonically increasing revision for this thread's status notifications within the current app-server session. Older servers omit this field.",
+            ge=0,
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "CollabAgentToolCallThreadItem",
+        "    receiver_thread_ids: Annotated[",
+        "requested_model",
+        """    requested_model: Annotated[
+        str | None,
+        Field(
+            alias="requestedModel",
+            description="Caller-provided model override for a spawned agent, when one was supplied.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "CollabAgentToolCallThreadItem",
+        "    receiver_thread_ids: Annotated[",
+        "requested_reasoning_effort",
+        """    requested_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="requestedReasoningEffort",
+            description="Caller-provided reasoning-effort override for a spawned agent, when one was supplied.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadLoadedListParams",
+        "    cursor: Annotated[",
+        "ancestor_thread_id",
+        """    ancestor_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="ancestorThreadId",
+            description="Optional loaded thread-spawn ancestor. When set, returns only currently loaded descendants of that thread.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadLoadedListResponse",
+        "    data: Annotated[",
+        "ancestor_filter_applied",
+        """    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
+""",
+    )
+    source = _insert_generated_class_fields_before(
+        source,
+        "ThreadListResponse",
+        "    backwards_cursor: Annotated[",
+        "ancestor_filter_applied",
+        """    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
+""",
+    )
+    subscription_field = """    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\\n\\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
+"""
+    for response_class in (
+        "ThreadStartResponse",
+        "ThreadForkResponse",
+        "ThreadResumeResponse",
+    ):
+        source = _insert_generated_class_fields_before(
+            source,
+            response_class,
+            "    thread: Thread\n",
+            "thread_subscription_id",
+            subscription_field,
+            insert_after=True,
+        )
+    out_path.write_text(source)
+
+
+def _insert_generated_class_fields_before(
+    source: str,
+    class_name: str,
+    marker: str,
+    field_name: str,
+    fields: str,
+    *,
+    insert_after: bool = False,
+) -> str:
+    """Insert one current protocol field block into a known generated model class."""
+    class_start = source.find(f"class {class_name}(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError(f"Generated SDK is missing {class_name}")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    if f"    {field_name}:" in class_source:
+        return source
+    if marker not in class_source:
+        raise RuntimeError(f"Generated {class_name} is missing expected insertion marker")
+    replacement = f"{marker}{fields}" if insert_after else f"{fields}{marker}"
+    class_source = class_source.replace(marker, replacement, 1)
+    return source[:class_start] + class_source + source[class_end:]
+
+
+def _replace_generated_class_text(
+    source: str,
+    class_name: str,
+    outdated: str,
+    current: str,
+) -> str:
+    """Replace a pinned-runtime description when the schema gives that field newer semantics."""
+    class_start = source.find(f"class {class_name}(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError(f"Generated SDK is missing {class_name}")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    class_source = source[class_start:class_end]
+    if current in class_source or outdated not in class_source:
+        return source
+    class_source = class_source.replace(outdated, current, 1)
+    return source[:class_start] + class_source + source[class_end:]
 
 
 def _notification_specs(schema_dir: Path) -> list[tuple[str, str]]:

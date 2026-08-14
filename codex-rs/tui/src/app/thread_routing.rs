@@ -16,31 +16,37 @@ use codex_app_server_protocol::WarningNotification;
 
 impl App {
     pub(super) async fn shutdown_current_thread(&mut self, app_server: &mut AppServerSession) {
+        let selected_thread_id = self.chat_widget.thread_id();
         let side_thread_ids: Vec<ThreadId> = self.side_threads.keys().copied().collect();
-        for side_thread_id in side_thread_ids {
-            self.discard_side_thread(app_server, side_thread_id).await;
-        }
-        if let Some(thread_id) = self.chat_widget.thread_id() {
-            if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
-                tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
+        let mut main_thread_ids = HashSet::new();
+        main_thread_ids.extend(
+            [
+                selected_thread_id,
+                self.active_thread_id,
+                self.primary_thread_id,
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|thread_id| !side_thread_ids.contains(thread_id)),
+        );
+        for side_thread_id in side_thread_ids.iter().copied() {
+            if self.thread_is_replay_only(side_thread_id) {
+                // Saved side transcripts have no live app-server attachment. Keep shutdown local
+                // so a replay-only selection cannot issue a startup or turn interrupt while the
+                // next session is being created.
+                self.discard_thread_local_state(app_server, side_thread_id)
+                    .await;
+            } else {
+                self.discard_side_thread(app_server, side_thread_id).await;
             }
-            self.abort_thread_event_listener(thread_id);
         }
-    }
-
-    pub(super) fn abort_thread_event_listener(&mut self, thread_id: ThreadId) {
-        if let Some(handle) = self.thread_event_listener_tasks.remove(&thread_id) {
-            handle.abort();
-        }
-    }
-
-    pub(super) fn abort_all_thread_event_listeners(&mut self) {
-        for handle in self
-            .thread_event_listener_tasks
-            .drain()
-            .map(|(_, handle)| handle)
-        {
-            handle.abort();
+        for thread_id in main_thread_ids {
+            if !self.thread_is_replay_only(thread_id) {
+                if let Err(err) = app_server.thread_unsubscribe(thread_id).await {
+                    tracing::warn!("failed to unsubscribe thread {thread_id}: {err}");
+                }
+            }
+            self.discard_thread_local_state(app_server, thread_id).await;
         }
     }
 
@@ -48,6 +54,18 @@ impl App {
         self.thread_event_channels
             .entry(thread_id)
             .or_insert_with(|| ThreadEventChannel::new(THREAD_EVENT_CHANNEL_CAPACITY))
+    }
+
+    /// Buffers an unsolicited thread update without claiming a live app-server attachment.
+    ///
+    /// Notifications and server requests can both arrive before a resume, fork, or primary
+    /// session response. A later real attachment promotes the same channel to `Live`.
+    fn ensure_thread_buffer_channel(&mut self, thread_id: ThreadId) -> &mut ThreadEventChannel {
+        self.thread_event_channels
+            .entry(thread_id)
+            .or_insert_with(|| {
+                ThreadEventChannel::new_notification_buffer(THREAD_EVENT_CHANNEL_CAPACITY)
+            })
     }
 
     pub(super) async fn set_thread_active(&mut self, thread_id: ThreadId, active: bool) {
@@ -142,9 +160,10 @@ impl App {
             format!("Agent ({short_id})")
         };
         if let Some(entry) = self.agent_navigation.get(&thread_id) {
-            let label = format_agent_picker_item_name(
+            let label = format_agent_picker_item_label(
                 entry.agent_nickname.as_deref(),
                 entry.agent_role.as_deref(),
+                entry.agent_path.as_deref(),
                 is_primary,
             );
             if label == "Agent" {
@@ -167,6 +186,190 @@ impl App {
     /// recently began switching.
     pub(super) fn current_displayed_thread_id(&self) -> Option<ThreadId> {
         self.active_thread_id.or(self.chat_widget.thread_id())
+    }
+
+    /// Whether `thread_id` is a saved transcript that is displayed without a live session.
+    ///
+    /// Replay-only threads are readable, but must not receive thread-scoped writes.
+    pub(super) fn thread_is_replay_only(&self, thread_id: ThreadId) -> bool {
+        self.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ReplayOnly)
+    }
+
+    /// Whether local state for this thread was deliberately discarded. A tombstone is stronger
+    /// than an absent channel: late server traffic must not recreate a notification buffer, nor
+    /// may an already-rendered action resolve an old request through the app-server.
+    pub(super) fn thread_is_discarded(&self, thread_id: ThreadId) -> bool {
+        self.discarded_thread_generations.contains_key(&thread_id)
+    }
+
+    pub(crate) fn thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
+        self.thread_lifecycle_generations
+            .get(&thread_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Binds an app-server-issued immutable subscription identity to the
+    /// lifecycle that just completed an authoritative attach. Any prior active
+    /// identity for this thread becomes a tombstone instead of being removed:
+    /// a queued old frame must retain its old routing outcome after same-id
+    /// reattachment.
+    pub(super) fn bind_thread_subscription(
+        &mut self,
+        thread_id: ThreadId,
+        thread_subscription_id: Option<String>,
+    ) {
+        let target = ThreadLifecycleTarget {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+        };
+        self.bind_thread_subscription_to_target(target, thread_subscription_id);
+    }
+
+    /// Binds a subscription to a listener-captured lifecycle target. This is
+    /// used when server-authoritative traffic arrives before a primary session
+    /// is materialized, so the token remains attached to that pending target
+    /// instead of being recomputed against a later same-id lifecycle.
+    pub(super) fn bind_thread_subscription_to_target(
+        &mut self,
+        target: ThreadLifecycleTarget,
+        thread_subscription_id: Option<String>,
+    ) {
+        let Some(thread_subscription_id) = thread_subscription_id else {
+            // Older app servers do not advertise subscription identities. The
+            // ordinary raw-event compatibility path remains available, but it
+            // cannot provide the stronger delayed-frame guarantee.
+            return;
+        };
+        for binding in self.thread_subscription_targets.values_mut() {
+            if let ThreadSubscriptionBinding::Active(previous_target) = binding
+                && previous_target.thread_id == target.thread_id
+                && *previous_target != target
+            {
+                *binding = ThreadSubscriptionBinding::Tombstoned(*previous_target);
+            }
+        }
+        self.thread_subscription_targets.insert(
+            thread_subscription_id,
+            ThreadSubscriptionBinding::Active(target),
+        );
+        self.prune_thread_subscription_tombstones();
+    }
+
+    /// Captures the lifecycle expected by an app-server ingress listener. Before the first
+    /// primary attachment, events are buffered for the generation which that authoritative
+    /// attachment will create; after that, they belong to the current presentation.
+    pub(super) fn thread_lifecycle_target_at_ingress(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadLifecycleTarget {
+        let lifecycle_generation = if self.primary_thread_id.is_none() {
+            self.next_thread_lifecycle_generation(thread_id)
+        } else {
+            self.thread_lifecycle_generation(thread_id)
+        };
+        ThreadLifecycleTarget {
+            thread_id,
+            lifecycle_generation,
+        }
+    }
+
+    /// The generation that a buffered server event expects the next authoritative attachment to
+    /// receive. This is captured before a primary session exists and checked again at delivery.
+    fn next_thread_lifecycle_generation(&self, thread_id: ThreadId) -> u64 {
+        self.thread_lifecycle_generation(thread_id).wrapping_add(1)
+    }
+
+    pub(super) fn thread_accepts_lifecycle_generation(
+        &self,
+        thread_id: ThreadId,
+        generation: u64,
+    ) -> bool {
+        !self.thread_is_discarded(thread_id)
+            && self.thread_lifecycle_generation(thread_id) == generation
+    }
+
+    /// Accepts a listener-captured ingress target. The only future generation allowed is the
+    /// pre-primary buffer target, which is checked again when the primary attachment drains it.
+    pub(super) fn thread_accepts_ingress_target(&self, target: ThreadLifecycleTarget) -> bool {
+        !self.thread_is_discarded(target.thread_id)
+            && (self.thread_lifecycle_generation(target.thread_id) == target.lifecycle_generation
+                || (self.primary_thread_id.is_none()
+                    && self.next_thread_lifecycle_generation(target.thread_id)
+                        == target.lifecycle_generation))
+    }
+
+    /// Marks a session snapshot, resume, or explicit replay read as authoritative positive
+    /// lifecycle evidence. No passive notification or response is allowed to clear a tombstone.
+    pub(super) fn mark_thread_attached(&mut self, thread_id: ThreadId) {
+        let generation = self
+            .thread_lifecycle_generations
+            .entry(thread_id)
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        self.discarded_thread_generations.remove(&thread_id);
+    }
+
+    pub(super) fn mark_thread_discarded(&mut self, thread_id: ThreadId) {
+        let generation = self
+            .thread_lifecycle_generations
+            .entry(thread_id)
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        self.discarded_thread_generations
+            .insert(thread_id, *generation);
+        for binding in self.thread_subscription_targets.values_mut() {
+            if let ThreadSubscriptionBinding::Active(target) = binding
+                && target.thread_id == thread_id
+            {
+                *binding = ThreadSubscriptionBinding::Tombstoned(*target);
+            }
+        }
+    }
+
+    /// Rejects a thread-scoped write after its live session was replaced with a replay-only
+    /// transcript. Keep this at the App-to-app-server boundary so delayed events and slash
+    /// actions cannot bypass the ordinary command-submission guard.
+    pub(super) fn reject_replay_only_thread_write(&mut self, thread_id: ThreadId) -> bool {
+        if !self.thread_is_replay_only(thread_id) {
+            return false;
+        }
+
+        self.chat_widget
+            .add_error_message(crate::chatwidget::REPLAY_ONLY_INPUT_MESSAGE.to_string());
+        true
+    }
+
+    /// Whether a delayed metadata result still belongs to the current live thread lifecycle.
+    ///
+    /// A branch lookup starts outside the app event loop, so its result can arrive after a side
+    /// thread was discarded or after a saved transcript replaced a live channel. Requiring the
+    /// current channel, a live attachment, and a nonterminal picker lifecycle keeps that stale
+    /// result from writing metadata through the app-server boundary. A tracked side must also
+    /// still belong to the active primary lineage.
+    pub(super) fn thread_accepts_live_metadata_update(
+        &self,
+        thread_id: ThreadId,
+        lifecycle_generation: u64,
+    ) -> bool {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            return false;
+        }
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return false;
+        };
+        if !channel.has_live_attachment() || self.agent_navigation.is_terminally_closed(thread_id) {
+            return false;
+        }
+
+        self.side_threads.get(&thread_id).is_none_or(|side| {
+            self.primary_thread_id == Some(side.parent_thread_id)
+                || self
+                    .thread_event_channels
+                    .contains_key(&side.parent_thread_id)
+        })
     }
 
     pub(super) fn ignore_same_thread_resume(
@@ -220,6 +423,22 @@ impl App {
         thread_id: ThreadId,
         request: &ServerRequest,
     ) -> std::io::Result<Option<ThreadInteractiveRequest>> {
+        self.interactive_request_for_thread_request_at_lifecycle(
+            ThreadLifecycleTarget {
+                thread_id,
+                lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+            },
+            request,
+        )
+        .await
+    }
+
+    pub(super) async fn interactive_request_for_thread_request_at_lifecycle(
+        &self,
+        target: ThreadLifecycleTarget,
+        request: &ServerRequest,
+    ) -> std::io::Result<Option<ThreadInteractiveRequest>> {
+        let thread_id = target.thread_id;
         let thread_label = Some(self.thread_label(thread_id));
         Ok(match request {
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
@@ -253,28 +472,32 @@ impl App {
                     network_approval_context,
                     additional_permissions,
                 };
-                Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(
-                    approval,
-                )))
+                Some(ThreadInteractiveRequest::Approval {
+                    target,
+                    request: ApprovalRequest::Exec(approval),
+                })
             }
             ServerRequest::FileChangeRequestApproval { params, .. } => Some(
-                ThreadInteractiveRequest::Approval(ApprovalRequest::ApplyPatch(
-                    ApplyPatchApprovalRequest {
-                    thread_id,
-                    thread_label,
-                    id: params.item_id.clone(),
-                    reason: params.reason.clone(),
-                    cwd: self
-                        .thread_cwd(thread_id)
-                        .await
-                        .unwrap_or_else(|| self.config.cwd.clone()),
-                    changes: self
-                        .thread_file_change_changes(thread_id, &params.turn_id, &params.item_id)
-                        .await
-                        .map(crate::app_server_approval_conversions::file_update_changes_to_display)
-                        .unwrap_or_default(),
-                    },
-                )),
+                ThreadInteractiveRequest::Approval {
+                    target,
+                    request: ApprovalRequest::ApplyPatch(ApplyPatchApprovalRequest {
+                        thread_id,
+                        thread_label,
+                        id: params.item_id.clone(),
+                        reason: params.reason.clone(),
+                        cwd: self
+                            .thread_cwd(thread_id)
+                            .await
+                            .unwrap_or_else(|| self.config.cwd.clone()),
+                        changes: self
+                            .thread_file_change_changes(thread_id, &params.turn_id, &params.item_id)
+                            .await
+                            .map(
+                                crate::app_server_approval_conversions::file_update_changes_to_display,
+                            )
+                            .unwrap_or_default(),
+                    }),
+                },
             ),
             ServerRequest::McpServerElicitationRequest { request_id, params } => {
                 if let Some(params) = AppLinkViewParams::from_url_app_server_request(
@@ -283,7 +506,7 @@ impl App {
                     request_id.clone(),
                     &params.request,
                 ) {
-                    Some(ThreadInteractiveRequest::AppLink(params))
+                    Some(ThreadInteractiveRequest::AppLink { target, params })
                 } else if let Some(request) =
                     McpServerElicitationFormRequest::from_app_server_request(
                         thread_id,
@@ -291,33 +514,38 @@ impl App {
                         params,
                     )
                 {
-                    Some(ThreadInteractiveRequest::McpServerElicitation(request))
+                    Some(ThreadInteractiveRequest::McpServerElicitation { target, request })
                 } else {
                     match &params.request {
                         codex_app_server_protocol::McpServerElicitationRequest::Form {
                             message,
                             ..
-                        } => Some(ThreadInteractiveRequest::Approval(
-                            ApprovalRequest::McpElicitation(McpElicitationApprovalRequest {
-                                thread_id,
-                                thread_label,
-                                server_name: params.server_name.clone(),
-                                request_id: request_id.clone(),
-                                message: message.clone(),
-                            }),
-                        )),
+                        } => Some(ThreadInteractiveRequest::Approval {
+                            target,
+                            request: ApprovalRequest::McpElicitation(
+                                McpElicitationApprovalRequest {
+                                    thread_id,
+                                    thread_label,
+                                    server_name: params.server_name.clone(),
+                                    request_id: request_id.clone(),
+                                    message: message.clone(),
+                                },
+                            ),
+                        }),
                         codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm {
                             ..
                         }
                         | codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => {
-                            self.app_event_tx.resolve_elicitation(
-                                thread_id,
-                                params.server_name.clone(),
-                                request_id.clone(),
-                                codex_app_server_protocol::McpServerElicitationAction::Decline,
-                                /*content*/ None,
-                                /*meta*/ None,
-                            );
+                            self.app_event_tx
+                                .for_thread_lifecycle_generation(target.lifecycle_generation)
+                                .resolve_elicitation(
+                                    thread_id,
+                                    params.server_name.clone(),
+                                    request_id.clone(),
+                                    codex_app_server_protocol::McpServerElicitationAction::Decline,
+                                    /*content*/ None,
+                                    /*meta*/ None,
+                                );
                             None
                         }
                     }
@@ -332,8 +560,9 @@ impl App {
                         format!("failed to localize requested filesystem paths: {err}"),
                     )
                 })?;
-                Some(ThreadInteractiveRequest::Approval(
-                    ApprovalRequest::Permissions(PermissionsApprovalRequest {
+                Some(ThreadInteractiveRequest::Approval {
+                    target,
+                    request: ApprovalRequest::Permissions(PermissionsApprovalRequest {
                         thread_id,
                         thread_label,
                         call_id: params.item_id.clone(),
@@ -341,7 +570,7 @@ impl App {
                         reason: params.reason.clone(),
                         permissions,
                     }),
-                ))
+                })
             }
             _ => None,
         })
@@ -349,16 +578,61 @@ impl App {
 
     pub(super) fn push_thread_interactive_request(&mut self, request: ThreadInteractiveRequest) {
         match request {
-            ThreadInteractiveRequest::AppLink(params) => {
-                self.chat_widget.open_app_link_view(params);
+            ThreadInteractiveRequest::AppLink { target, params } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    target.thread_id,
+                    target.lifecycle_generation,
+                ) {
+                    tracing::debug!(
+                        thread_id = %target.thread_id,
+                        lifecycle_generation = target.lifecycle_generation,
+                        "dropping stale app-link prompt"
+                    );
+                    return;
+                }
+                self.chat_widget.open_app_link_view_with_sender(
+                    params,
+                    self.app_event_tx
+                        .for_thread_lifecycle_generation(target.lifecycle_generation),
+                );
             }
-            ThreadInteractiveRequest::Approval(request) => {
+            ThreadInteractiveRequest::Approval { target, request } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    target.thread_id,
+                    target.lifecycle_generation,
+                ) {
+                    tracing::debug!(
+                        thread_id = %target.thread_id,
+                        lifecycle_generation = target.lifecycle_generation,
+                        "dropping stale approval prompt"
+                    );
+                    return;
+                }
                 self.render_inactive_patch_preview(&request);
-                self.chat_widget.push_approval_request(request);
+                self.chat_widget.push_approval_request_with_sender(
+                    request,
+                    self.app_event_tx
+                        .for_thread_lifecycle_generation(target.lifecycle_generation),
+                );
             }
-            ThreadInteractiveRequest::McpServerElicitation(request) => {
+            ThreadInteractiveRequest::McpServerElicitation { target, request } => {
+                if !self.thread_accepts_lifecycle_generation(
+                    target.thread_id,
+                    target.lifecycle_generation,
+                ) {
+                    tracing::debug!(
+                        thread_id = %target.thread_id,
+                        lifecycle_generation = target.lifecycle_generation,
+                        "dropping stale MCP elicitation prompt"
+                    );
+                    return;
+                }
                 self.chat_widget
-                    .push_mcp_server_elicitation_request(request);
+                    .push_mcp_server_elicitation_request_with_sender(
+                        request,
+                        self.app_event_tx
+                            .for_thread_lifecycle_generation(target.lifecycle_generation),
+                    );
             }
         }
     }
@@ -377,7 +651,9 @@ impl App {
             ));
     }
 
-    pub(super) async fn pending_inactive_thread_requests(&self) -> Vec<(ThreadId, ServerRequest)> {
+    pub(super) async fn pending_inactive_thread_requests(
+        &self,
+    ) -> Vec<(ThreadLifecycleTarget, ServerRequest)> {
         let channels: Vec<(ThreadId, Arc<Mutex<ThreadEventStore>>)> = self
             .thread_event_channels
             .iter()
@@ -391,12 +667,16 @@ impl App {
             }
 
             let store = store.lock().await;
-            requests.extend(
-                store
-                    .pending_replay_requests()
-                    .into_iter()
-                    .map(|request| (thread_id, request)),
-            );
+            requests.extend(store.pending_replay_requests().into_iter().map(|request| {
+                let target = self
+                    .pending_app_server_requests
+                    .thread_target_for_request(&request)
+                    .unwrap_or(ThreadLifecycleTarget {
+                        thread_id,
+                        lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+                    });
+                (target, request)
+            }));
         }
         requests
     }
@@ -409,9 +689,9 @@ impl App {
         }
 
         let requests = self.pending_inactive_thread_requests().await;
-        for (thread_id, request) in requests {
+        for (target, request) in requests {
             if let Some(request) = self
-                .interactive_request_for_thread_request(thread_id, &request)
+                .interactive_request_for_thread_request_at_lifecycle(target, &request)
                 .await?
             {
                 self.push_thread_interactive_request(request);
@@ -440,6 +720,16 @@ impl App {
         thread_id: ThreadId,
         op: AppCommand,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping write for discarded thread lifecycle");
+            return Ok(());
+        }
+        if replay_only_thread_op_targets_thread(&op)
+            && self.reject_replay_only_thread_write(thread_id)
+        {
+            return Ok(());
+        }
+
         crate::session_log::log_outbound_op(&op);
 
         if self
@@ -467,31 +757,45 @@ impl App {
     }
 
     /// Persist prompt text in the local cross-session message history.
-    pub(super) fn append_message_history_entry(&self, thread_id: ThreadId, text: String) {
+    pub(super) async fn append_message_history_entry(
+        &self,
+        thread_id: ThreadId,
+        lifecycle_generation: u64,
+        text: String,
+    ) {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            tracing::debug!(%thread_id, "dropping history write for discarded thread lifecycle");
+            return;
+        }
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
         );
-        tokio::spawn(async move {
-            if let Err(err) =
-                codex_message_history::append_entry(&text, thread_id, &history_config).await
-            {
-                tracing::warn!(
-                    thread_id = %thread_id,
-                    error = %err,
-                    "failed to append to message history"
-                );
-            }
-        });
+        let result = codex_message_history::append_entry(&text, thread_id, &history_config).await;
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            tracing::debug!(%thread_id, "history append completed after its lifecycle was discarded");
+            return;
+        }
+        if let Err(err) = result {
+            tracing::warn!(
+                thread_id = %thread_id,
+                error = %err,
+                "failed to append to message history"
+            );
+        }
     }
 
     /// Fetch one local cross-session message history entry for the requesting thread.
     pub(super) async fn lookup_message_history_entry(
         &mut self,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         offset: usize,
         log_id: u64,
     ) -> Result<()> {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            return Ok(());
+        }
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -509,6 +813,7 @@ impl App {
 
             app_event_tx.send(AppEvent::ThreadHistoryEntryResponse {
                 thread_id,
+                lifecycle_generation,
                 event: HistoryLookupResponse::Entry {
                     offset,
                     log_id,
@@ -523,9 +828,13 @@ impl App {
     pub(super) async fn lookup_message_history_batch(
         &mut self,
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         cursor: codex_message_history::HistoryBatchCursor,
         log_id: u64,
     ) -> Result<()> {
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            return Ok(());
+        }
         let history_config = codex_message_history::HistoryConfig::new(
             self.chat_widget.config_ref().codex_home.clone(),
             &self.chat_widget.config_ref().history,
@@ -563,7 +872,11 @@ impl App {
                 }
             };
 
-            app_event_tx.send(AppEvent::ThreadHistoryEntryResponse { thread_id, event });
+            app_event_tx.send(AppEvent::ThreadHistoryEntryResponse {
+                thread_id,
+                lifecycle_generation,
+                event,
+            });
         });
         Ok(())
     }
@@ -574,6 +887,13 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(
+                %thread_id,
+                "skipping app-server operation for discarded thread lifecycle"
+            );
+            return Ok(false);
+        }
         match op {
             AppCommand::Interrupt => {
                 let mut turn_id = self
@@ -877,6 +1197,10 @@ impl App {
         thread_id: ThreadId,
         op: &AppCommand,
     ) -> Result<bool> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "skipping stale app-server request resolution");
+            return Ok(false);
+        }
         let Some(resolution) = self
             .pending_app_server_requests
             .take_resolution(op)
@@ -957,6 +1281,10 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping notification for discarded thread lifecycle");
+            return Ok(());
+        }
         if matches!(notification, ServerNotification::ThreadSettingsUpdated(_))
             && self.primary_thread_id.is_some()
             && self.primary_thread_id != Some(thread_id)
@@ -971,10 +1299,22 @@ impl App {
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
+        // `ensure_thread_channel` creates a local buffer for unknown notifications. It is not
+        // evidence that the app-server has attached this child live, so capture liveness before
+        // allocating the synthetic channel for a status-first `NotLoaded` transition.
+        let had_live_channel = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(ThreadEventChannel::has_live_attachment);
         let is_turn_started = matches!(notification, ServerNotification::TurnStarted(_));
+        let is_thread_closed = matches!(notification, ServerNotification::ThreadClosed(_));
+        let thread_status_change = match &notification {
+            ServerNotification::ThreadStatusChanged(notification) => Some(notification.clone()),
+            _ => None,
+        };
         let notification_status_change = SideParentStatusChange::for_notification(&notification);
         let (sender, store) = {
-            let channel = self.ensure_thread_channel(thread_id);
+            let channel = self.ensure_thread_buffer_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
         let (notification, pending_status, turn_stopped) = {
@@ -1004,7 +1344,31 @@ impl App {
                 turn_stopped,
             )
         };
-        if is_turn_started {
+        if let Some(notification) = thread_status_change {
+            self.apply_agent_picker_thread_status_change_with_liveness(
+                thread_id,
+                &notification,
+                had_live_channel,
+            );
+        }
+        if is_thread_closed && self.primary_thread_id != Some(thread_id) {
+            // Inactive child channels buffer this notification and never reach the active-thread
+            // shutdown handler. `ThreadClosed` is still terminal liveness, regardless of whether
+            // the retained channel is live or the transcript is replayed later. When picker
+            // metadata has not arrived yet, keep only bounded terminal evidence so delayed
+            // activity cannot materialize a ghost closed child.
+            if self
+                .agent_navigation
+                .accepts_unrevisioned_thread_closed(thread_id)
+            {
+                if self.agent_navigation.get(&thread_id).is_some() {
+                    self.mark_agent_picker_thread_closed(thread_id);
+                } else {
+                    self.agent_navigation
+                        .record_unmatched_thread_closed(thread_id);
+                }
+            }
+        } else if is_turn_started {
             self.agent_navigation.mark_running(thread_id);
         } else if turn_stopped {
             self.agent_navigation.mark_stopped(thread_id);
@@ -1039,7 +1403,8 @@ impl App {
     /// This intentionally avoids app-server reads on the active-thread rendering path. During large
     /// fan-outs the app-server can be saturated with spawn work, and blocking here would freeze the
     /// TUI event loop. Metadata from `ThreadStarted` or explicit picker refreshes still fills in
-    /// names and roles later; until then, rendering falls back to the thread id.
+    /// names and roles later; V1 terminal spawn metadata is also enough to populate the cache
+    /// before the child's `ThreadStarted` notification arrives.
     pub(super) fn cache_collab_receiver_threads_for_notification(
         &mut self,
         notification: &ServerNotification,
@@ -1071,14 +1436,24 @@ impl App {
                 continue;
             };
 
-            if self.agent_navigation.get(&thread_id).is_some() {
-                continue;
-            }
+            let (agent_nickname, agent_role, model, reasoning_effort) =
+                collab_receiver_identity(notification, receiver_thread_id);
 
             self.upsert_agent_picker_thread(
-                thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                thread_id,
+                agent_nickname,
+                agent_role,
                 /*is_closed*/ false,
             );
+            self.agent_navigation.update_identity(
+                thread_id,
+                model,
+                reasoning_effort,
+                /*model_provider*/ None,
+                /*task_name*/ None,
+            );
+            self.sync_agent_picker_identity(thread_id);
+            self.sync_active_agent_label();
         }
     }
 
@@ -1158,14 +1533,37 @@ impl App {
         thread_id: ThreadId,
         request: ServerRequest,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(%thread_id, "dropping request for discarded thread lifecycle");
+            return Ok(());
+        }
+        let target = self
+            .pending_app_server_requests
+            .thread_target_for_request(&request)
+            .unwrap_or(ThreadLifecycleTarget {
+                thread_id,
+                lifecycle_generation: self.thread_lifecycle_generation(thread_id),
+            });
+        if !self.thread_accepts_lifecycle_generation(target.thread_id, target.lifecycle_generation)
+        {
+            tracing::debug!(
+                thread_id = %target.thread_id,
+                lifecycle_generation = target.lifecycle_generation,
+                "dropping request from a stale thread lifecycle"
+            );
+            return Ok(());
+        }
         let inactive_interactive_request = if self.active_thread_id != Some(thread_id) {
-            self.interactive_request_for_thread_request(thread_id, &request)
+            self.interactive_request_for_thread_request_at_lifecycle(target, &request)
                 .await?
         } else {
             None
         };
         let (sender, store) = {
-            let channel = self.ensure_thread_channel(thread_id);
+            // Requests can arrive before a corresponding live attach just like notifications.
+            // Preserve the request for rendering/replay, but do not let its local buffer make a
+            // later `NotLoaded` status look live and reopen a saved child for writes.
+            let channel = self.ensure_thread_buffer_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
 
@@ -1207,6 +1605,13 @@ impl App {
         thread_id: ThreadId,
         event: HistoryLookupResponse,
     ) -> Result<()> {
+        if self.thread_is_discarded(thread_id) {
+            tracing::debug!(
+                %thread_id,
+                "dropping history response for discarded thread lifecycle"
+            );
+            return Ok(());
+        }
         let (sender, store) = {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
@@ -1271,7 +1676,28 @@ impl App {
         turns: Vec<Turn>,
         presentation: ThreadAttachPresentation,
     ) -> Result<()> {
+        self.enqueue_primary_thread_session_with_presentation_and_server(
+            /*app_server*/ None,
+            /*thread_subscription_id*/ None,
+            session,
+            turns,
+            presentation,
+        )
+        .await
+    }
+
+    pub(super) async fn enqueue_primary_thread_session_with_presentation_and_server(
+        &mut self,
+        app_server: Option<&AppServerSession>,
+        thread_subscription_id: Option<String>,
+        session: ThreadSessionState,
+        turns: Vec<Turn>,
+        presentation: ThreadAttachPresentation,
+    ) -> Result<()> {
         let thread_id = session.thread_id;
+        self.mark_thread_attached(thread_id);
+        self.chat_widget
+            .set_thread_lifecycle_generation(self.thread_lifecycle_generation(thread_id));
         self.primary_thread_id = Some(thread_id);
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
@@ -1279,9 +1705,14 @@ impl App {
             /*is_closed*/ false,
         );
         let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_live();
         {
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
+        }
+        if let Some(app_server) = app_server {
+            self.bind_thread_subscription_and_flush(app_server, thread_id, thread_subscription_id)
+                .await;
         }
         self.activate_thread_channel(thread_id).await;
         self.chat_widget
@@ -1309,7 +1740,39 @@ impl App {
             self.chat_widget.emit_prompt_edit_thread_event();
         }
         let pending = std::mem::take(&mut self.pending_primary_events);
+        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
+        let mut matching_events = Vec::new();
+        let mut stale_thread_ids = HashSet::new();
         for pending_event in pending {
+            if pending_event.thread_id == thread_id
+                && pending_event.lifecycle_generation == lifecycle_generation
+            {
+                matching_events.push(pending_event.event);
+            } else {
+                stale_thread_ids.insert(pending_event.thread_id);
+            }
+        }
+        for stale_thread_id in stale_thread_ids {
+            if stale_thread_id == thread_id {
+                // A same-id mismatch is necessarily an earlier attachment. Its request ledger is
+                // still scoped by id, so do not discard the just-attached lifecycle while draining
+                // it; production resets clear and reject this state before reattachment.
+                tracing::warn!(
+                    %thread_id,
+                    "dropping a mismatched buffered primary event for the newly attached lifecycle"
+                );
+                continue;
+            }
+            if let Some(app_server) = app_server {
+                self.discard_thread_local_state(app_server, stale_thread_id)
+                    .await;
+            } else {
+                self.mark_thread_discarded(stale_thread_id);
+                self.pending_app_server_requests
+                    .clear_thread(stale_thread_id);
+            }
+        }
+        for pending_event in matching_events {
             match pending_event {
                 ThreadBufferedEvent::Notification(notification) => {
                     self.enqueue_thread_notification(thread_id, notification)
@@ -1335,27 +1798,47 @@ impl App {
 
     pub(super) async fn enqueue_primary_thread_notification(
         &mut self,
+        thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
-        if let Some(thread_id) = self.primary_thread_id {
+        if let Some(primary_thread_id) = self.primary_thread_id {
+            if primary_thread_id != thread_id {
+                return self
+                    .enqueue_thread_notification(thread_id, notification)
+                    .await;
+            }
             return self
-                .enqueue_thread_notification(thread_id, notification)
+                .enqueue_thread_notification(primary_thread_id, notification)
                 .await;
         }
         self.pending_primary_events
-            .push_back(ThreadBufferedEvent::Notification(notification));
+            .push_back(PendingPrimaryThreadEvent {
+                thread_id,
+                lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
+                event: ThreadBufferedEvent::Notification(notification),
+            });
         Ok(())
     }
 
     pub(super) async fn enqueue_primary_thread_request(
         &mut self,
+        thread_id: ThreadId,
         request: ServerRequest,
     ) -> Result<()> {
-        if let Some(thread_id) = self.primary_thread_id {
-            return self.enqueue_thread_request(thread_id, request).await;
+        if let Some(primary_thread_id) = self.primary_thread_id {
+            if primary_thread_id != thread_id {
+                return self.enqueue_thread_request(thread_id, request).await;
+            }
+            return self
+                .enqueue_thread_request(primary_thread_id, request)
+                .await;
         }
         self.pending_primary_events
-            .push_back(ThreadBufferedEvent::Request(request));
+            .push_back(PendingPrimaryThreadEvent {
+                thread_id,
+                lifecycle_generation: self.next_thread_lifecycle_generation(thread_id),
+                event: ThreadBufferedEvent::Request(request),
+            });
         Ok(())
     }
 
@@ -1375,7 +1858,7 @@ impl App {
             .await
         {
             Ok(started) => {
-                self.apply_refreshed_snapshot_thread(thread_id, started, snapshot)
+                self.apply_refreshed_snapshot_thread(Some(app_server), thread_id, started, snapshot)
                     .await
             }
             Err(err) => {
@@ -1403,18 +1886,30 @@ impl App {
 
     pub(super) async fn apply_refreshed_snapshot_thread(
         &mut self,
+        app_server: Option<&AppServerSession>,
         thread_id: ThreadId,
         started: AppServerStartedThread,
         snapshot: &mut ThreadEventSnapshot,
     ) {
+        self.mark_thread_attached(thread_id);
         if started.blocks_direct_input {
             self.agent_navigation.mark_parent_owned(thread_id);
         }
-        let AppServerStartedThread { session, turns, .. } = started;
-        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+        let AppServerStartedThread {
+            session,
+            turns,
+            thread_subscription_id,
+            ..
+        } = started;
+        if let Some(channel) = self.thread_event_channels.get_mut(&thread_id) {
+            channel.mark_live();
             let mut store = channel.store.lock().await;
             store.set_session(session.clone(), turns.clone());
             store.rebase_buffer_after_session_refresh();
+        }
+        if let Some(app_server) = app_server {
+            self.bind_thread_subscription_and_flush(app_server, thread_id, thread_subscription_id)
+                .await;
         }
         snapshot.session = Some(session);
         snapshot.turns = turns;
@@ -1469,6 +1964,7 @@ impl App {
     /// 1. the event is `thread/closed`;
     /// 2. the active thread differs from the primary thread;
     /// 3. the active thread is not the pending shutdown-exit thread.
+    /// 4. the revisionless close does not conflict with a newer recovered lifecycle.
     pub(super) fn active_non_primary_shutdown_target(
         &self,
         notification: &ServerNotification,
@@ -1479,6 +1975,12 @@ impl App {
         let active_thread_id = self.active_thread_id?;
         let primary_thread_id = self.primary_thread_id?;
         if self.pending_shutdown_exit_thread_id == Some(active_thread_id) {
+            return None;
+        }
+        if !self
+            .agent_navigation
+            .accepts_unrevisioned_thread_closed(active_thread_id)
+        {
             return None;
         }
         (active_thread_id != primary_thread_id).then_some((active_thread_id, primary_thread_id))
@@ -1498,6 +2000,9 @@ impl App {
         let suppress_replay_notices =
             replay_filter::snapshot_has_pending_interactive_request(&snapshot);
         if let Some(session) = snapshot.session {
+            self.chat_widget.set_thread_lifecycle_generation(
+                self.thread_lifecycle_generation(session.thread_id),
+            );
             if session.reasoning_effort != Some(ReasoningEffortConfig::Ultra) {
                 self.chat_widget
                     .set_plan_mode_reasoning_effort(self.config.plan_mode_reasoning_effort.clone());
@@ -1666,7 +2171,8 @@ impl App {
         {
             self.mark_agent_picker_thread_closed(closed_thread_id);
             if self.side_threads.contains_key(&closed_thread_id) {
-                self.discard_closed_side_thread(closed_thread_id).await;
+                self.discard_closed_side_thread(app_server, closed_thread_id)
+                    .await;
                 self.select_agent_thread(tui, app_server, primary_thread_id)
                     .await?;
             } else {
@@ -1700,6 +2206,16 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Global refreshes do not act on the selected thread, so they remain available while replaying a
+/// saved transcript. Every other app-server command either targets the thread or resolves one of
+/// its pending requests and must stay blocked.
+fn replay_only_thread_op_targets_thread(op: &AppCommand) -> bool {
+    !matches!(
+        op,
+        AppCommand::ListSkills { .. } | AppCommand::ReloadUserConfig
+    )
 }
 
 #[cfg(test)]

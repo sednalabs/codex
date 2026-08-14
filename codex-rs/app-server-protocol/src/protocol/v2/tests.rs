@@ -37,6 +37,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandbox
 use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialPath;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
+use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
@@ -119,6 +120,128 @@ fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagen
             ApprovalsReviewer::AutoReview
         };
         assert_eq!(expected, reviewer);
+    }
+}
+
+#[test]
+fn collab_agent_state_uses_camel_case_identity_and_accepts_legacy_aliases() {
+    let state = CollabAgentState {
+        status: CollabAgentStatus::Running,
+        message: None,
+        agent_nickname: Some("Scout".to_string()),
+        agent_role: Some("explorer".to_string()),
+    };
+    let value = serde_json::to_value(&state).expect("serialize collab agent state");
+
+    assert_eq!(
+        value,
+        json!({
+            "status": "running",
+            "message": null,
+            "agentNickname": "Scout",
+            "agentRole": "explorer",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<CollabAgentState>(value)
+            .expect("deserialize canonical collab agent state"),
+        state
+    );
+    assert_eq!(
+        serde_json::from_value::<CollabAgentState>(json!({
+            "status": "running",
+            "message": null,
+            "agent_nickname": "Scout",
+            "agent_role": "explorer",
+        }))
+        .expect("deserialize legacy collab agent state"),
+        state
+    );
+}
+
+#[test]
+fn v1_receiver_identity_materializes_pending_state_without_losing_terminal_details() {
+    let sender_thread_id = codex_protocol::ThreadId::default();
+    let receiver_thread_id = codex_protocol::ThreadId::default();
+    let cases = [
+        (
+            "wait start",
+            CoreCollabAgentTool::Wait,
+            CollabAgentTool::Wait,
+            CoreCollabAgentToolCallStatus::InProgress,
+            None,
+            CollabAgentState {
+                status: CollabAgentStatus::PendingInit,
+                message: None,
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            },
+        ),
+        (
+            "resume start",
+            CoreCollabAgentTool::ResumeAgent,
+            CollabAgentTool::ResumeAgent,
+            CoreCollabAgentToolCallStatus::InProgress,
+            None,
+            CollabAgentState {
+                status: CollabAgentStatus::PendingInit,
+                message: None,
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            },
+        ),
+        (
+            "reported terminal state",
+            CoreCollabAgentTool::Wait,
+            CollabAgentTool::Wait,
+            CoreCollabAgentToolCallStatus::Completed,
+            Some(CoreAgentStatus::Completed(Some("reviewed".to_string()))),
+            CollabAgentState {
+                status: CollabAgentStatus::Completed,
+                message: Some("reviewed".to_string()),
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            },
+        ),
+    ];
+
+    for (case, core_tool, tool, status, reported_state, expected_state) in cases {
+        let agents_states = reported_state
+            .map(|reported_state| [(receiver_thread_id, reported_state)].into_iter().collect())
+            .unwrap_or_default();
+        let item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+            id: format!("collab-{case}"),
+            tool: core_tool,
+            status,
+            sender_thread_id,
+            receiver_thread_ids: vec![receiver_thread_id],
+            receiver_agents: vec![CollabAgentRef {
+                thread_id: receiver_thread_id,
+                agent_nickname: Some("Euclid".to_string()),
+                agent_role: Some("reviewer".to_string()),
+            }],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            agents_states,
+        });
+
+        let ThreadItem::CollabAgentToolCall {
+            tool: actual_tool,
+            agents_states,
+            ..
+        } = ThreadItem::from(item)
+        else {
+            panic!("expected converted collab item for {case}");
+        };
+        assert_eq!(actual_tool, tool, "{case}");
+        assert_eq!(
+            agents_states.get(&receiver_thread_id.to_string()),
+            Some(&expected_state),
+            "{case}"
+        );
     }
 }
 
@@ -208,6 +331,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             name: None,
             turns: Vec::new(),
         },
+        thread_subscription_id: None,
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -231,6 +355,22 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 
     let value = serde_json::to_value(&response).expect("serialize thread resume response");
     assert_eq!(value["thread"]["isPinned"], json!(true));
+    assert!(
+        value.get("threadSubscriptionId").is_none(),
+        "the optional identity must not change legacy response JSON"
+    );
+    let legacy_response = serde_json::from_value::<ThreadResumeResponse>(value.clone())
+        .expect("legacy response should deserialize without an identity");
+    assert_eq!(legacy_response.thread_subscription_id, None);
+
+    let mut response_with_identity = response.clone();
+    response_with_identity.thread_subscription_id = Some("subscription-123".to_string());
+    assert_eq!(
+        serde_json::to_value(response_with_identity)
+            .expect("serialize identity-bearing thread resume response")
+            .get("threadSubscriptionId"),
+        Some(&json!("subscription-123"))
+    );
 
     let mut legacy_thread = value["thread"].clone();
     legacy_thread
@@ -415,6 +555,8 @@ fn collab_agent_state_maps_interrupted_status() {
         CollabAgentState {
             status: CollabAgentStatus::Interrupted,
             message: None,
+            agent_nickname: None,
+            agent_role: None,
         }
     );
 }
@@ -2870,10 +3012,16 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         status: CoreCollabAgentToolCallStatus::Completed,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
-        receiver_agents: Vec::new(),
+        receiver_agents: vec![CollabAgentRef {
+            thread_id: receiver_thread_id,
+            agent_nickname: Some("Scout".to_string()),
+            agent_role: Some("explorer".to_string()),
+        }],
         prompt: Some("continue".to_string()),
         model: None,
         reasoning_effort: None,
+        requested_model: None,
+        requested_reasoning_effort: None,
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
@@ -2890,11 +3038,15 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             prompt: Some("continue".to_string()),
             model: None,
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: [(
                 receiver_thread_id.to_string(),
                 CollabAgentState {
                     status: CollabAgentStatus::Completed,
                     message: None,
+                    agent_nickname: Some("Scout".to_string()),
+                    agent_role: Some("explorer".to_string()),
                 },
             )]
             .into_iter()
@@ -2902,9 +3054,45 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         }
     );
 
+    let completed_spawn = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-1".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::Completed,
+        sender_thread_id,
+        receiver_thread_ids: vec![receiver_thread_id],
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect the repository".to_string()),
+        model: Some("gpt-effective-model".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: Some("gpt-requested-model".to_string()),
+        requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        agents_states: Default::default(),
+    });
+    let ThreadItem::CollabAgentToolCall {
+        model,
+        reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = ThreadItem::from(completed_spawn)
+    else {
+        panic!("expected converted collab spawn");
+    };
+    assert_eq!(model.as_deref(), Some("gpt-effective-model"));
+    assert_eq!(
+        reasoning_effort,
+        Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+    );
+    assert_eq!(requested_model.as_deref(), Some("gpt-requested-model"));
+    assert_eq!(
+        requested_reasoning_effort,
+        Some(codex_protocol::openai_models::ReasoningEffort::High)
+    );
+
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
         id: "activity-1".to_string(),
         kind: CoreSubAgentActivityKind::Interrupted,
+        terminal_state: None,
         agent_thread_id: receiver_thread_id,
         agent_path: codex_protocol::AgentPath::root()
             .join("worker")
@@ -2918,6 +3106,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         ThreadItem::SubAgentActivity {
             id: "activity-1".to_string(),
             kind: SubAgentActivityKind::Interrupted,
+            terminal_state: None,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
             model: Some("gpt-5.4".to_string()),

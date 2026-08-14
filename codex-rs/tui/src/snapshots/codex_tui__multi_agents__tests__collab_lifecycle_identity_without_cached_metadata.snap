@@ -1,0 +1,5 @@
+---
+source: tui/src/multi_agents.rs
+expression: cell_to_text(&cell)
+---
+• Waiting on · primitive: wait_agent · Euclid [reviewer]

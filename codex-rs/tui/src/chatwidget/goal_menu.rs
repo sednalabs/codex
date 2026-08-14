@@ -12,6 +12,7 @@ impl ChatWidget {
 
     pub(crate) fn show_goal_edit_prompt(&mut self, thread_id: ThreadId, goal: AppThreadGoal) {
         let tx = self.app_event_tx.clone();
+        let lifecycle_generation = self.thread_lifecycle_generation;
         let status = edited_goal_status(goal.status);
         let token_budget = goal.token_budget;
         let view = CustomPromptView::new(
@@ -22,6 +23,7 @@ impl ChatWidget {
             Box::new(move |objective: String| {
                 tx.send(AppEvent::SetThreadGoalDraft {
                     thread_id,
+                    lifecycle_generation,
                     draft: goal_files::GoalDraft {
                         objective,
                         ..Default::default()
@@ -41,9 +43,11 @@ impl ChatWidget {
         thread_id: ThreadId,
         objective: String,
     ) {
+        let lifecycle_generation = self.thread_lifecycle_generation;
         let resume_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::SetThreadGoalStatus {
                 thread_id,
+                lifecycle_generation,
                 status: AppThreadGoalStatus::Active,
             });
         })];

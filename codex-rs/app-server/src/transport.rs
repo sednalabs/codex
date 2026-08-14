@@ -2,6 +2,7 @@ use crate::message_processor::ConnectionSessionState;
 use crate::outgoing_message::OutgoingEnvelope;
 use codex_app_server_protocol::ExperimentalApi;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_transport::ThreadScopedServerRequest;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -104,19 +105,26 @@ fn should_skip_notification_for_connection(
         warn!("failed to read outbound opted-out notifications");
         return false;
     };
-    match message {
-        OutgoingMessage::AppServerNotification(envelope) => {
-            if envelope.notification.experimental_reason().is_some()
+    let notification = match message {
+        OutgoingMessage::AppServerNotification(envelope) => Some(&envelope.notification),
+        OutgoingMessage::ThreadScopedNotification(notification) => {
+            Some(&notification.envelope.notification)
+        }
+        _ => None,
+    };
+    match notification {
+        Some(notification) => {
+            if notification.experimental_reason().is_some()
                 && !connection_state
                     .experimental_api_enabled
                     .load(Ordering::Acquire)
             {
                 return true;
             }
-            let method = envelope.notification.to_string();
+            let method = notification.to_string();
             opted_out_notification_methods.contains(method.as_str())
         }
-        _ => false,
+        None => false,
     }
 }
 
@@ -189,6 +197,22 @@ fn filter_outgoing_message_for_connection(
             OutgoingMessage::Request(ServerRequest::CommandExecutionRequestApproval {
                 request_id,
                 params,
+            })
+        }
+        OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+            request:
+                ServerRequest::CommandExecutionRequestApproval {
+                    request_id,
+                    mut params,
+                },
+            thread_subscription_id,
+        }) => {
+            if !experimental_api_enabled {
+                params.strip_experimental_fields();
+            }
+            OutgoingMessage::ThreadScopedRequest(ThreadScopedServerRequest {
+                request: ServerRequest::CommandExecutionRequestApproval { request_id, params },
+                thread_subscription_id,
             })
         }
         _ => message,

@@ -57,6 +57,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
 use crate::protocol::SubAgentActivityEvent;
+use crate::protocol::SubAgentActivityTerminalState;
 use crate::protocol::UserMessageEvent;
 use crate::protocol::ViewImageToolCallEvent;
 use crate::protocol::WebSearchBeginEvent;
@@ -257,8 +258,20 @@ impl CollabAgentToolCallItem {
                     started_at_ms,
                     sender_thread_id: self.sender_thread_id,
                     prompt: self.prompt.clone().unwrap_or_default(),
-                    model: self.model.clone().unwrap_or_default(),
-                    reasoning_effort: self.reasoning_effort.clone().unwrap_or_default(),
+                    // Legacy spawn-begin records caller input, not the identity eventually
+                    // selected for the child. Before requested identity fields existed, the
+                    // in-progress item's model and effort held that caller input, so retain
+                    // them only as a backwards-compatible fallback for persisted history.
+                    model: self
+                        .requested_model
+                        .clone()
+                        .or_else(|| self.model.clone())
+                        .unwrap_or_default(),
+                    reasoning_effort: self
+                        .requested_reasoning_effort
+                        .clone()
+                        .or_else(|| self.reasoning_effort.clone())
+                        .unwrap_or_default(),
                 },
             )),
             CollabAgentTool::SendInput => receiver_thread_id.map(|receiver_thread_id| {
@@ -412,7 +425,15 @@ impl SubAgentActivityItem {
             agent_path: self.agent_path.clone(),
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
-            kind: self.kind,
+            // Legacy consumers only understand the original three activity
+            // kinds. Keep the extension out of the legacy serialized shape
+            // and project a terminal failure onto its historical interruption.
+            kind: match self.terminal_state {
+                Some(SubAgentActivityTerminalState::Errored) => {
+                    crate::protocol::SubAgentActivityKind::Interrupted
+                }
+                None => self.kind,
+            },
         })
     }
 }
@@ -636,5 +657,108 @@ impl HasLegacyEvent for EventMsg {
             }
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::openai_models::ReasoningEffort;
+    use crate::protocol::SubAgentActivityKind;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_sub_agent_activity_kind_remains_exhaustively_matchable_and_serialized() {
+        fn legacy_label(kind: SubAgentActivityKind) -> &'static str {
+            match kind {
+                SubAgentActivityKind::Started => "started",
+                SubAgentActivityKind::Interacted => "interacted",
+                SubAgentActivityKind::Interrupted => "interrupted",
+            }
+        }
+
+        assert_eq!(legacy_label(SubAgentActivityKind::Interrupted), "interrupted");
+        assert_eq!(
+            serde_json::to_value(SubAgentActivityKind::Interrupted)
+                .expect("legacy activity kind should serialize"),
+            json!("interrupted")
+        );
+    }
+
+    #[test]
+    fn legacy_spawn_begin_keeps_requested_identity_separate_from_effective_identity() {
+        let item = CollabAgentToolCallItem {
+            id: "spawn-1".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the repository".to_string()),
+            model: Some("gpt-effective".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            requested_model: Some("gpt-requested".to_string()),
+            requested_reasoning_effort: Some(ReasoningEffort::High),
+            agents_states: Default::default(),
+        };
+
+        let Some(EventMsg::CollabAgentSpawnBegin(begin)) =
+            item.as_legacy_begin_event(/*started_at_ms*/ 123)
+        else {
+            panic!("spawn item should emit a legacy begin event");
+        };
+        assert_eq!(begin.model, "gpt-requested");
+        assert_eq!(begin.reasoning_effort, ReasoningEffort::High);
+    }
+
+    #[test]
+    fn legacy_spawn_begin_recovers_request_from_serialized_pre_request_fields_item() {
+        let item = CollabAgentToolCallItem {
+            id: "spawn-1".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: ThreadId::new(),
+            receiver_thread_ids: Vec::new(),
+            receiver_agents: Vec::new(),
+            prompt: Some("inspect the repository".to_string()),
+            model: Some("gpt-requested-before-separation".to_string()),
+            reasoning_effort: Some(ReasoningEffort::Medium),
+            requested_model: None,
+            requested_reasoning_effort: None,
+            agents_states: Default::default(),
+        };
+
+        let mut serialized = serde_json::to_value(ItemStartedEvent {
+            thread_id: ThreadId::new(),
+            turn_id: "turn-1".to_string(),
+            item: TurnItem::CollabAgentToolCall(item),
+            started_at_ms: 123,
+        })
+        .expect("serialize pre-request-fields ItemStarted event");
+        let serialized_item = serialized
+            .get_mut("item")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("serialized ItemStarted event should contain an item object");
+        serialized_item.remove("requested_model");
+        serialized_item.remove("requested_reasoning_effort");
+
+        let event = serde_json::from_value::<ItemStartedEvent>(serialized)
+            .expect("deserialize pre-request-fields ItemStarted event");
+        let TurnItem::CollabAgentToolCall(item) = &event.item else {
+            panic!("deserialized event should retain the collab spawn item");
+        };
+        assert_eq!(item.requested_model, None);
+        assert_eq!(item.requested_reasoning_effort, None);
+
+        let mut legacy_events = event.as_legacy_events(/*show_raw_agent_reasoning*/ false);
+        let Some(EventMsg::CollabAgentSpawnBegin(begin)) = legacy_events.pop() else {
+            panic!("spawn item should emit a legacy begin event");
+        };
+        assert!(legacy_events.is_empty());
+        assert_eq!(
+            begin.model,
+            "gpt-requested-before-separation"
+        );
+        assert_eq!(begin.reasoning_effort, ReasoningEffort::Medium);
     }
 }

@@ -169,6 +169,11 @@ pub struct MockExperimentalMethodResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartResponse {
     pub thread: Thread,
+    /// Immutable identity for this connection's thread-event subscription.
+    /// Optional for compatibility with older app-server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_subscription_id: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
@@ -410,6 +415,11 @@ pub struct ThreadResumeParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadResumeResponse {
     pub thread: Thread,
+    /// Immutable identity for this connection's thread-event subscription.
+    /// Optional for compatibility with older app-server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_subscription_id: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
@@ -610,6 +620,11 @@ pub struct ThreadForkParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadForkResponse {
     pub thread: Thread,
+    /// Immutable identity for this connection's thread-event subscription.
+    /// Optional for compatibility with older app-server versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_subscription_id: Option<String>,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
@@ -1244,6 +1259,12 @@ pub enum SortDirection {
 #[ts(export_to = "v2/")]
 pub struct ThreadListResponse {
     pub data: Vec<Thread>,
+    /// True only when the server applied the requested `ancestorThreadId` filter.
+    ///
+    /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
+    pub ancestor_filter_applied: bool,
     /// Opaque cursor to pass to the next call to continue after the last item.
     /// if None, there are no more items to return.
     pub next_cursor: Option<String>,
@@ -1333,12 +1354,20 @@ pub struct ThreadSearchOccurrencesResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadLoadedListParams {
-    /// Opaque pagination cursor returned by a previous call.
+    /// Opaque pagination cursor returned as `nextCursor` by a previous call.
     #[ts(optional = nullable)]
     pub cursor: Option<String>,
-    /// Optional page size; defaults to no limit.
+    /// Optional page size. The legacy unfiltered form preserves its original semantics: omitted
+    /// `limit` returns every loaded thread and supplied values retain their legacy page-size
+    /// behavior, including treating zero as one, without a server maximum. With
+    /// `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow
+    /// `nextCursor` until it is null to continue a filtered result.
     #[ts(optional = nullable)]
     pub limit: Option<u32>,
+    /// Optional loaded thread-spawn ancestor. When set, returns only currently loaded
+    /// descendants of that thread.
+    #[ts(optional = nullable)]
+    pub ancestor_thread_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1347,8 +1376,14 @@ pub struct ThreadLoadedListParams {
 pub struct ThreadLoadedListResponse {
     /// Thread ids for sessions currently loaded in memory.
     pub data: Vec<String>,
-    /// Opaque cursor to pass to the next call to continue after the last item.
-    /// if None, there are no more items to return.
+    /// True only when the server applied the requested `ancestorThreadId` filter.
+    ///
+    /// Older servers omit this field. Clients must treat an omitted acknowledgement as false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional)]
+    pub ancestor_filter_applied: bool,
+    /// Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and
+    /// page boundary are server-defined. If it is null, there are no more items to return.
     pub next_cursor: Option<String>,
 }
 
@@ -1643,6 +1678,11 @@ pub struct ThreadStartedNotification {
 pub struct ThreadStatusChangedNotification {
     pub thread_id: String,
     pub status: ThreadStatus,
+    /// Monotonically increasing revision for this thread's status notifications within the
+    /// current app-server session. Older servers omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub status_revision: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

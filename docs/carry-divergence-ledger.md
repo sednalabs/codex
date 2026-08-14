@@ -1981,6 +1981,26 @@ decisions.
   serializes `null` rather than manufacturing a `medium` value. Wait completion
   derives pending target ids from refreshed status snapshots, not the original
   requested-id list.
+- A successful V1 or V2 spawn treats the returned `LiveAgent` effective model
+  and effort as authoritative if its immediate post-spawn thread-config lookup
+  is unavailable. A request is never repurposed as effective identity, and an
+  absent returned effort remains `null` rather than being defaulted. The V1
+  snapshot-loss regression proves the absent-effort case; the V2
+  terminal-babysitter regression suppresses its lookup and retains the
+  role-resolved Luna/low identity.
+- The picker keeps loaded descendants visible while its unified `remove`
+  boundary records a bounded terminal activity history for both terminal
+  `thread/read` liveness pruning and explicit side-thread discard. It blocks
+  every observed old `Started`, `Interrupted`, and `Errored` item after
+  close/recovery even once a fresh row exists, but permits a distinct fresh
+  `Started` item to establish the next lifecycle. Preserve the activity and
+  terminal-watermark bounds during future syncs.
+- The 2026-08-02 comparison against upstream
+  `feee0b07c7564455e253312e62e6dba69dc861d3` found only environment and
+  parent-turn spawn changes in the relevant path; searched open upstream PRs
+  had no equivalent effective-identity snapshot-loss repair. The combined PR
+  #574 update has no hosted-test claim until its exact pushed head receives
+  the listed targeted hosted proof.
 - `list_agents` is a first-class inventory tool on `carry/main`: the live handler is already on the upstream `multi_agents_v2` path, and the stale downstream `multi_agents/list_agents.rs` copy was dead carry rather than active behavior.
 - The remaining inventory divergence is therefore not a separate handler path; it is the extra descendant and persisted edge-status plumbing available from `agent/control.rs`, which still needs to be re-homed onto the upstream-native v2 inventory shape rather than dropped.
 - Downstream policy is to preserve the intent of the live carry while keeping the tree as close to upstream as possible; we explicitly carry the always-on, cheap live `list_agents` surface (including `has_active_subagents`/`active_subagent_count` and nested visibility/status metadata) to keep nested-agent live visibility intact, pair it with a richer, potentially stale `inspect_agent_tree` surface for deeper inventory sweeps, and welcome upstream-native reimplementation whenever it preserves these behaviors with less divergence.

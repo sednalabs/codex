@@ -4,7 +4,6 @@ use super::HistorySearchDirection;
 use super::HistorySearchResult;
 use super::MAX_BATCH_READ_RETRIES;
 use super::PendingHistorySearch;
-use crate::app_event::AppEvent;
 use crate::app_event::HistoryBatchEntryResponse;
 use crate::app_event_sender::AppEventSender;
 use codex_message_history::HistoryBatchCursor;
@@ -89,11 +88,7 @@ impl ChatComposerHistory {
                     read_failures: read_failures + 1,
                 });
             }
-            app_event_tx.send(AppEvent::LookupMessageHistoryBatch {
-                thread_id,
-                cursor,
-                log_id,
-            });
+            app_event_tx.lookup_message_history_batch(thread_id, cursor, log_id);
             return Some(HistorySearchResult::Pending);
         }
 
@@ -194,11 +189,7 @@ impl ChatComposerHistory {
                 read_failures: 0,
             });
         }
-        app_event_tx.send(AppEvent::LookupMessageHistoryBatch {
-            thread_id,
-            cursor,
-            log_id,
-        });
+        app_event_tx.lookup_message_history_batch(thread_id, cursor, log_id);
         HistorySearchResult::Pending
     }
 }

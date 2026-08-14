@@ -14,6 +14,7 @@ mod startup;
 mod turn_submission;
 
 use super::*;
+use super::agent_picker::AgentPickerRefreshResult;
 use crate::app_backtrack::BacktrackSelection;
 use crate::app_backtrack::BacktrackState;
 use crate::app_backtrack::user_count;
@@ -37,6 +38,8 @@ use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
+use crate::multi_agents::sub_agent_activity_display;
+use crate::multi_agents::sub_agent_activity_history_cell;
 use assert_matches::assert_matches;
 
 use crate::app_command::AppCommand as Op;
@@ -53,6 +56,7 @@ use codex_app_server_protocol::AdditionalPermissionProfile;
 use codex_app_server_protocol::AgentMessageDeltaNotification;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
+use codex_app_server_protocol::CurrentTimeReadParams;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -71,12 +75,15 @@ use codex_app_server_protocol::PermissionsRequestApprovalParams;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SubAgentActivityKind;
+use codex_app_server_protocol::SubAgentActivityTerminalState;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
+use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::TokenUsageBreakdown;
@@ -279,7 +286,8 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
             .note_server_request(&approval_request),
         None
     );
-    app.enqueue_primary_thread_request(approval_request).await?;
+    app.enqueue_primary_thread_request(thread_id, approval_request)
+        .await?;
     app.enqueue_primary_thread_session(
         test_thread_session(thread_id, test_path_buf("/tmp/project")),
         Vec::new(),
@@ -319,6 +327,69 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
     }
 
     panic!("expected approval action to submit a thread-scoped op");
+}
+
+#[tokio::test]
+async fn inactive_approval_uses_its_target_lifecycle_generation() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let displayed_thread_id = ThreadId::new();
+    let inactive_thread_id = ThreadId::new();
+    app.mark_thread_attached(displayed_thread_id);
+    app.mark_thread_attached(inactive_thread_id);
+    let displayed_generation = app.thread_lifecycle_generation(displayed_thread_id);
+    let inactive_generation = app.thread_lifecycle_generation(inactive_thread_id);
+    app.active_thread_id = Some(displayed_thread_id);
+    app.chat_widget
+        .set_thread_lifecycle_generation(displayed_generation);
+
+    let request = exec_approval_request(
+        inactive_thread_id,
+        "turn-inactive",
+        "inactive-call",
+        /*approval_id*/ None,
+    );
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_thread_server_request_for_lifecycle(
+                ThreadLifecycleTarget {
+                    thread_id: inactive_thread_id,
+                    lifecycle_generation: inactive_generation,
+                },
+                &request,
+            ),
+        None
+    );
+    app.enqueue_thread_request(inactive_thread_id, request)
+        .await?;
+
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+
+    let submitted = std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::SubmitThreadOp {
+                thread_id,
+                lifecycle_generation,
+                op: Op::ExecApproval { id, .. },
+            } => Some((thread_id, lifecycle_generation, id)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        submitted,
+        vec![(
+            inactive_thread_id,
+            inactive_generation,
+            "inactive-call".to_string(),
+        )]
+    );
+
+    app.mark_thread_attached(inactive_thread_id);
+    assert!(
+        !app.thread_accepts_lifecycle_generation(inactive_thread_id, inactive_generation),
+        "an answer from the earlier inactive presentation must be rejected after reattachment"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -444,6 +515,7 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
             AppEvent::SubmitThreadOp {
                 thread_id: op_thread_id,
                 op: Op::UserTurn { items, .. },
+                ..
             } => {
                 assert_eq!(op_thread_id, thread_id);
                 submitted_items = Some(items);
@@ -474,47 +546,17 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
 }
 
 #[tokio::test]
-async fn reset_thread_event_state_aborts_listener_tasks() {
-    struct NotifyOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
-
-    impl Drop for NotifyOnDrop {
-        fn drop(&mut self) {
-            if let Some(tx) = self.0.take() {
-                let _ = tx.send(());
-            }
-        }
-    }
-
-    let mut app = make_test_app().await;
-    let thread_id = ThreadId::new();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(async move {
-        let _notify_on_drop = NotifyOnDrop(Some(dropped_tx));
-        let _ = started_tx.send(());
-        std::future::pending::<()>().await;
-    });
-    app.thread_event_listener_tasks.insert(thread_id, handle);
-    started_rx
-        .await
-        .expect("listener task should report it started");
-
-    app.reset_thread_event_state();
-
-    assert_eq!(app.thread_event_listener_tasks.is_empty(), true);
-    time::timeout(Duration::from_millis(50), dropped_rx)
-        .await
-        .expect("timed out waiting for listener task abort")
-        .expect("listener task drop notification should succeed");
-}
-
-#[tokio::test]
 async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let thread_id = ThreadId::new();
 
-    app.lookup_message_history_entry(thread_id, /*offset*/ 0, /*log_id*/ 1)
-        .await?;
+    app.lookup_message_history_entry(
+        thread_id,
+        app.thread_lifecycle_generation(thread_id),
+        /*offset*/ 0,
+        /*log_id*/ 1,
+    )
+    .await?;
 
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
@@ -524,6 +566,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let AppEvent::ThreadHistoryEntryResponse {
         thread_id: routed_thread_id,
         event,
+        ..
     } = app_event
     else {
         panic!("expected thread-routed history response");
@@ -539,8 +582,13 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     );
 
     let cursor = codex_message_history::HistoryBatchCursor::new(/*end_offset*/ 10);
-    app.lookup_message_history_batch(thread_id, cursor, /*log_id*/ 1)
-        .await?;
+    app.lookup_message_history_batch(
+        thread_id,
+        app.thread_lifecycle_generation(thread_id),
+        cursor,
+        /*log_id*/ 1,
+    )
+    .await?;
     let app_event = tokio::time::timeout(Duration::from_secs(1), app_event_rx.recv())
         .await
         .expect("history batch lookup should emit an app event")
@@ -548,6 +596,7 @@ async fn history_lookup_response_is_routed_to_requesting_thread() -> Result<()> 
     let AppEvent::ThreadHistoryEntryResponse {
         thread_id: routed_thread_id,
         event,
+        ..
     } = app_event
     else {
         panic!("expected thread-routed history batch response");
@@ -1365,6 +1414,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1381,6 +1432,166 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             ..AgentPickerThreadEntry::default()
         })
     );
+}
+
+#[tokio::test]
+async fn v1_spawn_completion_before_thread_started_caches_identity_for_waiting() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+
+    // The parent can receive this V1 completion before the child sends ThreadStarted. Do not add
+    // a ThreadStarted notification here: the lifecycle record itself must be enough to render the
+    // name and effective identity, and the following wait must retain that cached metadata.
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: sender_thread_id.to_string(),
+            turn_id: "turn-spawn".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "spawn-before-thread-started".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("inspect the lifecycle".to_string()),
+                model: Some("gpt-5.6-sol".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::XHigh),
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    codex_app_server_protocol::CollabAgentState {
+                        status: codex_app_server_protocol::CollabAgentStatus::Running,
+                        message: None,
+                        agent_nickname: Some("Scout".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                    },
+                )]),
+            },
+        }),
+    ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: sender_thread_id.to_string(),
+            turn_id: "turn-wait".to_string(),
+            started_at_ms: 1,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "wait-before-thread-started".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::Wait,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+    ));
+
+    assert!(app.agent_navigation.get(&receiver_thread_id).is_some_and(|entry| {
+        entry.agent_nickname.as_deref() == Some("Scout")
+            && entry.agent_role.as_deref() == Some("explorer")
+            && entry.agent_path.is_none()
+            && entry.model.as_deref() == Some("gpt-5.6-sol")
+            && entry.reasoning_effort == Some(ReasoningEffortConfig::XHigh)
+    }));
+
+    let rendered = collect_rendered_history_cells(&mut app_event_rx);
+    assert!(rendered.contains("Scout [explorer]"), "got {rendered:?}");
+    assert!(
+        rendered.contains("effective: gpt-5.6-sol xhigh"),
+        "got {rendered:?}"
+    );
+    assert!(rendered.contains("Waiting on Scout [explorer]"), "got {rendered:?}");
+}
+
+#[tokio::test]
+async fn revisioned_watcher_idle_wins_when_activity_materializes_picker_row() {
+    let mut app = make_test_app().await;
+    let child_thread_id = ThreadId::new();
+
+    app.apply_agent_picker_thread_status_change(
+        child_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: child_thread_id.to_string(),
+            status: ThreadStatus::Idle,
+            status_revision: Some(18),
+        },
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    // The delayed parent activity would normally hint that this row is running. It can still
+    // provide durable child metadata, but has no revision ordering over the status watcher.
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-activity".to_string(),
+            started_at_ms: 0,
+            item: ThreadItem::SubAgentActivity {
+                id: "activity-started".to_string(),
+                kind: SubAgentActivityKind::Started,
+                terminal_state: None,
+                agent_thread_id: child_thread_id.to_string(),
+                agent_path: "/root/status-first-activity".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+        }),
+    ));
+
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        !entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/status-first-activity")
+    }));
+}
+
+#[tokio::test]
+async fn revisioned_watcher_active_wins_when_receiver_cache_materializes_picker_row() {
+    let mut app = make_test_app().await;
+    let receiver_thread_id = ThreadId::new();
+
+    app.apply_agent_picker_thread_status_change(
+        receiver_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: receiver_thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(19),
+        },
+    );
+    assert!(app.agent_navigation.get(&receiver_thread_id).is_none());
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-receiver".to_string(),
+            started_at_ms: 0,
+            item: ThreadItem::CollabAgentToolCall {
+                id: "wait-status-first".to_string(),
+                tool: codex_app_server_protocol::CollabAgentTool::Wait,
+                status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
+                sender_thread_id: ThreadId::new().to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+    ));
+
+    assert!(app.agent_navigation.get(&receiver_thread_id).is_some_and(|entry| {
+        entry.is_running && !entry.is_closed && !entry.has_system_error
+    }));
 }
 
 #[tokio::test]
@@ -1403,11 +1614,15 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 prompt: Some("hello".to_string()),
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     receiver_thread_id.to_string(),
                     codex_app_server_protocol::CollabAgentState {
                         status: codex_app_server_protocol::CollabAgentStatus::NotFound,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
                     },
                 )]),
             },
@@ -1487,6 +1702,420 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
 }
 
 #[tokio::test]
+async fn open_agent_picker_returns_before_a_busy_live_event_store_unlocks() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.agent_navigation.upsert(
+        child_thread_id,
+        Some("cached worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_agent_path(child_thread_id, Some("/root/worker".to_string()));
+    let child_channel = ThreadEventChannel::new(/*capacity*/ 1);
+    let child_store = Arc::clone(&child_channel.store);
+    app.thread_event_channels.insert(child_thread_id, child_channel);
+
+    let child_store_guard = child_store.lock().await;
+    assert!(
+        futures::FutureExt::now_or_never(app.open_agent_picker(&mut app_server)).is_some(),
+        "opening /agent must render cached rows instead of waiting for an event-store lock"
+    );
+    drop(child_store_guard);
+
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("cached worker"));
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+fn background_picker_thread(
+    thread_id: ThreadId,
+    primary_thread_id: ThreadId,
+    display_name: &str,
+) -> Thread {
+    Thread {
+        id: thread_id.to_string(),
+        extra: None,
+        session_id: primary_thread_id.to_string(),
+        forked_from_id: None,
+        parent_thread_id: Some(primary_thread_id.to_string()),
+        preview: display_name.to_string(),
+        ephemeral: false,
+        is_pinned: false,
+        history_mode: Default::default(),
+        model_provider: "test-provider".to_string(),
+        model: None,
+        reasoning_effort: None,
+        created_at: 1,
+        updated_at: 2,
+        recency_at: Some(2),
+        status: ThreadStatus::Idle,
+        path: None,
+        cwd: test_path_buf("/tmp/agent-picker-background").abs(),
+        cli_version: "0.0.0".to_string(),
+        source: codex_app_server_protocol::SessionSource::Unknown,
+        can_accept_direct_input: None,
+        thread_source: None,
+        agent_nickname: Some(display_name.to_string()),
+        agent_role: Some("explorer".to_string()),
+        git_info: None,
+        name: Some(display_name.to_string()),
+        turns: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn empty_agent_picker_open_upgrades_loading_view_when_background_rows_arrive() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    let discovered_thread_id = ThreadId::new();
+    app.config.features.enable(Feature::Collab);
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert_eq!(
+        app.chat_widget.selection_view_search_query("agent-picker"),
+        Some(String::new()),
+        "an empty cache must still open the updatable picker surface"
+    );
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Loading subagents..."),
+        "the initial picker should explain that descendant discovery is in progress"
+    );
+    let (refresh_root_thread_id, lifecycle_generation, request_generation) = app
+        .agent_navigation
+        .picker_refresh_ticket_for_test()
+        .expect("opening the picker schedules the first refresh");
+    assert_eq!(refresh_root_thread_id, primary_thread_id);
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![background_picker_thread(
+                discovered_thread_id,
+                primary_thread_id,
+                "discovered worker",
+            )],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(app.agent_navigation.get(&discovered_thread_id).is_some());
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("discovered worker"),
+        "a valid background result must replace the first empty picker without another /agent"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_agent_picker_becomes_terminal_after_an_exhausted_empty_refresh() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    app.config.features.enable(Feature::Collab);
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let (_, lifecycle_generation, request_generation) = app
+        .agent_navigation
+        .picker_refresh_ticket_for_test()
+        .expect("opening the picker schedules the first refresh");
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: Vec::new(),
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("No subagents found..."));
+    assert!(!picker.contains("Loading subagents..."));
+    assert_eq!(
+        app.chat_widget.selection_view_search_query("agent-picker"),
+        Some(String::new()),
+        "the terminal empty result must retain the picker input surface"
+    );
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.chat_widget.selection_view_search_query("agent-picker"), None);
+
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dismissed_empty_agent_picker_is_not_resurrected_by_background_rows() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let primary_thread_id = ThreadId::new();
+    let discovered_thread_id = ThreadId::new();
+    app.config.features.enable(Feature::Collab);
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let (_, lifecycle_generation, request_generation) = app
+        .agent_navigation
+        .picker_refresh_ticket_for_test()
+        .expect("opening the picker schedules the first refresh");
+    app.chat_widget
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.chat_widget.selection_view_search_query("agent-picker"), None);
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![background_picker_thread(
+                discovered_thread_id,
+                primary_thread_id,
+                "dismissed worker",
+            )],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(
+        app.agent_navigation.get(&discovered_thread_id).is_some(),
+        "the cache may update after dismissal"
+    );
+    assert_eq!(
+        app.chat_widget.selection_view_search_query("agent-picker"),
+        None,
+        "a completed refresh must not resurrect a dismissed picker"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_background_refresh_merges_discovered_rows_into_the_open_picker() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let cached_thread_id = ThreadId::new();
+    let discovered_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.agent_navigation.upsert(
+        primary_thread_id,
+        Some("Main".to_string()),
+        None,
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation.upsert(
+        cached_thread_id,
+        Some("cached worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.render_agent_picker().await;
+    let lifecycle_generation = app.thread_lifecycle_generation(primary_thread_id);
+    let request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, lifecycle_generation)
+        .expect("first refresh starts");
+
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![background_picker_thread(
+                discovered_thread_id,
+                primary_thread_id,
+                "discovered worker",
+            )],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: true,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert!(
+        app.agent_navigation.get(&discovered_thread_id).is_some(),
+        "the completion must merge discovered descendants into navigation state"
+    );
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("discovered worker"),
+        "the open picker must be rebuilt from the loaded rows"
+    );
+}
+
+#[tokio::test]
+async fn agent_picker_background_refresh_cannot_overwrite_newer_continuation_liveness() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    app.agent_navigation
+        .set_next_picker_page_cursor(Some("cursor-C1".to_string()));
+    let lifecycle_generation = app.thread_lifecycle_generation(primary_thread_id);
+    let request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, lifecycle_generation)
+        .expect("first refresh starts");
+
+    // This `Started` activity and the later C2 continuation both arrive after the root request.
+    // Either must make the root response metadata-only because that response carries no liveness
+    // revision or ordering proof.
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "newer-child-started".to_string(),
+            thread_id: child_thread_id,
+            agent_path: "/root/current-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // The user consumes C1 before the background first page returns. Its continuation response
+    // is newer picker authority. A late root NotLoaded row may refresh its descriptive name, but
+    // cannot erase C2 or close the child that the newer Started activity marked running.
+    app.agent_navigation
+        .set_next_picker_page_cursor_from_continuation(Some("cursor-C2".to_string()));
+    let mut late_not_loaded =
+        background_picker_thread(child_thread_id, primary_thread_id, "Late not-loaded name");
+    late_not_loaded.status = ThreadStatus::NotLoaded;
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![late_not_loaded],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: false,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        app.agent_navigation.next_picker_page_cursor(),
+        Some("cursor-C2".to_string()),
+        "a stale root response must not erase a newer continuation"
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_nickname.as_deref() == Some("Late not-loaded name")
+    }));
+
+    // The same non-owner rule covers a stale SystemError: it may merge safe descriptive
+    // metadata, but it cannot fail a child whose newer lifecycle is already established.
+    let second_request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, lifecycle_generation)
+        .expect("second refresh starts after the first completes");
+    app.agent_navigation
+        .set_next_picker_page_cursor_from_continuation(Some("cursor-C3".to_string()));
+    let mut late_system_error =
+        background_picker_thread(child_thread_id, primary_thread_id, "Late system-error name");
+    late_system_error.status = ThreadStatus::SystemError;
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        lifecycle_generation,
+        second_request_generation,
+        AgentPickerRefreshResult {
+            threads: vec![late_system_error],
+            persisted_next_picker_page_cursor: Some(None),
+            mark_legacy_relation_fallback_checked: false,
+            errors: Vec::new(),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        app.agent_navigation.next_picker_page_cursor(),
+        Some("cursor-C3".to_string()),
+        "a stale root response must not rewind a second continuation"
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_nickname.as_deref() == Some("Late system-error name")
+    }));
+}
+
+#[tokio::test]
+async fn agent_picker_background_refresh_rejects_an_old_root_lifecycle() {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(primary_thread_id);
+    let stale_lifecycle_generation = app.thread_lifecycle_generation(primary_thread_id);
+    let request_generation = app
+        .agent_navigation
+        .begin_picker_refresh(primary_thread_id, stale_lifecycle_generation)
+        .expect("first refresh starts");
+
+    // Same-id reattachment invalidates all work captured before its new lifecycle generation.
+    app.mark_thread_attached(primary_thread_id);
+    app.apply_agent_picker_thread_refresh(
+        primary_thread_id,
+        stale_lifecycle_generation,
+        request_generation,
+        AgentPickerRefreshResult {
+            threads: Vec::new(),
+            persisted_next_picker_page_cursor: Some(Some("stale-cursor".to_string())),
+            mark_legacy_relation_fallback_checked: true,
+            errors: vec!["stale failure".to_string()],
+        },
+    )
+    .await;
+
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    assert!(
+        app.agent_navigation.needs_legacy_relation_fallback_check(),
+        "a stale reply must not mark a new root lifecycle complete"
+    );
+}
+
+#[tokio::test]
 async fn open_agent_picker_preserves_running_hints_until_observed_completion() -> Result<()> {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -1499,10 +2128,12 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 4));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-child".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1557,10 +2188,12 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
     assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-child-error".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1575,6 +2208,569 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
 
     expected_entry.is_running = true;
     assert_eq!(app.agent_navigation.get(&thread_id), Some(&expected_entry));
+    Ok(())
+}
+
+#[tokio::test]
+async fn errored_subagent_activity_keeps_system_error_picker_row_and_transcript() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-failed-child".to_string(),
+            thread_id,
+            agent_path: "/root/failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // A child raw Error/SystemError marks the cached row failed before its parent receives the
+    // terminal V2 activity. That terminal activity must not make the row look idle again.
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
+    let errored_item = ThreadItem::SubAgentActivity {
+        id: "activity-errored".to_string(),
+        kind: SubAgentActivityKind::Interrupted,
+        terminal_state: Some(SubAgentActivityTerminalState::Errored),
+        agent_thread_id: thread_id.to_string(),
+        agent_path: "/root/failed-child".to_string(),
+        model: None,
+        reasoning_effort: None,
+    };
+    let display = sub_agent_activity_display(&errored_item)
+        .expect("errored activity should update picker liveness");
+    assert_eq!(display.activity_id, "activity-errored");
+    assert!(display.has_system_error);
+    assert!(!display.is_running_hint);
+    let transcript = lines_to_single_string(
+        &sub_agent_activity_history_cell(&errored_item)
+            .expect("errored activity should render in the transcript")
+            .display_lines(/*width*/ 80),
+    );
+    assert!(transcript.contains("Failed `/root/failed-child`"));
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+            item: errored_item,
+        }),
+    ));
+
+    assert_eq!(
+        app.agent_navigation.get(&thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_path: Some("/root/failed-child".to_string()),
+            is_running: false,
+            is_closed: false,
+            has_system_error: true,
+            ..AgentPickerThreadEntry::default()
+        })
+    );
+    assert!(
+        app.should_attach_live_thread_for_selection(thread_id),
+        "failed rows must keep their saved transcript inspectable"
+    );
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    let picker = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(picker.contains("/root/failed-child"));
+    assert!(picker.contains("system error failed inspect saved transcript"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_closed_picker_row_ignores_late_errored_activity() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-closed-child".to_string(),
+            thread_id,
+            agent_path: "/root/closed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: false,
+        });
+
+    // `ThreadClosed` reaches the picker through this explicit close transition. A terminal
+    // parent activity may still be in flight when the child has already become a closed,
+    // replayable row.
+    app.mark_agent_picker_thread_closed(thread_id);
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            thread_id: ThreadId::new().to_string(),
+            turn_id: "turn-late-activity".to_string(),
+            completed_at_ms: 0,
+            item: ThreadItem::SubAgentActivity {
+                id: "activity-after-close".to_string(),
+                kind: SubAgentActivityKind::Interrupted,
+                terminal_state: Some(SubAgentActivityTerminalState::Errored),
+                agent_thread_id: thread_id.to_string(),
+                agent_path: "/root/closed-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+            },
+        }),
+    ));
+
+    let entry = app
+        .agent_navigation
+        .get(&thread_id)
+        .expect("ThreadClosed row should remain in picker state");
+    assert!(entry.is_closed);
+    assert!(!entry.has_system_error);
+    assert!(!entry.is_running);
+    assert_eq!(
+        crate::multi_agents::agent_picker_status_dot_spans(
+            entry.is_closed,
+            entry.has_system_error,
+        )[0]
+        .style
+        .fg,
+        None,
+        "a closed row must not regain the red error dot from late activity"
+    );
+    assert!(
+        crate::multi_agents::format_agent_picker_item_description(
+            thread_id,
+            entry,
+            &crate::multi_agents::AgentPickerThreadUsage::default(),
+        )
+        .contains("closed stale finished")
+    );
+    assert!(
+        app.should_attach_live_thread_for_selection(thread_id),
+        "closed rows retain their saved-transcript selection path"
+    );
+}
+
+#[tokio::test]
+async fn thread_status_revisions_gate_error_recovery_picker_liveness() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-status-watched-child".to_string(),
+            thread_id,
+            agent_path: "/root/status-watched-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+    // TurnStarted and active snapshots are independent liveness observations. They must not
+    // recover a terminal activity before a newer status revision proves recovery.
+    app.enqueue_thread_notification(
+        thread_id,
+        turn_started_notification(thread_id, "turn-stale"),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+    );
+
+    // A delayed non-error status must not recover a terminal parent activity before the matching
+    // SystemError is observed.
+    for (delayed_status, status_revision) in [
+        (ThreadStatus::Idle, 1),
+        (
+            ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            2,
+        ),
+    ] {
+        app.enqueue_thread_notification(
+            thread_id,
+            ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: thread_id.to_string(),
+                    status: delayed_status,
+                    status_revision: Some(status_revision),
+                },
+            ),
+        )
+        .await?;
+        assert!(
+            app.agent_navigation
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+    }
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::SystemError,
+                status_revision: Some(3),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+    );
+
+    // The stale Active was generated before SystemError at revision 2 but arrives afterwards.
+    // A non-status running hint is equally unable to override confirmed error liveness.
+    app.agent_navigation.mark_running(thread_id);
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: Vec::new(),
+                },
+                status_revision: Some(2),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+    );
+
+    // Only a status revision newer than the confirmed error is a true recovery.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: Vec::new(),
+                },
+                status_revision: Some(4),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn delayed_thread_read_terminal_error_cannot_override_newer_watcher_liveness() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("Delayed read worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    // Model a watcher update received while a revisionless thread/read is in flight. Its
+    // terminal NotLoaded error must be evaluated after the await, against the watcher provenance
+    // that is current at the mutation fence.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(31),
+        },
+    );
+    let stale_not_loaded = color_eyre::eyre::eyre!(
+        "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &stale_not_loaded));
+    assert!(app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+        entry.is_running && !entry.is_closed && !entry.has_system_error
+    }));
+
+    // A matching SystemError watcher is equally newer than the same delayed read. The stale
+    // terminal observation must neither prune the row nor turn that failure into recovery.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::SystemError,
+            status_revision: Some(32),
+        },
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &stale_not_loaded));
+    assert!(app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+        !entry.is_running && !entry.is_closed && entry.has_system_error
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn picker_backfill_cannot_overwrite_newer_watcher_recovery() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    app.upsert_agent_picker_thread(
+        child_thread_id,
+        Some("Initial child".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    // The watcher is revisioned and therefore proves this is newer than a picker request that
+    // was already in flight. Both delayed terminal snapshot shapes must preserve it.
+    app.apply_agent_picker_thread_status_change(
+        child_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: child_thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(12),
+        },
+    );
+
+    let mut refreshed_thread_ids = std::collections::HashSet::new();
+    let mut stale_not_loaded =
+        background_picker_thread(child_thread_id, primary_thread_id, "Stale not-loaded name");
+    stale_not_loaded.status = ThreadStatus::NotLoaded;
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        stale_not_loaded,
+        /*apply_snapshot_liveness*/ true,
+        &mut refreshed_thread_ids,
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        !entry.is_closed
+            && !entry.has_system_error
+            && entry.is_running
+            && entry.agent_nickname.as_deref() == Some("Stale not-loaded name")
+    }));
+
+    let mut stale_system_error =
+        background_picker_thread(child_thread_id, primary_thread_id, "Stale system-error name");
+    stale_system_error.status = ThreadStatus::SystemError;
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        stale_system_error,
+        /*apply_snapshot_liveness*/ true,
+        &mut refreshed_thread_ids,
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        !entry.is_closed
+            && !entry.has_system_error
+            && entry.is_running
+            && entry.agent_nickname.as_deref() == Some("Stale system-error name")
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn picker_backend_row_reconciles_status_first_active_watcher_liveness() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+
+    // The watcher can learn the child is active before a background relation query discovers
+    // its picker row. Its revision is authoritative over the later revisionless row snapshot.
+    app.apply_agent_picker_thread_status_change(
+        child_thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: child_thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(17),
+        },
+    );
+    assert!(app.agent_navigation.get(&child_thread_id).is_none());
+
+    let mut refreshed_thread_ids = std::collections::HashSet::new();
+    let mut stale_backend_row =
+        background_picker_thread(child_thread_id, primary_thread_id, "Status-first active child");
+    stale_backend_row.status = ThreadStatus::NotLoaded;
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        stale_backend_row,
+        /*apply_snapshot_liveness*/ true,
+        &mut refreshed_thread_ids,
+    );
+
+    assert!(app.agent_navigation.get(&child_thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_nickname.as_deref() == Some("Status-first active child")
+    }));
+    assert!(
+        !refreshed_thread_ids.contains(&child_thread_id),
+        "the stale backend status must not be treated as a newer liveness refresh"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn newer_status_reopens_a_tracked_picker_row_after_not_loaded() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-then-reopen".to_string(),
+            thread_id,
+            agent_path: "/root/close-then-reopen".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // A persisted child can first arrive as unavailable, which retains its row for transcript
+    // review. The terminal revision must become the causal floor for a later recovery.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::NotLoaded,
+            status_revision: Some(7),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
+    // A revisionless watcher cannot positively correlate this Active status to a lifecycle newer
+    // than the terminal one. Preserve the closed row rather than resurrecting it from a delayed
+    // legacy-server observation.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: None,
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
+    // The terminal watermark rejects an older nonterminal status even though closing the visible
+    // row cleared its ordinary per-row revision cache.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(6),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
+    // A delayed metadata refresh is not status evidence, so it must not clear the terminal
+    // lifecycle before the watcher accepts a genuinely newer nonterminal status.
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("stale metadata".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.has_system_error && !entry.is_running)
+    );
+
+    // The next status is newer, so it may reopen the existing row and establish fresh liveness.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(8),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+
+    // The recovered rev-8 status remains authoritative over an unrevisioned stale `thread/read`
+    // that still reports the rev-7 terminal snapshot.
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("stale not-loaded metadata".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ true,
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+
+    // The original terminal status remains stale after recovery and cannot close the row again.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::NotLoaded,
+            status_revision: Some(7),
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
+
+    // A legacy terminal notification with no revision is equally unable to supersede the proven
+    // rev-8 recovery. Accepting it would make a delayed close overwrite fresh liveness.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::NotLoaded,
+            status_revision: None,
+        },
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error && entry.is_running)
+    );
     Ok(())
 }
 
@@ -1597,10 +2793,12 @@ async fn open_agent_picker_clears_running_hint_from_completed_snapshot() -> Resu
     );
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-errored-child".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
     assert!(!app.agent_navigation.is_parent_owned(thread_id));
@@ -1637,10 +2835,12 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
         .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-worker".to_string(),
             thread_id,
             agent_path: "/root/worker".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1661,6 +2861,460 @@ async fn open_agent_picker_selects_path_backed_agent() -> Result<()> {
 }
 
 #[tokio::test]
+async fn open_agent_picker_hides_closed_sidecars_until_closed_filter_is_entered() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-finished".to_string(),
+            thread_id,
+            agent_path: "/root/finished".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: false,
+        });
+    app.mark_agent_picker_thread_closed(thread_id);
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/finished"));
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(rendered.contains("/root/finished"));
+    assert!(rendered.contains("closed stale finished"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_live_child_thread_closed_marks_picker_closed_and_hides_default_filter()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::Live),
+        "the regression requires an inactive retained live channel"
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-inactive-live-child".to_string(),
+            thread_id,
+            agent_path: "/root/inactive-live-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running && !entry.has_system_error),
+        "an inactive child must become terminal before its buffered ThreadClosed replay"
+    );
+
+    app.render_agent_picker().await;
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/inactive-live-child"),
+        "the default picker filter must hide the terminal child"
+    );
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("/root/inactive-live-child"),
+        "the closed filter must retain the terminal child for transcript inspection"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn delayed_unrevisioned_thread_closed_does_not_close_recovered_child() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-recovered-child".to_string(),
+            thread_id,
+            agent_path: "/root/recovered-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    // The non-live NotLoaded status closes the first lifecycle at revision 7. A newer Active
+    // status recovers the same picker row at revision 8 before its old teardown notification
+    // arrives on the independent thread event stream.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(7),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running)
+    );
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::Active {
+                    active_flags: Vec::new(),
+                },
+                status_revision: Some(8),
+            },
+        ),
+    )
+    .await?;
+    assert!(
+        app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+            !entry.is_closed && entry.is_running && !entry.has_system_error
+        })
+    );
+
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+
+    assert!(
+        app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+            !entry.is_closed && entry.is_running && !entry.has_system_error
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn request_first_not_loaded_keeps_synthetic_buffer_non_live_across_backfill() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let thread_id = ThreadId::new();
+
+    // An approval may arrive before either a lifecycle notification or a resume/fork response.
+    // Routing must preserve it for replay without treating its synthetic queue as positive proof
+    // of a live app-server attachment.
+    app.enqueue_thread_request(
+        thread_id,
+        exec_approval_request(
+            thread_id,
+            "request-first-turn",
+            "request-first-call",
+            /*approval_id*/ None,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::NotificationBuffer),
+        "a request-first synthetic buffer must not advertise a live attachment"
+    );
+    assert!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .expect("request-first channel")
+            .store
+            .lock()
+            .await
+            .snapshot()
+            .events
+            .iter()
+            .any(|event| matches!(event, ThreadBufferedEvent::Request(_))),
+        "the request must remain available for replay after the child is classified closed"
+    );
+
+    // The subsequent status must still classify the unmaterialized child as terminal.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(1),
+            },
+        ),
+    )
+    .await?;
+    assert!(app.agent_navigation.is_empty());
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::NotificationBuffer),
+        "the synthetic notification buffer must not advertise a live attachment"
+    );
+
+    // A later status snapshot must continue to observe the same notification buffer as non-live;
+    // otherwise the second snapshot would silently reopen the closed lifecycle evidence.
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(2),
+            },
+        ),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .map(|channel| channel.attachment()),
+        Some(ThreadEventAttachment::NotificationBuffer),
+        "a repeated status must not promote a notification-only queue to live"
+    );
+
+    // A persisted backfill sees the same non-live attachment and keeps the child closed. This
+    // covers the status-plus-backfill path, rather than only the initial status notification.
+    app.primary_thread_id = Some(primary_thread_id);
+    let mut refreshed_thread_ids = std::collections::HashSet::new();
+    app.register_agent_picker_thread_from_backend(
+        primary_thread_id,
+        Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: primary_thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: Some(primary_thread_id.to_string()),
+            preview: "saved child".to_string(),
+            ephemeral: false,
+            is_pinned: false,
+            history_mode: Default::default(),
+            model_provider: "test-provider".to_string(),
+            model: None,
+            reasoning_effort: None,
+            created_at: 1,
+            updated_at: 2,
+            recency_at: Some(2),
+            status: ThreadStatus::NotLoaded,
+            path: None,
+            cwd: test_path_buf("/tmp/status-first-not-loaded").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Unknown,
+            can_accept_direct_input: None,
+            thread_source: None,
+            agent_nickname: Some("Saved worker".to_string()),
+            agent_role: Some("worker".to_string()),
+            git_info: None,
+            name: Some("saved child".to_string()),
+            turns: Vec::new(),
+        },
+        /*apply_snapshot_liveness*/ true,
+        &mut refreshed_thread_ids,
+    );
+    assert!(refreshed_thread_ids.contains(&thread_id));
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running)
+    );
+    assert!(
+        !app.thread_accepts_live_metadata_update(
+            thread_id,
+            app.thread_lifecycle_generation(thread_id),
+        ),
+        "a request-first child classified NotLoaded must follow the replay path, not write through a synthetic channel"
+    );
+
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "status-first-not-loaded-late-start".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-not-loaded".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed && !entry.is_running),
+        "a delayed Started activity cannot reopen a closed child after status-first NotLoaded"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn actual_live_channel_keeps_not_loaded_status_nonterminal() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    // `new` models a channel created by a real live-session attach, not a notification buffer.
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "actual-live-not-loaded".to_string(),
+            thread_id,
+            agent_path: "/root/actual-live".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: ThreadStatus::NotLoaded,
+                status_revision: Some(1),
+            },
+        ),
+    )
+    .await?;
+
+    assert!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(ThreadEventChannel::has_live_attachment)
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.is_closed && !entry.is_running)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn inactive_child_thread_closed_before_picker_row_rejects_late_activity() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+
+    // The child channel exists before parent activity provides the picker metadata. Closing it
+    // must keep a bounded causal guard without inventing a visible closed row.
+    app.enqueue_thread_notification(thread_id, thread_closed_notification(thread_id))
+        .await?;
+    assert!(app.agent_navigation.is_empty());
+
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-before-row-late-start".to_string(),
+            thread_id,
+            agent_path: "/root/closed-before-row".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+    assert!(
+        app.agent_navigation.is_empty(),
+        "a late Started activity from the closed lifecycle must not materialize a picker ghost"
+    );
+
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-before-row-late-error".to_string(),
+            thread_id,
+            agent_path: "/root/closed-before-row".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+    assert!(
+        app.agent_navigation.is_empty(),
+        "late activity from the closed lifecycle must not materialize a picker ghost"
+    );
+
+    // A newer watcher status then a distinct Started activity establishes a legitimate new
+    // lifecycle. This also proves the unmatched close did not leave a stale stopped hint.
+    app.apply_agent_picker_thread_status_change(
+        thread_id,
+        &codex_app_server_protocol::ThreadStatusChangedNotification {
+            thread_id: thread_id.to_string(),
+            status: ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            status_revision: Some(1),
+        },
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-close-before-row-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-after-close".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+    assert!(app.agent_navigation.get(&thread_id).is_some_and(|entry| {
+        entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/fresh-after-close")
+    }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn backfill_status_classification_keeps_system_error_sidecars_selectable() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let status = crate::app::session_lifecycle::agent_picker_thread_status(
+        &codex_app_server_protocol::ThreadStatus::SystemError,
+        /*has_live_channel*/ false,
+    );
+
+    assert!(!status.is_running);
+    assert!(!status.is_closed);
+    assert!(status.has_system_error);
+
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Failed worker".to_string()),
+        Some("worker".to_string()),
+        status.is_closed,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_system_error(thread_id, status.has_system_error);
+
+    assert!(
+        app.should_attach_live_thread_for_selection(thread_id),
+        "a system-error row must keep the saved-transcript selection path"
+    );
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.has_system_error)
+    );
+}
+
+#[tokio::test]
 async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Result<()> {
     let mut app = Box::pin(make_test_app()).await;
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
@@ -1678,10 +3332,12 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
     app.thread_event_channels.insert(thread_id, channel);
     app.agent_navigation
         .record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-channel-child".to_string(),
             thread_id,
             agent_path: "/root/child".to_string(),
             model: None,
             reasoning_effort: None,
+            has_system_error: false,
             is_running_hint: true,
         });
 
@@ -1881,10 +3537,12 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
 
         app.agent_navigation
             .record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: "activity-child-0".to_string(),
                 thread_id: child_thread_ids[0],
                 agent_path: "/root/child-0".to_string(),
                 model: None,
                 reasoning_effort: None,
+                has_system_error: false,
                 is_running_hint: true,
             });
         app.thread_event_channels.remove(&child_thread_ids[1]);
@@ -1894,19 +3552,17 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             backfill.refreshed_thread_ids,
             [child_thread_ids[1]].into_iter().collect()
         );
-        assert_eq!(
-            app.agent_navigation.get(&child_thread_ids[0]),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: Some("child-0".to_string()),
-                agent_role: Some("worker".to_string()),
-                agent_path: Some("/root/child-0".to_string()),
-                is_running: true,
-                is_closed: false,
-                created_at: None,
-                updated_at: None,
-                ..AgentPickerThreadEntry::default()
-            })
-        );
+        let child_zero = app
+            .agent_navigation
+            .get(&child_thread_ids[0])
+            .expect("first child should remain in the navigation cache");
+        assert_eq!(child_zero.agent_nickname.as_deref(), Some("child-0"));
+        assert_eq!(child_zero.agent_role.as_deref(), Some("worker"));
+        assert_eq!(child_zero.agent_path.as_deref(), Some("/root/child-0"));
+        assert!(child_zero.is_running);
+        assert!(!child_zero.is_closed);
+        assert!(child_zero.created_at.is_some());
+        assert!(child_zero.updated_at.is_some());
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
         assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
 
@@ -1948,6 +3604,7 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
         assert!(resumed.blocks_direct_input);
         app.replace_chat_widget_with_app_server_thread(
             &mut tui,
+            &app_server,
             resumed,
             crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
             /*initial_user_message*/ None,
@@ -2039,7 +3696,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 }
 
 #[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
+async fn should_attach_saved_thread_for_selection_includes_closed_metadata() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2051,7 +3708,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         /*updated_at*/ None,
     );
 
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
 
     app.agent_navigation.upsert(
         thread_id,
@@ -2092,6 +3749,198 @@ async fn refresh_agent_picker_thread_liveness_prunes_closed_metadata_only_thread
     assert!(!is_available);
     assert_eq!(app.agent_navigation.get(&thread_id), None);
     assert!(!app.thread_event_channels.contains_key(&thread_id));
+    Ok(())
+}
+
+#[tokio::test]
+async fn transient_liveness_failure_preserves_known_system_error_status() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Unavailable worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
+
+    let err = color_eyre::eyre::eyre!(
+        "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &err));
+
+    let entry = app
+        .agent_navigation
+        .get(&thread_id)
+        .expect("transient liveness failure should retain the cached picker entry");
+    assert!(
+        entry.has_system_error,
+        "a transient read failure must not erase a previously observed SystemError"
+    );
+    assert!(!entry.is_running);
+}
+
+#[tokio::test]
+async fn successful_liveness_read_clears_a_prior_system_error_without_newer_evidence() -> Result<()>
+{
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let thread_id = started.session.thread_id;
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Recovered worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
+
+    assert!(Box::pin(app.refresh_agent_picker_thread_liveness(&mut app_server, thread_id)).await);
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| !entry.has_system_error)
+    );
+
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_liveness_failure_with_replay_channel_clears_system_error_and_matches_closed_filter()
+ {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Closed worker".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.thread_event_channels
+        .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation
+        .set_system_error(thread_id, /*has_system_error*/ true);
+
+    let err = color_eyre::eyre::eyre!(
+        "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: {thread_id}"
+    );
+    assert!(app.handle_agent_picker_thread_liveness_read_error(thread_id, &err));
+
+    let entry = app
+        .agent_navigation
+        .get(&thread_id)
+        .expect("a replayable terminal thread should stay in the picker");
+    assert!(entry.is_closed);
+    assert!(
+        !entry.has_system_error,
+        "terminal closure must supersede an earlier SystemError"
+    );
+
+    app.render_agent_picker().await;
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Closed worker"),
+        "closed sidecars should remain hidden until the documented closed filter is entered"
+    );
+    for character in "closed".chars() {
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(rendered.contains("Closed worker"));
+    assert!(rendered.contains("closed stale finished"));
+    assert!(!rendered.contains("system error failed inspect replay"));
+}
+
+#[tokio::test]
+async fn invalid_agent_picker_continuation_clears_the_stale_load_more_action() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    app.agent_navigation.upsert(
+        ThreadId::new(),
+        Some("Visible sidecar".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_next_picker_page_cursor(Some("invalid-cursor".to_string()));
+
+    app.render_agent_picker().await;
+    assert!(
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .contains("Load more historical sidecars")
+    );
+
+    app.load_more_agent_picker_page(&mut app_server).await;
+
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .contains("Load more historical sidecars"),
+        "an invalid continuation must not remain as a retryable picker action"
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_next_page()
+-> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    app.enqueue_primary_thread_session(started.session, started.turns)
+        .await?;
+    app.agent_navigation.upsert(
+        ThreadId::new(),
+        Some("Visible sidecar".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.agent_navigation
+        .set_next_picker_page_cursor(Some("stale-continuation".to_string()));
+
+    // Pagination is refreshed asynchronously when the picker opens. Exercise the direct
+    // hydration seam here so this remains a deterministic cursor-safety regression.
+    let _backfill = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    app.render_agent_picker().await;
+
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    assert!(
+        !render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            .contains("Load more historical sidecars"),
+        "a first page without next_cursor must clear the stale continuation before it is clickable"
+    );
+    app_server.shutdown().await?;
     Ok(())
 }
 
@@ -2193,6 +4042,146 @@ async fn select_uncached_agent_thread_still_refreshes_liveness() -> Result<()> {
 
     assert_eq!(app.active_thread_id, None);
     assert_eq!(app.agent_navigation.get(&thread_id), None);
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn select_live_agent_thread_rebases_buffered_transcript_before_snapshot_replay() -> Result<()>
+{
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.config.clone();
+    let thread_id = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            config.codex_home.as_path(),
+            "2026-08-02T10-00-00",
+            "2026-08-02T10:00:00Z",
+            "authoritative child transcript",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create child rollout"),
+    )?;
+    let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+
+    // Make this a live resume target without letting its notifications reach the TUI. The
+    // synthetic child channel below must therefore attach via `thread/resume` at selection time.
+    app_server
+        .resume_thread(
+            config,
+            thread_id,
+            crate::app_server_session::ResumeModelSettings::RestoreFromThread,
+        )
+        .await?;
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Scout".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.enqueue_thread_notification(
+        thread_id,
+        buffered_agent_message_completion(thread_id, "authoritative child transcript"),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .expect("buffered child channel")
+            .attachment(),
+        ThreadEventAttachment::NotificationBuffer
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+        .await?;
+
+    let snapshot = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("attached child channel")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert!(snapshot.events.is_empty());
+    let rendered = collect_rendered_history_cells(&mut app_event_rx);
+    assert_eq!(
+        rendered.matches("authoritative child transcript").count(),
+        1
+    );
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn select_closed_agent_thread_rebases_buffered_transcript_before_snapshot_replay()
+-> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let config = app.config.clone();
+    let thread_id = ThreadId::from_string(
+        &app_test_support::create_fake_rollout(
+            config.codex_home.as_path(),
+            "2026-08-02T10-01-00",
+            "2026-08-02T10:01:00Z",
+            "authoritative closed transcript",
+            Some(config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .expect("create closed child rollout"),
+    )?;
+    let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Archivist".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+    app.enqueue_thread_notification(
+        thread_id,
+        buffered_agent_message_completion(thread_id, "authoritative closed transcript"),
+    )
+    .await?;
+    assert_eq!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .expect("buffered closed child channel")
+            .attachment(),
+        ThreadEventAttachment::NotificationBuffer
+    );
+    while app_event_rx.try_recv().is_ok() {}
+
+    // No `thread/resume` occurred, so liveness turns this saved rollout into a replay-only
+    // selection. Its authoritative `thread/read(includeTurns)` snapshot must similarly win.
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agent_thread(&mut tui, &mut app_server, thread_id)
+        .await?;
+
+    assert!(
+        app.agent_navigation
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+    );
+    let snapshot = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("replay child channel")
+        .store
+        .lock()
+        .await
+        .snapshot();
+    assert!(snapshot.events.is_empty());
+    let rendered = collect_rendered_history_cells(&mut app_event_rx);
+    assert_eq!(
+        rendered.matches("authoritative closed transcript").count(),
+        1
+    );
     app_server.shutdown().await?;
     Ok(())
 }
@@ -3084,7 +5073,10 @@ async fn inactive_thread_exec_approval_preserves_context() {
         action: AppServerNetworkPolicyRuleAction::Allow,
     }]);
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(approval))) = app
+    let Some(ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::Exec(approval),
+        ..
+    }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -3146,7 +5138,10 @@ async fn inactive_thread_exec_approval_splits_shell_wrapped_command() {
     params.command =
         Some(shlex::try_join(["/bin/zsh", "-lc", script]).expect("round-trippable shell wrapper"));
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Exec(approval))) = app
+    let Some(ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::Exec(approval),
+        ..
+    }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -3206,7 +5201,11 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
         .expect("valid localized paths")
         .expect("expected file change approval request");
 
-    let ThreadInteractiveRequest::Approval(ApprovalRequest::ApplyPatch(approval)) = &request else {
+    let ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::ApplyPatch(approval),
+        ..
+    } = &request
+    else {
         panic!("expected apply-patch approval request");
     };
     assert_eq!(
@@ -3261,7 +5260,10 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
         },
     };
 
-    let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Permissions(approval))) = app
+    let Some(ThreadInteractiveRequest::Approval {
+        request: ApprovalRequest::Permissions(approval),
+        ..
+    }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -3303,7 +5305,7 @@ async fn inactive_thread_url_elicitation_routes_to_app_link() {
         },
     };
 
-    let Some(ThreadInteractiveRequest::AppLink(params)) = app
+    let Some(ThreadInteractiveRequest::AppLink { params, .. }) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
         .expect("valid localized paths")
@@ -3360,6 +5362,7 @@ async fn inactive_thread_invalid_url_elicitation_is_declined() {
                 content: None,
                 meta: None,
             },
+            ..
         }) if op_thread_id == thread_id && server_name == "payments"
     );
 }
@@ -3543,6 +5546,7 @@ fn inactive_thread_started_notification_initializes_replay_session() -> Result<(
                 task_name: Some("agent thread".to_string()),
                 is_running: false,
                 is_closed: false,
+                has_system_error: false,
                 created_at: Some(1),
                 updated_at: Some(2),
             })
@@ -3707,56 +5711,63 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
 }
 
 #[test]
-fn agent_picker_item_name_snapshot() {
+fn agent_picker_item_label_snapshot() {
     let thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
     let snapshot = [
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 Some("Robie"),
                 Some("explorer"),
+                Some("/root/research"),
                 /*is_primary*/ true
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 Some("Robie"),
                 Some("explorer"),
+                Some("/root/research"),
                 /*is_primary*/ false
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 Some("Robie"),
                 /*agent_role*/ None,
+                Some("/root/research"),
                 /*is_primary*/ false
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
+            format_agent_picker_item_label(
                 /*agent_nickname*/ None,
                 Some("explorer"),
+                Some("/root/research"),
                 /*is_primary*/ false
             ),
             thread_id
         ),
         format!(
             "{} | {}",
-            format_agent_picker_item_name(
-                /*agent_nickname*/ None, /*agent_role*/ None, /*is_primary*/ false
+            format_agent_picker_item_label(
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
+                Some("/root/research"),
+                /*is_primary*/ false
             ),
             thread_id
         ),
     ]
     .join("\n");
-    assert_app_snapshot!("agent_picker_item_name", snapshot);
+    assert_app_snapshot!("agent_picker_item_label", snapshot);
 }
 
 #[tokio::test]
@@ -4157,11 +6168,13 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
     );
 
     app.apply_refreshed_snapshot_thread(
+        Some(&app_server),
         child_thread_id,
         AppServerStartedThread {
             session: test_thread_session(child_thread_id, test_path_buf("/tmp/child")),
             turns: Vec::new(),
             blocks_direct_input: false,
+            thread_subscription_id: None,
         },
         &mut child_snapshot,
     )
@@ -4419,8 +6432,11 @@ async fn discard_side_thread_keeps_local_state_when_server_close_fails() -> Resu
 }
 
 #[tokio::test]
-async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
-    let mut app = make_test_app().await;
+async fn discard_closed_side_thread_removes_local_state_and_rejects_pending_requests() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let app_server = crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+        .await
+        .expect("embedded app server");
     let parent_thread_id = ThreadId::new();
     let side_thread_id = ThreadId::new();
     app.active_thread_id = Some(side_thread_id);
@@ -4436,13 +6452,619 @@ async fn discard_closed_side_thread_removes_local_state_without_server_rpc() {
         /*created_at*/ None,
         /*updated_at*/ None,
     );
+    let pending_request = exec_approval_request(
+        side_thread_id,
+        "turn-discarded",
+        "discarded-call",
+        /*approval_id*/ None,
+    );
+    assert_eq!(
+        app.pending_app_server_requests
+            .note_thread_server_request(side_thread_id, &pending_request),
+        None
+    );
 
-    app.discard_closed_side_thread(side_thread_id).await;
+    app.discard_closed_side_thread(&app_server, side_thread_id)
+        .await;
 
     assert_eq!(app.active_thread_id, None);
     assert!(!app.side_threads.contains_key(&side_thread_id));
     assert!(!app.thread_event_channels.contains_key(&side_thread_id));
     assert_eq!(app.agent_navigation.get(&side_thread_id), None);
+    assert!(app.thread_is_discarded(side_thread_id));
+
+    // Late traffic cannot recreate a local buffer, re-surface a prompt, or recover the old
+    // request-id mapping that would otherwise let a stale UI action send an app-server reply.
+    app.enqueue_thread_notification(
+        side_thread_id,
+        ServerNotification::ServerRequestResolved(
+            codex_app_server_protocol::ServerRequestResolvedNotification {
+                thread_id: side_thread_id.to_string(),
+                request_id: AppServerRequestId::Integer(1),
+            },
+        ),
+    )
+    .await
+    .expect("discarded notification is ignored");
+    app.enqueue_thread_request(side_thread_id, pending_request)
+        .await
+        .expect("discarded request is ignored");
+    app.enqueue_thread_history_entry_response(
+        side_thread_id,
+        HistoryLookupResponse::Entry {
+            offset: 0,
+            log_id: 1,
+            entry: Some("late history".to_string()),
+        },
+    )
+    .await
+    .expect("discarded history response is ignored");
+    assert!(!app.thread_event_channels.contains_key(&side_thread_id));
+    assert!(
+        app.pending_app_server_requests
+            .take_resolution(&Op::ExecApproval {
+                id: "discarded-call".to_string(),
+                turn_id: None,
+                decision: codex_app_server_protocol::CommandExecutionApprovalDecision::Accept,
+            })
+            .expect("discarded request lookup should not serialize")
+            .is_none()
+    );
+    assert!(!app.chat_widget.has_active_view());
+    assert!(app_event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn authoritative_primary_attach_clears_discard_tombstone() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.discard_closed_side_thread(&app_server, thread_id).await;
+    assert!(app.thread_is_discarded(thread_id));
+
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached")),
+        Vec::new(),
+    )
+    .await?;
+
+    assert!(!app.thread_is_discarded(thread_id));
+    assert!(
+        app.thread_event_channels
+            .get(&thread_id)
+            .is_some_and(ThreadEventChannel::has_live_attachment)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_targeted_goal_state_is_fenced_after_same_id_reattach() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let old_subscription_id = "old-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(old_subscription_id.clone()));
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-ingress")),
+        Vec::new(),
+    )
+    .await?;
+    let new_subscription_id = "new-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(new_subscription_id.clone()));
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: old_subscription_id,
+            notification: thread_goal_updated_notification(thread_id),
+        },
+    )
+    .await;
+    assert!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("reattached primary has a receiver")
+            .try_recv()
+            .is_err(),
+        "a delayed goal state from the old subscription must not reach the reattached presentation"
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: new_subscription_id,
+            notification: thread_goal_updated_notification(thread_id),
+        },
+    )
+    .await;
+    assert!(matches!(
+        app.active_thread_rx
+            .as_mut()
+            .expect("reattached primary has a receiver")
+            .try_recv(),
+        Ok(ThreadBufferedEvent::Notification(
+            ServerNotification::ThreadGoalUpdated(_)
+        ))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn subscription_fence_prunes_retired_tokens_and_resets_per_session_state() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let subscription_ids = (0..(THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT + 2))
+        .map(|index| format!("retired-subscription-{index}"))
+        .collect::<Vec<_>>();
+
+    for subscription_id in &subscription_ids {
+        app.mark_thread_attached(thread_id);
+        app.bind_thread_subscription(thread_id, Some(subscription_id.clone()));
+        app.mark_thread_discarded(thread_id);
+    }
+    app.prune_thread_subscription_tombstones();
+    assert!(
+        app.thread_subscription_targets.len() <= THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT,
+        "repeated attach/discard must not retain unbounded subscription tombstones"
+    );
+    let pruned_subscription_id = subscription_ids
+        .iter()
+        .find(|subscription_id| !app.thread_subscription_targets.contains_key(*subscription_id))
+        .expect("the bounded tombstone sweep should prune an unreferenced old token")
+        .clone();
+
+    app.deferred_thread_subscription_events.push_back(
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: "deferred-reset-token".to_string(),
+            notification: thread_goal_updated_notification(thread_id),
+        },
+    );
+    app.rejected_stale_thread_subscription_requests.push_back((
+        "rejected-reset-token".to_string(),
+        AppServerRequestId::Integer(9),
+    ));
+    app.reset_thread_event_state(None).await;
+    assert!(app.thread_subscription_targets.is_empty());
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    assert!(app.rejected_stale_thread_subscription_requests.is_empty());
+    assert!(app.thread_is_discarded(thread_id));
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: pruned_subscription_id,
+            notification: automatic_child_started_notification(thread_id, "Stale", "worker"),
+        },
+    )
+    .await;
+    assert!(
+        app.thread_subscription_targets.is_empty(),
+        "a pruned old token must remain fenced by the discarded lifecycle"
+    );
+    assert!(
+        !app.thread_event_channels.contains_key(&thread_id),
+        "stale traffic after reset must not recreate a thread presentation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn subscription_fence_bounds_deferred_events_and_rejects_overflow_once() -> Result<()> {
+    let mut app = make_test_app().await;
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let subscription_id = "unbound-overflow-subscription".to_string();
+    let thread_id = ThreadId::new();
+
+    for _ in 0..DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT {
+        app.handle_app_server_event(
+            &app_server,
+            codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id: subscription_id.clone(),
+                notification: thread_goal_updated_notification(thread_id),
+            },
+        )
+        .await;
+    }
+    assert_eq!(
+        app.deferred_thread_subscription_events.len(),
+        DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT
+    );
+
+    let overflow_request = exec_approval_request(
+        thread_id,
+        "turn-overflow",
+        "request-overflow",
+        /*approval_id*/ None,
+    );
+    for _ in 0..2 {
+        app.handle_app_server_event(
+            &app_server,
+            codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id: subscription_id.clone(),
+                request: overflow_request.clone(),
+            },
+        )
+        .await;
+    }
+
+    assert_eq!(
+        app.deferred_thread_subscription_events.len(),
+        DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT,
+        "a full queue must never grow for an unbound subscription"
+    );
+    assert_eq!(
+        app.rejected_stale_thread_subscription_requests.len(),
+        1,
+        "the overflowed request id must be rejected exactly once"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_targeted_request_is_rejected_and_new_ingress_is_retained() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let old_subscription_id = "old-request-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(old_subscription_id.clone()));
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-request")),
+        Vec::new(),
+    )
+    .await?;
+    let new_subscription_id = "new-request-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(new_subscription_id.clone()));
+    let stale_request = exec_approval_request(
+        thread_id,
+        "turn-old",
+        "request-old",
+        /*approval_id*/ None,
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: old_subscription_id.clone(),
+            request: stale_request.clone(),
+        },
+    )
+    .await;
+    assert!(
+        !app.pending_app_server_requests
+            .contains_server_request(&stale_request),
+        "a stale request must be rejected before it can enter the new lifecycle's ledger"
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: old_subscription_id,
+            request: stale_request.clone(),
+        },
+    )
+    .await;
+    assert_eq!(
+        app.rejected_stale_thread_subscription_requests.len(),
+        1,
+        "the original stale request id must be rejected exactly once"
+    );
+
+    let new_request = exec_approval_request(
+        thread_id,
+        "turn-new",
+        "request-new",
+        /*approval_id*/ None,
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: new_subscription_id,
+            request: new_request.clone(),
+        },
+    )
+    .await;
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&new_request),
+        "a request delivered by the replacement listener must remain actionable"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_targeted_current_time_request_is_fenced_after_same_id_reattach() -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let old_subscription_id = "old-current-time-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(old_subscription_id.clone()));
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-current-time")),
+        Vec::new(),
+    )
+    .await?;
+    let new_subscription_id = "new-current-time-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(new_subscription_id.clone()));
+    while app_event_rx.try_recv().is_ok() {}
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: old_subscription_id,
+            request: current_time_read_request(thread_id, /*request_id*/ 41),
+        },
+    )
+    .await;
+    assert!(
+        collect_rendered_history_cells(&mut app_event_rx).is_empty(),
+        "a stale CurrentTimeRead must not reach the replacement thread presentation"
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: new_subscription_id,
+            request: current_time_read_request(thread_id, /*request_id*/ 42),
+        },
+    )
+    .await;
+    assert!(
+        collect_rendered_history_cells(&mut app_event_rx)
+            .contains("External current time is not available in TUI."),
+        "the replacement subscription must still deliver CurrentTimeRead normally"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn subscription_request_replayed_before_resume_bind_is_deferred_then_actionable() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let subscription_id = "resume-replay-subscription".to_string();
+    let replayed_request = exec_approval_request(
+        thread_id,
+        "turn-replayed-before-response",
+        "request-replayed-before-response",
+        /*approval_id*/ None,
+    );
+
+    // App-server is allowed to replay a pending request immediately after it
+    // attaches the listener and before the resume response reaches the TUI.
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: subscription_id.clone(),
+            request: replayed_request.clone(),
+        },
+    )
+    .await;
+    assert_eq!(app.deferred_thread_subscription_events.len(), 1);
+    assert!(
+        !app.pending_app_server_requests
+            .contains_server_request(&replayed_request),
+        "an unknown subscription must not be guessed from a thread id"
+    );
+
+    app.mark_thread_attached(thread_id);
+    app.bind_thread_subscription_and_flush(&app_server, thread_id, Some(subscription_id))
+        .await;
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/replayed-resume")),
+        Vec::new(),
+    )
+    .await?;
+
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&replayed_request),
+        "the replayed request must become actionable after the response binds its identity"
+    );
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_child_subscription_started_binds_and_fences_reattach() -> Result<()> {
+    let mut app = make_test_app().await;
+    let primary_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+    let primary_session = test_thread_session(primary_thread_id, test_path_buf("/tmp/main"));
+    app.primary_thread_id = Some(primary_thread_id);
+    app.active_thread_id = Some(primary_thread_id);
+    app.primary_session_configured = Some(primary_session.clone());
+    app.thread_event_channels.insert(
+        primary_thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            primary_session,
+            Vec::new(),
+        ),
+    );
+
+    let automatic_subscription_id = "automatic-child-subscription".to_string();
+    let child_approval = exec_approval_request(
+        child_thread_id,
+        "turn-child",
+        "request-child",
+        /*approval_id*/ None,
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: automatic_subscription_id.clone(),
+            request: child_approval.clone(),
+        },
+    )
+    .await;
+    assert_eq!(app.deferred_thread_subscription_events.len(), 1);
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: automatic_subscription_id.clone(),
+            notification: automatic_child_started_notification(
+                child_thread_id,
+                "Child",
+                "explorer",
+            ),
+        },
+    )
+    .await;
+    assert!(matches!(
+        app.thread_subscription_targets.get(&automatic_subscription_id),
+        Some(ThreadSubscriptionBinding::Active(target)) if target.thread_id == child_thread_id
+    ));
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&child_approval),
+        "the deferred child approval must become actionable after its automatic handshake"
+    );
+    assert_eq!(
+        app.chat_widget.pending_thread_approvals(),
+        &["Subagent: Child [explorer]".to_string()],
+        "the child approval must surface in the active parent view"
+    );
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    let child_entry = app
+        .agent_navigation
+        .get(&child_thread_id)
+        .expect("the automatic ThreadStarted metadata must create a child picker entry");
+    assert_eq!(child_entry.agent_nickname.as_deref(), Some("Child"));
+    assert_eq!(child_entry.agent_role.as_deref(), Some("explorer"));
+    assert_eq!(child_entry.model.as_deref(), Some("gpt-test"));
+
+    // Reattaching the same thread id gives the UI a new authoritative
+    // lifecycle. The old automatic token remains a tombstone and its delayed
+    // ThreadStarted frame cannot mutate the replacement child presentation.
+    app.mark_thread_discarded(child_thread_id);
+    app.mark_thread_attached(child_thread_id);
+    let replacement_subscription_id = "replacement-child-subscription".to_string();
+    app.bind_thread_subscription(child_thread_id, Some(replacement_subscription_id.clone()));
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: automatic_subscription_id.clone(),
+            notification: automatic_child_started_notification(
+                child_thread_id,
+                "Stale Child",
+                "reviewer",
+            ),
+        },
+    )
+    .await;
+    assert!(matches!(
+        app.thread_subscription_targets.get(&automatic_subscription_id),
+        Some(ThreadSubscriptionBinding::Tombstoned(target)) if target.thread_id == child_thread_id
+    ));
+    assert!(matches!(
+        app.thread_subscription_targets.get(&replacement_subscription_id),
+        Some(ThreadSubscriptionBinding::Active(target)) if target.thread_id == child_thread_id
+    ));
+    assert_eq!(
+        app.agent_navigation
+            .get(&child_thread_id)
+            .and_then(|entry| entry.agent_nickname.as_deref()),
+        Some("Child"),
+        "a delayed old token must not overwrite the replacement child metadata"
+    );
+    assert!(app.deferred_thread_subscription_events.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_transport_resolution_cannot_clear_replacement_request() -> Result<()> {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let app_server =
+        crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
+
+    app.mark_thread_attached(thread_id);
+    let stale_subscription_id = "old-resolution-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(stale_subscription_id.clone()));
+    app.mark_thread_discarded(thread_id);
+    app.enqueue_primary_thread_session(
+        test_thread_session(thread_id, test_path_buf("/tmp/reattached-resolution")),
+        Vec::new(),
+    )
+    .await?;
+    let replacement_subscription_id = "new-resolution-subscription".to_string();
+    app.bind_thread_subscription(thread_id, Some(replacement_subscription_id.clone()));
+    let replacement_request = exec_approval_request(
+        thread_id,
+        "turn-replacement",
+        "request-replacement",
+        /*approval_id*/ None,
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id: replacement_subscription_id.clone(),
+            request: replacement_request.clone(),
+        },
+    )
+    .await;
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&replacement_request),
+        "the replacement request must be recorded before a delayed resolution is handled"
+    );
+
+    let resolution = ServerNotification::ServerRequestResolved(
+        codex_app_server_protocol::ServerRequestResolvedNotification {
+            thread_id: thread_id.to_string(),
+            request_id: AppServerRequestId::Integer(1),
+        },
+    );
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: stale_subscription_id,
+            notification: resolution.clone(),
+        },
+    )
+    .await;
+    assert!(
+        app.pending_app_server_requests
+            .contains_server_request(&replacement_request),
+        "a stale resolution must not clear the replacement lifecycle's pending request"
+    );
+
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id: replacement_subscription_id,
+            notification: resolution,
+        },
+    )
+    .await;
+    assert!(
+        !app.pending_app_server_requests
+            .contains_server_request(&replacement_request),
+        "the replacement lifecycle's own resolution must still work"
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -4486,6 +7108,47 @@ async fn active_non_primary_shutdown_target_returns_ids_for_non_primary_shutdown
     assert_eq!(
         app.active_non_primary_shutdown_target(&thread_closed_notification(active_thread_id)),
         Some((active_thread_id, primary_thread_id))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_non_primary_shutdown_target_rejects_stale_close_after_status_recovery() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let active_thread_id = ThreadId::new();
+    app.primary_thread_id = Some(ThreadId::new());
+    app.active_thread_id = Some(active_thread_id);
+    app.agent_navigation.upsert(
+        active_thread_id,
+        Some("Recovered child".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+        /*created_at*/ None,
+        /*updated_at*/ None,
+    );
+
+    assert!(app.agent_navigation.accepts_thread_status_change(
+        active_thread_id,
+        /*has_system_error*/ false,
+        /*status_revision*/ Some(7),
+        /*is_closed*/ true,
+    ));
+    app.agent_navigation.mark_closed(active_thread_id);
+    assert!(app.agent_navigation.accepts_thread_status_change(
+        active_thread_id,
+        /*has_system_error*/ false,
+        /*status_revision*/ Some(8),
+        /*is_closed*/ false,
+    ));
+    app.agent_navigation
+        .reopen_after_newer_status(active_thread_id);
+    app.agent_navigation.mark_running(active_thread_id);
+
+    assert_eq!(
+        app.active_non_primary_shutdown_target(&thread_closed_notification(active_thread_id)),
+        None,
+        "an unrevisioned close cannot override the recovered lifecycle"
     );
     Ok(())
 }
@@ -4744,7 +7407,11 @@ async fn make_test_app() -> App {
         pending_shutdown_exit_thread_id: None,
         windows_sandbox: WindowsSandboxState::default(),
         thread_event_channels: HashMap::new(),
-        thread_event_listener_tasks: HashMap::new(),
+        thread_lifecycle_generations: HashMap::new(),
+        discarded_thread_generations: HashMap::new(),
+        thread_subscription_targets: HashMap::new(),
+        deferred_thread_subscription_events: VecDeque::new(),
+        rejected_stale_thread_subscription_requests: VecDeque::new(),
         agent_navigation: AgentNavigationState::default(),
         side_threads: HashMap::new(),
         active_thread_id: None,
@@ -4815,7 +7482,11 @@ async fn make_test_app_with_channels() -> (
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
-            thread_event_listener_tasks: HashMap::new(),
+            thread_lifecycle_generations: HashMap::new(),
+            discarded_thread_generations: HashMap::new(),
+            thread_subscription_targets: HashMap::new(),
+            deferred_thread_subscription_events: VecDeque::new(),
+            rejected_stale_thread_subscription_requests: VecDeque::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,
@@ -4847,11 +7518,13 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     let thread_id = started.session.thread_id;
     app.enqueue_primary_thread_session(started.session, started.turns)
         .await?;
+    let lifecycle_generation = app.thread_lifecycle_generation(thread_id);
     let objective = "x".repeat(MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1);
 
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: objective.clone(),
             ..Default::default()
@@ -4908,6 +7581,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         paste_draft.clone(),
         crate::app_event::ThreadGoalSetMode::ConfirmIfExists,
     )
@@ -4930,6 +7604,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         paste_draft,
         crate::app_event::ThreadGoalSetMode::ReplaceExisting,
     )
@@ -4951,6 +7626,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: "small goal".to_string(),
             pending_pastes: vec![stale_paste],
@@ -4968,6 +7644,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: whitespace_placeholder.to_string(),
             text_elements: vec![TextElement::new(
@@ -5001,6 +7678,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
     app.set_thread_goal_draft(
         &mut app_server,
         thread_id,
+        lifecycle_generation,
         crate::goal_files::GoalDraft {
             objective: format!("Describe {image_placeholder}"),
             text_elements: vec![TextElement::new(
@@ -5044,6 +7722,7 @@ async fn replace_goal_confirmation_snapshot() {
     let mut app = make_test_app().await;
     app.show_replace_thread_goal_confirmation(
         ThreadId::new(),
+        /*lifecycle_generation*/ 0,
         goal_files::GoalDraft {
             objective: "New goal".to_string(),
             ..Default::default()
@@ -5460,6 +8139,65 @@ fn thread_closed_notification(thread_id: ThreadId) -> ServerNotification {
     })
 }
 
+fn thread_goal_updated_notification(thread_id: ThreadId) -> ServerNotification {
+    ServerNotification::ThreadGoalUpdated(
+        codex_app_server_protocol::ThreadGoalUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: Some("turn-goal".to_string()),
+            goal: codex_app_server_protocol::ThreadGoal {
+                thread_id: thread_id.to_string(),
+                objective: "finish the task".to_string(),
+                status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                token_budget: Some(100),
+                tokens_used: 25,
+                time_used_seconds: 1,
+                created_at: 0,
+                updated_at: 0,
+            },
+        },
+    )
+}
+
+fn automatic_child_started_notification(
+    thread_id: ThreadId,
+    agent_nickname: &str,
+    agent_role: &str,
+) -> ServerNotification {
+    ServerNotification::ThreadStarted(ThreadStartedNotification {
+        thread: Thread {
+            id: thread_id.to_string(),
+            extra: None,
+            session_id: thread_id.to_string(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview: "automatic child".to_string(),
+            ephemeral: false,
+            is_pinned: false,
+            history_mode: Default::default(),
+            model_provider: "test-provider".to_string(),
+            model: Some("gpt-test".to_string()),
+            reasoning_effort: None,
+            created_at: 1,
+            updated_at: 1,
+            recency_at: Some(1),
+            status: codex_app_server_protocol::ThreadStatus::Active {
+                active_flags: Vec::new(),
+            },
+            path: None,
+            cwd: test_path_buf("/tmp/child").abs(),
+            cli_version: "0.0.0".to_string(),
+            source: codex_app_server_protocol::SessionSource::Unknown,
+            can_accept_direct_input: Some(true),
+            thread_source: None,
+            agent_nickname: Some(agent_nickname.to_string()),
+            agent_role: Some(agent_role.to_string()),
+            git_info: None,
+            name: Some("automatic child".to_string()),
+            turns: Vec::new(),
+        },
+    })
+}
+
 fn token_usage_notification(
     thread_id: ThreadId,
     turn_id: &str,
@@ -5504,6 +8242,34 @@ fn agent_message_delta_notification(
     })
 }
 
+fn buffered_agent_message_completion(thread_id: ThreadId, text: &str) -> ServerNotification {
+    ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+        thread_id: thread_id.to_string(),
+        turn_id: "buffered-turn".to_string(),
+        completed_at_ms: 0,
+        item: ThreadItem::AgentMessage {
+            id: "buffered-agent-message".to_string(),
+            text: text.to_string(),
+            phase: None,
+            memory_citation: None,
+        },
+    })
+}
+
+fn collect_rendered_history_cells(
+    app_event_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> String {
+    std::iter::from_fn(|| app_event_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 120)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn exec_approval_request(
     thread_id: ThreadId,
     turn_id: &str,
@@ -5528,6 +8294,15 @@ fn exec_approval_request(
             proposed_execpolicy_amendment: None,
             proposed_network_policy_amendments: None,
             available_decisions: None,
+        },
+    }
+}
+
+fn current_time_read_request(thread_id: ThreadId, request_id: i64) -> ServerRequest {
+    ServerRequest::CurrentTimeRead {
+        request_id: AppServerRequestId::Integer(request_id),
+        params: CurrentTimeReadParams {
+            thread_id: thread_id.to_string(),
         },
     }
 }
@@ -5951,6 +8726,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
             thread_id,
             nth_user_message,
             prompt,
+            ..
         } if thread_id == expected.thread_id
             && nth_user_message == expected.nth_user_message
             && prompt == expected.prompt
@@ -6511,6 +9287,7 @@ async fn prompt_edit_forks_before_selected_prompt_and_preserves_source() -> Resu
         &mut app_server,
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
+            lifecycle_generation: app.thread_lifecycle_generation(source_thread_id),
             nth_user_message: 1,
             prompt: prompt.clone(),
         },
@@ -6609,6 +9386,7 @@ async fn prompt_edit_before_first_prompt_starts_fresh_thread() -> Result<()> {
         &mut app_server,
         AppEvent::ForkSessionForPromptEdit {
             thread_id: source_thread_id,
+            lifecycle_generation: app.thread_lifecycle_generation(source_thread_id),
             nth_user_message: 0,
             prompt: crate::chatwidget::UserMessage::from("first prompt"),
         },
@@ -6728,7 +9506,7 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
 }
 
 #[tokio::test]
-async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
+async fn reset_and_replay_reseeds_friendly_and_effective_agent_identity() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     let receiver_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread");
@@ -6740,6 +9518,16 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         /*created_at*/ None,
         /*updated_at*/ None,
     );
+    app.agent_navigation
+        .set_agent_path(receiver_thread_id, Some("/root/explore".to_string()));
+    app.agent_navigation.update_identity(
+        receiver_thread_id,
+        Some("gpt-5.4".to_string()),
+        Some(ReasoningEffortConfig::High),
+        Some("openai".to_string()),
+        Some("Explore historical metadata".to_string()),
+    );
+    app.sync_agent_picker_identity(receiver_thread_id);
 
     let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
         config: app.config.clone(),
@@ -6771,12 +9559,32 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
         ThreadEventSnapshot {
             session: None,
             turns: Vec::new(),
-            events: vec![ThreadBufferedEvent::Notification(
-                ServerNotification::ItemStarted(
+            events: vec![
+                ThreadBufferedEvent::Notification(ServerNotification::ItemCompleted(
+                    codex_app_server_protocol::ItemCompletedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        completed_at_ms: 0,
+                        item: ThreadItem::CollabAgentToolCall {
+                            id: "spawn-1".to_string(),
+                            tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+                            status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                            sender_thread_id: ThreadId::new().to_string(),
+                            receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                            prompt: None,
+                            model: Some("gpt-5".to_string()),
+                            reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                            requested_model: None,
+                            requested_reasoning_effort: None,
+                            agents_states: HashMap::new(),
+                        },
+                    },
+                )),
+                ThreadBufferedEvent::Notification(ServerNotification::ItemStarted(
                     codex_app_server_protocol::ItemStartedNotification {
                         thread_id: "thread-1".to_string(),
                         turn_id: "turn-1".to_string(),
-                        started_at_ms: 0,
+                        started_at_ms: 1,
                         item: ThreadItem::CollabAgentToolCall {
                             id: "wait-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
@@ -6787,27 +9595,48 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             prompt: None,
                             model: None,
                             reasoning_effort: None,
+                            requested_model: None,
+                            requested_reasoning_effort: None,
                             agents_states: HashMap::new(),
                         },
                     },
-                ),
-            )],
+                )),
+            ],
             input_state: None,
         },
         /*resume_restored_queue*/ false,
     );
 
+    let mut saw_named_spawn = false;
     let mut saw_named_wait = false;
+    let mut saw_effective_identity = false;
+    let mut saw_requested_identity = false;
     while let Ok(event) = app_event_rx.try_recv() {
         if let AppEvent::InsertHistoryCell(cell) = event {
             let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
+            saw_named_spawn |= transcript.contains("Spawned")
+                && transcript.contains("Robie [explorer] · /root/explore");
             saw_named_wait |= transcript.contains("Robie [explorer]");
+            saw_effective_identity |= transcript.contains("effective: gpt-5.4 high");
+            saw_requested_identity |= transcript.contains("requested: gpt-5 medium");
         }
     }
 
     assert!(
+        saw_named_spawn,
+        "expected replayed spawn item to keep agent identity"
+    );
+    assert!(
         saw_named_wait,
-        "expected replayed wait item to keep agent name"
+        "expected replayed wait item to keep agent identity"
+    );
+    assert!(
+        saw_effective_identity,
+        "expected replayed spawn to use effective metadata"
+    );
+    assert!(
+        saw_requested_identity,
+        "expected replayed spawn to retain requested metadata"
     );
 }
 
@@ -6851,11 +9680,13 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     };
 
     app.apply_refreshed_snapshot_thread(
+        /*app_server*/ None,
         thread_id,
         AppServerStartedThread {
             session: resumed_session.clone(),
             turns: resumed_turns.clone(),
             blocks_direct_input: true,
+            thread_subscription_id: None,
         },
         &mut snapshot,
     )

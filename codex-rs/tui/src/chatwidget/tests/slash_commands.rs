@@ -774,6 +774,7 @@ async fn goal_slash_command_with_extra_os_emits_set_goal_event() {
         thread_id: actual_thread_id,
         draft,
         mode,
+        ..
     } = event
     else {
         panic!("expected SetThreadGoalDraft, got {event:?}");
@@ -865,7 +866,7 @@ async fn bare_goal_slash_command_drains_pending_submission_state() {
 
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::OpenThreadGoalMenu { thread_id: opened }) if opened == thread_id
+        Ok(AppEvent::OpenThreadGoalMenu { thread_id: opened, .. }) if opened == thread_id
     );
     assert!(chat.remote_image_urls().is_empty());
     assert!(chat.bottom_pane.composer_local_image_paths().is_empty());
@@ -893,6 +894,7 @@ async fn goal_control_slash_commands_emit_goal_events() {
                 let AppEvent::SetThreadGoalStatus {
                     thread_id: actual_thread_id,
                     status: actual_status,
+                    ..
                 } = event
                 else {
                     panic!("expected SetThreadGoalStatus, got {event:?}");
@@ -904,6 +906,7 @@ async fn goal_control_slash_commands_emit_goal_events() {
                 let event = rx.try_recv().expect("expected clear goal event");
                 let AppEvent::ClearThreadGoal {
                     thread_id: actual_thread_id,
+                    ..
                 } = event
                 else {
                     panic!("expected ClearThreadGoal, got {event:?}");
@@ -941,6 +944,7 @@ async fn goal_edit_slash_command_opens_goal_editor() {
         let event = rx.try_recv().expect("expected goal editor event");
         let AppEvent::OpenThreadGoalEditor {
             thread_id: actual_thread_id,
+            ..
         } = event
         else {
             panic!("expected OpenThreadGoalEditor, got {event:?}");
@@ -2386,7 +2390,8 @@ async fn slash_mcp_requests_inventory_via_app_server() {
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
             detail: McpServerStatusDetail::ToolsAndAuthOnly,
-            thread_id: Some(actual_thread_id)
+            thread_id: Some(actual_thread_id),
+            ..
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");
@@ -2405,7 +2410,8 @@ async fn slash_mcp_verbose_requests_full_inventory_via_app_server() {
         rx.try_recv(),
         Ok(AppEvent::FetchMcpInventory {
             detail: McpServerStatusDetail::Full,
-            thread_id: Some(actual_thread_id)
+            thread_id: Some(actual_thread_id),
+            ..
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");

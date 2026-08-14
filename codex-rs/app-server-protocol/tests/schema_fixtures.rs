@@ -3,6 +3,7 @@ use anyhow::Result;
 use codex_app_server_protocol::generate_json_with_experimental;
 use codex_app_server_protocol::generate_typescript_schema_fixture_subtree_for_tests;
 use codex_app_server_protocol::read_schema_fixture_subtree;
+use serde_json::Value;
 use similar::TextDiff;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,6 +25,18 @@ fn typescript_schema_fixtures_match_generated() -> Result<()> {
             || generated_tree.contains_key(Path::new("PathUri.ts")),
         "stable ConfigRequirements.ts imports PathUri but PathUri.ts was not generated"
     );
+    for response_path in [
+        "v2/ThreadListResponse.ts",
+        "v2/ThreadLoadedListResponse.ts",
+    ] {
+        let response = generated_tree
+            .get(Path::new(response_path))
+            .with_context(|| format!("generated {response_path} should exist"))?;
+        anyhow::ensure!(
+            String::from_utf8_lossy(response).contains("ancestorFilterApplied?: boolean"),
+            "{response_path} must keep the older-server ancestor acknowledgement optional"
+        );
+    }
 
     Ok(())
 }
@@ -33,6 +46,198 @@ fn json_schema_fixtures_match_generated() -> Result<()> {
     assert_schema_fixtures_match_generated("json", |output_dir| {
         generate_json_with_experimental(output_dir, /*experimental_api*/ false)
     })
+}
+
+/// Locks the additive subagent terminal-state contract across every checked-in JSON schema that
+/// exposes a subagent activity. The whole-tree fixture test above proves the files are generated
+/// from Rust; this focused check gives a compatibility failure a direct, legible assertion. Raw
+/// aggregate bundles retain a trailing newline, while per-schema JSON files do not; read_tree
+/// normalizes both forms before comparing them with freshly generated output.
+#[test]
+fn json_schema_fixtures_keep_subagent_activity_kind_legacy_and_terminal_detail_additive(
+) -> Result<()> {
+    let schema_root = schema_root()?;
+    let fixture_tree = read_tree(&schema_root, "json")?;
+    let expected_kind = serde_json::json!(["started", "interacted", "interrupted"]);
+    let expected_terminal_state = serde_json::json!(["errored"]);
+
+    for (path, bytes) in fixture_tree.iter().filter(|(path, bytes)| {
+        path.extension().is_some_and(|extension| extension == "json")
+            && String::from_utf8_lossy(bytes).contains("\"SubAgentActivityKind\"")
+    }) {
+        let raw_path = schema_root.join("json").join(path);
+        let raw_bytes = std::fs::read(&raw_path)
+            .with_context(|| format!("read raw JSON schema fixture {}", raw_path.display()))?;
+        let expected_suffix = expected_json_fixture_suffix(path);
+        anyhow::ensure!(
+            raw_bytes.ends_with(expected_suffix),
+            "{} must end with the checked-in JSON suffix {:?}",
+            path.display(),
+            String::from_utf8_lossy(expected_suffix)
+        );
+        let schema: Value = serde_json::from_slice(&raw_bytes)
+            .with_context(|| format!("parse JSON schema fixture {}", path.display()))?;
+        let mut activity_kinds = Vec::new();
+        collect_named_schema_values(&schema, "SubAgentActivityKind", &mut activity_kinds);
+        assert_eq!(
+            activity_kinds.len(),
+            1,
+            "{} must define SubAgentActivityKind exactly once",
+            path.display()
+        );
+        assert_eq!(
+            activity_kinds[0].get("enum"),
+            Some(&expected_kind),
+            "{} must retain the three legacy activity kinds",
+            path.display()
+        );
+
+        let mut terminal_states = Vec::new();
+        collect_named_schema_values(
+            &schema,
+            "SubAgentActivityTerminalState",
+            &mut terminal_states,
+        );
+        assert_eq!(
+            terminal_states.len(),
+            1,
+            "{} must define the additive terminal-state enum exactly once",
+            path.display()
+        );
+        assert_eq!(
+            terminal_states[0].get("enum"),
+            Some(&expected_terminal_state),
+            "{} must expose the errored terminal detail",
+            path.display()
+        );
+
+        let mut terminal_properties = Vec::new();
+        collect_named_schema_values(&schema, "terminalState", &mut terminal_properties);
+        assert_eq!(
+            terminal_properties.len(),
+            1,
+            "{} must expose terminalState on subAgentActivity",
+            path.display()
+        );
+        let terminal_property = terminal_properties[0];
+        let any_of = terminal_property
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .with_context(|| format!("{} terminalState must be nullable", path.display()))?;
+        assert!(
+            any_of.iter().any(|schema| {
+                schema
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reference| reference.ends_with("SubAgentActivityTerminalState"))
+            }),
+            "{} terminalState must refer to SubAgentActivityTerminalState",
+            path.display()
+        );
+        assert!(
+            any_of
+                .iter()
+                .any(|schema| schema.get("type") == Some(&Value::String("null".to_string()))),
+            "{} terminalState must remain optional and nullable",
+            path.display()
+        );
+    }
+
+    Ok(())
+}
+
+/// Locks the additive V1 child identity across every checked-in schema carrying a collab agent
+/// state. The existing whole-tree checks prove these fixtures are generated; this targeted check
+/// prevents an older generator/runtime from silently making the optional identity fields required.
+#[test]
+fn json_schema_fixtures_keep_collab_agent_identity_additive() -> Result<()> {
+    let schema_root = schema_root()?;
+    let fixture_tree = read_tree(&schema_root, "json")?;
+
+    for (path, bytes) in fixture_tree.iter().filter(|(path, bytes)| {
+        path.extension().is_some_and(|extension| extension == "json")
+            && String::from_utf8_lossy(bytes).contains("\"CollabAgentState\"")
+    }) {
+        let schema: Value = serde_json::from_slice(bytes)
+            .with_context(|| format!("parse JSON schema fixture {}", path.display()))?;
+        let mut collab_agent_states = Vec::new();
+        collect_named_schema_values(&schema, "CollabAgentState", &mut collab_agent_states);
+        assert_eq!(
+            collab_agent_states.len(),
+            1,
+            "{} must define CollabAgentState exactly once",
+            path.display()
+        );
+
+        let properties = collab_agent_states[0]
+            .get("properties")
+            .and_then(Value::as_object)
+            .with_context(|| {
+                format!("{} CollabAgentState must have properties", path.display())
+            })?;
+        let required = collab_agent_states[0]
+            .get("required")
+            .and_then(Value::as_array)
+            .with_context(|| {
+                format!("{} CollabAgentState must have required fields", path.display())
+            })?;
+        for field in ["agentNickname", "agentRole"] {
+            let property = properties
+                .get(field)
+                .with_context(|| format!("{} must expose {field}", path.display()))?;
+            assert_eq!(
+                property.get("default"),
+                Some(&Value::Null),
+                "{} {field} must default to null",
+                path.display()
+            );
+            assert_eq!(
+                property.get("type"),
+                Some(&serde_json::json!(["string", "null"])),
+                "{} {field} must remain nullable",
+                path.display()
+            );
+            assert!(
+                !required.contains(&Value::String(field.to_string())),
+                "{} {field} must remain optional for older clients",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn expected_json_fixture_suffix(path: &Path) -> &'static [u8] {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("codex_app_server_protocol.schemas.json" | "codex_app_server_protocol.v2.schemas.json") => {
+            b"}\n"
+        }
+        _ => b"}",
+    }
+}
+
+fn collect_named_schema_values<'a>(
+    schema: &'a Value,
+    name: &str,
+    output: &mut Vec<&'a Value>,
+) {
+    match schema {
+        Value::Object(object) => {
+            for (key, value) in object {
+                if key == name {
+                    output.push(value);
+                }
+                collect_named_schema_values(value, name, output);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_named_schema_values(value, name, output);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 fn assert_schema_fixtures_match_generated(

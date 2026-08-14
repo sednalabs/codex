@@ -206,6 +206,8 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
                 agents_states,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
@@ -216,6 +218,8 @@ impl ChatWidget {
                 prompt,
                 model,
                 reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
                 agents_states,
             }),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),

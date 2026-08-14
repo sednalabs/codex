@@ -86,6 +86,9 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    /// The owning tool call's cancellation signal. Direct control-plane callers leave this
+    /// unset to retain their existing spawn behavior.
+    pub(crate) cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +96,68 @@ pub(crate) struct LiveAgent {
     pub(crate) thread_id: ThreadId,
     pub(crate) metadata: AgentMetadata,
     pub(crate) status: AgentStatus,
+    /// The configuration selected for the child before its initial input was delivered.
+    pub(crate) effective_model: String,
+    pub(crate) effective_reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Result of creating an agent and delivering its initial input.
+///
+/// The child is committed before initial-input delivery. Callers that own a parent lifecycle
+/// retain its identity for ordinary delivery failures, where it remains live. A child that dies
+/// during the spawn transaction is reported separately so callers never publish a nonexistent
+/// child reference.
+#[derive(Debug)]
+pub(crate) enum SpawnAgentOutcome {
+    Spawned(LiveAgent),
+    InitialInputDeliveryFailed { agent: LiveAgent, error: CodexErr },
+    /// The child died during initial delivery or cancellation cleanup and was removed from the
+    /// live registry. No child identity is returned because it is no longer a valid target.
+    ChildDiedDuringSpawn { error: CodexErr },
+    /// The initial input was accepted, then its owning spawn call was cancelled. The returned
+    /// child has been interrupted so callers can publish a truthful terminal lifecycle item.
+    Cancelled { agent: LiveAgent },
+    /// The initial input was accepted and cancellation was observed, but the child had already
+    /// reached its own completed or errored terminal state. The child was not interrupted.
+    TerminalBeforeCancellation { agent: LiveAgent },
+}
+
+impl SpawnAgentOutcome {
+    pub(crate) fn into_result(self) -> CodexResult<LiveAgent> {
+        match self {
+            Self::Spawned(agent) => Ok(agent),
+            Self::InitialInputDeliveryFailed { error, .. } => Err(error),
+            Self::ChildDiedDuringSpawn { error } => Err(error),
+            Self::Cancelled { .. } => Err(CodexErr::TurnAborted),
+            Self::TerminalBeforeCancellation { agent } => Ok(agent),
+        }
+    }
+}
+
+#[cfg(test)]
+struct SpawnInitialInputGate {
+    started: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpawnCancellationCleanupPhase {
+    BeforeRegistryCommit,
+    AfterRegistryCommit,
+}
+
+#[cfg(test)]
+struct SpawnCancellationCleanupGate {
+    phase: SpawnCancellationCleanupPhase,
+    started: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
+}
+
+#[cfg(test)]
+struct SpawnFinalStatusGate {
+    started: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
 }
 
 /// Internal inventory snapshot for a spawned sub-agent.
@@ -167,6 +232,8 @@ pub(crate) struct AgentTreeNode {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct AgentTreeInspection {
+    /// Canonical context root. In stale scope, a live context root is intentionally omitted from
+    /// `agents` while its persisted closed descendants remain addressable relative to this name.
     pub(crate) root_agent_name: String,
     pub(crate) scope_applied: AgentTreeScope,
     pub(crate) agent_roots_applied: Vec<String>,
@@ -208,6 +275,27 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    #[cfg(test)]
+    next_spawn_initial_input_error: Arc<tokio::sync::Mutex<Option<CodexErr>>>,
+    #[cfg(test)]
+    next_spawn_initial_input_gate: Arc<tokio::sync::Mutex<Option<SpawnInitialInputGate>>>,
+    #[cfg(test)]
+    next_spawn_cancellation_cleanup_gate:
+        Arc<tokio::sync::Mutex<Option<SpawnCancellationCleanupGate>>>,
+    #[cfg(test)]
+    next_spawn_final_status_gate: Arc<tokio::sync::Mutex<Option<SpawnFinalStatusGate>>>,
+    #[cfg(test)]
+    kill_next_spawn_initial_input_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    kill_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    remove_next_spawn_initial_input_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    remove_next_spawn_cancellation_interrupt_child: Arc<tokio::sync::Mutex<bool>>,
+    #[cfg(test)]
+    next_spawn_cancellation_terminal_status: Arc<tokio::sync::Mutex<Option<AgentStatus>>>,
+    #[cfg(test)]
+    hide_next_agent_config_snapshot: Arc<tokio::sync::Mutex<bool>>,
 }
 
 impl AgentControl {
@@ -224,6 +312,196 @@ impl AgentControl {
             control.rollout_budget.configure(rollout_budget);
         }
         control
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn fail_next_spawn_initial_input(&self, error: CodexErr) {
+        *self.next_spawn_initial_input_error.lock().await = Some(error);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_next_spawn_initial_input(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (proceed_sender, proceed_receiver) = tokio::sync::oneshot::channel();
+        *self.next_spawn_initial_input_gate.lock().await = Some(SpawnInitialInputGate {
+            started: started_sender,
+            proceed: proceed_receiver,
+        });
+        (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_next_spawn_cancellation_cleanup(
+        &self,
+        phase: SpawnCancellationCleanupPhase,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (proceed_sender, proceed_receiver) = tokio::sync::oneshot::channel();
+        *self.next_spawn_cancellation_cleanup_gate.lock().await =
+            Some(SpawnCancellationCleanupGate {
+                phase,
+                started: started_sender,
+                proceed: proceed_receiver,
+            });
+        (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    /// Pause after the spawned child has passed its final status and liveness checks, before the
+    /// outcome is published to the caller.
+    pub(crate) async fn pause_next_spawn_final_status(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (proceed_sender, proceed_receiver) = tokio::sync::oneshot::channel();
+        *self.next_spawn_final_status_gate.lock().await = Some(SpawnFinalStatusGate {
+            started: started_sender,
+            proceed: proceed_receiver,
+        });
+        (started_receiver, proceed_sender)
+    }
+
+    #[cfg(test)]
+    /// Terminate the next committed child immediately before its initial input is delivered.
+    /// The delivery path then observes a real closed submission channel and performs its normal
+    /// `InternalAgentDied` removal.
+    pub(crate) async fn kill_next_spawn_initial_input_child(&self) {
+        *self.kill_next_spawn_initial_input_child.lock().await = true;
+    }
+
+    #[cfg(test)]
+    /// Terminate the next child immediately before the cancellation interrupt is submitted.
+    pub(crate) async fn kill_next_spawn_cancellation_interrupt_child(&self) {
+        *self
+            .kill_next_spawn_cancellation_interrupt_child
+            .lock()
+            .await = true;
+    }
+
+    #[cfg(test)]
+    /// Remove the next committed child before initial delivery, then make delivery observe the
+    /// same `ThreadNotFound` race that an external concurrent shutdown produces.
+    pub(crate) async fn remove_next_spawn_initial_input_child(&self) {
+        *self.remove_next_spawn_initial_input_child.lock().await = true;
+    }
+
+    #[cfg(test)]
+    /// Remove the next committed child before cancellation submits its interrupt request.
+    pub(crate) async fn remove_next_spawn_cancellation_interrupt_child(&self) {
+        *self
+            .remove_next_spawn_cancellation_interrupt_child
+            .lock()
+            .await = true;
+    }
+
+    #[cfg(test)]
+    /// Finish the next delivered child naturally in the cancellation-to-interrupt window.
+    ///
+    /// This models a child that independently completes or errors after the parent observes
+    /// cancellation, but before it can submit an interrupt request.
+    pub(crate) async fn finish_next_spawn_cancellation_before_interrupt(
+        &self,
+        status: AgentStatus,
+    ) {
+        assert!(
+            matches!(status, AgentStatus::Completed(_) | AgentStatus::Errored(_)),
+            "the cancellation-window fixture requires a natural terminal status"
+        );
+        *self.next_spawn_cancellation_terminal_status.lock().await = Some(status);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hide_next_agent_config_snapshot(&self) {
+        *self.hide_next_agent_config_snapshot.lock().await = true;
+    }
+
+    #[cfg(test)]
+    async fn take_next_spawn_initial_input_error(&self) -> Option<CodexErr> {
+        self.next_spawn_initial_input_error.lock().await.take()
+    }
+
+    #[cfg(test)]
+    async fn take_kill_next_spawn_initial_input_child(&self) -> bool {
+        std::mem::take(&mut *self.kill_next_spawn_initial_input_child.lock().await)
+    }
+
+    #[cfg(test)]
+    async fn take_kill_next_spawn_cancellation_interrupt_child(&self) -> bool {
+        std::mem::take(
+            &mut *self
+                .kill_next_spawn_cancellation_interrupt_child
+                .lock()
+                .await,
+        )
+    }
+
+    #[cfg(test)]
+    async fn take_remove_next_spawn_initial_input_child(&self) -> bool {
+        std::mem::take(&mut *self.remove_next_spawn_initial_input_child.lock().await)
+    }
+
+    #[cfg(test)]
+    async fn take_remove_next_spawn_cancellation_interrupt_child(&self) -> bool {
+        std::mem::take(
+            &mut *self
+                .remove_next_spawn_cancellation_interrupt_child
+                .lock()
+                .await,
+        )
+    }
+
+    #[cfg(test)]
+    async fn take_next_spawn_cancellation_terminal_status(&self) -> Option<AgentStatus> {
+        self.next_spawn_cancellation_terminal_status.lock().await.take()
+    }
+
+    #[cfg(test)]
+    async fn wait_for_next_spawn_initial_input(&self) {
+        let Some(gate) = self.next_spawn_initial_input_gate.lock().await.take() else {
+            return;
+        };
+        let _ = gate.started.send(());
+        let _ = gate.proceed.await;
+    }
+
+    #[cfg(test)]
+    async fn wait_for_next_spawn_cancellation_cleanup(
+        &self,
+        phase: SpawnCancellationCleanupPhase,
+    ) {
+        let gate = {
+            let mut next_gate = self.next_spawn_cancellation_cleanup_gate.lock().await;
+            let Some(gate) = next_gate.take() else {
+                return;
+            };
+            if gate.phase != phase {
+                *next_gate = Some(gate);
+                return;
+            }
+            gate
+        };
+        let _ = gate.started.send(());
+        let _ = gate.proceed.await;
+    }
+
+    #[cfg(test)]
+    async fn wait_for_next_spawn_final_status(&self) {
+        let Some(gate) = self.next_spawn_final_status_gate.lock().await.take() else {
+            return;
+        };
+        let _ = gate.started.send(());
+        let _ = gate.proceed.await;
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
@@ -444,6 +722,10 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<ThreadConfigSnapshot> {
+        #[cfg(test)]
+        if std::mem::take(&mut *self.hide_next_agent_config_snapshot.lock().await) {
+            return None;
+        }
         let Ok(state) = self.upgrade() else {
             return None;
         };
@@ -657,41 +939,15 @@ impl AgentControl {
         }
 
         let (tree_root_thread_id, tree_root_session_state) = match target_path.as_ref() {
-            Some(target_path) => {
-                if let Some(thread_id) = self.state.agent_id_for_path(target_path) {
-                    (thread_id, AgentSessionState::Live)
-                } else {
-                    let Some(state_db_ctx) = state_db_ctx.as_ref() else {
-                        return Err(CodexErr::UnsupportedOperation(format!(
-                            "agent path `{}` not found in the live tree",
-                            target_path.as_str()
-                        )));
-                    };
-                    let thread_id = if target_path.is_root() {
-                        Some(root_live_thread_id)
-                    } else {
-                        state_db_ctx
-                            .find_thread_spawn_descendant_by_path(
-                                root_live_thread_id,
-                                target_path.as_str(),
-                            )
-                            .await
-                            .map_err(|err| {
-                                CodexErr::Fatal(format!(
-                                    "failed to inspect persisted agent path `{}`: {err}",
-                                    target_path.as_str()
-                                ))
-                            })?
-                    }
-                    .ok_or_else(|| {
-                        CodexErr::UnsupportedOperation(format!(
-                            "agent path `{}` not found",
-                            target_path.as_str()
-                        ))
-                    })?;
-                    (thread_id, AgentSessionState::Stale)
-                }
-            }
+            Some(target_path) => self
+                .resolve_agent_tree_path_in_scope(
+                    state_db_ctx.as_ref(),
+                    root_live_thread_id,
+                    target_path,
+                    scope,
+                )
+                .await?
+                .ok_or_else(|| inspect_agent_tree_path_not_found(target_path.as_str(), scope))?,
             None => (current_thread_id, AgentSessionState::Live),
         };
         let tree_root_name = match tree_root_session_state {
@@ -739,40 +995,149 @@ impl AgentControl {
             }
         }
 
-        let live_children_by_parent = if matches!(scope, AgentTreeScope::Stale) {
-            None
+        // Resolve an explicit branch filter before applying the bounded traversal. In particular,
+        // a sibling that happens to sort before a requested branch must not consume the entire
+        // result capacity and make the requested branch disappear. Exact agent-path lookups keep
+        // this preselection bounded without materializing unrelated siblings.
+        let mut traversal_roots = Vec::new();
+        let mut traversal_truncated = false;
+        if agent_roots_applied.is_empty() {
+            if agent_tree_scope_includes(scope, tree_root_session_state) {
+                traversal_roots.push((tree_root_thread_id, tree_root_session_state, 0usize));
+            } else {
+                // With an omitted target, `tree_root_thread_id` is the caller's live root.
+                // Stale scope must not report that live root merely to reach its persisted closed
+                // descendants, so seed the traversal from the scope-admitted direct children.
+                let child_states = self
+                    .tree_child_session_states(
+                        &state,
+                        state_db_ctx.as_ref(),
+                        tree_root_thread_id,
+                        scope,
+                        max_agents.saturating_add(1),
+                    )
+                    .await?;
+                let mut child_ids = child_states.keys().copied().collect::<Vec<_>>();
+                child_ids.sort_by_key(std::string::ToString::to_string);
+                if child_ids.len() > max_agents {
+                    traversal_truncated = true;
+                }
+                child_ids.truncate(max_agents);
+                traversal_roots.extend(child_ids.into_iter().filter_map(|child_thread_id| {
+                    child_states
+                        .get(&child_thread_id)
+                        .copied()
+                        .map(|session_state| (child_thread_id, session_state, 1usize))
+                }));
+            }
         } else {
-            Some(self.live_thread_spawn_children().await?)
-        };
-        let mut queue = VecDeque::from([(tree_root_thread_id, tree_root_session_state, 0usize)]);
+            let mut resolved_roots = Vec::new();
+            let mut seen_thread_ids = HashSet::new();
+            for agent_root in &agent_roots_applied {
+                let resolved_root = if agent_root.as_str() == tree_root_name.as_str() {
+                    agent_tree_scope_includes(scope, tree_root_session_state)
+                        .then_some((tree_root_thread_id, tree_root_session_state))
+                } else {
+                    self.resolve_agent_tree_path_in_scope(
+                        state_db_ctx.as_ref(),
+                        tree_root_thread_id,
+                        agent_root,
+                        scope,
+                    )
+                    .await?
+                };
+
+                let (thread_id, session_state) = resolved_root
+                    .ok_or_else(|| inspect_agent_tree_path_not_found(agent_root.as_str(), scope))?;
+                if seen_thread_ids.insert(thread_id) {
+                    let depth =
+                        agent_name_relative_depth(agent_root.as_str(), tree_root_name.as_str());
+                    resolved_roots.push((agent_root.to_string(), thread_id, session_state, depth));
+                }
+            }
+            resolved_roots.sort_by(|left, right| left.0.cmp(&right.0));
+            traversal_roots.extend(
+                resolved_roots
+                    .into_iter()
+                    .map(|(_, thread_id, session_state, depth)| (thread_id, session_state, depth)),
+            );
+        }
+
+        let mut queue = VecDeque::from(traversal_roots.clone());
         let mut depth_by_thread_id = HashMap::<ThreadId, usize>::new();
         let mut tree_children = HashMap::<ThreadId, Vec<ThreadId>>::new();
+        let mut parent_by_thread_id = HashMap::<ThreadId, ThreadId>::new();
+        if matches!(scope, AgentTreeScope::Stale) {
+            // A stale-only result must never reintroduce its live canonical root through a
+            // malformed persisted closed edge. This holds for every traversal entry point,
+            // including an explicit stale target below that root.
+            parent_by_thread_id.insert(root_live_thread_id, root_live_thread_id);
+        }
         let mut tree_records = HashMap::<ThreadId, AgentTreeRecord>::new();
-
         while let Some((thread_id, session_state, depth)) = queue.pop_front() {
             if tree_records.contains_key(&thread_id) {
                 continue;
+            }
+            if tree_records.len() >= max_agents {
+                traversal_truncated = true;
+                break;
             }
 
             let record = self
                 .load_agent_tree_record(&state, state_db_ctx.as_ref(), thread_id, session_state)
                 .await?;
             depth_by_thread_id.insert(thread_id, depth);
+            tree_records.insert(thread_id, record);
 
+            // Keep the queue and every direct-child query bounded by the remaining output
+            // capacity, plus one probe row that makes truncation explicit.
+            let remaining_queue_capacity = max_agents
+                .saturating_sub(tree_records.len())
+                .saturating_sub(queue.len());
             let child_states = self
                 .tree_child_session_states(
-                    live_children_by_parent.as_ref(),
+                    &state,
                     state_db_ctx.as_ref(),
                     thread_id,
                     scope,
+                    remaining_queue_capacity.saturating_add(1),
                 )
                 .await?;
             let mut child_ids = child_states.keys().copied().collect::<Vec<_>>();
             child_ids.sort_by_key(std::string::ToString::to_string);
+            child_ids.retain(|child_thread_id| {
+                let repeated_node = tree_records.contains_key(child_thread_id)
+                    || parent_by_thread_id.contains_key(child_thread_id);
+                let cyclic_edge = agent_tree_edge_would_form_cycle(
+                    thread_id,
+                    *child_thread_id,
+                    &parent_by_thread_id,
+                );
+                if repeated_node || cyclic_edge {
+                    warn!(
+                        parent_thread_id = %thread_id,
+                        child_thread_id = %child_thread_id,
+                        repeated_node,
+                        cyclic_edge,
+                        "discarding repeated or cyclic agent tree edge"
+                    );
+                    return false;
+                }
+                true
+            });
+            if depth >= max_depth {
+                traversal_truncated |= !child_ids.is_empty();
+                tree_children.insert(thread_id, Vec::new());
+                continue;
+            }
+            if child_ids.len() > remaining_queue_capacity {
+                traversal_truncated = true;
+            }
+            child_ids.truncate(remaining_queue_capacity);
             tree_children.insert(thread_id, child_ids.clone());
-            tree_records.insert(thread_id, record);
 
             for child_id in child_ids {
+                parent_by_thread_id.insert(child_id, thread_id);
                 if let Some(child_state) = child_states.get(&child_id).copied() {
                     queue.push_back((child_id, child_state, depth.saturating_add(1)));
                 }
@@ -796,11 +1161,21 @@ impl AgentControl {
         }
 
         let mut descendant_counts = HashMap::<ThreadId, usize>::new();
-        compute_descendant_counts(tree_root_thread_id, &tree_children, &mut descendant_counts);
+        for (thread_id, _, _) in &traversal_roots {
+            compute_descendant_counts(*thread_id, &tree_children, &mut descendant_counts);
+        }
 
         let mut ordered_thread_ids = Vec::with_capacity(tree_records.len());
-        let mut stack = vec![tree_root_thread_id];
+        let mut ordered_seen = HashSet::new();
+        let mut stack = traversal_roots
+            .iter()
+            .rev()
+            .map(|(thread_id, _, _)| *thread_id)
+            .collect::<Vec<_>>();
         while let Some(thread_id) = stack.pop() {
+            if !ordered_seen.insert(thread_id) {
+                continue;
+            }
             ordered_thread_ids.push(thread_id);
             if let Some(children) = tree_children.get(&thread_id) {
                 for child_id in children.iter().rev().copied() {
@@ -822,6 +1197,7 @@ impl AgentControl {
                         })
                     })
             })
+            .take(max_agents)
             .collect::<Vec<_>>();
 
         let mut summary = AgentTreeSummary {
@@ -857,22 +1233,9 @@ impl AgentControl {
             }
         }
 
-        let filtered_count = filtered_thread_ids.len();
-        let within_depth = filtered_thread_ids
+        let truncated = traversal_truncated;
+        let agents = filtered_thread_ids
             .into_iter()
-            .filter(|thread_id| {
-                depth_by_thread_id
-                    .get(thread_id)
-                    .copied()
-                    .unwrap_or_default()
-                    <= max_depth
-            })
-            .collect::<Vec<_>>();
-        let within_depth_count = within_depth.len();
-        let truncated = filtered_count > within_depth_count || within_depth_count > max_agents;
-        let agents = within_depth
-            .into_iter()
-            .take(max_agents)
             .filter_map(|thread_id| {
                 let record = tree_records.get(&thread_id)?;
                 Some(AgentTreeNode {
@@ -895,7 +1258,7 @@ impl AgentControl {
         let root_agent_name = tree_records
             .get(&tree_root_thread_id)
             .map(|record| record.agent_name.clone())
-            .unwrap_or_else(|| tree_root_thread_id.to_string());
+            .unwrap_or(tree_root_name);
 
         Ok(AgentTreeInspection {
             root_agent_name,
@@ -1185,6 +1548,34 @@ impl AgentControl {
         }
     }
 
+    /// Close the durable parent edge when a committed child unexpectedly dies before the spawn
+    /// operation can hand its identity back to the caller. Completion watchers are installed only
+    /// after initial input delivery, so this path must not rely on a watcher to do that work.
+    async fn close_thread_spawn_edge_after_unexpected_child_exit(
+        &self,
+        child_thread: &crate::CodexThread,
+        child_thread_id: ThreadId,
+    ) -> CodexResult<()> {
+        if child_thread.config_snapshot().await.ephemeral {
+            return Ok(());
+        }
+        let state = self.upgrade()?;
+        let Some(agent_graph_store) = state.agent_graph_store() else {
+            return Ok(());
+        };
+        agent_graph_store
+            .set_thread_spawn_edge_status(
+                child_thread_id,
+                codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!(
+                    "failed to close unexpected child-exit spawn edge for {child_thread_id}: {err}"
+                ))
+            })
+    }
+
     #[allow(dead_code)]
     #[cfg(test)]
     /// Enumerate persisted descendants and filter them by the desired spawn-edge status.
@@ -1308,30 +1699,32 @@ impl AgentControl {
 
     async fn tree_child_session_states(
         &self,
-        live_children_by_parent: Option<&HashMap<ThreadId, Vec<(ThreadId, AgentMetadata)>>>,
+        state: &Arc<ThreadManagerState>,
         state_db_ctx: Option<&state_db::StateDbHandle>,
         parent_thread_id: ThreadId,
         scope: AgentTreeScope,
+        limit: usize,
     ) -> CodexResult<HashMap<ThreadId, AgentSessionState>> {
         let mut child_states = HashMap::<ThreadId, AgentSessionState>::new();
 
-        if !matches!(scope, AgentTreeScope::Stale)
-            && let Some(live_children_by_parent) = live_children_by_parent
-            && let Some(children) = live_children_by_parent.get(&parent_thread_id)
-        {
-            for (child_thread_id, _) in children {
-                child_states.insert(*child_thread_id, AgentSessionState::Live);
+        if !matches!(scope, AgentTreeScope::Stale) {
+            for child_thread_id in state
+                .list_live_thread_spawn_children(parent_thread_id, limit)
+                .await
+            {
+                child_states.insert(child_thread_id, AgentSessionState::Live);
             }
         }
 
-        if !matches!(scope, AgentTreeScope::Live) {
+        if !matches!(scope, AgentTreeScope::Live) && child_states.len() < limit {
             let Some(state_db_ctx) = state_db_ctx else {
                 return Err(inspect_agent_tree_state_db_unavailable());
             };
             let closed_children = state_db_ctx
-                .list_thread_spawn_children_with_status(
+                .list_thread_spawn_children_with_status_limit(
                     parent_thread_id,
                     DirectionalThreadSpawnEdgeStatus::Closed,
+                    limit.saturating_sub(child_states.len()),
                 )
                 .await
                 .map_err(|err| {
@@ -1348,6 +1741,52 @@ impl AgentControl {
 
         Ok(child_states)
     }
+
+    /// Resolves a canonical agent path using exactly the sources admitted by `scope`.
+    ///
+    /// Live registry membership is the only evidence of a live agent. Persisted stale lookup
+    /// follows closed edges only, including every edge on a nested path, so an evicted Open child
+    /// never becomes a fabricated stale result.
+    async fn resolve_agent_tree_path_in_scope(
+        &self,
+        state_db_ctx: Option<&state_db::StateDbHandle>,
+        root_live_thread_id: ThreadId,
+        agent_path: &AgentPath,
+        scope: AgentTreeScope,
+    ) -> CodexResult<Option<(ThreadId, AgentSessionState)>> {
+        if !matches!(scope, AgentTreeScope::Stale) {
+            let live_thread_id = if agent_path.is_root() {
+                Some(root_live_thread_id)
+            } else {
+                self.state.agent_id_for_path(agent_path)
+            };
+            if let Some(thread_id) = live_thread_id {
+                return Ok(Some((thread_id, AgentSessionState::Live)));
+            }
+        }
+
+        if !matches!(scope, AgentTreeScope::Live) && !agent_path.is_root() {
+            let Some(state_db_ctx) = state_db_ctx else {
+                return Err(inspect_agent_tree_state_db_unavailable());
+            };
+            let thread_id = state_db_ctx
+                .find_thread_spawn_descendant_by_path_with_status(
+                    root_live_thread_id,
+                    agent_path.as_str(),
+                    DirectionalThreadSpawnEdgeStatus::Closed,
+                )
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!(
+                        "failed to inspect persisted agent path `{}`: {err}",
+                        agent_path.as_str()
+                    ))
+                })?;
+            return Ok(thread_id.map(|thread_id| (thread_id, AgentSessionState::Stale)));
+        }
+
+        Ok(None)
+    }
 }
 
 fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<ThreadId> {
@@ -1361,6 +1800,47 @@ fn thread_spawn_parent_thread_id(session_source: &SessionSource) -> Option<Threa
 
 fn inspect_agent_tree_state_db_unavailable() -> CodexErr {
     CodexErr::UnsupportedOperation(INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE.to_string())
+}
+
+fn inspect_agent_tree_path_not_found(agent_path: &str, scope: AgentTreeScope) -> CodexErr {
+    let scope_name = match scope {
+        AgentTreeScope::Live => "live",
+        AgentTreeScope::Stale => "stale",
+        AgentTreeScope::All => "inspected",
+    };
+    CodexErr::UnsupportedOperation(format!(
+        "agent path `{agent_path}` not found in the {scope_name} tree"
+    ))
+}
+
+fn agent_tree_scope_includes(scope: AgentTreeScope, session_state: AgentSessionState) -> bool {
+    matches!(
+        (scope, session_state),
+        (AgentTreeScope::All, _)
+            | (AgentTreeScope::Live, AgentSessionState::Live)
+            | (AgentTreeScope::Stale, AgentSessionState::Stale)
+    )
+}
+
+/// Returns true when attaching `child_thread_id` below `parent_thread_id` would make this
+/// materialized forest cyclic or give one node more than one tree parent.
+fn agent_tree_edge_would_form_cycle(
+    parent_thread_id: ThreadId,
+    child_thread_id: ThreadId,
+    parent_by_thread_id: &HashMap<ThreadId, ThreadId>,
+) -> bool {
+    if parent_thread_id == child_thread_id || parent_by_thread_id.contains_key(&child_thread_id) {
+        return true;
+    }
+
+    let mut ancestor = Some(parent_thread_id);
+    while let Some(ancestor_thread_id) = ancestor {
+        if ancestor_thread_id == child_thread_id {
+            return true;
+        }
+        ancestor = parent_by_thread_id.get(&ancestor_thread_id).copied();
+    }
+    false
 }
 
 fn agent_matches_prefix(agent_path: Option<&AgentPath>, prefix: &AgentPath) -> bool {
@@ -1499,6 +1979,13 @@ fn agent_name_is_same_or_descendant_of(agent_name: &str, parent_name: &str) -> b
         || agent_name
             .strip_prefix(parent_name)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn agent_name_relative_depth(agent_name: &str, tree_root_name: &str) -> usize {
+    agent_name
+        .strip_prefix(tree_root_name)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .map_or(0, |relative_name| relative_name.split('/').count())
 }
 
 pub(crate) fn render_input_preview(input: &[UserInput]) -> String {

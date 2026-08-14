@@ -689,6 +689,27 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
         .expect("inspect_agent_tree should use object params");
     assert!(properties.contains_key("scope"));
     assert!(properties.contains_key("agent_roots"));
+    let agent_roots = properties.get("agent_roots").expect("agent_roots property");
+    assert_eq!(
+        agent_roots.max_items,
+        Some(INSPECT_AGENT_TREE_MAX_AGENT_ROOTS as u64)
+    );
+    assert_eq!(
+        agent_roots
+            .items
+            .as_ref()
+            .and_then(|items| items.max_length),
+        Some(INSPECT_AGENT_TREE_MAX_AGENT_ROOT_PATH_LENGTH as u64)
+    );
+    let max_depth = properties.get("max_depth").expect("max_depth property");
+    assert_eq!(max_depth.minimum, Some(1));
+    assert_eq!(max_depth.maximum, Some(INSPECT_AGENT_TREE_MAX_DEPTH as u64));
+    let max_agents = properties.get("max_agents").expect("max_agents property");
+    assert_eq!(max_agents.minimum, Some(1));
+    assert_eq!(
+        max_agents.maximum,
+        Some(INSPECT_AGENT_TREE_MAX_AGENTS as u64)
+    );
     let output_schema = output_schema.expect("inspect_agent_tree output schema");
     assert_eq!(
         output_schema["properties"]["agents"]["items"]["required"],
@@ -704,6 +725,23 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "direct_child_count",
             "descendant_count"
         ])
+    );
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["properties"]["agent_status"]["anyOf"][1],
+        json!({"type": "null"}),
+        "stale rows serialize a null status because no live runtime status exists"
+    );
+    assert_eq!(
+        output_schema["properties"]["agents"]["items"]["properties"]["agent_status"]["anyOf"][0]["oneOf"]
+            [0]["enum"],
+        json!([
+            "pending_init",
+            "running",
+            "interrupted",
+            "shutdown",
+            "not_found"
+        ]),
+        "live rows retain the complete shared agent-status schema"
     );
 }
 

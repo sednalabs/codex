@@ -461,6 +461,143 @@ def test_generate_v2_all_uses_titles_for_generated_names() -> None:
     assert "ruff-format" in source
 
 
+def test_generation_preserves_current_agent_picker_protocol_fields(
+    tmp_path: Path,
+) -> None:
+    """Pinned runtimes must not erase newer ancestor and spawn-request fields."""
+    script = _load_update_script_module()
+    generated = tmp_path / "v2_all.py"
+    generated.write_text(
+        """class CollabAgentState(BaseModel):
+    agent_nickname: str | None = None
+    agent_role: str | None = None
+    message: str | None = None
+    status: CollabAgentStatus
+
+
+class CollabAgentToolCallThreadItem(BaseModel):
+    model: Annotated[str | None, Field(description="Model requested for the spawned agent, when applicable.")]
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(description="Reasoning effort requested for the spawned agent, when applicable.")]
+    receiver_thread_ids: Annotated[
+
+
+class ThreadStatusChangedNotification(BaseModel):
+    status: ThreadStatus
+    thread_id: Annotated[
+
+
+class ThreadLoadedListParams(BaseModel):
+    cursor: Annotated[
+        str | None, Field(description="Opaque pagination cursor returned by a previous call.")
+    ] = None
+    limit: Annotated[
+        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)
+    ] = None
+
+
+class ThreadLoadedListResponse(BaseModel):
+    data: Annotated[list[str], Field(description="Thread ids for sessions currently loaded in memory.")]
+    next_cursor: Annotated[
+        str | None,
+        Field(
+            alias="nextCursor",
+            description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+        ),
+    ] = None
+
+
+class ThreadListResponse(BaseModel):
+    backwards_cursor: Annotated[
+
+
+class ThreadStartResponse(BaseModel):
+    thread: Thread
+
+
+class ThreadForkResponse(BaseModel):
+    thread: Thread
+
+
+class ThreadResumeResponse(BaseModel):
+    thread: Thread
+"""
+    )
+
+    script._preserve_current_protocol_fields(generated)
+    once = generated.read_text()
+    script._preserve_current_protocol_fields(generated)
+
+    assert generated.read_text() == once
+    for field in (
+        "agent_nickname",
+        "agent_role",
+        "requested_model",
+        "requested_reasoning_effort",
+        "status_revision",
+        "ancestor_thread_id",
+        "ancestor_filter_applied",
+        "thread_subscription_id",
+    ):
+        assert field in once
+    assert 'alias="requestedModel"' in once
+    assert 'alias="requestedReasoningEffort"' in once
+    assert 'alias="statusRevision"' in once
+    assert once.count('agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None') == 1
+    assert once.count('agent_role: Annotated[str | None, Field(alias="agentRole")] = None') == 1
+    assert "ge=0" in once
+    assert once.count('alias="ancestorFilterApplied"') == 2
+    assert once.count('alias="threadSubscriptionId"') == 3
+    assert "omitted `limit` returns every loaded thread" in once
+    assert "without a server maximum" in once
+    assert "With `ancestorThreadId`, the server applies a bounded default and maximum of 100" in once
+    assert "Opaque cursor to pass unchanged as `cursor` on the next call" in once
+    assert "Its representation and page boundary are server-defined" in once
+    assert "Effective model selected for the spawned agent" in once
+    assert "Effective reasoning effort selected for the spawned agent" in once
+
+
+def test_generation_preserves_canonical_subagent_activity_contract(
+    tmp_path: Path,
+) -> None:
+    script = _load_update_script_module()
+    generated = tmp_path / "v2_all.py"
+    generated.write_text(
+        '''class SubAgentActivityKind(Enum):
+    started = "started"
+    interacted = "interacted"
+    interrupted = "interrupted"
+    errored = "errored"
+
+
+class SubAgentActivityThreadItem(BaseModel):
+    agent_path: Annotated[str, Field(alias="agentPath")]
+    agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
+    id: str
+    kind: SubAgentActivityKind
+    type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]
+'''
+    )
+
+    script._preserve_subagent_activity_protocol_contract(generated)
+    once = generated.read_text()
+    script._preserve_subagent_activity_protocol_contract(generated)
+
+    compile(once, str(generated), "exec")
+
+    kind_start = once.index("class SubAgentActivityKind(Enum):")
+    kind_end = once.index("\n\nclass ", kind_start)
+    kind_source = once[kind_start:kind_end]
+    assert generated.read_text() == once
+    assert 'errored = "errored"' not in kind_source
+    assert "class SubAgentActivityTerminalState(Enum):" in once
+    assert '    errored = "errored"' in once
+    assert "terminal_state" in once
+    assert 'alias="terminalState"' in once
+    assert "model" in once
+    assert "reasoning_effort" in once
+    assert 'alias="reasoningEffort"' in once
+
+
 def test_generated_chatgpt_account_email_is_required_nullable() -> None:
     from openai_codex.generated.v2_all import ChatgptAccount
 

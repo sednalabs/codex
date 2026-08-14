@@ -65,6 +65,7 @@ use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 
 async fn test_config_with_cli_overrides(
@@ -214,6 +215,599 @@ impl AgentControlHarness {
     }
 }
 
+#[tokio::test]
+async fn spawn_agent_outcome_preserves_committed_child_when_initial_input_fails() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .fail_next_spawn_initial_input(CodexErr::UnsupportedOperation(
+            "injected initial input failure".to_string(),
+        ))
+        .await;
+
+    let outcome = harness
+        .control
+        .spawn_agent_with_metadata_outcome(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a committed child should be returned with its delivery failure");
+
+    let SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error } = outcome else {
+        panic!("initial input failure should preserve the created child");
+    };
+    assert_matches!(
+        error.details(),
+        CodexErrorDetails::UnsupportedOperation(message) if message == "injected initial input failure"
+    );
+    assert_matches!(
+        &agent.status,
+        AgentStatus::Errored(message) if message.contains("initial input delivery failed")
+    );
+    assert_eq!(agent.metadata.agent_id, Some(agent.thread_id));
+    assert_eq!(
+        harness.control.get_status(agent.thread_id).await,
+        agent.status
+    );
+
+    let child_thread = harness
+        .manager
+        .get_thread(agent.thread_id)
+        .await
+        .expect("child should remain registered after delivery fails");
+    assert_eq!(child_thread.agent_status().await, agent.status);
+    let inventory = harness
+        .control
+        .get_live_agent_inventory_info(agent.thread_id)
+        .await
+        .expect("committed child should remain present in the live inventory");
+    assert_eq!(inventory.status, agent.status);
+    let listed_agents = harness
+        .control
+        .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+        .await
+        .expect("committed child should be listed with its terminal status");
+    assert_eq!(
+        listed_agents
+            .iter()
+            .find(|listed| listed.agent_name == agent.thread_id.to_string())
+            .map(|listed| listed.agent_status.clone()),
+        Some(agent.status.clone())
+    );
+    let child_config = child_thread.config_snapshot().await;
+    assert_eq!(agent.effective_model, child_config.model);
+    assert_eq!(
+        agent.effective_reasoning_effort,
+        child_config.reasoning_effort
+    );
+    assert!(
+        harness
+            .manager
+            .list_live_thread_spawn_edges()
+            .await
+            .contains(&(parent_thread_id, agent.thread_id)),
+        "committed child should retain its parent edge"
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_outcome_reconciles_a_child_that_dies_during_initial_input() {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .remove_next_spawn_initial_input_child()
+        .await;
+
+    let outcome = harness
+        .control
+        .spawn_agent_with_metadata_outcome(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(parent_thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the child death should be represented as a spawn outcome");
+
+    let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
+        panic!("a removed child must not be represented as a live delivery failure");
+    };
+    assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
+    assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+    assert!(
+        harness
+            .control
+            .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+            .await
+            .expect("live agent inventory should load")
+            .is_empty(),
+        "the dead child must be absent from the registry-backed inventory"
+    );
+
+    let open_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty(), "dead child edge must not remain open");
+    let closed_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        harness
+            .control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none(),
+        "the removed child must not retain live inventory or residency identity"
+    );
+    assert_eq!(
+        harness.control.get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_reconciles_a_child_that_dies_before_interrupt() {
+    let (home, mut config) = test_config().await;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let (initial_input_started, allow_initial_input) =
+        harness.control.pause_next_spawn_initial_input().await;
+    harness
+        .control
+        .kill_next_spawn_cancellation_interrupt_child()
+        .await;
+    let cancellation_token = CancellationToken::new();
+    let control = harness.control.clone();
+    let child_config = harness.config.clone();
+    let child_cancellation_token = cancellation_token.clone();
+    let spawn_task = tokio::spawn(async move {
+        control
+            .spawn_agent_with_metadata_outcome(
+                child_config,
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    cancellation_token: Some(child_cancellation_token),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+
+    initial_input_started
+        .await
+        .expect("initial delivery should pause after the child is committed");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial delivery pause should still be waiting");
+
+    let outcome = spawn_task
+        .await
+        .expect("spawn task should join")
+        .expect("the child death should be represented as a spawn outcome");
+    let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
+        panic!("a dead child during cancellation must not be reported as cancelled and live");
+    };
+    assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+    assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+
+    let open_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = harness
+        .state_db
+        .as_ref()
+        .expect("sqlite state db should be configured")
+        .list_thread_spawn_children_with_status(
+            parent_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        harness
+            .control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_cleanup_owns_already_removed_precommit_and_postcommit_children() {
+    for phase in [
+        SpawnCancellationCleanupPhase::BeforeRegistryCommit,
+        SpawnCancellationCleanupPhase::AfterRegistryCommit,
+    ] {
+        let (home, mut config) = test_config().await;
+        config
+            .features
+            .enable(Feature::Sqlite)
+            .expect("test config should allow sqlite");
+        let harness = AgentControlHarness::new_with_config(home, config).await;
+        let (parent_thread_id, _) = harness.start_thread().await;
+        let (cleanup_started, allow_cleanup) = harness
+            .control
+            .pause_next_spawn_cancellation_cleanup(phase)
+            .await;
+        let cancellation_token = CancellationToken::new();
+        let control = harness.control.clone();
+        let child_config = harness.config.clone();
+        let child_cancellation_token = cancellation_token.clone();
+        let spawn_task = tokio::spawn(async move {
+            control
+                .spawn_agent_with_metadata_outcome(
+                    child_config,
+                    text_input("child task"),
+                    Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 1,
+                        agent_path: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                    })),
+                    SpawnAgentOptions {
+                        parent_thread_id: Some(parent_thread_id),
+                        cancellation_token: Some(child_cancellation_token),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+
+        cleanup_started
+            .await
+            .expect("spawn should pause before its selected cancellation cleanup phase");
+        let child_thread_id = harness
+            .manager
+            .list_thread_ids()
+            .await
+            .into_iter()
+            .find(|thread_id| *thread_id != parent_thread_id)
+            .expect("created child should remain visible until the concurrent teardown");
+        assert_eq!(
+            harness.control.get_agent_metadata(child_thread_id).is_some(),
+            phase == SpawnCancellationCleanupPhase::AfterRegistryCommit
+        );
+        cancellation_token.cancel();
+        match phase {
+            SpawnCancellationCleanupPhase::BeforeRegistryCommit => {
+                let child = harness
+                    .manager
+                    .get_thread(child_thread_id)
+                    .await
+                    .expect("precommit child should still be managed");
+                child
+                    .shutdown_and_wait()
+                    .await
+                    .expect("concurrent precommit teardown should complete");
+                let error = child
+                    .submit(Op::Shutdown {})
+                    .await
+                    .expect_err("the closed child submission channel should report child death");
+                assert_matches!(error.details(), CodexErrorDetails::InternalAgentDied);
+            }
+            SpawnCancellationCleanupPhase::AfterRegistryCommit => {
+                harness
+                    .control
+                    .shutdown_live_agent(child_thread_id)
+                    .await
+                    .expect("concurrent postcommit teardown should complete");
+                assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+                assert!(harness.manager.get_thread(child_thread_id).await.is_err());
+                let error = harness
+                    .control
+                    .shutdown_live_agent(child_thread_id)
+                    .await
+                    .expect_err("a postcommit cleanup retry should observe the removed child");
+                assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
+            }
+        }
+        allow_cleanup
+            .send(())
+            .expect("cancellation cleanup pause should still be waiting");
+
+        let error = spawn_task
+            .await
+            .expect("spawn task should join")
+            .expect_err("the caller cancellation should own benign cleanup races");
+        assert_matches!(error.details(), CodexErrorDetails::TurnAborted);
+        assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+        assert!(harness.control.get_agent_metadata(child_thread_id).is_none());
+        assert!(
+            harness
+                .control
+                .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+                .await
+                .expect("live agent inventory should load")
+                .is_empty(),
+            "cancellation cleanup must not leave a live child identity"
+        );
+
+        let state_db = harness
+            .state_db
+            .as_ref()
+            .expect("sqlite state db should be configured");
+        for status in [
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        ] {
+            assert!(
+                state_db
+                    .list_thread_spawn_children_with_status(parent_thread_id, status)
+                    .await
+                    .expect("child edge state should load")
+                    .is_empty(),
+                "cleanup before lifecycle publication must not leave a persisted child edge"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn spawn_cancellation_preserves_naturally_completed_and_errored_child_statuses() {
+    for expected_status in [
+        AgentStatus::Completed(Some("child finished first".to_string())),
+        AgentStatus::Errored("child failed first".to_string()),
+    ] {
+        let (home, config) = test_config().await;
+        let harness = AgentControlHarness::new_with_config(home, config).await;
+        let (parent_thread_id, _) = harness.start_thread().await;
+        let (initial_input_started, allow_initial_input) =
+            harness.control.pause_next_spawn_initial_input().await;
+        harness
+            .control
+            .finish_next_spawn_cancellation_before_interrupt(expected_status.clone())
+            .await;
+        let cancellation_token = CancellationToken::new();
+        let control = harness.control.clone();
+        let child_config = harness.config.clone();
+        let child_cancellation_token = cancellation_token.clone();
+        let spawn_task = tokio::spawn(async move {
+            control
+                .spawn_agent_with_metadata_outcome(
+                    child_config,
+                    text_input("child task"),
+                    Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id,
+                        depth: 1,
+                        agent_path: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                    })),
+                    SpawnAgentOptions {
+                        parent_thread_id: Some(parent_thread_id),
+                        cancellation_token: Some(child_cancellation_token),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+
+        initial_input_started
+            .await
+            .expect("initial delivery should pause after the child is committed");
+        cancellation_token.cancel();
+        allow_initial_input
+            .send(())
+            .expect("initial delivery pause should still be waiting");
+
+        let outcome = spawn_task
+            .await
+            .expect("spawn task should join")
+            .expect("a naturally terminal child should have a successful spawn outcome");
+        let SpawnAgentOutcome::TerminalBeforeCancellation { agent } = outcome else {
+            panic!("a child that naturally finished before the interrupt must not be cancelled");
+        };
+        assert_eq!(agent.status, expected_status);
+        assert_eq!(harness.control.get_status(agent.thread_id).await, expected_status);
+        assert!(
+            harness
+                .manager
+                .list_live_thread_spawn_edges()
+                .await
+                .contains(&(parent_thread_id, agent.thread_id)),
+            "a naturally terminal child remains a durable, live spawn target"
+        );
+        let child_ops = harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .filter_map(|(thread_id, op)| (thread_id == agent.thread_id).then_some(op))
+            .collect::<Vec<_>>();
+        assert!(
+            child_ops.iter().any(|op| matches!(op, Op::UserInput { .. })),
+            "the regression requires successful initial input delivery"
+        );
+        assert!(
+            !child_ops.iter().any(|op| matches!(op, Op::Interrupt)),
+            "a naturally terminal child must not receive a synthetic cancellation interrupt"
+        );
+    }
+}
+
+async fn spawn_with_cancellation_in_final_status_window(
+    harness: &AgentControlHarness,
+    parent_thread_id: ThreadId,
+) -> SpawnAgentOutcome {
+    let (final_status_started, allow_final_status) =
+        harness.control.pause_next_spawn_final_status().await;
+    let cancellation_token = CancellationToken::new();
+    let control = harness.control.clone();
+    let child_config = harness.config.clone();
+    let child_cancellation_token = cancellation_token.clone();
+    let spawn_task = tokio::spawn(async move {
+        control
+            .spawn_agent_with_metadata_outcome(
+                child_config,
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    cancellation_token: Some(child_cancellation_token),
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+
+    final_status_started
+        .await
+        .expect("spawn should pause after its final status and liveness checks");
+    cancellation_token.cancel();
+    allow_final_status
+        .send(())
+        .expect("final status pause should still be waiting");
+    spawn_task
+        .await
+        .expect("spawn task should join")
+        .expect("late cancellation should be represented as a spawn outcome")
+}
+
+#[tokio::test]
+async fn spawn_cancellation_in_final_status_window_interrupts_active_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let outcome = spawn_with_cancellation_in_final_status_window(&harness, parent_thread_id).await;
+    let SpawnAgentOutcome::Cancelled { agent } = outcome else {
+        panic!("an active child cancelled at the publication boundary must be interrupted");
+    };
+    assert_eq!(agent.status, AgentStatus::Interrupted);
+    assert_eq!(harness.control.get_status(agent.thread_id).await, agent.status);
+    assert!(
+        harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .any(|(thread_id, op)| thread_id == agent.thread_id && matches!(op, Op::Interrupt)),
+        "late cancellation must submit the same interrupt as an earlier cancellation"
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_in_final_status_window_preserves_natural_terminal_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    let expected_status = AgentStatus::Completed(Some("child finished first".to_string()));
+    harness
+        .control
+        .finish_next_spawn_cancellation_before_interrupt(expected_status.clone())
+        .await;
+    let outcome = spawn_with_cancellation_in_final_status_window(&harness, parent_thread_id).await;
+    let SpawnAgentOutcome::TerminalBeforeCancellation { agent } = outcome else {
+        panic!("a naturally terminal child at the publication boundary must not be interrupted");
+    };
+    assert_eq!(agent.status, expected_status);
+    assert_eq!(harness.control.get_status(agent.thread_id).await, expected_status);
+    assert!(
+        !harness
+            .manager
+            .captured_ops()
+            .into_iter()
+            .any(|(thread_id, op)| thread_id == agent.thread_id && matches!(op, Op::Interrupt)),
+        "a naturally terminal child must not receive a synthetic cancellation interrupt"
+    );
+}
+
+#[tokio::test]
+async fn spawn_cancellation_in_final_status_window_reconciles_removed_child() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, _) = harness.start_thread().await;
+    harness
+        .control
+        .remove_next_spawn_cancellation_interrupt_child()
+        .await;
+    let outcome = spawn_with_cancellation_in_final_status_window(&harness, parent_thread_id).await;
+    let SpawnAgentOutcome::ChildDiedDuringSpawn { error } = outcome else {
+        panic!("a removed child at the publication boundary must not be reported as cancelled");
+    };
+    assert_matches!(error.details(), CodexErrorDetails::ThreadNotFound(_));
+    assert_eq!(harness.manager.list_thread_ids().await, vec![parent_thread_id]);
+    assert!(
+        harness
+            .control
+            .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+            .await
+            .expect("live agent inventory should load")
+            .is_empty(),
+        "the removed child must not retain a live agent identity"
+    );
+}
+
 async fn persisted_originator(thread: &CodexThread) -> String {
     thread.ensure_rollout_materialized().await;
     thread
@@ -360,6 +954,29 @@ async fn wait_for_live_thread_spawn_children(
     .expect("expected persisted child tree");
 }
 
+async fn spawn_named_agent_for_tree_inspection(
+    harness: &AgentControlHarness,
+    parent_thread_id: ThreadId,
+    depth: usize,
+    agent_path: AgentPath,
+) -> ThreadId {
+    harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: depth.try_into().expect("test depth should fit in i32"),
+                agent_path: Some(agent_path),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("named child spawn should succeed")
+}
+
 #[tokio::test]
 async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
     let (home, config) = test_config().await;
@@ -389,6 +1006,556 @@ async fn inspect_agent_tree_without_state_db_points_to_subagent_tail() {
         CodexErrorDetails::UnsupportedOperation(message)
             if message == INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE
     );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_stops_at_depth_and_agent_bound_before_materializing_fanout() {
+    const HUGE_CHILD_COUNT: usize = 128;
+
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    for _ in 0..HUGE_CHILD_COUNT {
+        harness
+            .manager
+            .start_thread(StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                environments: Some(Vec::new()),
+                ..StartThreadOptions::new(harness.config.clone())
+            })
+            .await
+            .expect("start fanout child");
+    }
+
+    let inspection = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Live,
+            /*max_depth*/ 1,
+            /*max_agents*/ 1,
+        )
+        .await
+        .expect("bounded inspection should succeed");
+
+    assert_eq!(inspection.agents.len(), 1);
+    assert_eq!(inspection.agents[0].depth, 0);
+    assert!(inspection.truncated);
+    assert_eq!(inspection.summary.total_agents, 1);
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_applies_agent_roots_before_the_output_bound() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+
+    let mut b_thread_id = None;
+    for agent_name in ["a", "b"] {
+        let agent_path = AgentPath::root().join(agent_name).expect("agent path");
+        let thread_id = harness
+            .control
+            .spawn_agent(
+                harness.config.clone(),
+                text_input("child task"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path),
+                    agent_nickname: None,
+                    agent_role: Some("worker".to_string()),
+                })),
+            )
+            .await
+            .expect("named child spawn should succeed");
+        if agent_name == "b" {
+            b_thread_id = Some(thread_id);
+        }
+    }
+    let b_thread_id = b_thread_id.expect("b should be spawned");
+    harness
+        .control
+        .spawn_agent(
+            harness.config.clone(),
+            text_input("grandchild task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: b_thread_id,
+                depth: 2,
+                agent_path: Some(
+                    AgentPath::root()
+                        .join("b")
+                        .expect("b agent path")
+                        .join("child")
+                        .expect("child agent path"),
+                ),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("b child spawn should succeed");
+
+    let agent_roots = vec!["/root/b".to_string()];
+    let inspection = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 2,
+        )
+        .await
+        .expect("filtered inspection should succeed");
+
+    assert_eq!(
+        inspection
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/root/b", "/root/b/child"]
+    );
+    assert_eq!(inspection.summary.total_agents, 2);
+    assert!(!inspection.truncated);
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_explicit_target_respects_scope_and_serializes_stale_status() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let child_path = AgentPath::root().join("closed").expect("agent path");
+    let child_thread_id = spawn_named_agent_for_tree_inspection(
+        &harness,
+        root_thread_id,
+        /*depth*/ 1,
+        child_path.clone(),
+    )
+    .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
+    harness
+        .control
+        .close_agent(child_thread_id)
+        .await
+        .expect("child close should succeed");
+
+    let live_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("closed target must not be returned by live scope");
+    assert_matches!(
+        live_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/closed` not found in the live tree"
+    );
+
+    let stale = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("closed target should be returned by stale scope");
+    assert_eq!(stale.summary.stale_agents, 1);
+    assert_eq!(stale.summary.live_agents, 0);
+    assert_eq!(stale.agents.len(), 1);
+    assert_eq!(stale.agents[0].agent_name, "/root/closed");
+    assert_eq!(stale.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(stale.agents[0].agent_status, None);
+    assert_eq!(
+        serde_json::to_value(&stale).expect("stale receipt should serialize")["agents"][0]["agent_status"],
+        serde_json::Value::Null
+    );
+
+    let stale_from_live_root = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("stale scope should include persisted children without reporting the live root");
+    assert_eq!(stale_from_live_root.root_agent_name, "/root");
+    assert_eq!(stale_from_live_root.summary.live_agents, 0);
+    assert_eq!(stale_from_live_root.summary.stale_agents, 1);
+    assert_eq!(stale_from_live_root.agents.len(), 1);
+    assert_eq!(stale_from_live_root.agents[0].agent_name, "/root/closed");
+    assert_eq!(stale_from_live_root.agents[0].depth, 1);
+    assert_eq!(
+        stale_from_live_root.agents[0].session_state,
+        AgentSessionState::Stale
+    );
+
+    let agent_roots = vec![child_path.to_string()];
+    let stale_filtered = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("a closed explicit branch root should be returned by stale scope");
+    assert_eq!(stale_filtered.agents.len(), 1);
+    assert_eq!(stale_filtered.agents[0].agent_name, "/root/closed");
+    assert_eq!(
+        stale_filtered.agents[0].session_state,
+        AgentSessionState::Stale
+    );
+
+    let live_filtered_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("a closed explicit branch root must not be returned by live scope");
+    assert_matches!(
+        live_filtered_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/closed` not found in the live tree"
+    );
+
+    let all = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("all scope should include the closed target as stale");
+    assert_eq!(all.agents[0].session_state, AgentSessionState::Stale);
+
+    let stale_root_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some("/root"),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("live root must not be returned by explicit stale scope");
+    assert_matches!(
+        stale_root_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root` not found in the stale tree"
+    );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_never_reclassifies_live_or_open_paths_as_stale() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let child_path = AgentPath::root().join("open").expect("agent path");
+    let child_thread_id = spawn_named_agent_for_tree_inspection(
+        &harness,
+        root_thread_id,
+        /*depth*/ 1,
+        child_path.clone(),
+    )
+    .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
+
+    let stale_live_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("a live target must not be returned by stale scope");
+    assert_matches!(
+        stale_live_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/open` not found in the stale tree"
+    );
+
+    let live = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("all scope should prefer the loaded target");
+    assert_eq!(live.agents[0].session_state, AgentSessionState::Live);
+
+    harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("open child shutdown should succeed");
+    let persisted_open_children = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be configured")
+        .list_thread_spawn_children_with_status(
+            root_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open edge should remain persisted after ordinary shutdown");
+    assert_eq!(persisted_open_children, vec![child_thread_id]);
+    let open_err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            Some(child_path.as_str()),
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("an evicted Open edge must not be fabricated as a stale target");
+    assert_matches!(
+        open_err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/open` not found in the inspected tree"
+    );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_rejects_unresolved_explicit_agent_roots() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, _root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let agent_roots = vec!["/root/missing".to_string()];
+
+    let err = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            Some(&agent_roots),
+            AgentTreeScope::Live,
+            /*max_depth*/ 2,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect_err("an unresolved explicit branch root must not look like an empty tree");
+    assert_matches!(
+        err.details(),
+        CodexErrorDetails::UnsupportedOperation(message)
+            if message == "agent path `/root/missing` not found in the live tree"
+    );
+}
+
+#[tokio::test]
+async fn inspect_agent_tree_discards_persisted_cycle_edges_before_counting() {
+    let harness = AgentControlHarness::new().await;
+    let (root_thread_id, root_thread) = harness.start_thread().await;
+    harness
+        .control
+        .register_session_root(root_thread_id, /*current_parent_thread_id*/ None);
+    let child_path = AgentPath::root().join("cycle").expect("agent path");
+    let child_thread_id = spawn_named_agent_for_tree_inspection(
+        &harness,
+        root_thread_id,
+        /*depth*/ 1,
+        child_path,
+    )
+    .await;
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&root_thread, "root persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, root_thread_id, &[child_thread_id]).await;
+    harness
+        .control
+        .close_agent(child_thread_id)
+        .await
+        .expect("child close should succeed");
+    let state_db = harness
+        .state_db
+        .as_ref()
+        .expect("state db should be configured");
+    state_db
+        .upsert_thread_spawn_edge(
+            child_thread_id,
+            root_thread_id,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("malformed persisted cycle should be inserted for regression coverage");
+
+    let inspection = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::All,
+            /*max_depth*/ 3,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("cycle-safe inspection should succeed");
+    assert_eq!(
+        inspection
+            .agents
+            .iter()
+            .map(|agent| agent.agent_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/root", "/root/cycle"]
+    );
+    let root = inspection
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root")
+        .expect("root row");
+    assert_eq!(root.direct_child_count, 1);
+    assert_eq!(root.descendant_count, 1);
+    let child = inspection
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/cycle")
+        .expect("child row");
+    assert_eq!(child.direct_child_count, 0);
+    assert_eq!(child.descendant_count, 0);
+
+    let stale = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ None,
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 3,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("stale inspection should exclude its live context root");
+    assert_eq!(stale.root_agent_name, "/root");
+    assert_eq!(stale.summary.live_agents, 0);
+    assert_eq!(stale.summary.stale_agents, 1);
+    assert_eq!(stale.agents.len(), 1);
+    assert_eq!(stale.agents[0].agent_name, "/root/cycle");
+    assert_eq!(stale.agents[0].session_state, AgentSessionState::Stale);
+    assert_eq!(stale.agents[0].direct_child_count, 0);
+    assert_eq!(stale.agents[0].descendant_count, 0);
+
+    let stale_from_explicit_child = harness
+        .control
+        .inspect_agent_tree(
+            root_thread_id,
+            &SessionSource::Exec,
+            /*target*/ Some("/root/cycle"),
+            /*agent_roots*/ None,
+            AgentTreeScope::Stale,
+            /*max_depth*/ 3,
+            /*max_agents*/ 10,
+        )
+        .await
+        .expect("an explicit stale child must not reintroduce the live canonical root");
+    assert_eq!(stale_from_explicit_child.root_agent_name, "/root/cycle");
+    assert_eq!(stale_from_explicit_child.summary.live_agents, 0);
+    assert_eq!(stale_from_explicit_child.summary.stale_agents, 1);
+    assert_eq!(stale_from_explicit_child.agents.len(), 1);
+    assert_eq!(
+        stale_from_explicit_child.agents[0].agent_name,
+        "/root/cycle"
+    );
+    assert_eq!(
+        stale_from_explicit_child.agents[0].session_state,
+        AgentSessionState::Stale
+    );
+    assert_eq!(stale_from_explicit_child.agents[0].depth, 0);
+    assert_eq!(stale_from_explicit_child.agents[0].direct_child_count, 0);
+    assert_eq!(stale_from_explicit_child.agents[0].descendant_count, 0);
 }
 
 async fn assert_thread_not_loaded(manager: &ThreadManager, thread_id: ThreadId) {

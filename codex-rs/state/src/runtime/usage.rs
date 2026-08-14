@@ -31,8 +31,8 @@ struct TurnSnapshot {
 #[derive(Clone, Debug)]
 struct SpawnRequestState {
     parent_thread_id: ThreadId,
-    _requested_model: String,
-    _requested_reasoning_effort: String,
+    _requested_model: Option<String>,
+    _requested_reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -319,7 +319,10 @@ ON CONFLICT(thread_id) DO UPDATE SET
                     SpawnRequestState {
                         parent_thread_id: begin.sender_thread_id,
                         _requested_model: begin.model.clone(),
-                        _requested_reasoning_effort: begin.reasoning_effort.to_string(),
+                        _requested_reasoning_effort: begin
+                            .reasoning_effort
+                            .as_ref()
+                            .map(std::string::ToString::to_string),
                     },
                 );
                 if let Err(err) = self.insert_spawn_request(begin).await {
@@ -632,7 +635,12 @@ WHERE provider_call_id = ?
         .bind(begin.call_id.clone())
         .bind(begin.sender_thread_id.to_string())
         .bind(begin.model.clone())
-        .bind(begin.reasoning_effort.to_string())
+        .bind(
+            begin
+                .reasoning_effort
+                .as_ref()
+                .map(std::string::ToString::to_string),
+        )
         .bind("pending")
         .bind(Utc::now().to_rfc3339())
         .execute(self.pool.as_ref())
@@ -2859,6 +2867,92 @@ WHERE child_thread_id = ?
             }
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_completes_failed_spawn_without_child_or_effective_identity() -> Result<()>
+    {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+
+        let spawn_call = "failed-spawn-call";
+        logger
+            .record_event(&Event {
+                id: "turn-failed-spawn".to_string(),
+                msg: EventMsg::CollabAgentSpawnBegin(CollabAgentSpawnBeginEvent {
+                    call_id: spawn_call.to_string(),
+                    sender_thread_id: thread_id,
+                    prompt: "inspect the repository".to_string(),
+                    model: "gpt-requested".to_string(),
+                    reasoning_effort: ReasoningEffortConfig::High,
+                    started_at_ms: 0,
+                }),
+            })
+            .await;
+        logger
+            .record_event(&Event {
+                id: "turn-failed-spawn".to_string(),
+                msg: EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
+                    call_id: spawn_call.to_string(),
+                    sender_thread_id: thread_id,
+                    new_thread_id: None,
+                    new_agent_nickname: None,
+                    new_agent_role: None,
+                    prompt: "inspect the repository".to_string(),
+                    model: String::new(),
+                    reasoning_effort: ReasoningEffortConfig::default(),
+                    status: AgentStatus::NotFound,
+                    completed_at_ms: 1,
+                }),
+            })
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+        let mut spawn_row: SpawnRequestRow = sqlx::query_as(
+            r#"
+SELECT
+  parent_thread_id,
+  child_thread_id,
+  requested_model,
+  requested_role,
+  requested_reasoning_effort,
+  status,
+  completed_at
+FROM usage_spawn_requests
+WHERE spawn_request_id = ?
+"#,
+        )
+        .bind(spawn_call)
+        .fetch_one(pool)
+        .await?;
+        assert!(
+            spawn_row.completed_at.is_some(),
+            "failed spawn should complete the pending usage row"
+        );
+        spawn_row.completed_at = Some("<timestamp>".to_string());
+        assert_eq!(
+            spawn_row,
+            SpawnRequestRow {
+                parent_thread_id: thread_id.to_string(),
+                child_thread_id: None,
+                requested_model: Some("gpt-requested".to_string()),
+                requested_role: None,
+                requested_reasoning_effort: Some("high".to_string()),
+                status: Some(format!("{:?}", AgentStatus::NotFound)),
+                completed_at: Some("<timestamp>".to_string()),
+            }
+        );
         Ok(())
     }
 

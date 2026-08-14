@@ -103,27 +103,49 @@ async fn request_current_time(
         .subscribed_connection_ids(thread_id)
         .await;
     let connection_id = require_single_current_time_connection(&connection_ids)?;
-    let connection_ids = [connection_id];
+    // Capture the active transport identity rather than passing only the
+    // connection id into a later send. Reattachment can replace that map
+    // entry between these awaits; the delayed request must retain this token
+    // or fail safely, never mint an unannounced subscription identity.
+    let Some(thread_subscription) = outgoing
+        .thread_subscription_target_for_connection(connection_id, thread_id)
+        .await
+    else {
+        bail!("current-time client subscription disappeared before request delivery");
+    };
     let (request_id, rx) = outgoing
-        .send_request_to_connections(
-            Some(&connection_ids),
+        .send_request_to_thread_subscriptions(
+            &[thread_subscription],
             ServerRequestPayload::CurrentTimeRead(CurrentTimeReadParams {
                 thread_id: thread_id.to_string(),
             }),
-            /*thread_id*/ None,
+            thread_id,
         )
         .await;
 
     let result = match timeout_at(deadline, rx).await {
-        Ok(Ok(Ok(result))) => result,
+        Ok(Ok(Ok(result))) => {
+            outgoing
+                .discard_thread_request_resolution_targets(&request_id)
+                .await;
+            result
+        }
         Ok(Ok(Err(err))) => {
+            outgoing
+                .discard_thread_request_resolution_targets(&request_id)
+                .await;
             bail!(
                 "current-time request failed: code={} message={}",
                 err.code,
                 err.message
             );
         }
-        Ok(Err(err)) => bail!("current-time request was canceled: {err}"),
+        Ok(Err(err)) => {
+            outgoing
+                .discard_thread_request_resolution_targets(&request_id)
+                .await;
+            bail!("current-time request was canceled: {err}");
+        }
         Err(_) => {
             let _canceled = outgoing.cancel_request(&request_id).await;
             bail!(

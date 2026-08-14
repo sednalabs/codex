@@ -184,6 +184,7 @@ impl ChatWidget {
         }
         let header = ColumnRenderable::with(header);
         let mut items = Vec::new();
+        let lifecycle_generation = self.thread_lifecycle_generation;
         if let (Some(faster_model), Some(turn), Some(prompt), Some(thread_id)) =
             (faster_model, retry_turn, retry_prompt, thread_id)
         {
@@ -192,6 +193,7 @@ impl ChatWidget {
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::RetrySafetyBufferedTurn {
                         thread_id,
+                        lifecycle_generation,
                         turn_id: turn_id.clone(),
                         model: faster_model.clone(),
                         turn: turn.clone(),

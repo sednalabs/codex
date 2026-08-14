@@ -426,6 +426,17 @@ impl App {
         app_server: &mut AppServerSession,
         thread_id: ThreadId,
     ) -> bool {
+        // A replay-only channel is a saved transcript, and an accepted terminal lifecycle means
+        // an inactive live channel has already closed server-side. Every caller (including the
+        // switch-away path) must discard either kind of local presentation state without
+        // attempting a thread-scoped interrupt or unsubscribe.
+        if self.thread_is_replay_only(thread_id)
+            || self.agent_navigation.is_terminally_closed(thread_id)
+        {
+            self.discard_thread_local_state(app_server, thread_id).await;
+            return true;
+        }
+
         if let Err(message) = self.interrupt_side_thread(app_server, thread_id).await {
             tracing::warn!("{message}");
             self.chat_widget.add_error_message(message);
@@ -438,16 +449,44 @@ impl App {
             self.chat_widget.add_error_message(message);
             return false;
         }
-        self.discard_thread_local_state(thread_id).await;
+        self.discard_thread_local_state(app_server, thread_id).await;
         true
     }
 
-    pub(super) async fn discard_closed_side_thread(&mut self, thread_id: ThreadId) {
-        self.discard_thread_local_state(thread_id).await;
+    pub(super) async fn discard_closed_side_thread(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        self.discard_thread_local_state(app_server, thread_id).await;
     }
 
-    pub(super) async fn discard_thread_local_state(&mut self, thread_id: ThreadId) {
-        self.abort_thread_event_listener(thread_id);
+    pub(super) async fn discard_thread_local_state(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: ThreadId,
+    ) {
+        self.mark_thread_discarded(thread_id);
+        for request in self.pending_app_server_requests.clear_thread(thread_id) {
+            self.chat_widget
+                .dismiss_app_server_request(&request.request);
+            if let Err(err) = self
+                .reject_app_server_request(
+                    app_server,
+                    request.request_id,
+                    format!(
+                        "The TUI discarded thread {thread_id} before this request could be handled."
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %thread_id,
+                    error = %err,
+                    "failed to reject discarded app-server request"
+                );
+            }
+        }
         self.thread_event_channels.remove(&thread_id);
         self.side_threads.remove(&thread_id);
         self.agent_navigation.remove(thread_id);
@@ -624,6 +663,12 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
 
+        if self.reject_replay_only_thread_write(parent_thread_id) {
+            self.restore_side_user_message(user_message.take());
+            self.sync_side_thread_ui();
+            return Ok(AppRunControl::Continue);
+        }
+
         if let Some((&side_thread_id, state)) = self.side_threads.iter().next()
             && (parent_thread_id != state.parent_thread_id
                 || !self.discard_side_thread(app_server, side_thread_id).await)
@@ -648,11 +693,19 @@ impl App {
         {
             Ok(forked) => {
                 let child_thread_id = forked.session.thread_id;
+                self.mark_thread_attached(child_thread_id);
                 let channel = self.ensure_thread_channel(child_thread_id);
+                channel.mark_live();
                 {
                     let mut store = channel.store.lock().await;
                     Self::install_side_thread_snapshot(&mut store, forked.session, forked.turns);
                 }
+                self.bind_thread_subscription_and_flush(
+                    app_server,
+                    child_thread_id,
+                    forked.thread_subscription_id,
+                )
+                .await;
                 self.side_threads
                     .insert(child_thread_id, SideThreadState::new(parent_thread_id));
                 // `thread/started` is delivered after the fork response; seed navigation before

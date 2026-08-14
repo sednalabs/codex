@@ -6,6 +6,8 @@ pub use outgoing_message::OutgoingError;
 pub use outgoing_message::OutgoingMessage;
 pub use outgoing_message::OutgoingResponse;
 pub use outgoing_message::QueuedOutgoingMessage;
+pub use outgoing_message::ThreadScopedServerNotification;
+pub use outgoing_message::ThreadScopedServerRequest;
 pub use transport::AppServerStartupLock;
 pub use transport::AppServerTransport;
 pub use transport::AppServerTransportParseError;

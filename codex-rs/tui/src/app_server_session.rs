@@ -18,6 +18,7 @@ use codex_app_server_client::AppServerClient;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_client::TaggedAppServerEvent;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AskForApproval;
@@ -236,6 +237,9 @@ pub(crate) struct AppServerStartedThread {
     pub(crate) session: ThreadSessionState,
     pub(crate) turns: Vec<Turn>,
     pub(crate) blocks_direct_input: bool,
+    /// Server-minted immutable identity for the connection's live event
+    /// subscription. `None` is the compatibility path for an older server.
+    pub(crate) thread_subscription_id: Option<String>,
 }
 
 pub(crate) fn source_agent_path(source: &SessionSource) -> Option<String> {
@@ -513,6 +517,10 @@ impl AppServerSession {
         self.client.next_event().await
     }
 
+    pub(crate) async fn next_tagged_event(&mut self) -> Option<TaggedAppServerEvent> {
+        self.client.next_tagged_event().await
+    }
+
     #[cfg(test)]
     pub(crate) async fn start_thread(&mut self, config: &Config) -> Result<AppServerStartedThread> {
         self.start_thread_with_session_start_source(config, /*session_start_source*/ None)
@@ -746,9 +754,9 @@ impl AppServerSession {
 
     /// Lists thread ids that the app server currently holds in memory.
     ///
-    /// Used by `App::backfill_loaded_subagent_threads` to discover subagent threads that were
-    /// spawned before the TUI connected. The caller then fetches full metadata per thread via
-    /// `thread_read` and walks the spawn tree.
+    /// Used only by the bounded legacy compatibility fallback when an old, still-loaded session
+    /// has no persisted descendant relationship. The caller fetches metadata for this one page
+    /// and walks its spawn tree; current sessions use the indexed `thread/list` relation query.
     pub(crate) async fn thread_loaded_list(
         &mut self,
         params: ThreadLoadedListParams,
@@ -1710,6 +1718,7 @@ async fn started_thread_from_start_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        thread_subscription_id: response.thread_subscription_id,
     })
 }
 
@@ -1727,6 +1736,7 @@ async fn started_thread_from_resume_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        thread_subscription_id: response.thread_subscription_id,
     })
 }
 
@@ -1744,6 +1754,7 @@ async fn started_thread_from_fork_response(
         session,
         turns: response.thread.turns,
         blocks_direct_input,
+        thread_subscription_id: response.thread_subscription_id,
     })
 }
 
@@ -2844,6 +2855,7 @@ mod tests {
                     duration_ms: None,
                 }],
             },
+            thread_subscription_id: None,
             model: "gpt-5.4".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,

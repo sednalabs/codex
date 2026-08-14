@@ -245,6 +245,20 @@
     },
     "CollabAgentState": {
       "properties": {
+        "agentNickname": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
           "type": [
             "string",
@@ -1026,6 +1040,12 @@
         "started",
         "interacted",
         "interrupted"
+      ],
+      "type": "string"
+    },
+    "SubAgentActivityTerminalState": {
+      "enum": [
+        "errored"
       ],
       "type": "string"
     },
@@ -1874,7 +1894,7 @@
               "type": "string"
             },
             "model": {
-              "description": "Model requested for the spawned agent, when applicable.",
+              "description": "Effective model selected for the spawned agent, when available.",
               "type": [
                 "string",
                 "null"
@@ -1896,7 +1916,25 @@
                   "type": "null"
                 }
               ],
-              "description": "Reasoning effort requested for the spawned agent, when applicable."
+              "description": "Effective reasoning effort selected for the spawned agent, when available."
+            },
+            "requestedModel": {
+              "description": "Caller-provided model override for a spawned agent, when one was supplied.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "requestedReasoningEffort": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReasoningEffort"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Caller-provided reasoning-effort override for a spawned agent, when one was supplied."
             },
             "receiverThreadIds": {
               "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation,\nthis corresponds to the newly spawned agent.",
@@ -1966,6 +2004,17 @@
                 }
               ],
               "description": "Effective reasoning effort selected for the affected child, when known."
+            },
+            "terminalState": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SubAgentActivityTerminalState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Additive terminal detail. `kind` intentionally retains the legacy\nthree-variant enum for exhaustive existing consumers."
             },
             "type": {
               "const": "subAgentActivity",
@@ -2648,6 +2697,13 @@
     },
     "thread": {
       "$ref": "#/$defs/Thread"
+    },
+    "threadSubscriptionId": {
+      "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

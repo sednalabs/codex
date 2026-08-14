@@ -9,6 +9,7 @@ use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
@@ -21,6 +22,10 @@ use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHand
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
+use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::registry::ToolRegistry;
+use crate::tools::router::ToolCall;
+use crate::tools::router::ToolRouter;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
@@ -59,6 +64,8 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -68,6 +75,7 @@ use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
+use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
@@ -112,6 +120,88 @@ fn function_payload(args: serde_json::Value) -> ToolPayload {
     ToolPayload::Function {
         arguments: args.to_string(),
     }
+}
+
+async fn assert_failed_spawn_lifecycle(
+    args: Value,
+    requested_model: Option<&str>,
+    requested_reasoning_effort: Option<ReasoningEffort>,
+) {
+    let (session, turn, rx) = make_session_and_context_with_rx().await;
+    let result = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(args),
+        ))
+        .await;
+    assert!(
+        matches!(result, Err(FunctionCallError::RespondToModel(_))),
+        "spawn should fail after publishing a terminal lifecycle item"
+    );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn start event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.status, CollabAgentToolCallStatus::InProgress);
+    assert_eq!(started.model, None);
+    assert_eq!(started.reasoning_effort, None);
+    assert_eq!(started.requested_model.as_deref(), requested_model);
+    assert_eq!(
+        started.requested_reasoning_effort,
+        requested_reasoning_effort
+    );
+
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("legacy spawn begin channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn failure completion should arrive")
+        .expect("spawn failure completion channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+    assert_eq!(completed.model, None);
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model.as_deref(), requested_model);
+    assert_eq!(
+        completed.requested_reasoning_effort,
+        requested_reasoning_effort
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn end should arrive")
+        .expect("legacy spawn end channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert_eq!(legacy_end.model, None);
+    assert_eq!(legacy_end.reasoning_effort, None);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
 }
 
 fn parse_agent_id(id: &str) -> ThreadId {
@@ -366,6 +456,1515 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
             "Provide either message or items, but not both".to_string()
         )
     );
+}
+
+#[tokio::test]
+async fn spawn_agent_invalid_model_completes_failed_lifecycle_without_effective_identity() {
+    assert_failed_spawn_lifecycle(
+        json!({
+            "message": "inspect this repo",
+            "model": "not-a-configured-model"
+        }),
+        Some("not-a-configured-model"),
+        /*requested_reasoning_effort*/ None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_invalid_reasoning_effort_completes_failed_lifecycle_without_effective_identity()
+ {
+    assert_failed_spawn_lifecycle(
+        json!({
+            "message": "inspect this repo",
+            "reasoning_effort": "ultra"
+        }),
+        /*requested_model*/ None,
+        Some(ReasoningEffort::Ultra),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_invalid_role_completes_failed_lifecycle_without_effective_identity() {
+    assert_failed_spawn_lifecycle(
+        json!({
+            "message": "inspect this repo",
+            "agent_type": "not-a-configured-role"
+        }),
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_runtime_failure_completes_failed_lifecycle_without_effective_identity() {
+    // The default test session has no live ThreadManager behind AgentControl, so the actual
+    // runtime spawn call fails after all request and role validation has succeeded.
+    assert_failed_spawn_lifecycle(
+        json!({"message": "inspect this repo"}),
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn spawn_agent_snapshot_loss_keeps_authoritative_identity_and_absent_effort() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    // A child can legitimately have no resolved effort. Make the test prove that a missing
+    // post-spawn snapshot preserves that absence instead of inventing `medium`.
+    {
+        let turn = Arc::get_mut(&mut turn).expect("test turn should not be shared yet");
+        turn.reasoning_effort = None;
+        turn.model_info.default_reasoning_level = None;
+    }
+    let child_model = turn.model_info.slug.clone();
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.hide_next_agent_config_snapshot().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    SpawnAgentHandler::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo"})),
+        ))
+        .await
+        .expect("spawn should fall back to the authoritative live-agent identity");
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.model, None);
+    assert_eq!(started.reasoning_effort, None);
+    assert_eq!(started.requested_model, None);
+    assert_eq!(started.requested_reasoning_effort, None);
+
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.model.as_deref(), Some(child_model.as_str()));
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model, None);
+    assert_eq!(completed.requested_reasoning_effort, None);
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.model, completed.model);
+    assert_eq!(legacy_end.reasoning_effort, completed.reasoning_effort);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+}
+
+#[tokio::test]
+async fn spawn_agent_cancellation_waits_for_terminal_lifecycle_with_created_child() {
+    assert!(
+        SpawnAgentHandler::default().waits_for_runtime_cancellation(),
+        "the runtime must await V1 spawn lifecycle cleanup after cancellation"
+    );
+
+    let (mut session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control
+        .fail_next_spawn_initial_input(codex_protocol::error::CodexErr::UnsupportedOperation(
+            "injected initial input failure".to_string(),
+        ))
+        .await;
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandler::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandler::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let mut response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({"message": "inspect this repo"})),
+        },
+        cancellation_token.clone(),
+    ));
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn start event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("legacy spawn begin channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial input delivery should pause after the child is committed")
+        .expect("initial input delivery pause should signal");
+
+    cancellation_token.cancel();
+    assert!(
+        timeout(Duration::from_millis(20), &mut response_task)
+            .await
+            .is_err(),
+        "runtime should await spawn cleanup rather than abort its task"
+    );
+    allow_initial_input
+        .send(())
+        .expect("initial input pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should return after the spawn lifecycle is terminal")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("terminal spawn event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert_eq!(completed.receiver_thread_ids.len(), 1);
+    assert_eq!(completed.receiver_agents.len(), 1);
+    let child_thread_id = completed.receiver_thread_ids[0];
+    let child_status = completed
+        .agents_states
+        .get(&child_thread_id)
+        .expect("created child should have a terminal status");
+    assert!(matches!(
+        child_status,
+        AgentStatus::Errored(message) if message.contains("initial input delivery failed")
+    ));
+    let child_config = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("created child should remain registered")
+        .config_snapshot()
+        .await;
+    assert_eq!(
+        completed.model.as_deref(),
+        Some(child_config.model.as_str())
+    );
+    assert_eq!(completed.reasoning_effort, child_config.reasoning_effort);
+    assert!(
+        manager
+            .list_live_thread_spawn_edges()
+            .await
+            .contains(&(root.thread_id, child_thread_id)),
+        "created child should retain its parent edge"
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, Some(child_thread_id));
+    assert_eq!(legacy_end.model, completed.model);
+    assert_eq!(legacy_end.reasoning_effort, completed.reasoning_effort);
+    assert_eq!(legacy_end.status, (*child_status).clone());
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+}
+
+#[tokio::test]
+async fn spawn_agent_cancellation_interrupts_child_after_successful_initial_delivery() {
+    assert!(
+        SpawnAgentHandler::default().waits_for_runtime_cancellation(),
+        "the runtime must await V1 spawn cancellation cleanup"
+    );
+
+    let (mut session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandler::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandler::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({"message": "inspect this repo"})),
+        },
+        cancellation_token.clone(),
+    ));
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn start event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("legacy spawn begin channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial input delivery should pause after the child is committed")
+        .expect("initial input delivery pause should signal");
+
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial input pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should return after it interrupts the delivered child")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("terminal spawn event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert_eq!(completed.receiver_thread_ids.len(), 1);
+    let child_thread_id = completed.receiver_thread_ids[0];
+    assert_eq!(
+        completed.agents_states.get(&child_thread_id),
+        Some(&AgentStatus::Interrupted),
+        "the delivered child must be interrupted before the parent reports cancellation"
+    );
+    let child = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("interrupted child should remain registered");
+    assert_eq!(child.agent_status().await, AgentStatus::Interrupted);
+    assert_eq!(
+        control_for_assertion.get_status(child_thread_id).await,
+        AgentStatus::Interrupted
+    );
+    let child_ops = manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| (thread_id == child_thread_id).then_some(op))
+        .collect::<Vec<_>>();
+    assert!(
+        child_ops
+            .iter()
+            .any(|op| matches!(op, Op::UserInput { .. })),
+        "the regression requires successful initial input delivery"
+    );
+    assert!(
+        child_ops.iter().any(|op| matches!(op, Op::Interrupt)),
+        "cancellation must interrupt the child whose input was accepted"
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, Some(child_thread_id));
+    assert_eq!(legacy_end.status, AgentStatus::Interrupted);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+}
+
+#[tokio::test]
+async fn spawn_agent_cancellation_child_death_before_interrupt_reports_no_child_lifecycle() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    control
+        .kill_next_spawn_cancellation_interrupt_child()
+        .await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control.clone();
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandler::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandler::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({"message": "inspect this repo"})),
+        },
+        cancellation_token.clone(),
+    ));
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial input delivery should pause after the child is committed")
+        .expect("initial input delivery pause should signal");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial input pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should wait for child-death cleanup")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = loop {
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("terminal spawn event should arrive")
+            .expect("spawn event channel should remain open");
+        let EventMsg::ItemCompleted(completed) = event.msg else {
+            continue;
+        };
+        let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+            continue;
+        };
+        break completed;
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+
+    let legacy_end = loop {
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("legacy spawn terminal event should arrive")
+            .expect("spawn event channel should remain open");
+        if let EventMsg::CollabAgentSpawnEnd(legacy_end) = event.msg {
+            break legacy_end;
+        }
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    assert!(
+        control
+            .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+            .await
+            .expect("live agent inventory should load")
+            .is_empty()
+    );
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    assert!(control.get_agent_metadata(closed_children[0]).is_none());
+}
+
+#[tokio::test]
+async fn spawn_agent_cancellation_preserves_a_naturally_errored_child_lifecycle() {
+    let (mut session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    control
+        .finish_next_spawn_cancellation_before_interrupt(AgentStatus::Errored(
+            "child failed before cancellation could interrupt it".to_string(),
+        ))
+        .await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandler::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandler::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({"message": "inspect this repo"})),
+        },
+        cancellation_token.clone(),
+    ));
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("spawn start event should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("legacy spawn event channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial delivery should pause after the child is committed")
+        .expect("initial input delivery pause should signal");
+
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial input pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should preserve the natural terminal outcome")
+        .expect("runtime task should join")
+        .expect("runtime should return a cancellation response after lifecycle cleanup");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("spawn should return a function output");
+    };
+    assert_eq!(output.success, Some(false));
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("runtime cancellation should return a text response");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = loop {
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("spawn lifecycle event should arrive")
+            .expect("spawn event channel should remain open");
+        let EventMsg::ItemCompleted(completed) = event.msg else {
+            continue;
+        };
+        let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+            continue;
+        };
+        break completed;
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Completed);
+    let [child_thread_id] = completed.receiver_thread_ids.as_slice() else {
+        panic!("naturally terminal child must retain one valid identity");
+    };
+    assert_eq!(
+        completed.agents_states.get(child_thread_id),
+        Some(&AgentStatus::Errored(
+            "child failed before cancellation could interrupt it".to_string()
+        )),
+        "the lifecycle status must retain the child error rather than call it cancelled"
+    );
+    let child_ops = manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| (*child_thread_id == thread_id).then_some(op))
+        .collect::<Vec<_>>();
+    assert!(child_ops.iter().any(|op| matches!(op, Op::UserInput { .. })));
+    assert!(
+        !child_ops.iter().any(|op| matches!(op, Op::Interrupt)),
+        "the parent must not interrupt a child that already errored naturally"
+    );
+    assert_eq!(
+        control_for_assertion.get_status(*child_thread_id).await,
+        AgentStatus::Errored("child failed before cancellation could interrupt it".to_string())
+    );
+
+    let legacy_end = loop {
+        let event = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("legacy spawn terminal event should arrive")
+            .expect("spawn event channel should remain open");
+        if let EventMsg::CollabAgentSpawnEnd(legacy_end) = event.msg {
+            break legacy_end;
+        }
+    };
+    assert_eq!(legacy_end.new_thread_id, Some(*child_thread_id));
+    assert_eq!(
+        legacy_end.status,
+        AgentStatus::Errored("child failed before cancellation could interrupt it".to_string())
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_child_death_during_initial_delivery_reports_no_child_lifecycle() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.kill_next_spawn_initial_input_child().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control.clone();
+        session.thread_id = root.thread_id;
+    }
+
+    let error = SpawnAgentHandler::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo"})),
+        ))
+        .await
+        .expect_err("a dead child should make spawn fail");
+    assert!(
+        matches!(error, FunctionCallError::RespondToModel(_)),
+        "the real child-death error should remain visible to the caller"
+    );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(started.msg, EventMsg::ItemStarted(_)));
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn begin should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(
+        legacy_begin.msg,
+        EventMsg::CollabAgentSpawnBegin(_)
+    ));
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical spawn terminal event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected canonical spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn terminal event should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
+
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_initial_communication_failure_emits_errored_activity() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    control
+        .fail_next_spawn_initial_input(codex_protocol::error::CodexErr::UnsupportedOperation(
+            "injected initial communication failure".to_string(),
+        ))
+        .await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let error = match SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "delivery_failure",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+    {
+        Ok(_) => panic!("initial communication delivery should fail"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        FunctionCallError::RespondToModel("injected initial communication failure".to_string())
+    );
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical errored activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical activity completion");
+    };
+    let TurnItem::SubAgentActivity(activity) = completed.item else {
+        panic!("expected sub-agent activity item");
+    };
+    assert_eq!(activity.kind, SubAgentActivityKind::Interrupted);
+    assert_eq!(
+        activity.terminal_state,
+        Some(SubAgentActivityTerminalState::Errored)
+    );
+    assert_eq!(activity.agent_path.as_str(), "/root/delivery_failure");
+    let child = manager
+        .get_thread(activity.agent_thread_id)
+        .await
+        .expect("committed child should remain registered");
+    let child_status = child.agent_status().await;
+    assert!(matches!(
+        &child_status,
+        AgentStatus::Errored(message) if message.contains("initial input delivery failed")
+    ));
+    assert_eq!(
+        control_for_assertion
+            .get_status(activity.agent_thread_id)
+            .await,
+        child_status
+    );
+    let inventory = control_for_assertion
+        .get_live_agent_inventory_info(activity.agent_thread_id)
+        .await
+        .expect("committed child should remain present in the V2 live inventory");
+    assert_eq!(inventory.status, child_status);
+    let child_config = child.config_snapshot().await;
+    assert_eq!(activity.model.as_deref(), Some(child_config.model.as_str()));
+    assert_eq!(activity.reasoning_effort, child_config.reasoning_effort);
+    assert!(
+        manager
+            .list_live_thread_spawn_edges()
+            .await
+            .contains(&(root.thread_id, activity.agent_thread_id)),
+        "committed child should retain its parent edge"
+    );
+
+    let legacy_activity = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy errored activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::SubAgentActivity(legacy_activity) = legacy_activity.msg else {
+        panic!("expected legacy sub-agent activity");
+    };
+    assert_eq!(legacy_activity.agent_thread_id, activity.agent_thread_id);
+    assert_eq!(legacy_activity.agent_path, activity.agent_path);
+    assert_eq!(legacy_activity.model, activity.model);
+    assert_eq!(legacy_activity.reasoning_effort, activity.reasoning_effort);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
+    assert!(rx.try_recv().is_err(), "no extra activity events expected");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_child_death_during_initial_delivery_publishes_no_activity() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow MultiAgentV2");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.remove_next_spawn_initial_input_child().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control.clone();
+        session.thread_id = root.thread_id;
+    }
+
+    let error = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "dead_child",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect_err("a dead child should make V2 spawn fail");
+    assert!(matches!(error, FunctionCallError::RespondToModel(_)));
+    assert!(
+        rx.try_recv().is_err(),
+        "V2 must not publish canonical or legacy child activity for a removed child"
+    );
+
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    let child_thread_id = closed_children[0];
+    assert!(control.get_agent_metadata(child_thread_id).is_none());
+    assert!(
+        control
+            .get_live_agent_inventory_info(child_thread_id)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cancellation_waits_for_errored_activity_cleanup() {
+    assert!(
+        SpawnAgentHandlerV2::default().waits_for_runtime_cancellation(),
+        "the runtime must await V2 spawn activity cleanup after cancellation"
+    );
+
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    control
+        .fail_next_spawn_initial_input(codex_protocol::error::CodexErr::UnsupportedOperation(
+            "injected initial communication failure".to_string(),
+        ))
+        .await;
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandlerV2::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandlerV2::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let mut response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "cancelled_delivery_failure",
+                "fork_turns": "none"
+            })),
+        },
+        cancellation_token.clone(),
+    ));
+
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial communication should pause after the child is committed")
+        .expect("initial communication pause should signal");
+    cancellation_token.cancel();
+    assert!(
+        timeout(Duration::from_millis(20), &mut response_task)
+            .await
+            .is_err(),
+        "runtime should await V2 spawn cleanup rather than abort its task"
+    );
+    allow_initial_input
+        .send(())
+        .expect("initial communication pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should return after the activity is terminal")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled V2 spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled V2 spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical errored activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical activity completion");
+    };
+    let TurnItem::SubAgentActivity(activity) = completed.item else {
+        panic!("expected sub-agent activity item");
+    };
+    assert_eq!(activity.kind, SubAgentActivityKind::Interrupted);
+    assert_eq!(
+        activity.terminal_state,
+        Some(SubAgentActivityTerminalState::Errored)
+    );
+    assert_eq!(
+        activity.agent_path.as_str(),
+        "/root/cancelled_delivery_failure"
+    );
+    let child = manager
+        .get_thread(activity.agent_thread_id)
+        .await
+        .expect("committed child should remain registered");
+    let child_status = child.agent_status().await;
+    assert!(matches!(
+        &child_status,
+        AgentStatus::Errored(message) if message.contains("initial input delivery failed")
+    ));
+    assert_eq!(
+        control_for_assertion
+            .get_status(activity.agent_thread_id)
+            .await,
+        child_status
+    );
+    let inventory = control_for_assertion
+        .get_live_agent_inventory_info(activity.agent_thread_id)
+        .await
+        .expect("committed child should remain present in the V2 live inventory");
+    assert_eq!(inventory.status, child_status);
+    let child_config = child.config_snapshot().await;
+    assert_eq!(activity.model.as_deref(), Some(child_config.model.as_str()));
+    assert_eq!(activity.reasoning_effort, child_config.reasoning_effort);
+    assert!(
+        manager
+            .list_live_thread_spawn_edges()
+            .await
+            .contains(&(root.thread_id, activity.agent_thread_id)),
+        "committed child should retain its parent edge"
+    );
+
+    let legacy_activity = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy errored activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::SubAgentActivity(legacy_activity) = legacy_activity.msg else {
+        panic!("expected legacy sub-agent activity");
+    };
+    assert_eq!(legacy_activity.agent_thread_id, activity.agent_thread_id);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
+    assert!(rx.try_recv().is_err(), "no extra activity events expected");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cancellation_interrupts_child_after_successful_initial_delivery() {
+    assert!(
+        SpawnAgentHandlerV2::default().waits_for_runtime_cancellation(),
+        "the runtime must await V2 spawn cancellation cleanup"
+    );
+
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandlerV2::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandlerV2::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "cancelled_successful_delivery",
+                "fork_turns": "none"
+            })),
+        },
+        cancellation_token.clone(),
+    ));
+
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial communication should pause after the child is committed")
+        .expect("initial communication pause should signal");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial communication pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should return after it interrupts the delivered child")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled V2 spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled V2 spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical interrupted activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical activity completion");
+    };
+    let TurnItem::SubAgentActivity(activity) = completed.item else {
+        panic!("expected sub-agent activity item");
+    };
+    assert_eq!(activity.kind, SubAgentActivityKind::Interrupted);
+    assert_eq!(activity.terminal_state, None);
+    assert_eq!(
+        activity.agent_path.as_str(),
+        "/root/cancelled_successful_delivery"
+    );
+    let child = manager
+        .get_thread(activity.agent_thread_id)
+        .await
+        .expect("interrupted child should remain registered");
+    assert_eq!(child.agent_status().await, AgentStatus::Interrupted);
+    assert_eq!(
+        control_for_assertion
+            .get_status(activity.agent_thread_id)
+            .await,
+        AgentStatus::Interrupted
+    );
+
+    let legacy_activity = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy interrupted activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::SubAgentActivity(legacy_activity) = legacy_activity.msg else {
+        panic!("expected legacy sub-agent activity");
+    };
+    assert_eq!(legacy_activity.agent_thread_id, activity.agent_thread_id);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Interrupted);
+    assert!(rx.try_recv().is_err(), "no extra activity events expected");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cancellation_child_death_before_interrupt_publishes_no_activity() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    control
+        .kill_next_spawn_cancellation_interrupt_child()
+        .await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control.clone();
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandlerV2::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandlerV2::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "dead_before_interrupt",
+                "fork_turns": "none"
+            })),
+        },
+        cancellation_token.clone(),
+    ));
+
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial communication should pause after the child is committed")
+        .expect("initial communication pause should signal");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial communication pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should wait for child-death cleanup")
+        .expect("runtime task should join")
+        .expect("cancelled tool should return a model-facing response");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("cancelled V2 spawn should return a function output");
+    };
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("cancelled V2 spawn output should be text");
+    };
+    assert!(text.contains("aborted by user"));
+    assert!(
+        rx.try_recv().is_err(),
+        "V2 must not publish activity for a child removed before cancellation can interrupt it"
+    );
+    assert_eq!(manager.list_thread_ids().await, vec![root.thread_id]);
+    assert!(
+        control
+            .list_agents(&SessionSource::Cli, /*path_prefix*/ None)
+            .await
+            .expect("live agent inventory should load")
+            .is_empty()
+    );
+    let open_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .expect("open child edges should load");
+    assert!(open_children.is_empty());
+    let closed_children = state_db
+        .list_thread_spawn_children_with_status(
+            root.thread_id,
+            DirectionalThreadSpawnEdgeStatus::Closed,
+        )
+        .await
+        .expect("closed child edges should load");
+    assert_eq!(closed_children.len(), 1);
+    assert!(control.get_agent_metadata(closed_children[0]).is_none());
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_cancellation_preserves_a_naturally_completed_child_activity() {
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    let control_for_assertion = control.clone();
+    let (initial_input_started, allow_initial_input) =
+        control.pause_next_spawn_initial_input().await;
+    control
+        .finish_next_spawn_cancellation_before_interrupt(AgentStatus::Completed(Some(
+            "child completed before cancellation could interrupt it".to_string(),
+        )))
+        .await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let tool_name = SpawnAgentHandlerV2::default().tool_name();
+    let handler = Arc::new(SpawnAgentHandlerV2::default()) as Arc<dyn CoreToolRuntime>;
+    let step_context = StepContext::for_test(Arc::clone(&turn));
+    let router = Arc::new(ToolRouter::from_parts(
+        ToolRegistry::from_tools([handler]),
+        Vec::new(),
+    ));
+    let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+    let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+    let cancellation_token = CancellationToken::new();
+    let response_task = tokio::spawn(runtime.handle_tool_call(
+        ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "naturally_completed",
+                "fork_turns": "none"
+            })),
+        },
+        cancellation_token.clone(),
+    ));
+
+    timeout(Duration::from_secs(1), initial_input_started)
+        .await
+        .expect("initial communication should pause after the child is committed")
+        .expect("initial communication pause should signal");
+    cancellation_token.cancel();
+    allow_initial_input
+        .send(())
+        .expect("initial communication pause should still be waiting");
+
+    let response = timeout(Duration::from_secs(1), response_task)
+        .await
+        .expect("runtime should preserve the natural terminal outcome")
+        .expect("runtime task should join")
+        .expect("runtime should return a cancellation response after lifecycle cleanup");
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("spawn should return a function output");
+    };
+    assert_eq!(output.success, Some(false));
+    let FunctionCallOutputBody::Text(text) = output.body else {
+        panic!("runtime cancellation should return a text response");
+    };
+    assert!(text.contains("aborted by user"));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical started activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical activity completion");
+    };
+    let TurnItem::SubAgentActivity(activity) = completed.item else {
+        panic!("expected sub-agent activity item");
+    };
+    assert_eq!(activity.kind, SubAgentActivityKind::Started);
+    assert_eq!(activity.terminal_state, None);
+    assert_eq!(activity.agent_path.as_str(), "/root/naturally_completed");
+    assert_eq!(
+        control_for_assertion.get_status(activity.agent_thread_id).await,
+        AgentStatus::Completed(Some(
+            "child completed before cancellation could interrupt it".to_string()
+        )),
+        "the durable child status, not a synthetic interruption, is authoritative"
+    );
+    let child_ops = manager
+        .captured_ops()
+        .into_iter()
+        .filter_map(|(thread_id, op)| (thread_id == activity.agent_thread_id).then_some(op))
+        .collect::<Vec<_>>();
+    assert!(child_ops.iter().any(|op| matches!(op, Op::InterAgentCommunication { .. })));
+    assert!(
+        !child_ops.iter().any(|op| matches!(op, Op::Interrupt)),
+        "V2 must not publish an interrupted lifecycle after natural completion"
+    );
+
+    let legacy_activity = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy started activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::SubAgentActivity(legacy_activity) = legacy_activity.msg else {
+        panic!("expected legacy sub-agent activity");
+    };
+    assert_eq!(legacy_activity.agent_thread_id, activity.agent_thread_id);
+    assert_eq!(legacy_activity.kind, SubAgentActivityKind::Started);
 }
 
 #[tokio::test]
@@ -1356,7 +2955,9 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
         .await
         .expect("root thread should start");
-    session.services.agent_control = manager.agent_control();
+    let control = manager.agent_control();
+    control.hide_next_agent_config_snapshot().await;
+    session.services.agent_control = control;
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
     config
@@ -3130,13 +4731,19 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
 
 #[tokio::test]
 async fn spawn_agent_rejects_when_depth_limit_exceeded() {
-    let (mut session, mut turn) = make_session_and_context().await;
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    Arc::get_mut(&mut session)
+        .expect("test session should not be shared yet")
+        .services
+        .agent_control = manager.agent_control();
 
     let max_depth = turn.config.agent_max_depth;
-    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: session.thread_id,
+    let session_thread_id = session.thread_id;
+    Arc::get_mut(&mut turn)
+        .expect("test turn should not be shared yet")
+        .session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: session_thread_id,
         depth: max_depth,
         agent_path: None,
         agent_nickname: None,
@@ -3144,10 +4751,14 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
     });
 
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
-        function_payload(json!({"message": "hello"})),
+        function_payload(json!({
+            "message": "hello",
+            "model": "gpt-requested",
+            "reasoning_effort": "high",
+        })),
     );
     let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
         panic!("spawn should fail when depth limit exceeded");
@@ -3158,6 +4769,71 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
             "Agent depth limit reached. Solve the task yourself.".to_string()
         )
     );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("depth-limit spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.status, CollabAgentToolCallStatus::InProgress);
+    assert_eq!(started.prompt.as_deref(), Some("hello"));
+    assert_eq!(started.requested_model.as_deref(), Some("gpt-requested"));
+    assert_eq!(
+        started.requested_reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+
+    let legacy_begin = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy depth-limit spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnBegin(legacy_begin) = legacy_begin.msg else {
+        panic!("expected legacy spawn start");
+    };
+    assert_eq!(legacy_begin.prompt, "hello");
+    assert_eq!(legacy_begin.model.as_deref(), Some("gpt-requested"));
+    assert_eq!(legacy_begin.reasoning_effort, Some(ReasoningEffort::High));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("depth-limit spawn failure completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert!(completed.receiver_thread_ids.is_empty());
+    assert!(completed.receiver_agents.is_empty());
+    assert!(completed.agents_states.is_empty());
+    assert_eq!(completed.prompt.as_deref(), Some("hello"));
+    assert_eq!(completed.model, None);
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model.as_deref(), Some("gpt-requested"));
+    assert_eq!(
+        completed.requested_reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+
+    let legacy_end = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy depth-limit spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnEnd(legacy_end) = legacy_end.msg else {
+        panic!("expected legacy spawn completion");
+    };
+    assert_eq!(legacy_end.new_thread_id, None);
+    assert_eq!(legacy_end.model, None);
+    assert_eq!(legacy_end.reasoning_effort, None);
+    assert_eq!(legacy_end.status, AgentStatus::NotFound);
+    assert!(rx.try_recv().is_err(), "no extra lifecycle events expected");
 }
 
 #[tokio::test]

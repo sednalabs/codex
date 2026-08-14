@@ -88,6 +88,7 @@ async fn handle_interrupt_agent(
             model: None,
             reasoning_effort: None,
             kind: SubAgentActivityKind::Interrupted,
+            terminal_state: None,
         },
     )
     .await;

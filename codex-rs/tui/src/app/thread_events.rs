@@ -34,6 +34,9 @@ pub(super) struct FeedbackThreadEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ThreadEventAttachment {
+    /// A local queue created while routing a notification for a thread that has not yet been
+    /// attached by `thread/resume`, fork, or another authoritative live-session response.
+    NotificationBuffer,
     Live,
     ReplayOnly,
 }
@@ -59,8 +62,66 @@ impl ThreadEventStore {
                 | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
                 | ThreadBufferedEvent::Notification(ServerNotification::McpServerStatusUpdated(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadGoalUpdated(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadGoalCleared(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::ThreadNameUpdated(_))
                 | ThreadBufferedEvent::FeedbackSubmission(_)
         )
+    }
+
+    fn is_authoritative_session_refresh_state(event: &ThreadBufferedEvent) -> bool {
+        matches!(
+            event,
+            ThreadBufferedEvent::Notification(
+                ServerNotification::ThreadGoalUpdated(_)
+                    | ServerNotification::ThreadGoalCleared(_)
+                    | ServerNotification::ThreadTokenUsageUpdated(_)
+                    | ServerNotification::ThreadNameUpdated(_)
+            )
+        )
+    }
+
+    fn notification_replaces_authoritative_state(
+        event: &ThreadBufferedEvent,
+        notification: &ServerNotification,
+    ) -> bool {
+        matches!(
+            (event, notification),
+            (
+                ThreadBufferedEvent::Notification(
+                    ServerNotification::ThreadGoalUpdated(_)
+                        | ServerNotification::ThreadGoalCleared(_)
+                ),
+                ServerNotification::ThreadGoalUpdated(_) | ServerNotification::ThreadGoalCleared(_)
+            ) | (
+                ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_)),
+                ServerNotification::ThreadTokenUsageUpdated(_)
+            ) | (
+                ThreadBufferedEvent::Notification(ServerNotification::ThreadNameUpdated(_)),
+                ServerNotification::ThreadNameUpdated(_)
+            )
+        )
+    }
+
+    fn evict_after_overflow(&mut self) {
+        if self.buffer.len() <= self.capacity {
+            return;
+        }
+
+        let evicted_index = self
+            .buffer
+            .iter()
+            .position(|event| !Self::is_authoritative_session_refresh_state(event))
+            .unwrap_or(0);
+        let removed = self
+            .buffer
+            .remove(evicted_index)
+            .expect("overflowed thread event buffer must contain an event");
+        if let ThreadBufferedEvent::Request(request) = &removed {
+            self.pending_interactive_replay
+                .note_evicted_server_request(request);
+        }
     }
 
     pub(super) fn new(capacity: usize) -> Self {
@@ -158,28 +219,19 @@ impl ThreadEventStore {
             return;
         }
 
+        self.buffer.retain(|event| {
+            !Self::notification_replaces_authoritative_state(event, notification.as_ref())
+        });
         self.buffer
             .push_back(ThreadBufferedEvent::Notification(notification.into_owned()));
-        if self.buffer.len() > self.capacity
-            && let Some(removed) = self.buffer.pop_front()
-            && let ThreadBufferedEvent::Request(request) = &removed
-        {
-            self.pending_interactive_replay
-                .note_evicted_server_request(request);
-        }
+        self.evict_after_overflow();
     }
 
     pub(super) fn push_request(&mut self, request: ServerRequest) {
         self.pending_interactive_replay
             .note_server_request(&request);
         self.buffer.push_back(ThreadBufferedEvent::Request(request));
-        if self.buffer.len() > self.capacity
-            && let Some(removed) = self.buffer.pop_front()
-            && let ThreadBufferedEvent::Request(request) = &removed
-        {
-            self.pending_interactive_replay
-                .note_evicted_server_request(request);
-        }
+        self.evict_after_overflow();
     }
 
     pub(super) fn pending_replay_requests(&self) -> Vec<ServerRequest> {
@@ -326,13 +378,30 @@ pub(super) struct ThreadEventChannel {
 
 impl ThreadEventChannel {
     pub(super) fn new(capacity: usize) -> Self {
+        Self::new_with_attachment(capacity, ThreadEventAttachment::Live)
+    }
+
+    /// Creates a local notification queue without claiming that the app server has attached this
+    /// thread live. Status snapshots may arrive before a resume/fork response, and treating this
+    /// buffer as live would let a later `NotLoaded` status reopen a terminal child.
+    pub(super) fn new_notification_buffer(capacity: usize) -> Self {
+        Self::new_with_attachment(capacity, ThreadEventAttachment::NotificationBuffer)
+    }
+
+    fn new_with_attachment(capacity: usize, attachment: ThreadEventAttachment) -> Self {
         let (sender, receiver) = mpsc::channel(capacity);
         Self {
             sender,
             receiver: Some(receiver),
             store: Arc::new(Mutex::new(ThreadEventStore::new(capacity))),
-            attachment: ThreadEventAttachment::Live,
+            attachment,
         }
+    }
+
+    /// Records an actual live app-server attachment after a successful resume, fork, or primary
+    /// session start has populated this channel.
+    pub(super) fn mark_live(&mut self) {
+        self.attachment = ThreadEventAttachment::Live;
     }
 
     pub(super) fn mark_replay_only(&mut self) {
@@ -341,6 +410,10 @@ impl ThreadEventChannel {
 
     pub(super) fn attachment(&self) -> ThreadEventAttachment {
         self.attachment
+    }
+
+    pub(super) fn has_live_attachment(&self) -> bool {
+        self.attachment == ThreadEventAttachment::Live
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -509,6 +582,67 @@ mod tests {
         })
     }
 
+    fn thread_goal_updated_notification(thread_id: ThreadId) -> ServerNotification {
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: Some("turn-goal".to_string()),
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: thread_id.to_string(),
+                    objective: "finish the task".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 25,
+                    time_used_seconds: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            },
+        )
+    }
+
+    fn thread_goal_cleared_notification(thread_id: ThreadId) -> ServerNotification {
+        ServerNotification::ThreadGoalCleared(
+            codex_app_server_protocol::ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            },
+        )
+    }
+
+    fn thread_token_usage_updated_notification(thread_id: ThreadId) -> ServerNotification {
+        let usage = codex_app_server_protocol::TokenUsageBreakdown {
+            total_tokens: 25,
+            input_tokens: 20,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 5,
+            reasoning_output_tokens: 0,
+        };
+        ServerNotification::ThreadTokenUsageUpdated(
+            codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: "turn-goal".to_string(),
+                token_usage: codex_app_server_protocol::ThreadTokenUsage {
+                    total: usage.clone(),
+                    last: usage,
+                    model_context_window: Some(100),
+                },
+            },
+        )
+    }
+
+    fn thread_name_updated_notification(
+        thread_id: ThreadId,
+        thread_name: &str,
+    ) -> ServerNotification {
+        ServerNotification::ThreadNameUpdated(
+            codex_app_server_protocol::ThreadNameUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                thread_name: Some(thread_name.to_string()),
+            },
+        )
+    }
+
     fn exec_approval_request(
         thread_id: ThreadId,
         turn_id: &str,
@@ -653,6 +787,66 @@ mod tests {
         let snapshot = store.snapshot();
         assert!(snapshot.events.is_empty());
         assert_eq!(store.has_pending_thread_approvals(), false);
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_latest_goal_clear_usage_and_name_state() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(/*capacity*/ 5);
+        store.push_notification(thread_goal_updated_notification(thread_id));
+        store.push_notification(thread_goal_cleared_notification(thread_id));
+        store.push_notification(thread_token_usage_updated_notification(thread_id));
+        store.push_notification(thread_name_updated_notification(thread_id, "before refresh"));
+        store.push_notification(thread_name_updated_notification(thread_id, "after refresh"));
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.events.len(), 3);
+        assert!(matches!(
+            &snapshot.events[0],
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadGoalCleared(_))
+        ));
+        assert!(matches!(
+            &snapshot.events[1],
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadTokenUsageUpdated(_))
+        ));
+        assert!(matches!(
+            &snapshot.events[2],
+            ThreadBufferedEvent::Notification(ServerNotification::ThreadNameUpdated(
+                codex_app_server_protocol::ThreadNameUpdatedNotification {
+                    thread_name: Some(thread_name),
+                    ..
+                }
+            )) if thread_name == "after refresh"
+        ));
+    }
+
+    #[test]
+    fn thread_event_store_bounded_buffer_retains_sole_latest_authoritative_state() {
+        let thread_id = ThreadId::new();
+        for notification in [
+            thread_goal_updated_notification(thread_id),
+            thread_goal_cleared_notification(thread_id),
+            thread_token_usage_updated_notification(thread_id),
+            thread_name_updated_notification(thread_id, "latest name"),
+        ] {
+            let mut store = ThreadEventStore::new(/*capacity*/ 1);
+            store.push_notification(notification);
+            store.push_notification(hook_started_notification(thread_id, "turn-goal"));
+
+            let snapshot = store.snapshot();
+            assert_eq!(snapshot.events.len(), 1);
+            assert!(matches!(
+                &snapshot.events[0],
+                ThreadBufferedEvent::Notification(
+                    ServerNotification::ThreadGoalUpdated(_)
+                        | ServerNotification::ThreadGoalCleared(_)
+                        | ServerNotification::ThreadTokenUsageUpdated(_)
+                        | ServerNotification::ThreadNameUpdated(_)
+                )
+            ));
+        }
     }
 
     #[test]

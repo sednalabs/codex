@@ -21,13 +21,28 @@
 
 use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::SubAgentActivityDisplay;
-use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::format_agent_picker_item_label;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
+
+/// Retain only recent close notifications that had no corresponding picker row. The picker still
+/// preserves tracked closed rows separately; this cap only bounds unmatched notification state.
+const CLOSED_THREAD_TOMBSTONE_LIMIT: usize = 256;
+/// Retain only recent accepted nonterminal statuses that did not create a picker row. Terminal
+/// status provenance is instead owned by [`Self::terminal_lifecycle_watermarks`], which keeps
+/// the status revision and activity boundary together through a close/recovery lifecycle.
+const UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT: usize = 256;
+/// Terminal lifecycle evidence also protects rows after cache removal. It has a larger, separate
+/// bound so tracked close notifications cannot evict an unrelated unmatched-close tombstone.
+const TERMINAL_LIFECYCLE_WATERMARK_LIMIT: usize = 1024;
+/// Retain every activity identity from a normal child lifecycle, while still bounding the causal
+/// history held by each terminal watermark.
+const TERMINAL_LIFECYCLE_ACTIVITY_ID_LIMIT: usize = 16;
 
 /// Small state container for multi-agent picker ordering and labeling.
 ///
@@ -46,8 +61,177 @@ pub(crate) struct AgentNavigationState {
     order: Vec<ThreadId>,
     /// Threads with observed terminal liveness that must not be revived by delayed activity.
     stopped_threads: HashSet<ThreadId>,
+    /// Error activities that must see their matching status before a later status can recover
+    /// their picker row. Activity and status notifications race across independent streams.
+    system_error_epochs: HashMap<ThreadId, SystemErrorEpoch>,
+    /// Monotonic error observations per thread. A successful asynchronous `thread/read` may
+    /// clear an error only when no newer activity or status observed error evidence in flight.
+    system_error_observation_generations: HashMap<ThreadId, u64>,
+    /// Latest accepted status revision per thread. Revisions are scoped to one app-server session
+    /// and let the picker reject a status watcher message delivered out of order.
+    last_status_revisions: HashMap<ThreadId, u64>,
+    /// Kind and revision of the latest accepted status. The kind lets a terminal activity that
+    /// arrives after an already-observed `SystemError` enter a confirmed error epoch directly.
+    last_accepted_statuses: HashMap<ThreadId, AcceptedThreadStatus>,
+    /// FIFO ownership for status provenance that did not materialize a picker row and has no
+    /// terminal lifecycle watermark. Without this, a stream of unique status-only thread ids
+    /// would retain revision state for the lifetime of the TUI session.
+    unknown_thread_status_provenance_order: VecDeque<ThreadId>,
+    /// Recent terminal notifications for threads that may not have created picker metadata yet.
+    /// A late parent activity must not recreate an open row after the child was already closed.
+    closed_thread_tombstones: HashMap<ThreadId, ClosedThreadTombstone>,
+    /// FIFO eviction order for [`Self::closed_thread_tombstones`].
+    closed_thread_tombstone_order: VecDeque<ThreadId>,
+    /// Bounded terminal lifecycle evidence retained across picker-row removal. It distinguishes a
+    /// stale terminal activity from a new child lifecycle after a status-only recovery.
+    terminal_lifecycle_watermarks: HashMap<ThreadId, TerminalLifecycleWatermark>,
+    /// FIFO eviction order for [`Self::terminal_lifecycle_watermarks`].
+    terminal_lifecycle_watermark_order: VecDeque<ThreadId>,
+    /// Bounded activity identities from the currently known lifecycle for each child. They are
+    /// transferred into a terminal watermark before a close or explicit cache removal.
+    active_lifecycle_activity_ids: HashMap<ThreadId, ActivityIdHistory>,
     /// Spawned child threads whose instructions are owned by their parent agent.
     parent_owned_threads: HashSet<ThreadId>,
+    /// Opaque continuation for the next bounded persisted-subagent page.
+    next_picker_page_cursor: Option<String>,
+    /// Monotonic freshness marker for a root picker snapshot. A root refresh records this when
+    /// it starts; a later continuation result or accepted activity/status liveness observation
+    /// makes the delayed first-page snapshot metadata-only.
+    picker_snapshot_generation: u64,
+    /// Whether this session has completed the bounded legacy relation repair fallback.
+    legacy_relation_fallback_checked: bool,
+    /// Coalesces picker refreshes and binds their eventual reply to one root lifecycle.
+    ///
+    /// A refresh request deliberately outlives the picker view itself, so the request number is
+    /// monotonic across [`Self::clear`]. That makes an old reply fail closed after a same-root
+    /// resume has installed a new lifecycle.
+    picker_refresh: Option<PickerRefreshTicket>,
+    /// Source for the monotonic request identity in [`Self::picker_refresh`].
+    next_picker_refresh_generation: u64,
+    /// Whether an empty picker is still waiting for discovery or has completed an authoritative
+    /// empty first page. Cache emptiness alone cannot distinguish those user-visible states.
+    picker_empty_state: PickerEmptyState,
+}
+
+/// Correlates one background picker refresh with the root session that requested it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PickerRefreshTicket {
+    root_thread_id: ThreadId,
+    lifecycle_generation: u64,
+    request_generation: u64,
+    snapshot_generation: u64,
+}
+
+/// User-visible completion state for an otherwise empty picker cache.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PickerEmptyState {
+    /// No successful, authoritative empty discovery response has been applied yet.
+    #[default]
+    Unknown,
+    /// A root-scoped picker refresh is in flight.
+    Pending,
+    /// A successful, exhausted first page contained no visible descendants.
+    Complete,
+}
+
+/// The causal state for one activity-derived system error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SystemErrorEpoch {
+    /// A terminal activity was observed before its child status watcher reached `SystemError`.
+    AwaitingSystemError,
+    /// The watcher has confirmed the activity-derived failure; a later status may recover it.
+    ConfirmedSystemError {
+        /// Revision assigned to the matching `SystemError`, when the server supports it.
+        status_revision: Option<u64>,
+    },
+}
+
+/// The status observation most recently accepted for a picker thread.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AcceptedThreadStatus {
+    has_system_error: bool,
+    is_running: bool,
+    is_closed: bool,
+    status_revision: Option<u64>,
+}
+
+/// Revision evidence retained for a terminal notification when it carries a status revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ClosedThreadTombstone {
+    status_revision: Option<u64>,
+}
+
+/// Terminal evidence that survives removal of the corresponding picker row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TerminalLifecycleWatermark {
+    Closed {
+        status_revision: Option<u64>,
+        activity_ids: ActivityIdHistory,
+    },
+    Recovered {
+        status_revision: u64,
+        activity_ids: ActivityIdHistory,
+    },
+}
+
+impl TerminalLifecycleWatermark {
+    fn status_revision(&self) -> Option<u64> {
+        match self {
+            Self::Closed {
+                status_revision, ..
+            } => *status_revision,
+            Self::Recovered {
+                status_revision, ..
+            } => Some(*status_revision),
+        }
+    }
+
+    fn activity_ids(&self) -> &ActivityIdHistory {
+        match self {
+            Self::Closed { activity_ids, .. } | Self::Recovered { activity_ids, .. } => {
+                activity_ids
+            }
+        }
+    }
+
+    fn activity_ids_mut(&mut self) -> &mut ActivityIdHistory {
+        match self {
+            Self::Closed { activity_ids, .. } | Self::Recovered { activity_ids, .. } => {
+                activity_ids
+            }
+        }
+    }
+}
+
+/// Bounded activity identities observed during one child lifecycle.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ActivityIdHistory {
+    ids: VecDeque<String>,
+}
+
+impl ActivityIdHistory {
+    fn record(&mut self, activity_id: String) {
+        self.ids.retain(|candidate| candidate != &activity_id);
+        self.ids.push_back(activity_id);
+        while self.ids.len() > TERMINAL_LIFECYCLE_ACTIVITY_ID_LIMIT {
+            self.ids.pop_front();
+        }
+    }
+
+    fn extend(&mut self, other: &Self) {
+        for activity_id in &other.ids {
+            self.record(activity_id.clone());
+        }
+    }
+
+    fn contains(&self, activity_id: &str) -> bool {
+        self.ids.iter().any(|candidate| candidate == activity_id)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
 }
 
 /// Direction of keyboard traversal through the stable picker order.
@@ -60,6 +244,96 @@ pub(crate) enum AgentNavigationDirection {
 }
 
 impl AgentNavigationState {
+    /// Starts one root-scoped picker refresh, returning `None` when an equivalent refresh is
+    /// already in flight. The caller must send all three returned identifiers back with the
+    /// completion event so stale work cannot update a later session.
+    pub(crate) fn begin_picker_refresh(
+        &mut self,
+        root_thread_id: ThreadId,
+        lifecycle_generation: u64,
+    ) -> Option<u64> {
+        if self.picker_refresh.is_some() {
+            return None;
+        }
+        self.picker_empty_state = PickerEmptyState::Pending;
+        self.next_picker_refresh_generation = self.next_picker_refresh_generation.wrapping_add(1);
+        let request_generation = self.next_picker_refresh_generation;
+        self.picker_refresh = Some(PickerRefreshTicket {
+            root_thread_id,
+            lifecycle_generation,
+            request_generation,
+            snapshot_generation: self.picker_snapshot_generation,
+        });
+        Some(request_generation)
+    }
+
+    /// Returns whether the matching root refresh still owns its revisionless picker snapshot.
+    /// Thread metadata remains useful after newer picker liveness wins this race, but its
+    /// first-page cursor and liveness do not carry ordering evidence after that point.
+    pub(crate) fn picker_refresh_owns_snapshot(
+        &self,
+        root_thread_id: ThreadId,
+        lifecycle_generation: u64,
+        request_generation: u64,
+    ) -> bool {
+        self.picker_refresh.is_some_and(|ticket| {
+            ticket.root_thread_id == root_thread_id
+                && ticket.lifecycle_generation == lifecycle_generation
+                && ticket.request_generation == request_generation
+                && ticket.snapshot_generation == self.picker_snapshot_generation
+        })
+    }
+
+    /// Consumes the matching in-flight picker refresh. A mismatch is an old response or a reply
+    /// for a previous root lifecycle and must not change navigation or picker UI state.
+    pub(crate) fn finish_picker_refresh(
+        &mut self,
+        root_thread_id: ThreadId,
+        lifecycle_generation: u64,
+        request_generation: u64,
+    ) -> bool {
+        if !self.picker_refresh.is_some_and(|ticket| {
+            ticket.root_thread_id == root_thread_id
+                && ticket.lifecycle_generation == lifecycle_generation
+                && ticket.request_generation == request_generation
+        }) {
+            return false;
+        }
+        self.picker_refresh = None;
+        true
+    }
+
+    /// Records whether a completed background refresh authoritatively established that no
+    /// descendants are available. Partial or failed responses remain unknown rather than looking
+    /// like a final empty result.
+    pub(crate) fn complete_picker_refresh_empty_state(
+        &mut self,
+        is_authoritatively_empty: bool,
+    ) {
+        self.picker_empty_state = if is_authoritatively_empty && self.is_empty() {
+            PickerEmptyState::Complete
+        } else {
+            PickerEmptyState::Unknown
+        };
+    }
+
+    /// Returns whether an empty picker should render its stable terminal state rather than an
+    /// in-flight discovery placeholder.
+    pub(crate) fn has_completed_empty_picker_refresh(&self) -> bool {
+        self.picker_empty_state == PickerEmptyState::Complete
+    }
+
+    #[cfg(test)]
+    pub(crate) fn picker_refresh_ticket_for_test(&self) -> Option<(ThreadId, u64, u64)> {
+        self.picker_refresh.map(|ticket| {
+            (
+                ticket.root_thread_id,
+                ticket.lifecycle_generation,
+                ticket.request_generation,
+            )
+        })
+    }
+
     /// Returns the cached picker entry for a specific thread id.
     ///
     /// Callers use this when they already know which thread they care about and need the last
@@ -87,6 +361,23 @@ impl AgentNavigationState {
         self.threads.is_empty()
     }
 
+    /// Returns whether an unversioned `thread/read` or picker-backfill snapshot may update
+    /// liveness. Once a watcher status has a revision, an asynchronous snapshot has no ordering
+    /// evidence to supersede it; callers may still merge the snapshot's descriptive metadata.
+    pub(crate) fn accepts_unversioned_picker_snapshot_liveness(
+        &self,
+        thread_id: ThreadId,
+    ) -> bool {
+        self.revisioned_watcher_status(thread_id).is_none()
+    }
+
+    fn revisioned_watcher_status(&self, thread_id: ThreadId) -> Option<AcceptedThreadStatus> {
+        self.last_accepted_statuses
+            .get(&thread_id)
+            .copied()
+            .filter(|status| status.status_revision.is_some())
+    }
+
     /// Inserts or updates a picker entry while preserving first-seen traversal order.
     ///
     /// The key invariant of this module is enforced here: a thread id is appended to `order` only
@@ -101,10 +392,30 @@ impl AgentNavigationState {
         created_at: Option<i64>,
         updated_at: Option<i64>,
     ) {
-        let previous_is_running = self
-            .threads
-            .get(&thread_id)
-            .is_some_and(|entry| entry.is_running);
+        let revisioned_watcher_status = self.revisioned_watcher_status(thread_id);
+        let stale_terminal_metadata = is_closed
+            && self
+                .terminal_lifecycle_watermarks
+                .get(&thread_id)
+                .is_some_and(|watermark| {
+                    matches!(watermark, TerminalLifecycleWatermark::Recovered { .. })
+                });
+        let records_snapshot_closure = is_closed
+            && revisioned_watcher_status.is_none()
+            && !stale_terminal_metadata;
+        let is_closed = revisioned_watcher_status.map_or(
+            is_closed && !stale_terminal_metadata,
+            |status| status.is_closed,
+        );
+        if records_snapshot_closure {
+            self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
+            self.system_error_epochs.remove(&thread_id);
+            self.last_status_revisions.remove(&thread_id);
+            self.last_accepted_statuses.remove(&thread_id);
+        }
+        let previous_entry = self.threads.get(&thread_id);
+        let previous_is_running = previous_entry.is_some_and(|entry| entry.is_running);
+        let previous_has_system_error = previous_entry.is_some_and(|entry| entry.has_system_error);
         self.upsert_with_path(
             thread_id,
             AgentPickerThreadEntry {
@@ -117,20 +428,73 @@ impl AgentNavigationState {
                 task_name: None,
                 is_running: previous_is_running && !is_closed,
                 is_closed,
+                // A backend metadata refresh can lag the child status watch. Keep an activity-
+                // derived error until a direct recovery event or terminal closure supersedes it.
+                has_system_error: revisioned_watcher_status.map_or(
+                    previous_has_system_error && !is_closed,
+                    |status| status.has_system_error && !is_closed,
+                ),
                 created_at,
                 updated_at,
             },
         );
     }
 
-    pub(crate) fn upsert_with_path(&mut self, thread_id: ThreadId, entry: AgentPickerThreadEntry) {
+    pub(crate) fn upsert_with_path(
+        &mut self,
+        thread_id: ThreadId,
+        mut entry: AgentPickerThreadEntry,
+    ) {
+        self.remove_unknown_thread_status_provenance_tracking(thread_id);
         let existing = self.threads.get(&thread_id).cloned();
+        let stale_terminal_metadata = entry.is_closed
+            && self
+                .terminal_lifecycle_watermarks
+                .get(&thread_id)
+                .is_some_and(|watermark| {
+                    matches!(watermark, TerminalLifecycleWatermark::Recovered { .. })
+                });
+        if stale_terminal_metadata {
+            // A backfill has no watcher revision and cannot supersede a known recovery. Retain
+            // the visible liveness as well as the recovered watermark until a newer terminal
+            // status is accepted through the status-watch path.
+            entry.is_closed = false;
+            entry.is_running = existing.as_ref().is_some_and(|entry| entry.is_running);
+            entry.has_system_error = existing
+                .as_ref()
+                .is_some_and(|entry| entry.has_system_error);
+        }
+        let preserves_terminal_closure = existing.as_ref().is_some_and(|entry| entry.is_closed)
+            || self
+                .terminal_lifecycle_watermarks
+                .get(&thread_id)
+                .is_some_and(|watermark| {
+                    matches!(watermark, TerminalLifecycleWatermark::Closed { .. })
+                });
+        if preserves_terminal_closure {
+            // Metadata and backfill reads carry no status revision, so they cannot establish a
+            // new lifecycle after a terminal close. Only `reopen_after_newer_status`, after the
+            // watcher has accepted a strictly newer nonterminal status, may clear this state.
+            entry.is_closed = true;
+            entry.is_running = false;
+            entry.has_system_error = false;
+        }
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
+                agent_nickname: entry.agent_nickname.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.agent_nickname.clone())
+                }),
+                agent_role: entry.agent_role.or_else(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|entry| entry.agent_role.clone())
+                }),
                 agent_path: entry
                     .agent_path
                     .or_else(|| existing.as_ref().and_then(|entry| entry.agent_path.clone())),
@@ -159,10 +523,38 @@ impl AgentNavigationState {
                 ..entry
             },
         );
+        // Every row producer, including local receiver caches and replay-only materialization,
+        // comes through this path. A revisioned watcher state carries stronger liveness ordering
+        // than such metadata, so restore it after safely merging the descriptive fields.
+        self.reconcile_revisioned_watcher_liveness(thread_id);
     }
 
     pub(crate) fn record_sub_agent_activity(&mut self, activity: SubAgentActivityDisplay) {
+        let thread_id = activity.thread_id;
+        if self.activity_is_retired_lifecycle_replay(&activity) {
+            // A recovered child can have a fresh row by the time the parent replays an older
+            // terminal item. Preserve the new row rather than letting that old item recolor it.
+            return;
+        }
+        let revisioned_watcher_status = self.revisioned_watcher_status(thread_id);
+        let watcher_owns_liveness = revisioned_watcher_status.is_some();
+        let is_errored_activity = activity.has_system_error;
+        let accepted_system_error = self
+            .last_accepted_statuses
+            .get(&thread_id)
+            .is_some_and(|status| status.has_system_error);
+        let error_epoch = (!watcher_owns_liveness && is_errored_activity).then(|| {
+            self.last_accepted_statuses
+                .get(&thread_id)
+                .filter(|status| status.has_system_error)
+                .map_or(SystemErrorEpoch::AwaitingSystemError, |status| {
+                    SystemErrorEpoch::ConfirmedSystemError {
+                        status_revision: status.status_revision,
+                    }
+                })
+        });
         if !self.threads.contains_key(&activity.thread_id) {
+            self.remove_unknown_thread_status_provenance_tracking(activity.thread_id);
             self.order.push(activity.thread_id);
         }
         let entry =
@@ -178,6 +570,10 @@ impl AgentNavigationState {
                     task_name: None,
                     is_running: false,
                     is_closed: false,
+                    // A status watcher can report SystemError before any parent activity creates
+                    // this picker row. Preserve that accepted status when the row finally
+                    // materializes so a delayed Started item cannot invent a green running row.
+                    has_system_error: accepted_system_error,
                     created_at: None,
                     updated_at: None,
                 });
@@ -188,8 +584,37 @@ impl AgentNavigationState {
         if activity.reasoning_effort.is_some() {
             entry.reasoning_effort = activity.reasoning_effort;
         }
+        if entry.is_closed {
+            // A `ThreadClosed` transition is terminal for picker liveness. Parent activity can
+            // arrive after that transition on an independent notification stream; retain its
+            // descriptive metadata above and its identity below, but never let it recolor or
+            // revive a closed row.
+            self.record_terminal_activity_id(thread_id, activity.activity_id);
+            return;
+        }
+        if watcher_owns_liveness {
+            // Parent activity has no revision ordering relative to a child watcher. It can fill
+            // in identity and retain its replay boundary, but must not turn a status-first Idle,
+            // Active, or SystemError observation into a different liveness state.
+            self.reconcile_revisioned_watcher_liveness(thread_id);
+            if self
+                .threads
+                .get(&thread_id)
+                .is_some_and(|entry| entry.is_closed)
+            {
+                self.record_terminal_activity_id(thread_id, activity.activity_id);
+            } else {
+                self.record_active_activity_id(thread_id, activity.activity_id);
+            }
+            self.advance_picker_snapshot_generation();
+            return;
+        }
+        // A delayed non-error activity must not make a terminal `Errored` activity look like a
+        // recovery. Only a direct status transition or closure may clear this state.
+        entry.has_system_error |= activity.has_system_error;
         if activity.is_running_hint
             && !entry.is_closed
+            && !entry.has_system_error
             && !self.stopped_threads.contains(&activity.thread_id)
         {
             entry.is_running = true;
@@ -197,6 +622,16 @@ impl AgentNavigationState {
             entry.is_running = false;
             self.stopped_threads.insert(activity.thread_id);
         }
+        if let Some(error_epoch) = error_epoch {
+            self.system_error_epochs
+                .entry(thread_id)
+                .or_insert(error_epoch);
+        }
+        if is_errored_activity {
+            self.record_system_error_observation(thread_id);
+        }
+        self.record_active_activity_id(thread_id, activity.activity_id);
+        self.advance_picker_snapshot_generation();
     }
 
     pub(crate) fn update_identity(
@@ -225,11 +660,11 @@ impl AgentNavigationState {
     }
 
     pub(crate) fn mark_running(&mut self, thread_id: ThreadId) {
-        if self
+        let can_mark_running = self
             .threads
             .get(&thread_id)
-            .is_some_and(|entry| entry.is_closed)
-        {
+            .is_some_and(|entry| !entry.is_closed && !entry.has_system_error);
+        if !can_mark_running {
             return;
         }
         self.stopped_threads.remove(&thread_id);
@@ -244,6 +679,610 @@ impl AgentNavigationState {
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_running = is_running;
+        }
+    }
+
+    /// Records the app-server's current error state without hiding a replayable saved thread.
+    pub(crate) fn set_system_error(&mut self, thread_id: ThreadId, has_system_error: bool) {
+        let mut observed_system_error = false;
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            if entry.is_closed {
+                return;
+            }
+            entry.has_system_error = has_system_error;
+            if has_system_error {
+                entry.is_running = false;
+                self.stopped_threads.insert(thread_id);
+                observed_system_error = true;
+            }
+        }
+        if observed_system_error {
+            self.record_system_error_observation(thread_id);
+        }
+    }
+
+    /// Captures the error-observation generation before an asynchronous authoritative liveness
+    /// read begins.
+    pub(crate) fn system_error_observation_generation(&self, thread_id: ThreadId) -> u64 {
+        self.system_error_observation_generations
+            .get(&thread_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Clears stale error display state from a successful authoritative read only when no newer
+    /// activity or status error observation arrived while that read was in flight.
+    pub(crate) fn clear_system_error_from_authoritative_read(
+        &mut self,
+        thread_id: ThreadId,
+        observed_generation: u64,
+    ) -> bool {
+        if self.system_error_observation_generation(thread_id) != observed_generation {
+            return false;
+        }
+        self.system_error_epochs.remove(&thread_id);
+        self.set_system_error(thread_id, /*has_system_error*/ false);
+        true
+    }
+
+    fn record_system_error_observation(&mut self, thread_id: ThreadId) {
+        let generation = self
+            .system_error_observation_generations
+            .entry(thread_id)
+            .or_default();
+        *generation = generation.saturating_add(1);
+    }
+
+    /// Records an unversioned `SystemError` obtained during thread/read or persisted-thread
+    /// backfill when no newer revisioned watcher state fences it. Such a snapshot confirms an
+    /// activity-derived error epoch so a later revisioned status notification can recover it.
+    pub(crate) fn confirm_system_error_from_authoritative_status(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) -> bool {
+        if self
+            .threads
+            .get(&thread_id)
+            .is_none_or(|entry| entry.is_closed)
+            || (status_revision.is_none()
+                && !self.accepts_unversioned_picker_snapshot_liveness(thread_id))
+        {
+            return false;
+        }
+
+        self.record_accepted_status(
+            thread_id,
+            /*has_system_error*/ true,
+            /*is_closed*/ false,
+            status_revision,
+        );
+        if let Some(epoch) = self.system_error_epochs.get_mut(&thread_id) {
+            match epoch {
+                SystemErrorEpoch::AwaitingSystemError => {
+                    *epoch = SystemErrorEpoch::ConfirmedSystemError { status_revision };
+                }
+                SystemErrorEpoch::ConfirmedSystemError {
+                    status_revision: error_revision,
+                } if error_revision.is_none() && status_revision.is_some() => {
+                    *error_revision = status_revision;
+                }
+                SystemErrorEpoch::ConfirmedSystemError { .. } => {}
+            }
+        }
+        self.set_system_error(thread_id, /*has_system_error*/ true);
+        true
+    }
+
+    /// Records the running bit of a status watcher update that has already passed
+    /// [`Self::accepts_thread_status_change`]. Keeping it with the accepted revision lets a
+    /// later backend row materialize the watcher liveness without re-accepting the status.
+    pub(crate) fn record_accepted_status_running(
+        &mut self,
+        thread_id: ThreadId,
+        is_running: bool,
+    ) {
+        if let Some(status) = self.last_accepted_statuses.get_mut(&thread_id) {
+            status.is_running = is_running;
+        }
+    }
+
+    /// Applies retained revisioned watcher liveness when a picker row appears after the watcher
+    /// status. This is reconciliation only: it neither advances revisions nor accepts a delayed
+    /// snapshot status over the watcher state.
+    pub(crate) fn reconcile_revisioned_watcher_liveness(&mut self, thread_id: ThreadId) {
+        let Some(status) = self.revisioned_watcher_status(thread_id) else {
+            return;
+        };
+        if !self.threads.contains_key(&thread_id) {
+            return;
+        }
+
+        if status.is_closed {
+            if let Some(entry) = self.threads.get_mut(&thread_id) {
+                entry.is_closed = true;
+                entry.is_running = false;
+                entry.has_system_error = false;
+            }
+            self.stopped_threads.insert(thread_id);
+            return;
+        }
+
+        self.reopen_after_newer_status(thread_id);
+        self.set_system_error(thread_id, status.has_system_error);
+        if status.is_running && !status.has_system_error {
+            self.mark_running(thread_id);
+        } else {
+            self.set_running(thread_id, /*is_running*/ false);
+        }
+    }
+
+    /// Returns whether a status-watch update can change the picker liveness for this thread.
+    ///
+    /// The V2 activity stream and the child status watcher are independent. An `Errored` activity
+    /// therefore starts an epoch which ignores a delayed `Idle` or `Active` status until the
+    /// watcher reports the matching `SystemError`. Once confirmed, only a strictly newer status
+    /// revision may recover the row. A tracked close moves its causal revision into a terminal
+    /// lifecycle watermark, so revisionless older servers also fail closed after terminal state.
+    /// In particular, there is intentionally no inferred `NotLoaded`-to-`Active` recovery for a
+    /// revisionless watcher: independent streams provide no positive correlation proving that the
+    /// `Active` observation belongs to a lifecycle newer than the terminal one.
+    pub(crate) fn accepts_thread_status_change(
+        &mut self,
+        thread_id: ThreadId,
+        has_system_error: bool,
+        status_revision: Option<u64>,
+        is_closed: bool,
+    ) -> bool {
+        if is_closed
+            && let Some(TerminalLifecycleWatermark::Recovered {
+                status_revision: recovered_revision,
+                ..
+            }) = self.terminal_lifecycle_watermarks.get(&thread_id)
+            && status_revision.is_none_or(|status_revision| status_revision <= *recovered_revision)
+        {
+            // A recovered watermark is a stronger causal boundary than a delayed or legacy
+            // terminal notification. Only a strictly newer terminal revision may close this row.
+            return false;
+        }
+
+        if let Some(status_revision) = status_revision
+            && let Some(latest_revision) = self.last_status_revisions.get(&thread_id).copied()
+            && status_revision <= latest_revision
+        {
+            if is_closed
+                && status_revision == latest_revision
+                && !self.threads.contains_key(&thread_id)
+                && self
+                    .closed_thread_tombstones
+                    .get(&thread_id)
+                    .is_some_and(|tombstone| tombstone.status_revision == Some(status_revision))
+            {
+                // A duplicate close notification carries no newer lifecycle information, but it
+                // does prove this unknown row remains recently relevant for FIFO retention.
+                self.record_closed_tombstone(thread_id, Some(status_revision));
+            }
+            return false;
+        }
+
+        if !is_closed && let Some(watermark) = self.terminal_lifecycle_watermarks.get(&thread_id) {
+            let Some(status_revision) = status_revision else {
+                // A picker row may clear its ordinary revision cache when it closes, but the
+                // terminal watermark still owns the causal boundary. Do not let an older server's
+                // revisionless status revive that row without positive newer evidence.
+                return false;
+            };
+            if watermark
+                .status_revision()
+                .is_some_and(|terminal_revision| status_revision <= terminal_revision)
+            {
+                return false;
+            }
+        }
+
+        if is_closed {
+            let is_unmatched_close = !self.threads.contains_key(&thread_id);
+            self.record_accepted_status(
+                thread_id,
+                /*has_system_error*/ false,
+                /*is_closed*/ true,
+                status_revision,
+            );
+            self.record_terminal_lifecycle_closed(thread_id, status_revision);
+            if is_unmatched_close {
+                self.record_closed_tombstone(thread_id, status_revision);
+            }
+            self.advance_picker_snapshot_generation();
+            return true;
+        }
+
+        // A status watcher can observe `SystemError` and its newer recovery before a parent
+        // activity has materialized a picker row. Retire that status-only error lifecycle now so
+        // a delayed old `Errored` activity cannot create an unconfirmable AwaitingSystemError
+        // epoch after the child is already healthy again.
+        let recovered_status_first_system_error = !has_system_error
+            && self.system_error_epochs.get(&thread_id).is_none()
+            && self
+                .last_accepted_statuses
+                .get(&thread_id)
+                .is_some_and(|status| status.has_system_error);
+        let mut recovered_system_error_lifecycle = false;
+        let accepts = match self.system_error_epochs.get(&thread_id).copied() {
+            Some(SystemErrorEpoch::AwaitingSystemError) if !has_system_error => false,
+            Some(SystemErrorEpoch::AwaitingSystemError) => {
+                self.system_error_epochs.insert(
+                    thread_id,
+                    SystemErrorEpoch::ConfirmedSystemError { status_revision },
+                );
+                true
+            }
+            Some(SystemErrorEpoch::ConfirmedSystemError {
+                status_revision: error_revision,
+            }) if !has_system_error => {
+                if match (error_revision, status_revision) {
+                    (Some(error_revision), Some(status_revision)) => {
+                        status_revision > error_revision
+                    }
+                    // A `thread/read` or backfill `SystemError` has no revision to compare, but
+                    // a subsequently delivered revisioned status is still explicit recovery
+                    // evidence. Revisionless status messages continue to fail closed.
+                    (None, Some(_)) => true,
+                    _ => false,
+                } {
+                    self.system_error_epochs.remove(&thread_id);
+                    recovered_system_error_lifecycle = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(SystemErrorEpoch::ConfirmedSystemError {
+                status_revision: error_revision,
+            }) => {
+                if error_revision.is_none() && status_revision.is_some() {
+                    self.system_error_epochs.insert(
+                        thread_id,
+                        SystemErrorEpoch::ConfirmedSystemError { status_revision },
+                    );
+                }
+                true
+            }
+            None => true,
+        };
+
+        if accepts {
+            self.record_accepted_status(
+                thread_id,
+                has_system_error,
+                /*is_closed*/ false,
+                status_revision,
+            );
+            self.advance_terminal_lifecycle_for_newer_status(thread_id, status_revision);
+            if recovered_system_error_lifecycle || recovered_status_first_system_error {
+                self.record_recovered_system_error_lifecycle(thread_id, status_revision);
+            }
+            self.record_unknown_nonterminal_status_provenance(thread_id);
+            self.advance_picker_snapshot_generation();
+        }
+        accepts
+    }
+
+    fn record_accepted_status(
+        &mut self,
+        thread_id: ThreadId,
+        has_system_error: bool,
+        is_closed: bool,
+        status_revision: Option<u64>,
+    ) {
+        self.last_accepted_statuses.insert(
+            thread_id,
+            AcceptedThreadStatus {
+                has_system_error,
+                is_running: false,
+                is_closed,
+                status_revision,
+            },
+        );
+        if let Some(status_revision) = status_revision {
+            self.last_status_revisions
+                .insert(thread_id, status_revision);
+        }
+    }
+
+    fn record_closed_tombstone(&mut self, thread_id: ThreadId, status_revision: Option<u64>) {
+        self.closed_thread_tombstone_order
+            .retain(|candidate| *candidate != thread_id);
+        self.closed_thread_tombstone_order.push_back(thread_id);
+        self.closed_thread_tombstones
+            .insert(thread_id, ClosedThreadTombstone { status_revision });
+        while self.closed_thread_tombstones.len() > CLOSED_THREAD_TOMBSTONE_LIMIT {
+            let expired_thread_id = self
+                .closed_thread_tombstone_order
+                .pop_front()
+                .expect("tombstone order must contain every tombstone");
+            self.closed_thread_tombstones.remove(&expired_thread_id);
+        }
+    }
+
+    /// Retains terminal liveness for a child whose `ThreadClosed` notification arrived before
+    /// picker metadata. This deliberately does not create a visible closed row: only later
+    /// revisioned status or current-owner snapshot evidence may establish a new lifecycle.
+    pub(crate) fn record_unmatched_thread_closed(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id) {
+            return;
+        }
+        self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
+        self.record_closed_tombstone(thread_id, /*status_revision*/ None);
+    }
+
+    /// Returns whether a revisionless `ThreadClosed` notification can close this child.
+    ///
+    /// The app-server protocol supplies only a thread id for `ThreadClosed`, so it cannot prove
+    /// that the notification belongs to a lifecycle recovered by a newer watcher status. Keep a
+    /// recovered watermark authoritative until a terminal status with newer revision evidence
+    /// arrives; otherwise a delayed teardown notification could close the reopened picker row.
+    pub(crate) fn accepts_unrevisioned_thread_closed(&self, thread_id: ThreadId) -> bool {
+        !matches!(
+            self.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Recovered { .. })
+        )
+    }
+
+    /// Returns whether accepted lifecycle evidence says this child is terminal. This includes
+    /// close notifications that preceded picker metadata, so teardown does not mistake a stale
+    /// local live channel for an app-server session that still needs interruption.
+    pub(crate) fn is_terminally_closed(&self, thread_id: ThreadId) -> bool {
+        self.threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed)
+            || matches!(
+                self.terminal_lifecycle_watermarks.get(&thread_id),
+                Some(TerminalLifecycleWatermark::Closed { .. })
+            )
+    }
+
+    /// Records revision provenance for an accepted status-only thread while there is no picker
+    /// row or terminal lifecycle watermark to own it. A terminal status moves this provenance to
+    /// [`Self::terminal_lifecycle_watermarks`]; a later activity or metadata update moves it to
+    /// the tracked picker row. This leaves every unknown-thread path bounded.
+    fn record_unknown_nonterminal_status_provenance(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id)
+            || self.terminal_lifecycle_watermarks.contains_key(&thread_id)
+        {
+            return;
+        }
+
+        self.unknown_thread_status_provenance_order
+            .retain(|candidate| *candidate != thread_id);
+        self.unknown_thread_status_provenance_order
+            .push_back(thread_id);
+        while self.unknown_thread_status_provenance_order.len()
+            > UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT
+        {
+            let expired_thread_id = self
+                .unknown_thread_status_provenance_order
+                .pop_front()
+                .expect("unknown status provenance order must contain every tracked thread");
+            self.clear_unknown_thread_status_provenance(expired_thread_id);
+        }
+    }
+
+    fn remove_unknown_thread_status_provenance_tracking(&mut self, thread_id: ThreadId) {
+        self.unknown_thread_status_provenance_order
+            .retain(|candidate| *candidate != thread_id);
+    }
+
+    /// Removes status provenance only after the lifecycle evidence that owned an unknown thread
+    /// has expired. Never clear a visible row's revision state: it still rejects out-of-order
+    /// watcher updates for that live picker entry.
+    fn clear_unknown_thread_status_provenance(&mut self, thread_id: ThreadId) {
+        if self.threads.contains_key(&thread_id) {
+            return;
+        }
+        self.last_status_revisions.remove(&thread_id);
+        self.last_accepted_statuses.remove(&thread_id);
+    }
+
+    fn advance_terminal_lifecycle_for_newer_status(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) {
+        let Some(status_revision) = status_revision else {
+            return;
+        };
+        let Some(watermark) = self.terminal_lifecycle_watermarks.get(&thread_id).cloned() else {
+            return;
+        };
+        if watermark
+            .status_revision()
+            .is_some_and(|terminal_revision| status_revision <= terminal_revision)
+        {
+            return;
+        }
+
+        self.record_terminal_lifecycle_watermark(
+            thread_id,
+            TerminalLifecycleWatermark::Recovered {
+                status_revision,
+                activity_ids: watermark.activity_ids().clone(),
+            },
+        );
+        // A direct revisioned status has recovered the unmatched close, but retain the lifecycle
+        // watermark so an old parent activity cannot recreate the row after this point.
+        if self.closed_thread_tombstones.contains_key(&thread_id) {
+            self.clear_closed_tombstone(thread_id);
+        }
+    }
+
+    /// A `SystemError`-to-nonterminal status transition retires the activity epoch that caused
+    /// the failure even though the row itself remains open. Preserve that epoch's activity ids
+    /// behind the recovered watermark so independently delivered old Errored/Interrupted events
+    /// cannot overwrite the newly active row.
+    fn record_recovered_system_error_lifecycle(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) {
+        let Some(status_revision) = status_revision else {
+            return;
+        };
+        self.remove_unknown_thread_status_provenance_tracking(thread_id);
+        let existing = self.terminal_lifecycle_watermarks.get(&thread_id).cloned();
+        let mut activity_ids = existing
+            .as_ref()
+            .map(|watermark| watermark.activity_ids().clone())
+            .unwrap_or_default();
+        if let Some(active_activity_ids) = self.active_lifecycle_activity_ids.get(&thread_id) {
+            activity_ids.extend(active_activity_ids);
+        }
+        self.active_lifecycle_activity_ids.remove(&thread_id);
+        self.record_terminal_lifecycle_watermark(
+            thread_id,
+            TerminalLifecycleWatermark::Recovered {
+                status_revision,
+                activity_ids,
+            },
+        );
+    }
+
+    fn record_terminal_lifecycle_closed(
+        &mut self,
+        thread_id: ThreadId,
+        status_revision: Option<u64>,
+    ) {
+        self.remove_unknown_thread_status_provenance_tracking(thread_id);
+        let existing = self.terminal_lifecycle_watermarks.get(&thread_id).cloned();
+        let mut activity_ids = existing
+            .as_ref()
+            .map(|watermark| watermark.activity_ids().clone())
+            .unwrap_or_default();
+        if let Some(active_activity_ids) = self.active_lifecycle_activity_ids.get(&thread_id) {
+            activity_ids.extend(active_activity_ids);
+        }
+        self.active_lifecycle_activity_ids.remove(&thread_id);
+        self.system_error_observation_generations.remove(&thread_id);
+        // `mark_closed` and `remove` do not carry a watcher revision, but they
+        // may run after we accepted one. Preserve that accepted causal floor
+        // before the ordinary cache is cleared below; otherwise an older
+        // watcher status could reopen the terminal lifecycle.
+        let latest_accepted_revision = self
+            .last_status_revisions
+            .get(&thread_id)
+            .copied()
+            .into_iter()
+            .chain(
+                self.last_accepted_statuses
+                    .get(&thread_id)
+                    .and_then(|status| status.status_revision),
+            )
+            .max();
+        let status_revision = [
+            existing
+                .as_ref()
+                .and_then(TerminalLifecycleWatermark::status_revision),
+            status_revision,
+            latest_accepted_revision,
+        ]
+        .into_iter()
+        .flatten()
+        .max();
+        self.record_terminal_lifecycle_watermark(
+            thread_id,
+            TerminalLifecycleWatermark::Closed {
+                status_revision,
+                activity_ids,
+            },
+        );
+    }
+
+    fn record_active_activity_id(&mut self, thread_id: ThreadId, activity_id: String) {
+        self.active_lifecycle_activity_ids
+            .entry(thread_id)
+            .or_default()
+            .record(activity_id);
+    }
+
+    fn record_terminal_activity_id(&mut self, thread_id: ThreadId, activity_id: String) {
+        let Some(mut watermark) = self.terminal_lifecycle_watermarks.get(&thread_id).cloned()
+        else {
+            return;
+        };
+        watermark.activity_ids_mut().record(activity_id);
+        self.record_terminal_lifecycle_watermark(thread_id, watermark);
+    }
+
+    fn record_terminal_lifecycle_watermark(
+        &mut self,
+        thread_id: ThreadId,
+        watermark: TerminalLifecycleWatermark,
+    ) {
+        self.terminal_lifecycle_watermark_order
+            .retain(|candidate| *candidate != thread_id);
+        self.terminal_lifecycle_watermark_order.push_back(thread_id);
+        self.terminal_lifecycle_watermarks
+            .insert(thread_id, watermark);
+        while self.terminal_lifecycle_watermarks.len() > TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            let expired_thread_id = self
+                .terminal_lifecycle_watermark_order
+                .pop_front()
+                .expect("terminal lifecycle watermark order must contain every watermark");
+            self.terminal_lifecycle_watermarks
+                .remove(&expired_thread_id);
+            self.active_lifecycle_activity_ids
+                .remove(&expired_thread_id);
+            self.system_error_observation_generations
+                .remove(&expired_thread_id);
+            self.clear_unknown_thread_status_provenance(expired_thread_id);
+        }
+    }
+
+    fn activity_is_retired_lifecycle_replay(
+        &mut self,
+        activity: &SubAgentActivityDisplay,
+    ) -> bool {
+        let Some(watermark) = self
+            .terminal_lifecycle_watermarks
+            .get(&activity.thread_id)
+            .cloned()
+        else {
+            return false;
+        };
+
+        if watermark.activity_ids().contains(&activity.activity_id) {
+            return true;
+        }
+
+        match watermark {
+            TerminalLifecycleWatermark::Closed { .. } => {
+                // A close watermark has no activity that can establish a newer lifecycle. Keep
+                // every late identity in its bounded dedupe history and leave the closed row
+                // untouched, even if that row is still retained for the closed picker filter.
+                self.record_terminal_activity_id(
+                    activity.thread_id,
+                    activity.activity_id.clone(),
+                );
+                true
+            }
+            TerminalLifecycleWatermark::Recovered { .. } => {
+                // Activity records have opaque stable ids but no causal order, timestamp, or
+                // lifecycle generation. Once the bounded exact-id history ages one out, even a
+                // `Started` hint cannot prove it is newer than this recovery. Keep revisionless
+                // activity fail-closed; a newer watcher status or current owner snapshot remains
+                // the authoritative route to discover the live lifecycle.
+                self.record_terminal_activity_id(
+                    activity.thread_id,
+                    activity.activity_id.clone(),
+                );
+                true
+            }
+        }
+    }
+
+    fn clear_closed_tombstone(&mut self, thread_id: ThreadId) {
+        if self.closed_thread_tombstones.remove(&thread_id).is_some() {
+            self.closed_thread_tombstone_order
+                .retain(|candidate| *candidate != thread_id);
         }
     }
 
@@ -274,15 +1313,37 @@ impl AgentNavigationState {
     /// this up" by deleting the entry instead, wraparound navigation will silently change shape
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
+        self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
+        self.system_error_epochs.remove(&thread_id);
+        self.last_status_revisions.remove(&thread_id);
+        self.last_accepted_statuses.remove(&thread_id);
         if let Some(entry) = self.threads.get_mut(&thread_id) {
             entry.is_closed = true;
             entry.is_running = false;
+            entry.has_system_error = false;
         } else {
             self.upsert(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
                 /*is_closed*/ true, /*created_at*/ None, /*updated_at*/ None,
             );
         }
+    }
+
+    /// Reopens a tracked picker row after [`Self::accepts_thread_status_change`] has accepted a
+    /// strictly newer nonterminal status. The caller owns that causal check; this helper only
+    /// resets the row so the subsequent status can establish its current running/error state.
+    pub(crate) fn reopen_after_newer_status(&mut self, thread_id: ThreadId) {
+        let Some(entry) = self.threads.get_mut(&thread_id) else {
+            return;
+        };
+        if !entry.is_closed {
+            return;
+        }
+
+        entry.is_closed = false;
+        entry.is_running = false;
+        entry.has_system_error = false;
+        self.stopped_threads.remove(&thread_id);
     }
 
     /// Drops all cached picker state.
@@ -293,18 +1354,84 @@ impl AgentNavigationState {
         self.threads.clear();
         self.order.clear();
         self.stopped_threads.clear();
+        self.system_error_epochs.clear();
+        self.system_error_observation_generations.clear();
+        self.last_status_revisions.clear();
+        self.last_accepted_statuses.clear();
+        self.unknown_thread_status_provenance_order.clear();
+        self.closed_thread_tombstones.clear();
+        self.closed_thread_tombstone_order.clear();
+        self.terminal_lifecycle_watermarks.clear();
+        self.terminal_lifecycle_watermark_order.clear();
+        self.active_lifecycle_activity_ids.clear();
         self.parent_owned_threads.clear();
+        self.next_picker_page_cursor = None;
+        self.legacy_relation_fallback_checked = false;
+        self.picker_refresh = None;
+        self.picker_empty_state = PickerEmptyState::Unknown;
+    }
+
+    /// Stores the server continuation after a bounded `/agent` backfill.
+    pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) {
+        self.next_picker_page_cursor = next_cursor;
+    }
+
+    /// Stores the cursor produced by an explicit continuation request. This advances snapshot
+    /// freshness even when the continuation exhausts or invalidates the relation set, so an
+    /// older root refresh cannot resurrect or rewind its cursor afterward.
+    pub(crate) fn set_next_picker_page_cursor_from_continuation(
+        &mut self,
+        next_cursor: Option<String>,
+    ) {
+        self.next_picker_page_cursor = next_cursor;
+        self.advance_picker_snapshot_generation();
+    }
+
+    /// Invalidates the liveness authority of any root snapshot that began before a newer
+    /// continuation, activity, or accepted watcher status was observed. The counter deliberately
+    /// survives [`Self::clear`] just like request identities, so an old reply cannot regain
+    /// authority after teardown and reattachment.
+    fn advance_picker_snapshot_generation(&mut self) {
+        self.picker_snapshot_generation = self.picker_snapshot_generation.wrapping_add(1);
+    }
+
+    /// Returns the next persisted-subagent page when one exists.
+    pub(crate) fn next_picker_page_cursor(&self) -> Option<String> {
+        self.next_picker_page_cursor.clone()
+    }
+
+    /// Returns whether the bounded legacy relation fallback still needs a successful pass.
+    ///
+    /// Callers must mark it complete only after both compatibility probes and every listed
+    /// loaded-thread metadata read have returned successfully. This keeps a temporary app-server
+    /// failure from making legacy descendants permanently undiscoverable for the rest of the
+    /// picker session.
+    pub(crate) fn needs_legacy_relation_fallback_check(&self) -> bool {
+        !self.legacy_relation_fallback_checked
+    }
+
+    /// Records a successful bounded legacy relation fallback pass.
+    pub(crate) fn mark_legacy_relation_fallback_checked(&mut self) {
+        self.legacy_relation_fallback_checked = true;
     }
 
     /// Removes a tracked thread entirely from picker metadata and traversal order.
     ///
-    /// This is reserved for entries that were only discovered opportunistically and never became
-    /// replayable local threads. Keeping those around after the backend confirms they are gone
-    /// would leave ghost rows in `/agent`.
+    /// This is reserved for terminal liveness pruning and explicit side-thread discard. Capture
+    /// terminal evidence before removing the row so delayed parent activity cannot recreate a
+    /// ghost after either cleanup path.
     pub(crate) fn remove(&mut self, thread_id: ThreadId) {
+        self.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
         self.threads.remove(&thread_id);
         self.order.retain(|candidate| *candidate != thread_id);
         self.stopped_threads.remove(&thread_id);
+        self.system_error_epochs.remove(&thread_id);
+        self.last_status_revisions.remove(&thread_id);
+        self.last_accepted_statuses.remove(&thread_id);
+        self.clear_closed_tombstone(thread_id);
+        // Keep the terminal lifecycle watermark: delayed parent activity can still arrive after
+        // this cleanup boundary, while `clear` bounds it to the current session.
+        self.active_lifecycle_activity_ids.remove(&thread_id);
         self.parent_owned_threads.remove(&thread_id);
     }
 
@@ -409,23 +1536,17 @@ impl AgentNavigationState {
             self.threads
                 .get(&thread_id)
                 .map(|entry| {
-                    if !is_primary
-                        && let Some(agent_path) = entry
-                            .agent_path
-                            .as_deref()
-                            .filter(|agent_path| !agent_path.trim().is_empty())
-                    {
-                        return format!("`{agent_path}`");
-                    }
-                    format_agent_picker_item_name(
+                    format_agent_picker_item_label(
                         entry.agent_nickname.as_deref(),
                         entry.agent_role.as_deref(),
+                        entry.agent_path.as_deref(),
                         is_primary,
                     )
                 })
                 .unwrap_or_else(|| {
-                    format_agent_picker_item_name(
-                        /*agent_nickname*/ None, /*agent_role*/ None, is_primary,
+                    format_agent_picker_item_label(
+                        /*agent_nickname*/ None, /*agent_role*/ None,
+                        /*agent_path*/ None, is_primary,
                     )
                 }),
         )
@@ -699,6 +1820,7 @@ mod tests {
                 task_name: None,
                 is_running: true,
                 is_closed: false,
+                has_system_error: false,
                 created_at: Some(1),
                 updated_at: Some(3),
             })
@@ -724,9 +1846,1352 @@ mod tests {
                 task_name: None,
                 is_running: false,
                 is_closed: true,
+                has_system_error: false,
                 created_at: Some(1),
                 updated_at: Some(4),
             })
+        );
+    }
+
+    #[test]
+    fn metadata_upserts_preserve_terminal_closure_until_newer_status_recovers_it() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000116").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Finished child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+        state.mark_running(thread_id);
+        state.mark_closed(thread_id);
+
+        state.upsert(
+            thread_id,
+            Some("Stale idle metadata".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(3),
+        );
+        state.upsert_with_path(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_path: Some("/root/finished-child".to_string()),
+                is_running: true,
+                is_closed: false,
+                has_system_error: true,
+                ..AgentPickerThreadEntry::default()
+            },
+        );
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_closed
+                && !entry.is_running
+                && !entry.has_system_error
+                && entry.agent_nickname.as_deref() == Some("Stale idle metadata")
+                && entry.agent_path.as_deref() == Some("/root/finished-child")
+        }));
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ false,
+        ));
+        state.reopen_after_newer_status(thread_id);
+        state.mark_running(thread_id);
+        state.upsert(
+            thread_id,
+            Some("Recovered child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(4),
+        );
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.is_closed && entry.is_running)
+        );
+    }
+
+    #[test]
+    fn terminal_metadata_closes_a_row_without_recovered_status_authority() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000117").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Current child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.mark_running(thread_id);
+
+        state.upsert(
+            thread_id,
+            Some("Current child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_closed && !entry.is_running && !entry.has_system_error
+        }));
+        assert!(matches!(
+            state.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Closed { .. })
+        ));
+    }
+
+    #[test]
+    fn authoritative_read_error_clear_rejects_newer_error_observation() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000119").expect("valid thread");
+        state.upsert(
+            thread_id,
+            Some("Current child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        let read_generation = state.system_error_observation_generation(thread_id);
+
+        // This activity arrives while the read is in flight. Its newer causal observation must
+        // keep the row failed even though the older authoritative response says Idle/Active.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-119-newer-error".to_string(),
+            thread_id,
+            agent_path: "/root/current-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(!state.clear_system_error_from_authoritative_read(thread_id, read_generation));
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error)
+        );
+
+        // A subsequent read that starts after the latest error observation is current enough to
+        // clear the stale error epoch and allow its non-error status to set liveness.
+        let current_generation = state.system_error_observation_generation(thread_id);
+        assert!(state.clear_system_error_from_authoritative_read(thread_id, current_generation));
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error)
+        );
+        assert!(!state.system_error_epochs.contains_key(&thread_id));
+    }
+
+    #[test]
+    fn terminal_transfer_releases_active_activity_history_with_bounded_watermarks() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        state.record_active_activity_id(first_thread_id, "activity-first".to_string());
+        state.record_terminal_lifecycle_closed(first_thread_id, /*status_revision*/ None);
+        assert!(
+            !state
+                .active_lifecycle_activity_ids
+                .contains_key(&first_thread_id),
+            "terminal transfer must move activity identities out of the active-lifecycle map"
+        );
+        assert!(
+            state
+                .terminal_lifecycle_watermarks
+                .get(&first_thread_id)
+                .is_some_and(|watermark| watermark.activity_ids().contains("activity-first"))
+        );
+
+        for _ in 0..TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            let thread_id = ThreadId::new();
+            state.record_active_activity_id(thread_id, "activity-bounded".to_string());
+            state.record_terminal_lifecycle_closed(thread_id, /*status_revision*/ None);
+        }
+        assert!(state.active_lifecycle_activity_ids.is_empty());
+        assert_eq!(
+            state.terminal_lifecycle_watermarks.len(),
+            TERMINAL_LIFECYCLE_WATERMARK_LIMIT
+        );
+        assert!(
+            !state
+                .terminal_lifecycle_watermarks
+                .contains_key(&first_thread_id),
+            "watermark eviction must leave no parallel active-lifecycle history behind"
+        );
+    }
+
+    #[test]
+    fn errored_activity_stays_failed_across_stale_upserts_until_recovery_or_closure() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-105".to_string(),
+            thread_id,
+            agent_path: "/root/failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+        // A delayed backend upsert only carries metadata and must not overwrite failure liveness.
+        state.upsert(
+            thread_id,
+            Some("Failed child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+
+        // TurnStarted and active snapshots are not ordered with the terminal activity and cannot
+        // clear it on their own.
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(2),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+
+        state.mark_closed(thread_id);
+        assert!(
+            state.get(&thread_id).is_some_and(|entry| entry.is_closed
+                && !entry.has_system_error
+                && !entry.is_running)
+        );
+    }
+
+    #[test]
+    fn system_error_before_errored_activity_uses_its_revision_for_recovery() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000106").expect("valid thread");
+
+        // Status notifications can win the race with a terminal parent activity. Retain the
+        // SystemError revision so that the activity enters a confirmed, recoverable epoch.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-106".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+    }
+
+    #[test]
+    fn status_first_system_error_seeds_a_late_started_picker_row() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000114").expect("valid thread");
+
+        // A status watcher can win the race before picker metadata or parent activity exists.
+        // The later Started item must inherit that accepted SystemError instead of creating a
+        // green running row with no error provenance.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-114-started".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-started".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| entry.has_system_error && !entry.is_running)
+        );
+    }
+
+    #[test]
+    fn status_first_system_error_recovery_retires_late_errored_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000118").expect("valid thread");
+
+        // Both status changes arrive before a parent activity creates a picker row. The newer
+        // Active is the recovery boundary for the earlier SystemError, even though no activity
+        // epoch exists yet.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(2),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(matches!(
+            state.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Recovered {
+                status_revision: 2,
+                ..
+            })
+        ));
+
+        // The independently delivered old Errored activity cannot create an AwaitingSystemError
+        // epoch after that recovery; otherwise every subsequent non-error status would be
+        // rejected forever.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-118-late-errored".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-recovered-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+        assert!(!state.system_error_epochs.contains_key(&thread_id));
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(!state.system_error_epochs.contains_key(&thread_id));
+        assert!(matches!(
+            state.terminal_lifecycle_watermarks.get(&thread_id),
+            Some(TerminalLifecycleWatermark::Recovered {
+                status_revision: 3,
+                ..
+            })
+        ));
+
+        // Activity ids have no ordering evidence. A late, unseen Started item therefore cannot
+        // establish a row merely because this recovered watermark's bounded history lacks its id.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-118-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/status-first-fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.is_empty());
+
+        // A current owner snapshot is authoritative independently of the revisionless activity
+        // stream, and is the route by which a genuinely later lifecycle becomes discoverable.
+        state.upsert(
+            thread_id,
+            Some("Current snapshot child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.set_agent_path(thread_id, Some("/root/current-snapshot-child".to_string()));
+        state.mark_running(thread_id);
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_running
+                && !entry.is_closed
+                && !entry.has_system_error
+                && entry.agent_path.as_deref() == Some("/root/current-snapshot-child")
+        }));
+    }
+
+    #[test]
+    fn system_error_recovery_retires_prior_activity_epoch_before_late_replay() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000115").expect("valid thread");
+
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-115-started", false, true),
+            ("activity-115-interrupted", false, false),
+            ("activity-115-errored", true, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/recovering-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+        }
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+
+        // The rev-4 recovery stays active even when the rev-3 epoch is replayed afterward.
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-115-errored", true, false),
+            ("activity-115-interrupted", false, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/recovering-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+        }
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+
+        // The activity has no revision or ordering evidence, so it cannot alter the recovered
+        // row by itself even if it is genuinely new.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-115-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.get(&thread_id).is_some_and(|entry| entry.is_running
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/recovering-child")));
+    }
+
+    #[test]
+    fn recovery_fences_unseen_retired_error_after_a_fresh_started_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000130").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-130-old-started".to_string(),
+            thread_id,
+            agent_path: "/root/old-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+
+        // The activity stream cannot prove that this Started item precedes the independently
+        // delivered old terminal item, so neither item may alter the recovered liveness.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-130-fresh-started".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-130-unseen-old-errored".to_string(),
+            thread_id,
+            agent_path: "/root/old-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_running
+                && !entry.is_closed
+                && !entry.has_system_error
+                && entry.agent_path.as_deref() == Some("/root/old-child")
+        }));
+        assert!(state
+            .terminal_lifecycle_watermarks
+            .get(&thread_id)
+            .is_some_and(|watermark| {
+                watermark
+                    .activity_ids()
+                    .contains("activity-130-unseen-old-errored")
+            }));
+    }
+
+    #[test]
+    fn revisioned_active_status_fences_delayed_not_loaded_snapshot() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000128")
+            .expect("valid thread");
+
+        // A watcher may win the race before picker discovery materializes its row. The later
+        // unversioned snapshot must still contribute its metadata without terminally closing it.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ false,
+        ));
+        state.upsert(
+            thread_id,
+            Some("Delayed snapshot name".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ true,
+            /*created_at*/ Some(1),
+            /*updated_at*/ Some(2),
+        );
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            !entry.is_closed
+                && entry.agent_nickname.as_deref() == Some("Delayed snapshot name")
+                && entry.agent_role.as_deref() == Some("worker")
+        }));
+    }
+
+    #[test]
+    fn recovered_revisioned_status_fences_delayed_system_error_snapshot() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000129")
+            .expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Recovering child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(5),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(6),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+
+        // `thread/read` and picker backfill have no comparable revision. A delayed error
+        // snapshot cannot overwrite the accepted rev-6 recovery.
+        assert!(!state.confirm_system_error_from_authoritative_status(
+            thread_id, /*status_revision*/ None,
+        ));
+        assert!(state
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_running && !entry.has_system_error));
+    }
+
+    #[test]
+    fn hydrated_system_error_confirms_errored_activity_for_revisioned_recovery() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000107").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-107".to_string(),
+            thread_id,
+            agent_path: "/root/hydrated-failed-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        // `thread/read` and persisted-thread backfill currently provide this authoritative error
+        // state without a comparable watcher revision.
+        state.confirm_system_error_from_authoritative_status(
+            thread_id, /*status_revision*/ None,
+        );
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+        assert!(
+            state
+                .get(&thread_id)
+                .is_some_and(|entry| !entry.has_system_error && entry.is_running)
+        );
+    }
+
+    #[test]
+    fn closed_status_tombstone_blocks_late_activity_until_newer_status() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000108").expect("valid thread");
+
+        // A close notification is meaningful even when no child activity has created a picker
+        // row. It must not materialize an unrelated closed row by itself.
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        assert!(state.is_empty());
+        assert!(state.closed_thread_tombstones.contains_key(&thread_id));
+
+        // The parent can receive terminal activity after the child has already closed. Keep the
+        // picker empty rather than resurrecting an open, failed row.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-108".to_string(),
+            thread_id,
+            agent_path: "/root/closed-before-activity".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+
+        // Stale watcher state cannot remove the tombstone, while a newer direct status can.
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(2),
+            /*is_closed*/ false,
+        ));
+        assert!(state.closed_thread_tombstones.contains_key(&thread_id));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        assert!(!state.closed_thread_tombstones.contains_key(&thread_id));
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-109".to_string(),
+            thread_id,
+            agent_path: "/root/recovered-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(
+            state.get(&thread_id).is_some_and(|entry| !entry.is_closed
+                && !entry.has_system_error
+                && entry.is_running)
+        );
+    }
+
+    #[test]
+    fn recovered_lifecycle_suppresses_stale_errored_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000110").expect("valid thread");
+
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        assert!(!state.closed_thread_tombstones.contains_key(&thread_id));
+
+        // Parent activity is independently delivered and may still describe the closed rev-3
+        // lifecycle. The rev-4 recovery removes the public tombstone but keeps this causal guard.
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-110-stale-error".to_string(),
+            thread_id,
+            agent_path: "/root/recovered-then-stale-error".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn remove_retains_closed_lifecycle_guard_against_late_errored_activity() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Finished child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        state.mark_closed(thread_id);
+        state.remove(thread_id);
+        assert!(state.is_empty());
+        assert!(state.terminal_lifecycle_watermarks.contains_key(&thread_id));
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-111-late-error".to_string(),
+            thread_id,
+            agent_path: "/root/removed-then-stale-error".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn revisionless_mark_closed_preserves_last_watcher_revision_floor() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000120").expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Recoverable child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+
+        // This cleanup path has no watcher revision of its own, so it must
+        // retain the accepted rev-3 floor before clearing the ordinary cache.
+        state.mark_closed(thread_id);
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+
+        state.reopen_after_newer_status(thread_id);
+        assert!(state.get(&thread_id).is_some_and(|entry| !entry.is_closed));
+    }
+
+    #[test]
+    fn revisionless_remove_preserves_last_watcher_revision_floor() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000121").expect("valid thread");
+
+        state.upsert(
+            thread_id,
+            Some("Pruned child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+
+        state.remove(thread_id);
+        assert!(!state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ false,
+        ));
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+    }
+
+    #[test]
+    fn remove_records_terminal_guard_for_every_cleanup_path() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-112-started".to_string(),
+            thread_id,
+            agent_path: "/root/pruned-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+        // `remove` is the common state boundary for terminal thread/read pruning and explicit
+        // side-thread discard. It must establish terminal evidence even without a prior close.
+        state.remove(thread_id);
+        assert!(state.is_empty());
+        assert!(state.terminal_lifecycle_watermarks.contains_key(&thread_id));
+
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-112-started", false, true),
+            ("activity-112-interrupted", false, false),
+            ("activity-112-errored", true, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/pruned-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+            assert!(state.is_empty());
+        }
+    }
+
+    #[test]
+    fn recovered_lifecycle_blocks_all_unordered_activity_ids_until_current_evidence_arrives() {
+        let mut state = AgentNavigationState::default();
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000113").expect("valid thread");
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-113-started".to_string(),
+            thread_id,
+            agent_path: "/root/previous-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-113-interrupted".to_string(),
+            thread_id,
+            agent_path: "/root/previous-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: false,
+        });
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-113-errored".to_string(),
+            thread_id,
+            agent_path: "/root/previous-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: true,
+            is_running_hint: false,
+        });
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ true,
+        ));
+        state.mark_closed(thread_id);
+        state.remove(thread_id);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+
+        // Every item observed for the retired lifecycle remains blocked after recovery, not just
+        // the last terminal item. None of them can create a row before fresh evidence arrives.
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-113-started", false, true),
+            ("activity-113-interrupted", false, false),
+            ("activity-113-errored", true, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/previous-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+            assert!(state.is_empty());
+        }
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-113-fresh-start".to_string(),
+            thread_id,
+            agent_path: "/root/fresh-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+        assert!(state.is_empty());
+
+        // A current owner snapshot can establish the row without trusting an unordered parent
+        // activity. Later delayed activities still remain unable to change that authoritative
+        // liveness.
+        state.upsert(
+            thread_id,
+            Some("Current snapshot child".to_string()),
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+            /*created_at*/ None,
+            /*updated_at*/ None,
+        );
+        state.set_agent_path(thread_id, Some("/root/current-snapshot-child".to_string()));
+        state.mark_running(thread_id);
+
+        // The old Interrupted and Errored items can arrive after the current snapshot. They must
+        // remain no-ops rather than stopping or failing the authoritative picker row.
+        for (activity_id, has_system_error, is_running_hint) in [
+            ("activity-113-started", false, true),
+            ("activity-113-interrupted", false, false),
+            ("activity-113-errored", true, false),
+        ] {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: activity_id.to_string(),
+                thread_id,
+                agent_path: "/root/previous-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error,
+                is_running_hint,
+            });
+        }
+
+        assert!(state.get(&thread_id).is_some_and(|entry| entry.is_running
+            && !entry.is_closed
+            && !entry.has_system_error
+            && entry.agent_path.as_deref() == Some("/root/current-snapshot-child")));
+        assert!(state.terminal_lifecycle_watermarks.contains_key(&thread_id));
+    }
+
+    #[test]
+    fn terminal_lifecycle_activity_history_is_bounded() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::new();
+        for index in 0..=TERMINAL_LIFECYCLE_ACTIVITY_ID_LIMIT {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: format!("activity-{index}"),
+                thread_id,
+                agent_path: "/root/history-bound".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error: false,
+                is_running_hint: true,
+            });
+        }
+
+        state.mark_closed(thread_id);
+        let activity_ids = state
+            .terminal_lifecycle_watermarks
+            .get(&thread_id)
+            .expect("closure records a terminal watermark")
+            .activity_ids();
+        assert_eq!(activity_ids.len(), TERMINAL_LIFECYCLE_ACTIVITY_ID_LIMIT);
+        assert!(!activity_ids.contains("activity-0"));
+        assert!(activity_ids.contains(&format!(
+            "activity-{}",
+            TERMINAL_LIFECYCLE_ACTIVITY_ID_LIMIT
+        )));
+    }
+
+    #[test]
+    fn recovered_lifecycle_fences_an_aged_out_started_activity_without_authority() {
+        let mut state = AgentNavigationState::default();
+        let thread_id = ThreadId::new();
+
+        // The fixed identity history intentionally ages out the first item. Activity ids are
+        // opaque, so that absence cannot prove the old Started item describes a later lifecycle.
+        for index in 0..=TERMINAL_LIFECYCLE_ACTIVITY_ID_LIMIT {
+            state.record_sub_agent_activity(SubAgentActivityDisplay {
+                activity_id: format!("activity-{index}"),
+                thread_id,
+                agent_path: "/root/old-child".to_string(),
+                model: None,
+                reasoning_effort: None,
+                has_system_error: false,
+                is_running_hint: true,
+            });
+        }
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ true,
+            /*status_revision*/ Some(3),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ true);
+        assert!(state.accepts_thread_status_change(
+            thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(4),
+            /*is_closed*/ false,
+        ));
+        state.set_system_error(thread_id, /*has_system_error*/ false);
+        state.mark_running(thread_id);
+        state.set_agent_path(thread_id, Some("/root/recovered-child".to_string()));
+
+        assert!(state
+            .terminal_lifecycle_watermarks
+            .get(&thread_id)
+            .is_some_and(|watermark| !watermark.activity_ids().contains("activity-0")));
+
+        state.record_sub_agent_activity(SubAgentActivityDisplay {
+            activity_id: "activity-0".to_string(),
+            thread_id,
+            agent_path: "/root/stale-aged-out-child".to_string(),
+            model: None,
+            reasoning_effort: None,
+            has_system_error: false,
+            is_running_hint: true,
+        });
+
+        assert!(state.get(&thread_id).is_some_and(|entry| {
+            entry.is_running
+                && !entry.is_closed
+                && !entry.has_system_error
+                && entry.agent_path.as_deref() == Some("/root/recovered-child")
+        }));
+    }
+
+    #[test]
+    fn terminal_lifecycle_watermarks_evict_the_oldest_thread() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        state.record_terminal_lifecycle_closed(first_thread_id, /*status_revision*/ None);
+        for _ in 0..TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            state.record_terminal_lifecycle_closed(ThreadId::new(), /*status_revision*/ None);
+        }
+
+        assert_eq!(
+            state.terminal_lifecycle_watermarks.len(),
+            TERMINAL_LIFECYCLE_WATERMARK_LIMIT
+        );
+        assert!(
+            !state
+                .terminal_lifecycle_watermarks
+                .contains_key(&first_thread_id)
+        );
+    }
+
+    #[test]
+    fn terminal_unknown_status_provenance_expires_with_its_lifecycle_watermark() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ true,
+        ));
+
+        for _ in 0..TERMINAL_LIFECYCLE_WATERMARK_LIMIT {
+            assert!(state.accepts_thread_status_change(
+                ThreadId::new(),
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ true,
+            ));
+        }
+
+        assert!(
+            !state
+                .terminal_lifecycle_watermarks
+                .contains_key(&first_thread_id),
+            "the terminal watermark owns and bounds unknown-close provenance"
+        );
+        assert!(
+            !state.last_status_revisions.contains_key(&first_thread_id)
+                && !state.last_accepted_statuses.contains_key(&first_thread_id),
+            "the evicted lifecycle must not leave status provenance behind"
+        );
+
+        // Once the bounded terminal evidence is gone, an older status is a new unknown stream,
+        // not a stale revision that the evicted record can falsely reject. It still cannot create
+        // a picker row without independent activity or metadata evidence.
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(7),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(
+            !state.accepts_thread_status_change(
+                first_thread_id,
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(6),
+                /*is_closed*/ false,
+            ),
+            "the newly accepted stream must again reject its own stale revision"
+        );
+    }
+
+    #[test]
+    fn unknown_nonterminal_status_provenance_is_fifo_bounded() {
+        let mut state = AgentNavigationState::default();
+        let first_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(8),
+            /*is_closed*/ false,
+        ));
+
+        for _ in 0..UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT {
+            assert!(state.accepts_thread_status_change(
+                ThreadId::new(),
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ false,
+            ));
+        }
+
+        assert_eq!(
+            state.unknown_thread_status_provenance_order.len(),
+            UNKNOWN_THREAD_STATUS_PROVENANCE_LIMIT
+        );
+        assert!(
+            !state.last_status_revisions.contains_key(&first_thread_id)
+                && !state.last_accepted_statuses.contains_key(&first_thread_id),
+            "evicting an unknown status-only thread must clear both revision and kind evidence"
+        );
+
+        // The evicted revision must not be retained as a false causal guard. Like the terminal
+        // case above, accepting a new unknown status cannot by itself resurrect a picker row.
+        assert!(state.accepts_thread_status_change(
+            first_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(7),
+            /*is_closed*/ false,
+        ));
+        assert!(state.is_empty());
+        assert!(
+            !state.accepts_thread_status_change(
+                first_thread_id,
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(6),
+                /*is_closed*/ false,
+            ),
+            "the fresh bounded record must still fail closed for its own stale revision"
+        );
+    }
+
+    #[test]
+    fn known_closures_do_not_evict_unmatched_close_tombstones() {
+        let mut state = AgentNavigationState::default();
+        let unmatched_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            unmatched_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+
+        for _ in 0..(CLOSED_THREAD_TOMBSTONE_LIMIT + 1) {
+            let known_thread_id = ThreadId::new();
+            state.upsert(
+                known_thread_id,
+                /*agent_nickname*/ None,
+                /*agent_role*/ None,
+                /*is_closed*/ false,
+                /*created_at*/ None,
+                /*updated_at*/ None,
+            );
+            assert!(state.accepts_thread_status_change(
+                known_thread_id,
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ true,
+            ));
+        }
+
+        assert!(
+            state
+                .closed_thread_tombstones
+                .contains_key(&unmatched_thread_id)
+        );
+        assert_eq!(state.closed_thread_tombstones.len(), 1);
+    }
+
+    #[test]
+    fn refreshed_unmatched_close_tombstone_moves_to_fifo_back() {
+        let mut state = AgentNavigationState::default();
+        let refreshed_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            refreshed_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+        let first_other_thread_id = ThreadId::new();
+        assert!(state.accepts_thread_status_change(
+            first_other_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+        for _ in 0..(CLOSED_THREAD_TOMBSTONE_LIMIT - 2) {
+            assert!(state.accepts_thread_status_change(
+                ThreadId::new(),
+                /*has_system_error*/ false,
+                /*status_revision*/ Some(1),
+                /*is_closed*/ true,
+            ));
+        }
+        assert_eq!(
+            state.closed_thread_tombstones.len(),
+            CLOSED_THREAD_TOMBSTONE_LIMIT
+        );
+
+        // A duplicate close notification is recent again even when it carries no newer revision.
+        // The next unrelated close must evict the oldest other tombstone instead.
+        assert!(!state.accepts_thread_status_change(
+            refreshed_thread_id,
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+        assert!(state.accepts_thread_status_change(
+            ThreadId::new(),
+            /*has_system_error*/ false,
+            /*status_revision*/ Some(1),
+            /*is_closed*/ true,
+        ));
+
+        assert!(
+            state
+                .closed_thread_tombstones
+                .contains_key(&refreshed_thread_id)
+        );
+        assert!(
+            !state
+                .closed_thread_tombstones
+                .contains_key(&first_other_thread_id)
         );
     }
 
@@ -774,12 +3239,74 @@ mod tests {
     }
 
     #[test]
+    fn clear_drops_picker_page_cursor() {
+        let mut state = AgentNavigationState::default();
+        state.set_next_picker_page_cursor(Some("opaque-cursor".to_string()));
+        assert!(state.needs_legacy_relation_fallback_check());
+        state.mark_legacy_relation_fallback_checked();
+        assert!(!state.needs_legacy_relation_fallback_check());
+
+        state.clear();
+
+        assert_eq!(state.next_picker_page_cursor(), None);
+        assert!(state.needs_legacy_relation_fallback_check());
+    }
+
+    #[test]
+    fn picker_refresh_coalesces_reopens_while_one_request_is_in_flight() {
+        let mut state = AgentNavigationState::default();
+        let root_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid root");
+
+        let request_generation = state
+            .begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 7)
+            .expect("first refresh starts");
+        assert_eq!(
+            state.begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 7),
+            None,
+            "a second picker open must reuse the in-flight refresh"
+        );
+        assert!(state.finish_picker_refresh(
+            root_thread_id,
+            /*lifecycle_generation*/ 7,
+            request_generation,
+        ));
+    }
+
+    #[test]
+    fn picker_refresh_rejects_stale_reply_after_session_clear() {
+        let mut state = AgentNavigationState::default();
+        let root_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid root");
+        let stale_request_generation = state
+            .begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 1)
+            .expect("first refresh starts");
+
+        state.clear();
+        let current_request_generation = state
+            .begin_picker_refresh(root_thread_id, /*lifecycle_generation*/ 2)
+            .expect("refresh after reset starts");
+
+        assert!(!state.finish_picker_refresh(
+            root_thread_id,
+            /*lifecycle_generation*/ 1,
+            stale_request_generation,
+        ));
+        assert!(state.finish_picker_refresh(
+            root_thread_id,
+            /*lifecycle_generation*/ 2,
+            current_request_generation,
+        ));
+    }
+
+    #[test]
     fn active_agent_label_tracks_current_thread() {
-        let (state, main_thread_id, first_agent_id, _) = populated_state();
+        let (mut state, main_thread_id, first_agent_id, _) = populated_state();
+        state.set_agent_path(first_agent_id, Some("/root/explorer".to_string()));
 
         assert_eq!(
             state.active_agent_label(Some(first_agent_id), Some(main_thread_id)),
-            Some("Subagent: Robie [explorer]".to_string())
+            Some("Subagent: Robie [explorer] · /root/explorer".to_string())
         );
         assert_eq!(
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),

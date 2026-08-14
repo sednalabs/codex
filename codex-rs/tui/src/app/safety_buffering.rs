@@ -36,6 +36,9 @@ impl App {
         {
             return;
         }
+        if self.reject_replay_only_thread_write(thread_id) {
+            return;
+        }
         if !self.chat_widget.can_retry_safety_buffered_turn(&turn_id) {
             self.app_event_tx.send(AppEvent::UpdateModel(model));
             self.app_event_tx.send(AppEvent::UpdateReasoningEffort(Some(
@@ -135,6 +138,7 @@ impl App {
         if let Err(err) = self
             .replace_chat_widget_with_app_server_thread(
                 tui,
+                app_server,
                 started,
                 ThreadAttachPresentation::SessionLineage,
                 /*initial_user_message*/ None,

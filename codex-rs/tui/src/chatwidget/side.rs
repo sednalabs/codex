@@ -24,7 +24,11 @@ impl ChatWidget {
         self.bottom_pane.set_placeholder_text(placeholder);
         self.bottom_pane.set_side_conversation_active(active);
         if self.blocks_direct_input && !active {
-            self.bottom_pane.set_parent_owned_thread();
+            if self.replay_only {
+                self.bottom_pane.set_replay_only_thread();
+            } else {
+                self.bottom_pane.set_parent_owned_thread();
+            }
         }
     }
 

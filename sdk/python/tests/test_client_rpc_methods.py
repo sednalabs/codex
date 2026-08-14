@@ -1,25 +1,40 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
 
 from openai_codex.client import CodexClient, _params_dict
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
+    CollabAgentState,
+    CollabAgentToolCallThreadItem,
     ReasoningEffort,
     ReasoningEffortOption,
     ThreadForkParams,
     ThreadListParams,
+    ThreadListResponse,
+    ThreadLoadedListParams,
+    ThreadLoadedListResponse,
     ThreadResumeResponse,
     ThreadStartParams,
+    ThreadStatusChangedNotification,
     ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
     TurnStartParams,
     WarningNotification,
 )
 from openai_codex.models import Notification, UnknownNotification
-from openai_codex.types import ThreadSource
+from openai_codex.types import (
+    SubAgentActivityKind,
+    SubAgentActivityTerminalState,
+    SubAgentActivityThreadItem,
+    ThreadSource,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,6 +50,165 @@ def test_generated_params_models_are_snake_case_and_dump_by_alias() -> None:
 def test_generated_v2_bundle_has_single_shared_plan_type_definition() -> None:
     source = (ROOT / "src" / "openai_codex" / "generated" / "v2_all.py").read_text()
     assert source.count("class PlanType(") == 1
+
+
+def test_subagent_activity_terminal_detail_matches_json_schema() -> None:
+    item = SubAgentActivityThreadItem.model_validate(
+        {
+            "agentPath": "/root/failed-child",
+            "agentThreadId": "child-thread-1",
+            "id": "activity-1",
+            "kind": "interrupted",
+            "model": "gpt-5.6",
+            "reasoningEffort": "high",
+            "terminalState": "errored",
+            "type": "subAgentActivity",
+        }
+    )
+    schema_bundle = json.loads(
+        (
+            ROOT.parents[1]
+            / "codex-rs"
+            / "app-server-protocol"
+            / "schema"
+            / "json"
+            / "codex_app_server_protocol.v2.schemas.json"
+        ).read_text()
+    )
+
+    assert item.kind is SubAgentActivityKind.interrupted
+    assert item.terminal_state is SubAgentActivityTerminalState.errored
+    assert item.model == "gpt-5.6"
+    assert item.reasoning_effort is ReasoningEffort.high
+    assert schema_bundle["definitions"]["SubAgentActivityKind"]["enum"] == [
+        "started",
+        "interacted",
+        "interrupted",
+    ]
+    assert schema_bundle["definitions"]["SubAgentActivityTerminalState"]["enum"] == ["errored"]
+
+
+def test_agent_picker_protocol_models_match_current_schema() -> None:
+    """Keep ancestor-filter and spawned-agent request fields aligned with the V2 bundle."""
+    ancestor_params = ThreadLoadedListParams(ancestor_thread_id="root-thread-1")
+    loaded_ack = ThreadLoadedListResponse.model_validate(
+        {"data": ["child-thread-1"], "ancestorFilterApplied": True}
+    )
+    thread_list_ack = ThreadListResponse.model_validate({"data": [], "ancestorFilterApplied": True})
+    status_changed = ThreadStatusChangedNotification.model_validate(
+        {
+            "status": {"type": "idle"},
+            "statusRevision": 7,
+            "threadId": "child-thread-1",
+        }
+    )
+    tool_call = CollabAgentToolCallThreadItem.model_validate(
+        {
+            "agentsStates": {
+                "child-thread-1": {
+                    "agentNickname": "Scout",
+                    "agentRole": "explorer",
+                    "status": "running",
+                }
+            },
+            "id": "call-1",
+            "receiverThreadIds": ["child-thread-1"],
+            "requestedModel": "gpt-5.6",
+            "requestedReasoningEffort": "high",
+            "senderThreadId": "root-thread-1",
+            "status": "completed",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+    )
+    schema_bundle = json.loads(
+        (
+            ROOT.parents[1]
+            / "codex-rs"
+            / "app-server-protocol"
+            / "schema"
+            / "json"
+            / "codex_app_server_protocol.v2.schemas.json"
+        ).read_text()
+    )
+    collab_properties = next(
+        variant["properties"]
+        for variant in schema_bundle["definitions"]["ThreadItem"]["oneOf"]
+        if variant.get("title") == "CollabAgentToolCallThreadItem"
+    )
+    collab_model_aliases = {
+        field.alias or name for name, field in CollabAgentToolCallThreadItem.model_fields.items()
+    }
+    collab_state_properties = schema_bundle["definitions"]["CollabAgentState"]["properties"]
+    collab_state_model_aliases = {
+        field.alias or name for name, field in CollabAgentState.model_fields.items()
+    }
+    status_changed_properties = schema_bundle["definitions"]["ThreadStatusChangedNotification"][
+        "properties"
+    ]
+    status_changed_model_aliases = {
+        field.alias or name for name, field in ThreadStatusChangedNotification.model_fields.items()
+    }
+
+    assert _params_dict(ancestor_params) == {"ancestorThreadId": "root-thread-1"}
+    assert loaded_ack.ancestor_filter_applied is True
+    assert thread_list_ack.ancestor_filter_applied is True
+    assert status_changed.status_revision == 7
+    with pytest.raises(ValidationError):
+        ThreadStatusChangedNotification.model_validate(
+            {
+                "status": {"type": "idle"},
+                "statusRevision": -1,
+                "threadId": "child-thread-1",
+            }
+        )
+    # The RPC client converts models through `_params_dict` in Pydantic JSON mode before writing
+    # the JSON-RPC payload. Assert that wire object rather than Python-mode Enum instances.
+    assert _params_dict(tool_call) == {
+        "agentsStates": {
+            "child-thread-1": {
+                "agentNickname": "Scout",
+                "agentRole": "explorer",
+                "status": "running",
+            }
+        },
+        "id": "call-1",
+        "receiverThreadIds": ["child-thread-1"],
+        "requestedModel": "gpt-5.6",
+        "requestedReasoningEffort": "high",
+        "senderThreadId": "root-thread-1",
+        "status": "completed",
+        "tool": "spawnAgent",
+        "type": "collabAgentToolCall",
+    }
+    assert {
+        "ancestorThreadId",
+    } <= schema_bundle["definitions"]["ThreadLoadedListParams"]["properties"].keys()
+    assert {
+        "ancestorFilterApplied",
+    } <= schema_bundle["definitions"]["ThreadLoadedListResponse"]["properties"].keys()
+    assert {
+        "ancestorFilterApplied",
+    } <= schema_bundle["definitions"]["ThreadListResponse"]["properties"].keys()
+    assert collab_model_aliases == set(collab_properties)
+    assert collab_state_model_aliases == set(collab_state_properties)
+    assert tool_call.agents_states["child-thread-1"].agent_nickname == "Scout"
+    assert tool_call.agents_states["child-thread-1"].agent_role == "explorer"
+    assert "agentNickname" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
+    assert "agentRole" not in schema_bundle["definitions"]["CollabAgentState"]["required"]
+    legacy_collab_state = CollabAgentState.model_validate(
+        {
+            "agent_nickname": "Legacy Scout",
+            "agent_role": "explorer",
+            "status": "running",
+        }
+    )
+    assert legacy_collab_state.model_dump(by_alias=True, exclude_none=True) == {
+        "agentNickname": "Legacy Scout",
+        "agentRole": "explorer",
+        "status": "running",
+    }
+    assert status_changed_model_aliases == set(status_changed_properties)
 
 
 def test_reasoning_effort_preserves_enum_constants_and_accepts_future_values() -> None:

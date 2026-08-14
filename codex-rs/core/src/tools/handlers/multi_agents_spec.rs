@@ -15,6 +15,10 @@ use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+pub const INSPECT_AGENT_TREE_MAX_DEPTH: usize = 8;
+pub const INSPECT_AGENT_TREE_MAX_AGENTS: usize = 100;
+pub const INSPECT_AGENT_TREE_MAX_AGENT_ROOTS: usize = INSPECT_AGENT_TREE_MAX_AGENTS;
+pub const INSPECT_AGENT_TREE_MAX_AGENT_ROOT_PATH_LENGTH: usize = 512;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
@@ -353,12 +357,14 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
         (
             "agent_roots".to_string(),
             JsonSchema::array(
-                JsonSchema::string(/*description*/ None),
+                JsonSchema::string(/*description*/ None)
+                    .with_max_length(INSPECT_AGENT_TREE_MAX_AGENT_ROOT_PATH_LENGTH as u64),
                 Some(
                     "Optional task-path roots to keep in the returned tree. Matching rows include the named agent and its descendants."
                         .to_string(),
                 ),
-            ),
+            )
+            .with_max_items(INSPECT_AGENT_TREE_MAX_AGENT_ROOTS as u64),
         ),
         (
             "scope".to_string(),
@@ -369,17 +375,21 @@ pub fn create_inspect_agent_tree_tool() -> ToolSpec {
         ),
         (
             "max_depth".to_string(),
-            JsonSchema::number(Some(
+            JsonSchema::integer(Some(
                 "Optional maximum descendant depth to return, counted from the inspected subtree root."
                     .to_string(),
-            )),
+            ))
+            .with_minimum(/*minimum*/ 1)
+            .with_maximum(INSPECT_AGENT_TREE_MAX_DEPTH as u64),
         ),
         (
             "max_agents".to_string(),
-            JsonSchema::number(Some(
+            JsonSchema::integer(Some(
                 "Optional maximum number of rows to return after tree ordering is applied."
                     .to_string(),
-            )),
+            ))
+            .with_minimum(/*minimum*/ 1)
+            .with_maximum(INSPECT_AGENT_TREE_MAX_AGENTS as u64),
         ),
     ]);
 
@@ -707,12 +717,16 @@ fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
 }
 
 fn inspect_agent_tree_output_schema() -> Value {
+    let agent_status_schema = json!({
+        "anyOf": [agent_status_output_schema(), { "type": "null" }],
+        "description": "Live agent status. Null for a persisted stale thread because no live runtime status is available."
+    });
     json!({
         "type": "object",
         "properties": {
             "root_agent_name": {
                 "type": "string",
-                "description": "Canonical task name or agent id for the inspected subtree root."
+                "description": "Canonical task name or agent id for the inspected subtree root. This is context rather than an agent row when scope=stale and that root is live."
             },
             "scope_applied": {
                 "type": "string",
@@ -733,7 +747,7 @@ fn inspect_agent_tree_output_schema() -> Value {
             },
             "truncated": {
                 "type": "boolean",
-                "description": "Whether the returned tree rows were truncated."
+                "description": "Whether traversal stopped at a depth or row boundary; when true, summary counts cover only the materialized rows."
             },
             "summary": {
                 "type": "object",
@@ -771,7 +785,7 @@ fn inspect_agent_tree_output_schema() -> Value {
                         "agent_name": { "type": "string" },
                         "depth": { "type": "number" },
                         "session_state": { "type": "string" },
-                        "agent_status": { "type": "string" },
+                        "agent_status": agent_status_schema,
                         "nickname": { "type": ["string", "null"] },
                         "role": { "type": ["string", "null"] },
                         "effective_model": {

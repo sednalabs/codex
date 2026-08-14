@@ -223,6 +223,8 @@ const AMBIENT_PET_WRAP_GAP_COLUMNS: u16 = 2;
 const TUI_STUB_MESSAGE: &str = "Not available in TUI yet.";
 const PARENT_OWNED_INPUT_MESSAGE: &str =
     "This sub-agent is controlled by its parent. Direct input is disabled.";
+pub(crate) const REPLAY_ONLY_INPUT_MESSAGE: &str =
+    "This saved transcript is read-only. Direct input is disabled.";
 
 /// Choose the keybinding used to edit the most-recently queued message.
 ///
@@ -671,6 +673,11 @@ pub(crate) struct ChatWidget {
     #[cfg(test)]
     pet_image_support_override: Option<crate::pets::PetImageSupport>,
     thread_id: Option<ThreadId>,
+    /// Generation owned by `App` for the thread currently projected into this widget.
+    ///
+    /// Async UI work copies it into its event so a discarded lifecycle cannot affect a later
+    /// attachment with the same server thread id.
+    thread_lifecycle_generation: u64,
     /// Nudge dismissals that should survive draft edits within the current thread scope.
     ///
     /// The nudge is only a discovery aid, so once a user dismisses it or enters Plan mode we keep it
@@ -680,6 +687,7 @@ pub(crate) struct ChatWidget {
     thread_rename_block_message: Option<String>,
     active_side_conversation: bool,
     blocks_direct_input: bool,
+    replay_only: bool,
     normal_placeholder_text: String,
     side_placeholder_text: String,
     forked_from: Option<ThreadId>,
@@ -1035,9 +1043,17 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_app_link_view(&mut self, params: crate::bottom_pane::AppLinkViewParams) {
+        self.open_app_link_view_with_sender(params, self.app_event_tx.clone());
+    }
+
+    pub(crate) fn open_app_link_view_with_sender(
+        &mut self,
+        params: crate::bottom_pane::AppLinkViewParams,
+        app_event_tx: crate::app_event_sender::AppEventSender,
+    ) {
         let view = crate::bottom_pane::AppLinkView::new_with_keymap(
             params,
-            self.app_event_tx.clone(),
+            app_event_tx,
             self.bottom_pane.list_keymap(),
         );
         self.bottom_pane.show_view(Box::new(view));
@@ -1565,6 +1581,7 @@ impl ChatWidget {
         self.app_event_tx.send(AppEvent::FetchMcpInventory {
             detail,
             thread_id: self.thread_id(),
+            lifecycle_generation: self.thread_id().map(|_| self.thread_lifecycle_generation),
         });
     }
 
@@ -1776,7 +1793,7 @@ impl ChatWidget {
                 AppCommand::UserTurn { .. } | AppCommand::Review { .. } | AppCommand::Compact
             )
         {
-            self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+            self.add_error_message(self.direct_input_blocked_message().to_string());
             return false;
         }
         self.prepare_local_op_submission(&op);
@@ -1803,8 +1820,11 @@ impl ChatWidget {
             tracing::warn!("failed to append to message history: no active thread id");
             return;
         };
-        self.app_event_tx
-            .send(AppEvent::AppendMessageHistoryEntry { thread_id, text });
+        self.app_event_tx.send(AppEvent::AppendMessageHistoryEntry {
+            thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation,
+            text,
+        });
     }
 
     pub(crate) fn prepare_local_op_submission(&mut self, op: &AppCommand) {
@@ -1861,6 +1881,12 @@ impl ChatWidget {
 
     pub(crate) fn thread_id(&self) -> Option<ThreadId> {
         self.thread_id
+    }
+
+    pub(crate) fn set_thread_lifecycle_generation(&mut self, generation: u64) {
+        self.thread_lifecycle_generation = generation;
+        self.app_event_tx
+            .set_thread_lifecycle_generation(generation);
     }
 
     pub(crate) fn thread_name(&self) -> Option<String> {

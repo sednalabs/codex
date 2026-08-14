@@ -61,7 +61,7 @@ use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
 use crate::multi_agents::agent_picker_status_dot_spans;
-use crate::multi_agents::format_agent_picker_item_name;
+use crate::multi_agents::format_agent_picker_item_label;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::multi_agents::sub_agent_activity_display;
@@ -118,6 +118,7 @@ use codex_app_server_protocol::PluginReadParams;
 use codex_app_server_protocol::PluginReadResponse;
 use codex_app_server_protocol::PluginUninstallParams;
 use codex_app_server_protocol::PluginUninstallResponse;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode as AppServerSandboxMode;
 use codex_app_server_protocol::SendAddCreditsNudgeEmailParams;
 use codex_app_server_protocol::ServerNotification;
@@ -126,7 +127,6 @@ use codex_app_server_protocol::SkillErrorInfo;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadItem;
-use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadStartSource;
 use codex_app_server_protocol::Turn;
@@ -181,6 +181,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
@@ -197,11 +198,11 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
-use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_message_consolidation;
 mod agent_navigation;
+pub(crate) mod agent_picker;
 mod agent_status_feed;
 mod app_server_event_targets;
 mod app_server_events;
@@ -231,7 +232,6 @@ mod thread_settings;
 use self::agent_navigation::AgentNavigationDirection;
 use self::agent_navigation::AgentNavigationState;
 use self::app_server_requests::PendingAppServerRequests;
-use self::loaded_threads::find_loaded_subagent_threads_for_primary;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
 use self::platform_actions::*;
 use self::side::SideParentStatus;
@@ -242,11 +242,38 @@ use self::thread_events::*;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
+/// Keep delayed subscription traffic bounded while still allowing a large
+/// burst to wait for its authoritative attach response.
+const DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT: usize = 256;
+/// A retired subscription is retained until no deferred traffic references it.
+/// The temporary excess is itself bounded by the deferred-event limit.
+const THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT: usize = 256;
+/// Keep duplicate stale-request rejection receipts bounded per TUI session.
+const REJECTED_STALE_THREAD_SUBSCRIPTION_REQUEST_LIMIT: usize = 512;
+
+/// A thread presentation identity captured when work enters the TUI.
+///
+/// Thread ids can be deliberately reattached after a discard. Pairing the id with the local
+/// generation keeps queued work from a previous presentation from mutating the replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ThreadLifecycleTarget {
+    pub(super) thread_id: ThreadId,
+    pub(super) lifecycle_generation: u64,
+}
 
 enum ThreadInteractiveRequest {
-    AppLink(AppLinkViewParams),
-    Approval(ApprovalRequest),
-    McpServerElicitation(McpServerElicitationFormRequest),
+    AppLink {
+        target: ThreadLifecycleTarget,
+        params: AppLinkViewParams,
+    },
+    Approval {
+        target: ThreadLifecycleTarget,
+        request: ApprovalRequest,
+    },
+    McpServerElicitation {
+        target: ThreadLifecycleTarget,
+        request: McpServerElicitationFormRequest,
+    },
 }
 
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
@@ -305,6 +332,55 @@ fn collab_receiver_is_not_found(
         },
         _ => false,
     }
+}
+
+/// Returns the V1 identity carried by a completed collab lifecycle item for one receiver.
+///
+/// V1 does not assign an agent path. Its canonical nickname and role arrive with the terminal
+/// lifecycle record, which can precede the child's `ThreadStarted` notification. The effective
+/// spawn model and reasoning effort live on the item itself.
+fn collab_receiver_identity(
+    notification: &ServerNotification,
+    receiver_thread_id: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<codex_protocol::openai_models::ReasoningEffort>,
+) {
+    let item = match notification {
+        ServerNotification::ItemStarted(notification) => &notification.item,
+        ServerNotification::ItemCompleted(notification) => &notification.item,
+        _ => return Default::default(),
+    };
+    let ThreadItem::CollabAgentToolCall {
+        tool,
+        model,
+        reasoning_effort,
+        agents_states,
+        ..
+    } = item
+    else {
+        return Default::default();
+    };
+    let Some(agent_state) = agents_states.get(receiver_thread_id) else {
+        return Default::default();
+    };
+
+    let (model, reasoning_effort) = if matches!(
+        tool,
+        codex_app_server_protocol::CollabAgentTool::SpawnAgent
+    ) {
+        (model.clone(), reasoning_effort.clone())
+    } else {
+        (None, None)
+    };
+    (
+        agent_state.agent_nickname.clone(),
+        agent_state.agent_role.clone(),
+        model,
+        reasoning_effort,
+    )
 }
 
 fn default_exec_approval_decisions(
@@ -573,7 +649,22 @@ pub(crate) struct App {
     windows_sandbox: WindowsSandboxState,
 
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
-    thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
+    /// Monotonic local lifecycle generation for each thread presentation. Background responses
+    /// capture this value so an old discard-era response cannot enter a later reattachment.
+    thread_lifecycle_generations: HashMap<ThreadId, u64>,
+    /// A local discard tombstone. Only an authoritative attach/recovery may remove it.
+    discarded_thread_generations: HashMap<ThreadId, u64>,
+    /// Server-minted subscription identities bound to their local lifecycle.
+    /// Old identities remain tombstoned after discard so delayed traffic cannot
+    /// be reclassified as a newer attachment of the same thread id.
+    thread_subscription_targets: HashMap<String, ThreadSubscriptionBinding>,
+    /// Thread traffic that arrived before the corresponding start/resume/fork
+    /// response gave us its subscription identity. It is replayed only after
+    /// that identity is bound to an authoritative local lifecycle.
+    deferred_thread_subscription_events: VecDeque<codex_app_server_client::TaggedAppServerEvent>,
+    /// A stale request must be rejected once with its original JSON-RPC id,
+    /// even if a delayed transport delivery duplicates it.
+    rejected_stale_thread_subscription_requests: VecDeque<(String, RequestId)>,
     agent_navigation: AgentNavigationState,
     side_threads: HashMap<ThreadId, SideThreadState>,
     active_thread_id: Option<ThreadId>,
@@ -581,7 +672,7 @@ pub(crate) struct App {
     primary_thread_id: Option<ThreadId>,
     last_subagent_backfill_attempt: Option<ThreadId>,
     primary_session_configured: Option<ThreadSessionState>,
-    pending_primary_events: VecDeque<ThreadBufferedEvent>,
+    pending_primary_events: VecDeque<PendingPrimaryThreadEvent>,
     pending_app_server_requests: PendingAppServerRequests,
     pending_startup_thread_start: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
@@ -593,6 +684,23 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+}
+
+/// A server event received before a primary session is attached.
+///
+/// The target lifecycle is captured at ingress rather than inferred when a later primary arrives,
+/// so replacing startup thread A with B cannot deliver A's request into B's presentation.
+#[derive(Debug)]
+pub(crate) struct PendingPrimaryThreadEvent {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) lifecycle_generation: u64,
+    pub(crate) event: ThreadBufferedEvent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ThreadSubscriptionBinding {
+    Active(ThreadLifecycleTarget),
+    Tombstoned(ThreadLifecycleTarget),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1071,7 +1179,11 @@ See the Codex keymap documentation for supported actions and examples."
             pending_shutdown_exit_thread_id: None,
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
-            thread_event_listener_tasks: HashMap::new(),
+            thread_lifecycle_generations: HashMap::new(),
+            discarded_thread_generations: HashMap::new(),
+            thread_subscription_targets: HashMap::new(),
+            deferred_thread_subscription_events: VecDeque::new(),
+            rejected_stale_thread_subscription_requests: VecDeque::new(),
             agent_navigation: AgentNavigationState::default(),
             side_threads: HashMap::new(),
             active_thread_id: None,
@@ -1095,8 +1207,14 @@ See the Codex keymap documentation for supported actions and examples."
             if started.blocks_direct_input {
                 app.mark_primary_thread_parent_owned(thread_id);
             }
-            app.enqueue_primary_thread_session(started.session, started.turns)
-                .await?;
+            app.enqueue_primary_thread_session_with_presentation_and_server(
+                Some(&app_server),
+                started.thread_subscription_id,
+                started.session,
+                started.turns,
+                crate::app::session_lifecycle::ThreadAttachPresentation::SessionLineage,
+            )
+            .await?;
             if should_prompt_for_paused_goal_after_startup_resume {
                 app.maybe_prompt_resume_paused_goal_after_resume(&mut app_server, thread_id)
                     .await;
@@ -1227,7 +1345,8 @@ See the Codex keymap documentation for supported actions and examples."
                             app.handle_exit_mode(&mut app_server, ExitMode::ShutdownFirst).await
                         }
                     }
-                    app_server_event = app_server.next_event(), if listen_for_app_server_events => {
+                    app_server_event = app_server.next_tagged_event(),
+                        if listen_for_app_server_events => {
                         match app_server_event {
                             Some(event) => app.handle_app_server_event(&app_server, event).await,
                             None => {

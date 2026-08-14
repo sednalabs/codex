@@ -1,4 +1,6 @@
 #[cfg(test)]
+use crate::outgoing_message::ConnectionId;
+#[cfg(test)]
 use crate::outgoing_message::OutgoingEnvelope;
 #[cfg(test)]
 use crate::outgoing_message::OutgoingMessage;
@@ -9,11 +11,16 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_protocol::ThreadId;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 #[cfg(test)]
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+
+/// Keep recent unloaded-thread revisions long enough to preserve notification ordering if a
+/// thread is reloaded, without retaining one revision entry per historical thread forever.
+const RETIRED_STATUS_REVISION_LIMIT: usize = 1024;
 
 #[derive(Clone)]
 pub(crate) struct ThreadWatchManager {
@@ -302,6 +309,8 @@ pub(crate) fn resolve_thread_status(
 #[derive(Default)]
 struct ThreadWatchState {
     runtime_by_thread_id: HashMap<String, RuntimeFacts>,
+    status_revision_by_thread_id: HashMap<String, u64>,
+    retired_status_revision_order: VecDeque<String>,
     status_watcher_by_thread_id: HashMap<String, watch::Sender<ThreadStatus>>,
 }
 
@@ -311,6 +320,7 @@ impl ThreadWatchState {
         thread_id: String,
         emit_notification: bool,
     ) -> Option<ThreadStatusChangedNotification> {
+        self.remove_retired_status_revision_tracking(&thread_id);
         let previous_status = self.status_for(&thread_id);
         let runtime = self
             .runtime_by_thread_id
@@ -329,14 +339,20 @@ impl ThreadWatchState {
         let previous_status = self.status_for(thread_id);
         self.runtime_by_thread_id.remove(thread_id);
         self.update_status_watcher(thread_id, &ThreadStatus::NotLoaded);
-        if previous_status.is_some() && previous_status != Some(ThreadStatus::NotLoaded) {
-            Some(ThreadStatusChangedNotification {
-                thread_id: thread_id.to_string(),
-                status: ThreadStatus::NotLoaded,
-            })
-        } else {
-            None
+        let notification =
+            if previous_status.is_some() && previous_status != Some(ThreadStatus::NotLoaded) {
+                Some(ThreadStatusChangedNotification {
+                    thread_id: thread_id.to_string(),
+                    status: ThreadStatus::NotLoaded,
+                    status_revision: Some(self.next_status_revision(thread_id)),
+                })
+            } else {
+                None
+            };
+        if notification.is_some() {
+            self.retain_retired_status_revision(thread_id);
         }
+        notification
     }
 
     fn update_runtime<F>(
@@ -347,6 +363,7 @@ impl ThreadWatchState {
     where
         F: FnOnce(&mut RuntimeFacts),
     {
+        self.remove_retired_status_revision_tracking(thread_id);
         let previous_status = self.status_for(thread_id);
         let runtime = self
             .runtime_by_thread_id
@@ -404,7 +421,7 @@ impl ThreadWatchState {
     }
 
     fn status_changed_notification(
-        &self,
+        &mut self,
         thread_id: String,
         previous_status: Option<ThreadStatus>,
     ) -> Option<ThreadStatusChangedNotification> {
@@ -414,7 +431,41 @@ impl ThreadWatchState {
             return None;
         }
 
-        Some(ThreadStatusChangedNotification { thread_id, status })
+        let status_revision = self.next_status_revision(&thread_id);
+        Some(ThreadStatusChangedNotification {
+            thread_id,
+            status,
+            status_revision: Some(status_revision),
+        })
+    }
+
+    fn next_status_revision(&mut self, thread_id: &str) -> u64 {
+        let revision = self
+            .status_revision_by_thread_id
+            .entry(thread_id.to_string())
+            .or_default();
+        *revision = revision.saturating_add(1);
+        *revision
+    }
+
+    fn remove_retired_status_revision_tracking(&mut self, thread_id: &str) {
+        self.retired_status_revision_order
+            .retain(|candidate| candidate != thread_id);
+    }
+
+    fn retain_retired_status_revision(&mut self, thread_id: &str) {
+        self.remove_retired_status_revision_tracking(thread_id);
+        self.retired_status_revision_order
+            .push_back(thread_id.to_string());
+        while self.retired_status_revision_order.len() > RETIRED_STATUS_REVISION_LIMIT {
+            let expired_thread_id = self
+                .retired_status_revision_order
+                .pop_front()
+                .expect("retired revision order must contain every retained revision");
+            // Entries leave this FIFO only after `remove_thread` has dropped their runtime.
+            // A thread that was reloaded removes itself from the FIFO before it can expire.
+            self.status_revision_by_thread_id.remove(&expired_thread_id);
+        }
     }
 }
 
@@ -689,10 +740,18 @@ mod tests {
     #[tokio::test]
     async fn status_change_emits_notification() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
-        let manager = ThreadWatchManager::new_with_outgoing(Arc::new(OutgoingMessageSender::new(
+        let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
-        )));
+        ));
+        outgoing
+            .register_thread_subscription(
+                ConnectionId(1),
+                ThreadId::from_string(INTERACTIVE_THREAD_ID)
+                    .expect("interactive thread id should be valid"),
+            )
+            .await;
+        let manager = ThreadWatchManager::new_with_outgoing(outgoing);
 
         manager.upsert_thread(INTERACTIVE_THREAD_ID).await;
         assert_eq!(
@@ -700,6 +759,7 @@ mod tests {
             ThreadStatusChangedNotification {
                 thread_id: INTERACTIVE_THREAD_ID.to_string(),
                 status: ThreadStatus::Idle,
+                status_revision: Some(1),
             },
         );
 
@@ -711,6 +771,7 @@ mod tests {
                 status: ThreadStatus::Active {
                     active_flags: vec![],
                 },
+                status_revision: Some(2),
             },
         );
 
@@ -720,17 +781,83 @@ mod tests {
             ThreadStatusChangedNotification {
                 thread_id: INTERACTIVE_THREAD_ID.to_string(),
                 status: ThreadStatus::NotLoaded,
+                status_revision: Some(3),
             },
+        );
+    }
+
+    #[tokio::test]
+    async fn retired_thread_status_revisions_are_bounded_and_preserve_recent_reload_order() {
+        let manager = ThreadWatchManager::new();
+        let retained_thread_id = "retained-thread";
+
+        manager.upsert_thread(retained_thread_id).await;
+        manager.remove_thread(retained_thread_id).await;
+        for index in 0..RETIRED_STATUS_REVISION_LIMIT - 1 {
+            let thread_id = format!("retired-thread-{index}");
+            manager.upsert_thread(&thread_id).await;
+            manager.remove_thread(&thread_id).await;
+        }
+
+        {
+            let state = manager.state.lock().await;
+            assert_eq!(
+                state.status_revision_by_thread_id.len(),
+                RETIRED_STATUS_REVISION_LIMIT
+            );
+            assert_eq!(
+                state.status_revision_by_thread_id.get(retained_thread_id),
+                Some(&2),
+                "a recent reload must continue the prior status-revision sequence"
+            );
+        }
+
+        manager.upsert_thread(retained_thread_id).await;
+        {
+            let state = manager.state.lock().await;
+            assert_eq!(
+                state.status_revision_by_thread_id.get(retained_thread_id),
+                Some(&3),
+                "reloading inside the retention window must not reset revision ordering"
+            );
+        }
+        manager.remove_thread(retained_thread_id).await;
+
+        for index in 0..RETIRED_STATUS_REVISION_LIMIT {
+            let thread_id = format!("later-retired-thread-{index}");
+            manager.upsert_thread(&thread_id).await;
+            manager.remove_thread(&thread_id).await;
+        }
+
+        let state = manager.state.lock().await;
+        assert_eq!(
+            state.status_revision_by_thread_id.len(),
+            RETIRED_STATUS_REVISION_LIMIT,
+            "unloading many distinct threads must not grow revision state without bound"
+        );
+        assert!(
+            !state
+                .status_revision_by_thread_id
+                .contains_key(retained_thread_id),
+            "the oldest retired revision should be evicted after the bounded window"
         );
     }
 
     #[tokio::test]
     async fn silent_upsert_skips_initial_notification() {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel(8);
-        let manager = ThreadWatchManager::new_with_outgoing(Arc::new(OutgoingMessageSender::new(
+        let outgoing = Arc::new(OutgoingMessageSender::new(
             outgoing_tx,
             codex_analytics::AnalyticsEventsClient::disabled(),
-        )));
+        ));
+        outgoing
+            .register_thread_subscription(
+                ConnectionId(1),
+                ThreadId::from_string(INTERACTIVE_THREAD_ID)
+                    .expect("interactive thread id should be valid"),
+            )
+            .await;
+        let manager = ThreadWatchManager::new_with_outgoing(outgoing);
 
         manager.upsert_thread_silently(INTERACTIVE_THREAD_ID).await;
 
@@ -755,6 +882,7 @@ mod tests {
                 status: ThreadStatus::Active {
                     active_flags: vec![],
                 },
+                status_revision: Some(1),
             },
         );
     }
@@ -823,12 +951,14 @@ mod tests {
             .await
             .expect("timed out waiting for outgoing notification")
             .expect("outgoing channel closed unexpectedly");
-        let OutgoingEnvelope::Broadcast { message } = envelope else {
-            panic!("expected broadcast notification");
+        let OutgoingEnvelope::ToConnection {
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = envelope
+        else {
+            panic!("expected tagged thread/status/changed notification");
         };
-        let OutgoingMessage::AppServerNotification(envelope) = message else {
-            panic!("expected thread/status/changed notification");
-        };
+        let envelope = notification.envelope;
         let ServerNotification::ThreadStatusChanged(notification) = envelope.notification else {
             panic!("expected thread/status/changed notification");
         };

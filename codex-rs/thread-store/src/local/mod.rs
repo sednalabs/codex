@@ -530,8 +530,12 @@ mod tests {
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::MessagePhase;
     use codex_protocol::models::ResponseItem;
+    use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::AgentMessageEvent;
+    use codex_protocol::protocol::AgentStatus;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
+    use codex_protocol::protocol::CollabAgentSpawnEndEvent;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::RolloutItem;
@@ -1219,6 +1223,116 @@ mod tests {
 
         assert_rollout_contains_message(rollout_path.as_path(), "before resume").await;
         assert_rollout_contains_message(rollout_path.as_path(), "after resume").await;
+    }
+
+    #[tokio::test]
+    async fn resumed_legacy_writer_persists_and_replays_collab_spawn_lifecycle() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let thread_id = ThreadId::default();
+        let spawned_thread_id = ThreadId::default();
+        let first_store = LocalThreadStore::new(config.clone(), /*state_db*/ None);
+        let mut params = create_thread_params(thread_id);
+        params.history_mode = ThreadHistoryMode::Legacy;
+        first_store
+            .create_thread(params)
+            .await
+            .expect("create initial legacy thread");
+        first_store
+            .append_items(AppendThreadItemsParams {
+                thread_id,
+                items: vec![
+                    RolloutItem::EventMsg(EventMsg::CollabAgentSpawnBegin(
+                        CollabAgentSpawnBeginEvent {
+                            call_id: "spawn-legacy-resume".to_string(),
+                            started_at_ms: 10,
+                            sender_thread_id: thread_id,
+                            prompt: "inspect the persisted history".to_string(),
+                            model: "gpt-requested".to_string(),
+                            reasoning_effort: ReasoningEffort::High,
+                        },
+                    )),
+                    RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(
+                        CollabAgentSpawnEndEvent {
+                            call_id: "spawn-legacy-resume".to_string(),
+                            completed_at_ms: 20,
+                            sender_thread_id: thread_id,
+                            new_thread_id: Some(spawned_thread_id),
+                            new_agent_nickname: Some("Scout".to_string()),
+                            new_agent_role: Some("explorer".to_string()),
+                            prompt: "inspect the persisted history".to_string(),
+                            model: "gpt-effective".to_string(),
+                            reasoning_effort: ReasoningEffort::Medium,
+                            status: AgentStatus::Running,
+                        },
+                    )),
+                ],
+            })
+            .await
+            .expect("append legacy collab lifecycle");
+        first_store
+            .flush_thread(thread_id)
+            .await
+            .expect("flush legacy lifecycle");
+        let rollout_path = first_store
+            .live_rollout_path(thread_id)
+            .await
+            .expect("load initial rollout path");
+        first_store
+            .shutdown_thread(thread_id)
+            .await
+            .expect("shutdown initial writer");
+
+        let resumed_store = LocalThreadStore::new(config, /*state_db*/ None);
+        resumed_store
+            .resume_thread(ResumeThreadParams {
+                thread_id,
+                rollout_path: None,
+                history: None,
+                include_archived: true,
+                metadata: thread_metadata(),
+            })
+            .await
+            .expect("resume legacy writer");
+        resumed_store
+            .append_items(AppendThreadItemsParams {
+                thread_id,
+                items: vec![user_message_item("after legacy resume")],
+            })
+            .await
+            .expect("append after legacy resume");
+        resumed_store
+            .flush_thread(thread_id)
+            .await
+            .expect("flush resumed legacy writer");
+
+        assert_rollout_contains_message(rollout_path.as_path(), "after legacy resume").await;
+        let history = resumed_store
+            .load_history(LoadThreadHistoryParams {
+                thread_id,
+                include_archived: true,
+            })
+            .await
+            .expect("load resumed legacy history");
+        assert!(history.items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::CollabAgentSpawnBegin(event))
+                    if event.call_id == "spawn-legacy-resume"
+                        && event.model.as_deref() == Some("gpt-requested")
+                        && event.reasoning_effort == Some(ReasoningEffort::High)
+            )
+        }));
+        assert!(history.items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(event))
+                    if event.call_id == "spawn-legacy-resume"
+                        && event.new_thread_id == Some(spawned_thread_id)
+                        && event.model.as_deref() == Some("gpt-effective")
+                        && event.reasoning_effort == Some(ReasoningEffort::Medium)
+            )
+        }));
     }
 
     #[tokio::test]

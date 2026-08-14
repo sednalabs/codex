@@ -84,6 +84,9 @@ use crate::facts::TurnStatus;
 use crate::facts::TurnSteerRequestError;
 use crate::facts::TurnTokenUsageFact;
 use crate::reducer::AnalyticsReducer;
+use crate::reducer::PENDING_TOOL_ITEM_LIFECYCLE_LIMIT;
+use crate::reducer::PENDING_TOOL_ITEMS_PER_TURN_LIMIT;
+use crate::reducer::TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT;
 use crate::reducer::normalize_path_for_skill_id;
 use crate::reducer::skill_id_for_local_skill;
 use codex_app_server_protocol::ApprovalsReviewer as AppServerApprovalsReviewer;
@@ -240,6 +243,7 @@ fn sample_thread_start_response(
             Some(AppServerThreadSource::User),
             /*parent_thread_id*/ None,
         ),
+        thread_subscription_id: None,
         model: model.to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -305,6 +309,7 @@ fn sample_thread_resume_response_with_source(
             thread_source,
             parent_thread_id,
         ),
+        thread_subscription_id: None,
         model: model.to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -2522,6 +2527,511 @@ async fn item_lifecycle_notifications_publish_command_execution_event() {
 }
 
 #[tokio::test]
+async fn live_canonical_spawn_lifecycle_preserves_requested_analytics_attribution() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+
+    ingest_review_prerequisites(&mut reducer, &mut events).await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_started_notification(
+                "thread-1", "turn-1",
+            ))),
+            &mut events,
+        )
+        .await;
+
+    let spawn_item = |id: &str,
+                      status: CollabAgentToolCallStatus,
+                      model: Option<&str>,
+                      reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+                      requested_model: Option<&str>,
+                      requested_reasoning_effort: Option<
+        codex_protocol::openai_models::ReasoningEffort,
+    >| {
+        ThreadItem::CollabAgentToolCall {
+            id: id.to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status,
+            sender_thread_id: "thread-1".to_string(),
+            receiver_thread_ids: vec![format!("receiver-{id}")],
+            prompt: Some("inspect the repository".to_string()),
+            model: model.map(str::to_string),
+            reasoning_effort,
+            requested_model: requested_model.map(str::to_string),
+            requested_reasoning_effort,
+            agents_states: Default::default(),
+        }
+    };
+    let cases = [
+        (
+            "spawn-model-only",
+            Some("gpt-requested-model"),
+            None,
+            "gpt-effective-model",
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            Some("gpt-requested-model"),
+            None,
+        ),
+        (
+            "spawn-effort-only",
+            None,
+            Some(codex_protocol::openai_models::ReasoningEffort::High),
+            "gpt-effective-effort",
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            None,
+            Some("high"),
+        ),
+        (
+            "spawn-explicit-mismatch",
+            Some("gpt-requested-pair"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Ultra),
+            "gpt-effective-pair",
+            Some(codex_protocol::openai_models::ReasoningEffort::Low),
+            Some("gpt-requested-pair"),
+            Some("ultra"),
+        ),
+    ];
+
+    for (
+        id,
+        requested_model,
+        requested_reasoning_effort,
+        effective_model,
+        effective_reasoning_effort,
+        _,
+        _,
+    ) in &cases
+    {
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                    ItemStartedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        started_at_ms: 1_000,
+                        item: spawn_item(
+                            id,
+                            CollabAgentToolCallStatus::InProgress,
+                            *requested_model,
+                            requested_reasoning_effort.clone(),
+                            *requested_model,
+                            requested_reasoning_effort.clone(),
+                        ),
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                    ItemCompletedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: "turn-1".to_string(),
+                        completed_at_ms: 1_025,
+                        item: spawn_item(
+                            id,
+                            CollabAgentToolCallStatus::Completed,
+                            Some(*effective_model),
+                            effective_reasoning_effort.clone(),
+                            None,
+                            None,
+                        ),
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    let payload = serde_json::to_value(&events).expect("serialize analytics events");
+    let events = payload.as_array().expect("analytics event array");
+    assert_eq!(events.len(), 3);
+    for (id, _, _, _, _, expected_model, expected_reasoning_effort) in &cases {
+        let event = events
+            .iter()
+            .find(|event| event["event_params"]["item_id"] == *id)
+            .expect("spawn analytics event");
+        assert_eq!(
+            event["event_type"],
+            json!("codex_collab_agent_tool_call_event")
+        );
+        assert_eq!(
+            event["event_params"]["requested_model"],
+            expected_model.map_or_else(|| json!(null), |model| json!(model))
+        );
+        assert_eq!(
+            event["event_params"]["requested_reasoning_effort"],
+            expected_reasoning_effort.map_or_else(|| json!(null), |effort| json!(effort))
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_spawn_completion_emits_analytics_and_clears_pending_lifecycle_state() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+    ingest_review_prerequisites(&mut reducer, &mut events).await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_started_notification(
+                "thread-1", "turn-1",
+            ))),
+            &mut events,
+        )
+        .await;
+
+    let started = ThreadItem::CollabAgentToolCall {
+        id: "failed-spawn".to_string(),
+        tool: CollabAgentTool::SpawnAgent,
+        status: CollabAgentToolCallStatus::InProgress,
+        sender_thread_id: "thread-1".to_string(),
+        receiver_thread_ids: Vec::new(),
+        prompt: Some("inspect the repository".to_string()),
+        model: Some("gpt-requested".to_string()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        requested_model: Some("gpt-requested".to_string()),
+        requested_reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::High),
+        agents_states: Default::default(),
+    };
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                ItemStartedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 1_000,
+                    item: started,
+                },
+            ))),
+            &mut events,
+        )
+        .await;
+    assert_eq!(reducer.spawn_item_starts.len(), 1);
+    assert_eq!(reducer.tool_items_started_at_ms.len(), 1);
+
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 1_025,
+                    item: ThreadItem::CollabAgentToolCall {
+                        id: "failed-spawn".to_string(),
+                        tool: CollabAgentTool::SpawnAgent,
+                        status: CollabAgentToolCallStatus::Failed,
+                        sender_thread_id: "thread-1".to_string(),
+                        receiver_thread_ids: Vec::new(),
+                        prompt: Some("inspect the repository".to_string()),
+                        model: None,
+                        reasoning_effort: None,
+                        requested_model: None,
+                        requested_reasoning_effort: None,
+                        agents_states: Default::default(),
+                    },
+                },
+            ))),
+            &mut events,
+        )
+        .await;
+
+    assert!(reducer.spawn_item_starts.is_empty());
+    assert!(reducer.tool_items_started_at_ms.is_empty());
+    let payload = serde_json::to_value(&events).expect("serialize analytics event");
+    assert_eq!(payload.as_array().expect("analytics event array").len(), 1);
+    assert_eq!(
+        payload[0]["event_type"],
+        "codex_collab_agent_tool_call_event"
+    );
+    assert_eq!(payload[0]["event_params"]["terminal_status"], "failed");
+    assert_eq!(
+        payload[0]["event_params"]["requested_model"],
+        "gpt-requested"
+    );
+    assert_eq!(
+        payload[0]["event_params"]["requested_reasoning_effort"],
+        "high"
+    );
+}
+
+#[tokio::test]
+async fn terminal_turn_retains_item_lifecycle_for_late_completion() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+    ingest_review_prerequisites(&mut reducer, &mut events).await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_started_notification(
+                "thread-1", "turn-1",
+            ))),
+            &mut events,
+        )
+        .await;
+
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                ItemStartedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 1_000,
+                    item: sample_command_execution_item_with_id(
+                        "command-late-after-turn",
+                        CommandExecutionStatus::InProgress,
+                        /*exit_code*/ None,
+                        /*duration_ms*/ None,
+                    ),
+                },
+            ))),
+            &mut events,
+        )
+        .await;
+    assert!(reducer.spawn_item_starts.is_empty());
+    assert_eq!(reducer.tool_items_started_at_ms.len(), 1);
+
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_completed_notification(
+                "thread-1",
+                "turn-1",
+                AppServerTurnStatus::Interrupted,
+                /*codex_error_info*/ None,
+            ))),
+            &mut events,
+        )
+        .await;
+
+    assert_eq!(reducer.tool_items_started_at_ms.len(), 1);
+    assert_eq!(reducer.terminal_turn_item_lifecycles.len(), 1);
+
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    completed_at_ms: 1_042,
+                    item: sample_command_execution_item_with_id(
+                        "command-late-after-turn",
+                        CommandExecutionStatus::Completed,
+                        Some(0),
+                        Some(42),
+                    ),
+                },
+            ))),
+            &mut events,
+        )
+        .await;
+
+    assert!(reducer.tool_items_started_at_ms.is_empty());
+    assert!(reducer.terminal_turn_item_lifecycles.is_empty());
+    let payload = serde_json::to_value(&events).expect("serialize late tool analytics event");
+    assert_eq!(payload.as_array().expect("events array").len(), 1);
+    assert_eq!(payload[0]["event_type"], "codex_command_execution_event");
+}
+
+#[tokio::test]
+async fn terminal_turn_item_lifecycle_retention_is_bounded() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+
+    for index in 0..=TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT {
+        let turn_id = format!("turn-{index}");
+        let item_id = format!("item-{index}");
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                    ItemStartedNotification {
+                        thread_id: "thread-retention".to_string(),
+                        turn_id: turn_id.clone(),
+                        started_at_ms: 1_000,
+                        item: sample_command_execution_item_with_id(
+                            &item_id,
+                            CommandExecutionStatus::InProgress,
+                            /*exit_code*/ None,
+                            /*duration_ms*/ None,
+                        ),
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(sample_turn_completed_notification(
+                    "thread-retention",
+                    &turn_id,
+                    AppServerTurnStatus::Interrupted,
+                    /*codex_error_info*/ None,
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    assert_eq!(
+        reducer.terminal_turn_item_lifecycles.len(),
+        TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT
+    );
+    assert_eq!(
+        reducer.terminal_turn_item_lifecycle_order.len(),
+        TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT
+    );
+    assert_eq!(
+        reducer.tool_items_started_at_ms.len(),
+        TERMINAL_TURN_ITEM_LIFECYCLE_LIMIT
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .all(|key| key.turn_id != "turn-0")
+    );
+    assert!(
+        reducer
+            .terminal_turn_item_lifecycles
+            .contains(&("thread-retention".to_string(), "turn-256".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn pending_tool_item_lifecycle_is_bounded_per_turn_before_turn_completion() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+
+    for index in 0..=PENDING_TOOL_ITEMS_PER_TURN_LIMIT {
+        let item_id = format!("started-only-{index}");
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                    ItemStartedNotification {
+                        thread_id: "thread-started-only".to_string(),
+                        turn_id: "turn-never-completes".to_string(),
+                        started_at_ms: 1_000,
+                        item: ThreadItem::CollabAgentToolCall {
+                            id: item_id,
+                            tool: CollabAgentTool::SpawnAgent,
+                            status: CollabAgentToolCallStatus::InProgress,
+                            sender_thread_id: "thread-started-only".to_string(),
+                            receiver_thread_ids: Vec::new(),
+                            prompt: None,
+                            model: None,
+                            reasoning_effort: None,
+                            requested_model: None,
+                            requested_reasoning_effort: None,
+                            agents_states: Default::default(),
+                        },
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    assert_eq!(
+        reducer.tool_items_started_at_ms.len(),
+        PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+    );
+    assert_eq!(
+        reducer.spawn_item_starts.len(),
+        PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+    );
+    assert_eq!(
+        reducer.pending_tool_item_lifecycle_order.len(),
+        PENDING_TOOL_ITEMS_PER_TURN_LIMIT
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .all(|key| key.item_id != "started-only-0")
+    );
+    assert!(
+        reducer
+            .spawn_item_starts
+            .keys()
+            .all(|key| key.item_id != "started-only-0")
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .any(|key| key.item_id == format!("started-only-{PENDING_TOOL_ITEMS_PER_TURN_LIMIT}"))
+    );
+}
+
+#[tokio::test]
+async fn pending_tool_item_lifecycle_is_bounded_globally_across_turns() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut events = Vec::new();
+
+    // One started item per distinct turn avoids the per-turn cap, isolating global eviction.
+    for index in 0..=PENDING_TOOL_ITEM_LIFECYCLE_LIMIT {
+        let thread_id = format!("thread-started-only-{index}");
+        let turn_id = format!("turn-never-completes-{index}");
+        let item_id = format!("started-only-{index}");
+        reducer
+            .ingest(
+                AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                    ItemStartedNotification {
+                        thread_id: thread_id.clone(),
+                        turn_id,
+                        started_at_ms: 1_000,
+                        item: ThreadItem::CollabAgentToolCall {
+                            id: item_id,
+                            tool: CollabAgentTool::SpawnAgent,
+                            status: CollabAgentToolCallStatus::InProgress,
+                            sender_thread_id: thread_id,
+                            receiver_thread_ids: Vec::new(),
+                            prompt: None,
+                            model: None,
+                            reasoning_effort: None,
+                            requested_model: None,
+                            requested_reasoning_effort: None,
+                            agents_states: Default::default(),
+                        },
+                    },
+                ))),
+                &mut events,
+            )
+            .await;
+    }
+
+    assert_eq!(
+        reducer.tool_items_started_at_ms.len(),
+        PENDING_TOOL_ITEM_LIFECYCLE_LIMIT
+    );
+    assert_eq!(
+        reducer.spawn_item_starts.len(),
+        PENDING_TOOL_ITEM_LIFECYCLE_LIMIT
+    );
+    assert_eq!(
+        reducer.pending_tool_item_lifecycle_order.len(),
+        PENDING_TOOL_ITEM_LIFECYCLE_LIMIT
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .all(|key| key.item_id != "started-only-0")
+    );
+    assert!(
+        reducer
+            .spawn_item_starts
+            .keys()
+            .all(|key| key.item_id != "started-only-0")
+    );
+    assert!(
+        reducer
+            .tool_items_started_at_ms
+            .keys()
+            .any(|key| key.item_id == format!("started-only-{PENDING_TOOL_ITEM_LIFECYCLE_LIMIT}"))
+    );
+}
+
+#[tokio::test]
 async fn command_execution_approval_response_publishes_user_review_event() {
     let mut reducer = AnalyticsReducer::default();
     let mut events = Vec::new();
@@ -4511,6 +5021,84 @@ async fn turn_lifecycle_emits_turn_event() {
 }
 
 #[tokio::test]
+async fn delayed_tool_completion_after_turn_event_is_recorded() {
+    let mut reducer = AnalyticsReducer::default();
+    let mut out = Vec::new();
+
+    // Use every normal turn-event prerequisite, then prove that the turn has actually emitted
+    // before the delayed tool lifecycle arrives.
+    ingest_turn_prerequisites(
+        &mut reducer,
+        &mut out,
+        /*include_initialize*/ true,
+        /*include_resolved_config*/ true,
+        /*include_started*/ true,
+        /*include_token_usage*/ true,
+    )
+    .await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(sample_turn_completed_notification(
+                "thread-2",
+                "turn-2",
+                AppServerTurnStatus::Completed,
+                /*codex_error_info*/ None,
+            ))),
+            &mut out,
+        )
+        .await;
+    assert!(matches!(out.as_slice(), [TrackEventRequest::TurnEvent(_)]));
+    out.clear();
+
+    // Both lifecycle notifications are late. The completed turn's bounded retained state must
+    // still supply the provenance required to emit the command-execution analytics event.
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemStarted(
+                ItemStartedNotification {
+                    thread_id: "thread-2".to_string(),
+                    turn_id: "turn-2".to_string(),
+                    started_at_ms: 1_000,
+                    item: sample_command_execution_item_with_id(
+                        "late-command",
+                        CommandExecutionStatus::InProgress,
+                        /*exit_code*/ None,
+                        /*duration_ms*/ None,
+                    ),
+                },
+            ))),
+            &mut out,
+        )
+        .await;
+    reducer
+        .ingest(
+            AnalyticsFact::Notification(Box::new(ServerNotification::ItemCompleted(
+                ItemCompletedNotification {
+                    thread_id: "thread-2".to_string(),
+                    turn_id: "turn-2".to_string(),
+                    completed_at_ms: 1_042,
+                    item: sample_command_execution_item_with_id(
+                        "late-command",
+                        CommandExecutionStatus::Completed,
+                        Some(0),
+                        Some(42),
+                    ),
+                },
+            ))),
+            &mut out,
+        )
+        .await;
+
+    assert!(matches!(
+        out.as_slice(),
+        [TrackEventRequest::CommandExecution(_)]
+    ));
+    let payload = serde_json::to_value(&out[0]).expect("serialize delayed tool event");
+    assert_eq!(payload["event_params"]["thread_id"], json!("thread-2"));
+    assert_eq!(payload["event_params"]["turn_id"], json!("turn-2"));
+}
+
+#[tokio::test]
 async fn turn_event_counts_completed_tool_items() {
     let mut reducer = AnalyticsReducer::default();
     let mut out = Vec::new();
@@ -4571,11 +5159,14 @@ async fn turn_event_counts_completed_tool_items() {
             prompt: Some("help".to_string()),
             model: Some("gpt-5".to_string()),
             reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
             agents_states: Default::default(),
         },
         ThreadItem::SubAgentActivity {
             id: "sub-agent-activity-1".to_string(),
             kind: SubAgentActivityKind::Interacted,
+            terminal_state: None,
             agent_thread_id: "thread-child".to_string(),
             agent_path: "/root/child".to_string(),
             model: None,

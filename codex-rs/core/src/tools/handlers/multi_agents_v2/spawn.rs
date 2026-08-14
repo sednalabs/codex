@@ -1,6 +1,7 @@
 use super::*;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
+use crate::agent::control::SpawnAgentOutcome;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent_communication::AgentCommunicationContext;
@@ -10,6 +11,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
+use codex_protocol::error::CodexErr;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -45,6 +47,7 @@ async fn handle_spawn_agent(
         turn,
         payload,
         call_id,
+        cancellation_token,
         ..
     } = invocation;
     let arguments = function_arguments(payload)?;
@@ -120,7 +123,7 @@ async fn handle_spawn_agent(
         session
             .services
             .agent_control
-            .spawn_agent_with_communication(
+            .spawn_agent_with_communication_outcome(
                 config,
                 communication,
                 context,
@@ -130,12 +133,58 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    cancellation_token: Some(cancellation_token),
                 },
             ),
     )
-    .await
-    .map_err(collab_spawn_error)?;
+    .await;
+    let spawned_agent = match spawned_agent {
+        Ok(SpawnAgentOutcome::Spawned(agent))
+        | Ok(SpawnAgentOutcome::TerminalBeforeCancellation { agent }) => agent,
+        Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }) => {
+            emit_sub_agent_activity(
+                &session,
+                &turn,
+                SubAgentActivityItem {
+                    id: call_id,
+                    agent_thread_id: agent.thread_id,
+                    agent_path: new_agent_path,
+                    model: Some(agent.effective_model),
+                    reasoning_effort: agent.effective_reasoning_effort,
+                    kind: SubAgentActivityKind::Interrupted,
+                    terminal_state: Some(SubAgentActivityTerminalState::Errored),
+                },
+            )
+            .await;
+            return Err(collab_spawn_error(error));
+        }
+        Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error }) => {
+            // V2 has not published a Started activity yet. Do not invent an interrupted child
+            // activity for a thread that was removed from the live registry.
+            return Err(collab_spawn_error(error));
+        }
+        Ok(SpawnAgentOutcome::Cancelled { agent }) => {
+            emit_sub_agent_activity(
+                &session,
+                &turn,
+                SubAgentActivityItem {
+                    id: call_id,
+                    agent_thread_id: agent.thread_id,
+                    agent_path: new_agent_path,
+                    model: Some(agent.effective_model),
+                    reasoning_effort: agent.effective_reasoning_effort,
+                    kind: SubAgentActivityKind::Interrupted,
+                    terminal_state: None,
+                },
+            )
+            .await;
+            return Err(collab_spawn_error(CodexErr::TurnAborted));
+        }
+        Err(error) => return Err(collab_spawn_error(error)),
+    };
     let new_thread_id = spawned_agent.thread_id;
+    let spawned_effective_model = spawned_agent.effective_model;
+    let spawned_effective_reasoning_effort = spawned_agent.effective_reasoning_effort;
     let agent_snapshot = session
         .services
         .agent_control
@@ -148,11 +197,11 @@ async fn handle_spawn_agent(
     let effective_model = agent_snapshot
         .as_ref()
         .map(|snapshot| snapshot.model.clone())
-        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        .unwrap_or(spawned_effective_model);
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
         .map(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or_else(|| args.reasoning_effort.clone());
+        .unwrap_or(spawned_effective_reasoning_effort);
     emit_sub_agent_activity(
         &session,
         &turn,
@@ -163,6 +212,7 @@ async fn handle_spawn_agent(
             model: Some(effective_model.clone()),
             reasoning_effort: effective_reasoning_effort.clone(),
             kind: SubAgentActivityKind::Started,
+            terminal_state: None,
         },
     )
     .await;
@@ -209,6 +259,10 @@ async fn handle_spawn_agent(
 impl CoreToolRuntime for Handler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
     }
 }
 

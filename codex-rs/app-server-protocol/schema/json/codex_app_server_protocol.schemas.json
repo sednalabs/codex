@@ -7211,6 +7211,20 @@
       },
       "CollabAgentState": {
         "properties": {
+          "agentNickname": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentRole": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "message": {
             "type": [
               "string",
@@ -17420,6 +17434,12 @@
         ],
         "type": "string"
       },
+      "SubAgentActivityTerminalState": {
+        "enum": [
+          "errored"
+        ],
+        "type": "string"
+      },
       "SubAgentSource": {
         "oneOf": [
           {
@@ -18084,6 +18104,13 @@
           },
           "thread": {
             "$ref": "#/definitions/v2/Thread"
+          },
+          "threadSubscriptionId": {
+            "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -18838,7 +18865,7 @@
                 "type": "string"
               },
               "model": {
-                "description": "Model requested for the spawned agent, when applicable.",
+                "description": "Effective model selected for the spawned agent, when available.",
                 "type": [
                   "string",
                   "null"
@@ -18860,7 +18887,25 @@
                     "type": "null"
                   }
                 ],
-                "description": "Reasoning effort requested for the spawned agent, when applicable."
+                "description": "Effective reasoning effort selected for the spawned agent, when available."
+              },
+              "requestedModel": {
+                "description": "Caller-provided model override for a spawned agent, when one was supplied.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requestedReasoningEffort": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/ReasoningEffort"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Caller-provided reasoning-effort override for a spawned agent, when one was supplied."
               },
               "receiverThreadIds": {
                 "description": "Thread ID of the receiving agent, when applicable. In case of spawn operation,\nthis corresponds to the newly spawned agent.",
@@ -18930,6 +18975,17 @@
                   }
                 ],
                 "description": "Effective reasoning effort selected for the affected child, when known."
+              },
+              "terminalState": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/v2/SubAgentActivityTerminalState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Additive terminal detail. `kind` intentionally retains the legacy\nthree-variant enum for exhaustive existing consumers."
               },
               "type": {
                 "const": "subAgentActivity",
@@ -19221,6 +19277,10 @@
       "ThreadListResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "ancestorFilterApplied": {
+            "description": "True only when the server applied the requested `ancestorThreadId` filter.\n\nOlder servers omit this field. Clients must treat an omitted acknowledgement as false.",
+            "type": "boolean"
+          },
           "backwardsCursor": {
             "description": "Opaque cursor to pass as `cursor` when reversing `sortDirection`.\nThis is only populated when the page contains at least one thread.\nUse it with the opposite `sortDirection`; for timestamp sorts it anchors\nat the start of the page timestamp so same-second updates are not skipped.",
             "type": [
@@ -19251,15 +19311,22 @@
       "ThreadLoadedListParams": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "ancestorThreadId": {
+            "description": "Optional loaded thread-spawn ancestor. When set, returns only currently loaded\ndescendants of that thread.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "cursor": {
-            "description": "Opaque pagination cursor returned by a previous call.",
+            "description": "Opaque pagination cursor returned as `nextCursor` by a previous call.",
             "type": [
               "string",
               "null"
             ]
           },
           "limit": {
-            "description": "Optional page size; defaults to no limit.",
+            "description": "Optional page size. The legacy unfiltered form preserves its original semantics: omitted\n`limit` returns every loaded thread and supplied values retain their legacy page-size\nbehavior, including treating zero as one, without a server maximum. With\n`ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow\n`nextCursor` until it is null to continue a filtered result.",
             "format": "uint32",
             "minimum": 0,
             "type": [
@@ -19274,6 +19341,10 @@
       "ThreadLoadedListResponse": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "ancestorFilterApplied": {
+            "description": "True only when the server applied the requested `ancestorThreadId` filter.\n\nOlder servers omit this field. Clients must treat an omitted acknowledgement as false.",
+            "type": "boolean"
+          },
           "data": {
             "description": "Thread ids for sessions currently loaded in memory.",
             "items": {
@@ -19282,7 +19353,7 @@
             "type": "array"
           },
           "nextCursor": {
-            "description": "Opaque cursor to pass to the next call to continue after the last item.\nif None, there are no more items to return.",
+            "description": "Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and\npage boundary are server-defined. If it is null, there are no more items to return.",
             "type": [
               "string",
               "null"
@@ -19858,6 +19929,13 @@
           },
           "thread": {
             "$ref": "#/definitions/v2/Thread"
+          },
+          "threadSubscriptionId": {
+            "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -20264,6 +20342,13 @@
           },
           "thread": {
             "$ref": "#/definitions/v2/Thread"
+          },
+          "threadSubscriptionId": {
+            "description": "Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -20370,6 +20455,15 @@
         "properties": {
           "status": {
             "$ref": "#/definitions/v2/ThreadStatus"
+          },
+          "statusRevision": {
+            "description": "Monotonically increasing revision for this thread's status notifications within the\ncurrent app-server session. Older servers omit this field.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "threadId": {
             "type": "string"

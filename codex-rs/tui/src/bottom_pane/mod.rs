@@ -219,6 +219,7 @@ pub(crate) use list_selection_view::SelectionItem;
 
 struct DelayedApprovalRequest {
     request: ApprovalRequest,
+    app_event_tx: AppEventSender,
     features: Features,
 }
 
@@ -509,6 +510,11 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_replay_only_thread(&mut self) {
+        self.composer.set_replay_only_thread();
+        self.request_redraw();
+    }
+
     /// Update the key hint shown next to queued messages so it matches the
     /// binding that `ChatWidget` actually listens for.
     pub(crate) fn set_queued_message_edit_binding(&mut self, binding: Option<KeyBinding>) {
@@ -623,13 +629,13 @@ impl BottomPane {
         };
         let mut modal = ApprovalOverlay::new(
             first.request,
-            self.app_event_tx.clone(),
+            first.app_event_tx,
             first.features,
             self.keymap.approval.clone(),
             self.keymap.list.clone(),
         );
         while let Some(delayed) = self.delayed_approval_requests.pop_back() {
-            modal.enqueue_request(delayed.request);
+            modal.enqueue_request_with_sender(delayed.request, delayed.app_event_tx);
         }
         self.pause_status_timer_for_modal();
         self.push_view(Box::new(modal));
@@ -926,8 +932,11 @@ impl BottomPane {
     pub(crate) fn clear_composer_for_ctrl_c(&mut self) {
         if let Some(text) = self.composer.clear_for_ctrl_c() {
             if let Some(thread_id) = self.thread_id {
-                self.app_event_tx
-                    .send(AppEvent::AppendMessageHistoryEntry { thread_id, text });
+                self.app_event_tx.send(AppEvent::AppendMessageHistoryEntry {
+                    thread_id,
+                    lifecycle_generation: self.app_event_tx.thread_lifecycle_generation(),
+                    text,
+                });
             } else {
                 tracing::warn!(
                     "failed to append Ctrl+C-cleared draft to history: no active thread id"
@@ -1372,6 +1381,22 @@ impl BottomPane {
             .and_then(|view| view.active_tab_id())
     }
 
+    /// Returns the active list filter so a refresh can rebuild the same view
+    /// without widening the user's result set.
+    pub(crate) fn search_query_for_active_view(&self, view_id: &'static str) -> Option<String> {
+        self.view_stack
+            .last()
+            .filter(|view| view.view_id() == Some(view_id))
+            .and_then(|view| view.search_query())
+            .map(ToOwned::to_owned)
+    }
+
+    pub(crate) fn is_selection_view_active(&self, view_id: &'static str) -> bool {
+        self.view_stack
+            .last()
+            .is_some_and(|view| view.view_id() == Some(view_id))
+    }
+
     pub(crate) fn dismiss_active_view_if_id(&mut self, view_id: &'static str) -> bool {
         let is_match = self
             .view_stack
@@ -1510,8 +1535,22 @@ impl BottomPane {
 
     /// Called when the agent requests user approval.
     pub fn push_approval_request(&mut self, request: ApprovalRequest, features: &Features) {
-        let request = if let Some(view) = self.view_stack.last_mut() {
-            match view.try_consume_approval_request(request) {
+        self.push_approval_request_with_sender(request, self.app_event_tx.clone(), features);
+    }
+
+    /// Called when an approval belongs to a thread that is not currently displayed.
+    ///
+    /// The sender is deliberately supplied by the caller because the bottom pane's normal
+    /// sender follows the visible thread and would otherwise stamp the response with that
+    /// unrelated lifecycle generation.
+    pub(crate) fn push_approval_request_with_sender(
+        &mut self,
+        request: ApprovalRequest,
+        app_event_tx: AppEventSender,
+        features: &Features,
+    ) {
+        let (request, app_event_tx) = if let Some(view) = self.view_stack.last_mut() {
+            match view.try_consume_approval_request(request, app_event_tx) {
                 Some(request) => request,
                 None => {
                     self.request_redraw();
@@ -1519,7 +1558,7 @@ impl BottomPane {
                 }
             }
         } else {
-            request
+            (request, app_event_tx)
         };
 
         let now = Instant::now();
@@ -1529,6 +1568,7 @@ impl BottomPane {
             self.delayed_approval_requests
                 .push_back(DelayedApprovalRequest {
                     request,
+                    app_event_tx,
                     features: features.clone(),
                 });
             self.maybe_show_delayed_approval_requests_at(now);
@@ -1536,7 +1576,7 @@ impl BottomPane {
             // No recent composer activity, so show the approval modal immediately.
             let modal = ApprovalOverlay::new(
                 request,
-                self.app_event_tx.clone(),
+                app_event_tx,
                 features.clone(),
                 self.keymap.approval.clone(),
                 self.keymap.list.clone(),
@@ -1580,8 +1620,17 @@ impl BottomPane {
         &mut self,
         request: McpServerElicitationFormRequest,
     ) {
-        let request = if let Some(view) = self.view_stack.last_mut() {
-            match view.try_consume_mcp_server_elicitation_request(request) {
+        self.push_mcp_server_elicitation_request_with_sender(request, self.app_event_tx.clone());
+    }
+
+    pub(crate) fn push_mcp_server_elicitation_request_with_sender(
+        &mut self,
+        request: McpServerElicitationFormRequest,
+        app_event_tx: AppEventSender,
+    ) {
+        let (request, app_event_tx) = if let Some(view) = self.view_stack.last_mut() {
+            match view.try_consume_mcp_server_elicitation_request_with_sender(request, app_event_tx)
+            {
                 Some(request) => request,
                 None => {
                     self.request_redraw();
@@ -1589,7 +1638,7 @@ impl BottomPane {
                 }
             }
         } else {
-            request
+            (request, app_event_tx)
         };
 
         if let Some(tool_suggestion) = request.tool_suggestion()
@@ -1635,7 +1684,7 @@ impl BottomPane {
                         request_id: request.request_id().clone(),
                     }),
                 },
-                self.app_event_tx.clone(),
+                app_event_tx.clone(),
                 self.keymap.list.clone(),
             );
             self.pause_status_timer_for_modal();
@@ -1649,7 +1698,7 @@ impl BottomPane {
 
         let modal = McpServerElicitationOverlay::new_with_keymap(
             request,
-            self.app_event_tx.clone(),
+            app_event_tx,
             self.has_input_focus,
             self.enhanced_keys_supported,
             self.disable_paste_burst,

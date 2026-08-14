@@ -74,7 +74,9 @@ async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<(
         .is_err()
     );
 
-    let ThreadLoadedListResponse { data, next_cursor } = mcp
+    let ThreadLoadedListResponse {
+        data, next_cursor, ..
+    } = mcp
         .request(|request_id| ClientRequest::ThreadLoadedList {
             request_id,
             params: ThreadLoadedListParams::default(),

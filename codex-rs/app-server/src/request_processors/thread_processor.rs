@@ -1,8 +1,10 @@
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
+use super::thread_lifecycle::rollback_failed_thread_attach;
 use super::turn_processor::can_accept_direct_input;
 use super::*;
 use crate::error_code::method_not_found;
 use crate::extensions::app_server_hooks;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
@@ -13,6 +15,8 @@ use codex_protocol::protocol::ThreadHistoryMode;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const THREAD_LOADED_LIST_FILTERED_DEFAULT_LIMIT: usize = 100;
+const THREAD_LOADED_LIST_FILTERED_MAX_LIMIT: usize = 100;
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
@@ -604,15 +608,18 @@ impl ThreadRequestProcessor {
         params: ThreadArchiveParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         match self.thread_archive_inner(params).await {
-            Ok((response, archived_thread_ids)) => {
+            Ok((response, archived_threads)) => {
                 self.outgoing
                     .send_response(request_id.clone(), response)
                     .await;
-                for thread_id in archived_thread_ids {
+                for (thread_id, terminal_recipients) in archived_threads {
                     self.outgoing
-                        .send_server_notification(ServerNotification::ThreadArchived(
-                            ThreadArchivedNotification { thread_id },
-                        ))
+                        .send_server_notification_to_thread_subscriptions(
+                            &terminal_recipients,
+                            ServerNotification::ThreadArchived(ThreadArchivedNotification {
+                                thread_id,
+                            }),
+                        )
                         .await;
                 }
                 Ok(None)
@@ -922,6 +929,12 @@ impl ThreadRequestProcessor {
     async fn finalize_thread_teardown(&self, thread_id: ThreadId) {
         self.pending_thread_unloads.lock().await.remove(&thread_id);
         self.outgoing
+            .release_thread_outbound_barrier_for_teardown(thread_id)
+            .await;
+        self.outgoing
+            .unregister_thread_subscriptions_for_thread(thread_id)
+            .await;
+        self.outgoing
             .cancel_requests_for_thread(thread_id, /*error*/ None)
             .await;
         self.thread_state_manager
@@ -939,20 +952,116 @@ impl ThreadRequestProcessor {
     ) -> Result<ThreadUnsubscribeResponse, JSONRPCErrorError> {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        // Keep the identity observed by this unsubscribe. A newer overlapping resume can install
+        // a replacement token while this request is in flight; cleanup below must not remove it.
+        let observed_subscription_id = self
+            .outgoing
+            .current_thread_subscription_id(connection_id, thread_id)
+            .await;
+        let observed_state_subscription_id = self
+            .thread_state_manager
+            .connection_thread_subscription_id(thread_id, connection_id)
+            .await;
+        let canceled_pending_resume = self
+            .thread_state_manager
+            .cancel_pending_thread_resume_with_provisional_subscription(thread_id, connection_id)
+            .await;
+        let canceled_pending_resume_exists = canceled_pending_resume.is_some();
 
         if self.thread_manager.get_thread(thread_id).await.is_err() {
+            if let Some(subscription_id) = observed_subscription_id.as_deref() {
+                if self
+                    .outgoing
+                    .unregister_thread_subscription_if_matches(
+                        connection_id,
+                        thread_id,
+                        subscription_id,
+                    )
+                    .await
+                {
+                    let _ = self
+                        .thread_state_manager
+                        .unsubscribe_connection_from_thread_if_subscription_matches(
+                            thread_id,
+                            connection_id,
+                            subscription_id,
+                        )
+                        .await;
+                }
+            } else {
+                self.outgoing
+                    .unregister_thread_subscription(connection_id, thread_id)
+                    .await;
+            }
             self.finalize_thread_teardown(thread_id).await;
             return Ok(ThreadUnsubscribeResponse {
                 status: ThreadUnsubscribeStatus::NotLoaded,
             });
         };
 
-        let was_subscribed = self
-            .thread_state_manager
-            .unsubscribe_connection_from_thread(thread_id, connection_id)
-            .await;
+        let was_subscribed = if let Some(subscription_id) = observed_subscription_id.as_deref() {
+            if self
+                .outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    subscription_id,
+                )
+                .await
+            {
+                // A running resume can have installed unpublished B while the transport still
+                // presents A. The canceled reservation tells us B's immutable token; use the
+                // single state-lock check below so C, installed after this unsubscribe captured
+                // A, cannot be removed by a broad fallback.
+                self.thread_state_manager
+                    .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+                        thread_id,
+                        connection_id,
+                        subscription_id,
+                        canceled_pending_resume
+                            .as_ref()
+                            .and_then(|cancellation| {
+                                cancellation.provisional_subscription_id.as_deref()
+                            }),
+                    )
+                    .await
+            } else {
+                false
+            }
+        } else if let Some(subscription_id) = observed_state_subscription_id.as_deref() {
+            // No outgoing owner was captured, so do not unregister a transport that a newer
+            // attach may have published after the observation. Remove only the state token U
+            // actually observed (or its canceled provisional B).
+            self.thread_state_manager
+                .unsubscribe_connection_from_thread_if_observed_or_provisional_matches(
+                    thread_id,
+                    connection_id,
+                    subscription_id,
+                    canceled_pending_resume
+                        .as_ref()
+                        .and_then(|cancellation| {
+                            cancellation.provisional_subscription_id.as_deref()
+                        }),
+                )
+                .await
+        } else if let Some(provisional_subscription_id) = canceled_pending_resume
+            .as_ref()
+            .and_then(|cancellation| cancellation.provisional_subscription_id.as_deref())
+        {
+            self.thread_state_manager
+                .unsubscribe_connection_from_thread_if_subscription_matches(
+                    thread_id,
+                    connection_id,
+                    provisional_subscription_id,
+                )
+                .await
+        } else {
+            self.thread_state_manager
+                .unsubscribe_connection_from_thread_if_untagged(thread_id, connection_id)
+                .await
+        };
 
-        let status = if was_subscribed {
+        let status = if was_subscribed || canceled_pending_resume_exists {
             ThreadUnsubscribeStatus::Unsubscribed
         } else {
             ThreadUnsubscribeStatus::NotSubscribed
@@ -960,11 +1069,26 @@ impl ThreadRequestProcessor {
         Ok(ThreadUnsubscribeResponse { status })
     }
 
-    async fn prepare_thread_for_archive(&self, thread_id: ThreadId) {
-        self.prepare_thread_for_removal(thread_id, "archive").await;
+    async fn prepare_thread_for_archive(
+        &self,
+        thread_id: ThreadId,
+    ) -> Vec<ThreadSubscriptionTarget> {
+        self.prepare_thread_for_removal(thread_id, "archive").await
     }
 
-    pub(super) async fn prepare_thread_for_removal(&self, thread_id: ThreadId, operation: &str) {
+    pub(super) async fn prepare_thread_for_removal(
+        &self,
+        thread_id: ThreadId,
+        operation: &str,
+    ) -> Vec<ThreadSubscriptionTarget> {
+        // Preserve the exact recipient identities before finalization removes
+        // them. The terminal archive/delete notification must close the
+        // lifecycle those clients actually observed; it must never recreate a
+        // subscription after teardown.
+        let terminal_recipients = self
+            .outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
         let removed_conversation = self.thread_manager.remove_thread(&thread_id).await;
         if let Some(conversation) = removed_conversation {
             info!("thread {thread_id} was active; shutting down");
@@ -981,6 +1105,7 @@ impl ThreadRequestProcessor {
             }
         }
         self.finalize_thread_teardown(thread_id).await;
+        terminal_recipients
     }
 
     fn listener_task_context(&self) -> ListenerTaskContext {
@@ -1002,12 +1127,14 @@ impl ThreadRequestProcessor {
         conversation_id: ThreadId,
         connection_id: ConnectionId,
         raw_events_enabled: bool,
+        expected_subscription_id: Option<&str>,
     ) -> Result<EnsureConversationListenerResult, JSONRPCErrorError> {
         super::thread_lifecycle::ensure_conversation_listener(
             self.listener_task_context(),
             conversation_id,
             connection_id,
             raw_events_enabled,
+            expected_subscription_id,
         )
         .await
     }
@@ -1154,7 +1281,16 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn clear_all_thread_listeners(&self) {
-        self.thread_state_manager.clear_all_listeners().await;
+        let thread_ids = self.thread_state_manager.thread_ids().await;
+        for thread_id in thread_ids {
+            self.outgoing
+                .release_thread_outbound_barrier_for_teardown(thread_id)
+                .await;
+            self.thread_state_manager.clear_listener(thread_id).await;
+        }
+        // Preserve the prior all-listener clear contract for an already-orphaned detached wait
+        // whose thread state disappeared before this snapshot.
+        self.thread_state_manager.clear_targetless_warning_waits();
     }
 
     pub(crate) async fn shutdown_threads(&self) {
@@ -1376,13 +1512,27 @@ impl ThreadRequestProcessor {
             session_configured.rollout_path.clone(),
         );
 
-        // Auto-attach a thread listener when starting a thread.
-        log_listener_attach_result(
+        // Mint the connection-local identity before attaching the listener:
+        // listener startup may replay thread traffic before the start response.
+        let thread_subscription_id = listener_task_context
+            .outgoing
+            .register_thread_subscription(request_id.connection_id, thread_id)
+            .await;
+        let thread_subscription = ThreadSubscriptionTarget::captured(
+            request_id.connection_id,
+            thread_id,
+            thread_subscription_id.clone(),
+        );
+        // Auto-attach before publication. A failed attach has already rolled back the started
+        // thread's connection-local identity, so do not return its token or announce a lifecycle
+        // that this client cannot receive.
+        match gate_thread_start_listener_attachment(
             super::thread_lifecycle::ensure_conversation_listener(
                 listener_task_context.clone(),
                 thread_id,
                 request_id.connection_id,
                 experimental_raw_events,
+                Some(&thread_subscription_id),
             )
             .instrument(tracing::info_span!(
                 "app_server.thread_start.attach_listener",
@@ -1390,10 +1540,17 @@ impl ThreadRequestProcessor {
                 thread_start.experimental_raw_events = experimental_raw_events,
             ))
             .await,
+            &listener_task_context.thread_state_manager,
+            &listener_task_context.outgoing,
             thread_id,
             request_id.connection_id,
-            "thread",
-        );
+            &thread_subscription_id,
+        )
+        .await?
+        {
+            ThreadStartAttachmentPublication::Publish => {}
+            ThreadStartAttachmentPublication::Suppress => return Ok(()),
+        }
 
         listener_task_context
             .thread_watch_manager
@@ -1421,9 +1578,9 @@ impl ThreadRequestProcessor {
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
-
         let response = ThreadStartResponse {
             thread: thread.clone(),
+            thread_subscription_id: Some(thread_subscription_id.clone()),
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,
             service_tier: config_snapshot.service_tier,
@@ -1438,6 +1595,37 @@ impl ThreadRequestProcessor {
             multi_agent_mode: MultiAgentMode::ExplicitRequestOnly,
         };
         let notif = thread_started_notification(thread);
+        // The final ownership check is the publication linearization point. If a newer attach
+        // has already replaced A, this request must not return a receipt for A while the event
+        // stream belongs to B. Once A wins this check, both the response and ThreadStarted carry
+        // the same captured token; a later replacement owns its separate lifecycle.
+        if !captured_thread_subscription_is_current(
+            listener_task_context.outgoing.as_ref(),
+            request_id.connection_id,
+            thread_id,
+            &thread_subscription_id,
+        )
+        .await
+        {
+            let _ = listener_task_context
+                .thread_state_manager
+                .unsubscribe_connection_from_thread_if_subscription_matches(
+                    thread_id,
+                    request_id.connection_id,
+                    &thread_subscription_id,
+                )
+                .await;
+            listener_task_context
+                .outgoing
+                .send_error(
+                    request_id,
+                    invalid_request(
+                        "thread/start subscription was superseded before publication completed",
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
         listener_task_context
             .outgoing
             .send_response_with_thread_originator(request_id, response, thread_originator)
@@ -1449,7 +1637,10 @@ impl ThreadRequestProcessor {
 
         listener_task_context
             .outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
+            .send_server_notification_to_thread_subscriptions(
+                &[thread_subscription],
+                ServerNotification::ThreadStarted(notif),
+            )
             .instrument(tracing::info_span!(
                 "app_server.thread_start.notify_started",
                 otel.name = "app_server.thread_start.notify_started",
@@ -1503,7 +1694,13 @@ impl ThreadRequestProcessor {
     async fn thread_archive_inner(
         &self,
         params: ThreadArchiveParams,
-    ) -> Result<(ThreadArchiveResponse, Vec<String>), JSONRPCErrorError> {
+    ) -> Result<
+        (
+            ThreadArchiveResponse,
+            Vec<(String, Vec<ThreadSubscriptionTarget>)>,
+        ),
+        JSONRPCErrorError,
+    > {
         let _thread_list_state_permit = self.acquire_thread_list_state_permit().await?;
         self.thread_archive_response(params).await
     }
@@ -1511,7 +1708,13 @@ impl ThreadRequestProcessor {
     async fn thread_archive_response(
         &self,
         params: ThreadArchiveParams,
-    ) -> Result<(ThreadArchiveResponse, Vec<String>), JSONRPCErrorError> {
+    ) -> Result<
+        (
+            ThreadArchiveResponse,
+            Vec<(String, Vec<ThreadSubscriptionTarget>)>,
+        ),
+        JSONRPCErrorError,
+    > {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid session id: {err}")))?;
 
@@ -1562,8 +1765,12 @@ impl ThreadRequestProcessor {
         }
 
         archive_thread_ids[1..].reverse();
+        let mut terminal_recipients = HashMap::new();
         for &thread_id_to_archive in &archive_thread_ids {
-            self.prepare_thread_for_archive(thread_id_to_archive).await;
+            terminal_recipients.insert(
+                thread_id_to_archive,
+                self.prepare_thread_for_archive(thread_id_to_archive).await,
+            );
         }
 
         let archived_thread_ids = self
@@ -1575,7 +1782,11 @@ impl ThreadRequestProcessor {
             .await
             .map_err(|err| thread_store_archive_error("archive", err))?
             .into_iter()
-            .map(|thread_id| thread_id.to_string())
+            .map(|thread_id| {
+                let thread_id_string = thread_id.to_string();
+                let recipients = terminal_recipients.remove(&thread_id).unwrap_or_default();
+                (thread_id_string, recipients)
+            })
             .collect();
         Ok((ThreadArchiveResponse {}, archived_thread_ids))
     }
@@ -2068,6 +2279,7 @@ impl ThreadRequestProcessor {
             parent_thread_id,
             ancestor_thread_id,
         } = params;
+        let ancestor_filter_applied = ancestor_thread_id.is_some();
         let cwd_filters = normalize_thread_list_cwd_filters(cwd)?;
         let relation_filter = match (parent_thread_id, ancestor_thread_id) {
             (Some(_), Some(_)) => {
@@ -2152,6 +2364,7 @@ impl ThreadRequestProcessor {
         }
         Ok(ThreadListResponse {
             data,
+            ancestor_filter_applied,
             next_cursor,
             backwards_cursor,
         })
@@ -2298,11 +2511,59 @@ impl ThreadRequestProcessor {
         &self,
         params: ThreadLoadedListParams,
     ) -> Result<ThreadLoadedListResponse, JSONRPCErrorError> {
-        let ThreadLoadedListParams { cursor, limit } = params;
-        let mut data: Vec<String> = self
-            .thread_manager
-            .list_thread_ids()
-            .await
+        let ThreadLoadedListParams {
+            cursor,
+            limit,
+            ancestor_thread_id,
+        } = params;
+        let ancestor_filter_applied = ancestor_thread_id.is_some();
+        let cursor = cursor
+            .map(|cursor| {
+                ThreadId::from_string(&cursor)
+                    .map(|thread_id| thread_id.to_string())
+                    .map_err(|_| invalid_request(format!("invalid cursor: {cursor}")))
+            })
+            .transpose()?;
+
+        // The ancestor filter is new protocol surface, so its result can use a finite candidate
+        // window. The pre-existing global form intentionally preserves its unbounded omitted
+        // limit and caller-provided page size for clients that do not consume continuations.
+        if let Some(ancestor_thread_id) = ancestor_thread_id.as_deref() {
+            let ancestor_thread_id = ThreadId::from_string(ancestor_thread_id)
+                .map_err(|err| invalid_request(format!("invalid ancestor thread id: {err}")))?;
+            let cursor = cursor
+                .as_deref()
+                .map(ThreadId::from_string)
+                .transpose()
+                .map_err(|err| invalid_request(format!("invalid cursor: {err}")))?;
+            let page_size = limit
+                .unwrap_or(THREAD_LOADED_LIST_FILTERED_DEFAULT_LIMIT as u32)
+                .clamp(1, THREAD_LOADED_LIST_FILTERED_MAX_LIMIT as u32) as usize;
+            let (data, next_cursor) = self
+                .thread_manager
+                .list_live_thread_spawn_descendants_page(
+                    ancestor_thread_id,
+                    cursor,
+                    page_size,
+                )
+                .await
+                .map_err(|err| {
+                    internal_error(format!(
+                        "failed to list loaded spawned descendants for thread id {ancestor_thread_id}: {err}"
+                    ))
+                })?;
+            return Ok(ThreadLoadedListResponse {
+                data: data
+                    .into_iter()
+                    .map(|thread_id| thread_id.to_string())
+                    .collect(),
+                ancestor_filter_applied,
+                next_cursor: next_cursor.map(|thread_id| thread_id.to_string()),
+            });
+        }
+
+        let loaded_thread_ids = self.thread_manager.list_thread_ids().await;
+        let mut data: Vec<String> = loaded_thread_ids
             .into_iter()
             .map(|thread_id| thread_id.to_string())
             .collect();
@@ -2310,6 +2571,7 @@ impl ThreadRequestProcessor {
         if data.is_empty() {
             return Ok(ThreadLoadedListResponse {
                 data,
+                ancestor_filter_applied,
                 next_cursor: None,
             });
         }
@@ -2317,26 +2579,20 @@ impl ThreadRequestProcessor {
         data.sort();
         let total = data.len();
         let start = match cursor {
-            Some(cursor) => {
-                let cursor = match ThreadId::from_string(&cursor) {
-                    Ok(id) => id.to_string(),
-                    Err(_) => return Err(invalid_request(format!("invalid cursor: {cursor}"))),
-                };
-                match data.binary_search(&cursor) {
-                    Ok(idx) => idx + 1,
-                    Err(idx) => idx,
-                }
-            }
+            Some(cursor) => match data.binary_search(&cursor) {
+                Ok(idx) => idx + 1,
+                Err(idx) => idx,
+            },
             None => 0,
         };
-
         let effective_limit = limit.unwrap_or(total as u32).max(1) as usize;
         let end = start.saturating_add(effective_limit).min(total);
-        let page = data[start..end].to_vec();
-        let next_cursor = page.last().filter(|_| end < total).cloned();
+        let data = data[start..end].to_vec();
+        let next_cursor = data.last().filter(|_| end < total).cloned();
 
         Ok(ThreadLoadedListResponse {
-            data: page,
+            data,
+            ancestor_filter_applied,
             next_cursor,
         })
     }
@@ -3277,8 +3533,9 @@ impl ThreadRequestProcessor {
         connection_ids: Vec<ConnectionId>,
     ) {
         let mut raw_events_enabled = false;
-        if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            let config_snapshot = thread.config_snapshot().await;
+        let mut automatic_thread_started = None;
+        if let Ok(loaded_thread) = self.thread_manager.get_thread(thread_id).await {
+            let config_snapshot = loaded_thread.config_snapshot().await;
             self.thread_watch_manager
                 .upsert_thread(&thread_id.to_string())
                 .await;
@@ -3291,16 +3548,104 @@ impl ThreadRequestProcessor {
                     .await
                     .experimental_raw_events;
             }
+
+            let thread_started = match self
+                .read_thread_view(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => thread,
+                Err(error) => {
+                    tracing::warn!(
+                        %thread_id,
+                        %error,
+                        "failed to build persisted thread summary for automatic listener attachment"
+                    );
+                    let mut thread = build_thread_from_loaded_snapshot(
+                        thread_id,
+                        &config_snapshot,
+                        loaded_thread.as_ref(),
+                    );
+                    thread.status = resolve_thread_status(
+                        self.thread_watch_manager
+                            .loaded_status_for_thread(&thread.id)
+                            .await,
+                        matches!(loaded_thread.agent_status().await, AgentStatus::Running),
+                    );
+                    thread
+                }
+            };
+            automatic_thread_started = Some(thread_started_notification(thread_started));
         }
 
         for connection_id in connection_ids {
-            log_listener_attach_result(
-                self.ensure_conversation_listener(thread_id, connection_id, raw_events_enabled)
-                    .await,
-                thread_id,
-                connection_id,
-                "thread",
-            );
+            // Explicit start/resume/fork flows have already minted an identity
+            // for their response. A newly minted one here identifies a server-
+            // initiated child attachment, which needs a tagged ThreadStarted
+            // handshake so the TUI can bind and flush its deferred traffic.
+            let created_subscription = if automatic_thread_started.is_some() {
+                let (thread_subscription_id, created_subscription) = self
+                    .outgoing
+                    .ensure_thread_subscription_with_status(connection_id, thread_id)
+                    .await;
+                created_subscription.then(|| {
+                    (
+                        thread_subscription_id.clone(),
+                        ThreadSubscriptionTarget::captured(
+                            connection_id,
+                            thread_id,
+                            thread_subscription_id,
+                        ),
+                    )
+                })
+            } else {
+                None
+            };
+            let attach_result = self
+                .ensure_conversation_listener(
+                    thread_id,
+                    connection_id,
+                    raw_events_enabled,
+                    None,
+                )
+                .await;
+            if let Some((thread_subscription_id, thread_subscription)) = created_subscription
+                && matches!(
+                    &attach_result,
+                    Ok(EnsureConversationListenerResult::Attached)
+                )
+                && let Some(notification) = automatic_thread_started.clone()
+            {
+                if captured_thread_subscription_is_current(
+                    self.outgoing.as_ref(),
+                    connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+                {
+                    self.outgoing
+                        .send_server_notification_to_thread_subscriptions(
+                            &[thread_subscription],
+                            ServerNotification::ThreadStarted(notification),
+                        )
+                        .await;
+                } else {
+                    tracing::debug!(
+                        %thread_id,
+                        ?connection_id,
+                        "suppressing stale automatic thread-started handshake after reattach"
+                    );
+                    let _ = self
+                        .outgoing
+                        .unregister_thread_subscription_if_matches(
+                            connection_id,
+                            thread_id,
+                            &thread_subscription_id,
+                        )
+                        .await;
+                }
+            }
+            log_listener_attach_result(attach_result, thread_id, connection_id, "thread");
         }
     }
 
@@ -3543,19 +3888,55 @@ impl ThreadRequestProcessor {
                 } else {
                     None
                 };
-                // Auto-attach a thread listener when resuming a thread.
-                log_listener_attach_result(
-                    self.ensure_conversation_listener(
+                // Register before listener attach because resume may replay a
+                // pending request while its response is still in flight.
+                let thread_subscription_id = self
+                    .outgoing
+                    .register_thread_subscription(request_id.connection_id, thread_id)
+                    .await;
+                let thread_subscription = ThreadSubscriptionTarget::captured(
+                    request_id.connection_id,
+                    thread_id,
+                    thread_subscription_id.clone(),
+                );
+                // Auto-attach a thread listener before response hydration. A
+                // successful attach may replay pending traffic, but every
+                // later hydration failure must roll that attachment back
+                // without exposing its identity in a resume response.
+                match self
+                    .ensure_conversation_listener(
                         thread_id,
                         request_id.connection_id,
                         /*raw_events_enabled*/ false,
+                        Some(&thread_subscription_id),
                     )
-                    .await,
-                    thread_id,
-                    request_id.connection_id,
-                    "thread",
-                );
-
+                    .await
+                {
+                    Ok(EnsureConversationListenerResult::Attached) => {}
+                    Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+                        rollback_failed_thread_attach(
+                            &self.thread_state_manager,
+                            &self.outgoing,
+                            thread_id,
+                            request_id.connection_id,
+                            &thread_subscription_id,
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        rollback_failed_thread_attach(
+                            &self.thread_state_manager,
+                            &self.outgoing,
+                            thread_id,
+                            request_id.connection_id,
+                            &thread_subscription_id,
+                        )
+                        .await;
+                        self.outgoing.send_error(request_id, error).await;
+                        return Ok(());
+                    }
+                }
                 let mut thread = match self
                     .load_thread_from_resume_source_or_send_internal(
                         thread_id,
@@ -3569,6 +3950,14 @@ impl ThreadRequestProcessor {
                 {
                     Ok(thread) => thread,
                     Err(message) => {
+                        rollback_failed_thread_attach(
+                            &self.thread_state_manager,
+                            &self.outgoing,
+                            thread_id,
+                            request_id.connection_id,
+                            &thread_subscription_id,
+                        )
+                        .await;
                         self.outgoing
                             .send_error(request_id, internal_error(message))
                             .await;
@@ -3612,6 +4001,14 @@ impl ThreadRequestProcessor {
                         {
                             Ok(cursors) => cursors,
                             Err(error) => {
+                                rollback_failed_thread_attach(
+                                    &self.thread_state_manager,
+                                    &self.outgoing,
+                                    thread_id,
+                                    request_id.connection_id,
+                                    &thread_subscription_id,
+                                )
+                                .await;
                                 self.outgoing.send_error(request_id, error).await;
                                 return Ok(());
                             }
@@ -3642,6 +4039,14 @@ impl ThreadRequestProcessor {
                     match initial_turns_page_result {
                         Ok(page) => Some(page),
                         Err(error) => {
+                            rollback_failed_thread_attach(
+                                &self.thread_state_manager,
+                                &self.outgoing,
+                                thread_id,
+                                request_id.connection_id,
+                                &thread_subscription_id,
+                            )
+                            .await;
                             self.outgoing.send_error(request_id, error).await;
                             return Ok(());
                         }
@@ -3657,8 +4062,35 @@ impl ThreadRequestProcessor {
                 }
 
                 let thread_originator = config_snapshot.originator.clone();
+                if !captured_thread_subscription_is_current(
+                    self.outgoing.as_ref(),
+                    request_id.connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+                {
+                    rollback_failed_thread_attach(
+                        &self.thread_state_manager,
+                        &self.outgoing,
+                        thread_id,
+                        request_id.connection_id,
+                        &thread_subscription_id,
+                    )
+                    .await;
+                    self.outgoing
+                        .send_error(
+                            request_id,
+                            invalid_request(
+                                "thread/resume subscription was superseded before publication completed",
+                            ),
+                        )
+                        .await;
+                    return Ok(());
+                }
                 let response = ThreadResumeResponse {
                     thread,
+                    thread_subscription_id: Some(thread_subscription_id),
                     model: session_configured.model,
                     model_provider: session_configured.model_provider_id,
                     service_tier: session_configured.service_tier,
@@ -3676,7 +4108,6 @@ impl ThreadRequestProcessor {
                     items_backwards_cursor,
                 };
 
-                let connection_id = request_id.connection_id;
                 self.outgoing
                     .send_response_with_thread_originator(request_id, response, thread_originator)
                     .await;
@@ -3686,9 +4117,9 @@ impl ThreadRequestProcessor {
                     // The client needs restored usage before it starts another turn.
                     // Sending after the response preserves JSON-RPC request ordering while
                     // still filling the status line before the next turn lifecycle begins.
-                    send_thread_token_usage_update_to_connection(
+                    send_thread_token_usage_update_to_subscription(
                         &self.outgoing,
-                        connection_id,
+                        &thread_subscription,
                         thread_id,
                         codex_thread.as_ref(),
                         token_usage_turn_id,
@@ -3696,7 +4127,11 @@ impl ThreadRequestProcessor {
                     .await;
                 }
                 self.thread_goal_processor
-                    .emit_resume_goal_snapshot_and_continue(thread_id, codex_thread.as_ref())
+                    .emit_resume_goal_snapshot_and_continue(
+                        thread_id,
+                        codex_thread.as_ref(),
+                        vec![thread_subscription],
+                    )
                     .await;
             }
             Err(err) => {
@@ -3737,6 +4172,21 @@ impl ThreadRequestProcessor {
             .flatten()?;
         merge_persisted_resume_metadata(request_overrides, typesafe_overrides, &persisted_metadata);
         Some(persisted_metadata)
+    }
+
+    async fn clear_pending_running_resume_reservation(
+        &self,
+        thread_id: ThreadId,
+        request_id: &ConnectionRequestId,
+        reservation_id: &RequestId,
+    ) {
+        self.thread_state_manager
+            .clear_pending_thread_resume_if_matches(
+                thread_id,
+                request_id.connection_id,
+                reservation_id,
+            )
+            .await;
     }
 
     async fn resume_running_thread(
@@ -3807,12 +4257,31 @@ impl ThreadRequestProcessor {
                     active_path.display()
                 )));
             }
-            if requested_tools_require_reload {
-                self.unload_loaded_thread_for_dynamic_tool_resume(
+            // A path-only request reaches this branch only after resolving its persisted path to
+            // this concrete running id. Claim it before the following history/listener awaits so
+            // `thread/unsubscribe` can cancel the same lifecycle before B becomes attachable.
+            let reservation_id = request_id.request_id.clone();
+            self.thread_state_manager
+                .reserve_pending_thread_resume(
                     existing_thread_id,
-                    existing_thread,
+                    request_id.connection_id,
+                    reservation_id.clone(),
                 )
-                .await?;
+                .await;
+            if requested_tools_require_reload {
+                let unload_result = self
+                    .unload_loaded_thread_for_dynamic_tool_resume(
+                        existing_thread_id,
+                        existing_thread,
+                    )
+                    .await;
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
+                unload_result?;
                 return Ok(RunningThreadResumeResult::NotRunning(None));
             }
             let config_snapshot = existing_thread.config_snapshot().await;
@@ -3838,6 +4307,12 @@ impl ThreadRequestProcessor {
                         ThreadShutdownResult::Complete => {
                             self.thread_manager.remove_thread(&existing_thread_id).await;
                             self.finalize_thread_teardown(existing_thread_id).await;
+                            self.clear_pending_running_resume_reservation(
+                                existing_thread_id,
+                                request_id,
+                                &reservation_id,
+                            )
+                            .await;
                             // Shutdown can flush newer rollout items, so reload the
                             // stored thread before starting the replacement session.
                             return Ok(RunningThreadResumeResult::NotRunning(None));
@@ -3867,24 +4342,41 @@ impl ThreadRequestProcessor {
             if needs_history {
                 let source_thread_id = source_thread.thread_id.to_string();
                 let source_rollout_path = source_thread.rollout_path.clone();
-                source_thread = self
+                source_thread = match self
                     .read_stored_thread_for_resume(
                         &source_thread_id,
                         source_rollout_path.as_ref(),
                         /*include_history*/ true,
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(source_thread) => source_thread,
+                    Err(error) => {
+                        self.clear_pending_running_resume_reservation(
+                            existing_thread_id,
+                            request_id,
+                            &reservation_id,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                };
             }
             let history_items = if needs_history {
-                source_thread
-                    .history
-                    .take()
-                    .map(|history| history.items)
-                    .ok_or_else(|| {
-                        internal_error(format!(
+                match source_thread.history.take().map(|history| history.items) {
+                    Some(history_items) => history_items,
+                    None => {
+                        self.clear_pending_running_resume_reservation(
+                            existing_thread_id,
+                            request_id,
+                            &reservation_id,
+                        )
+                        .await;
+                        return Err(internal_error(format!(
                             "thread {existing_thread_id} did not include persisted history"
-                        ))
-                    })?
+                        )));
+                    }
+                }
             } else {
                 Vec::new()
             };
@@ -3893,18 +4385,36 @@ impl ThreadRequestProcessor {
                 .thread_state_manager
                 .thread_state(existing_thread_id)
                 .await;
-            self.ensure_listener_task_running(
+            if let Err(error) = self.ensure_listener_task_running(
                 existing_thread_id,
                 existing_thread.clone(),
                 thread_state.clone(),
             )
-            .await?;
-            Self::set_app_server_client_info(
+            .await
+            {
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
+                return Err(error);
+            }
+            if let Err(error) = Self::set_app_server_client_info(
                 existing_thread.as_ref(),
                 app_server_client_name,
                 app_server_client_version,
             )
-            .await?;
+            .await
+            {
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
+                return Err(error);
+            }
 
             let mut thread_summary = self.stored_thread_to_api_thread(
                 source_thread,
@@ -3924,6 +4434,12 @@ impl ThreadRequestProcessor {
                 thread_state.listener_command_tx()
             };
             let Some(listener_command_tx) = listener_command_tx else {
+                self.clear_pending_running_resume_reservation(
+                    existing_thread_id,
+                    request_id,
+                    &reservation_id,
+                )
+                .await;
                 return Err(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener is not running"
                 )));
@@ -3937,22 +4453,56 @@ impl ThreadRequestProcessor {
                 // Paginated JSONL is canonical, but its SQLite projection can lag after a
                 // previous write failure. Persist before legacy response hydration reads the
                 // latest durable turns and items.
-                self.thread_store
+                if let Err(error) = self
+                    .thread_store
                     .persist_thread(existing_thread_id)
                     .await
-                    .map_err(thread_store_resume_read_error)?;
+                    .map_err(thread_store_resume_read_error)
+                {
+                    self.clear_pending_running_resume_reservation(
+                        existing_thread_id,
+                        request_id,
+                        &reservation_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
             }
             let paginated_turns = if paginated_resume && include_turns {
-                Some(self.paginated_thread_full_turns(existing_thread_id).await?)
+                match self.paginated_thread_full_turns(existing_thread_id).await {
+                    Ok(turns) => Some(turns),
+                    Err(error) => {
+                        self.clear_pending_running_resume_reservation(
+                            existing_thread_id,
+                            request_id,
+                            &reservation_id,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                }
             } else {
                 None
             };
             let paginated_initial_turns_page = if paginated_resume {
                 match params.initial_turns_page.as_ref() {
-                    Some(params) => Some(
-                        self.paginated_resume_initial_turns_page(existing_thread_id, params)
-                            .await?,
-                    ),
+                    Some(params) => {
+                        match self
+                            .paginated_resume_initial_turns_page(existing_thread_id, params)
+                            .await
+                        {
+                            Ok(page) => Some(page),
+                            Err(error) => {
+                                self.clear_pending_running_resume_reservation(
+                                    existing_thread_id,
+                                    request_id,
+                                    &reservation_id,
+                                )
+                                .await;
+                                return Err(error);
+                            }
+                        }
+                    }
                     None => None,
                 }
             } else {
@@ -3966,13 +4516,24 @@ impl ThreadRequestProcessor {
                             SortDirection::Desc
                         ) =>
                     {
-                        Some(
-                            self.paginated_resume_initial_turns_page_with_active_slot(
+                        match self
+                            .paginated_resume_initial_turns_page_with_active_slot(
                                 existing_thread_id,
                                 params,
                             )
-                            .await?,
-                        )
+                            .await
+                        {
+                            Ok(page) => Some(page),
+                            Err(error) => {
+                                self.clear_pending_running_resume_reservation(
+                                    existing_thread_id,
+                                    request_id,
+                                    &reservation_id,
+                                )
+                                .await;
+                                return Err(error);
+                            }
+                        }
                     }
                     Some(_) | None => None,
                 }
@@ -3980,10 +4541,10 @@ impl ThreadRequestProcessor {
                 None
             };
             let resume_cursor_store = paginated_resume.then(|| Arc::clone(&self.thread_store));
-
             let command = crate::thread_state::ThreadListenerCommand::SendThreadResumeResponse(
                 Box::new(crate::thread_state::PendingThreadResumeRequest {
                     request_id: request_id.clone(),
+                    reservation_id: reservation_id.clone(),
                     history_items,
                     config_snapshot,
                     instruction_sources,
@@ -4000,6 +4561,13 @@ impl ThreadRequestProcessor {
                 }),
             );
             if listener_command_tx.send(command).is_err() {
+                self.thread_state_manager
+                    .clear_pending_thread_resume_if_matches(
+                        existing_thread_id,
+                        request_id.connection_id,
+                        &reservation_id,
+                    )
+                    .await;
                 return Err(internal_error(format!(
                     "failed to enqueue running thread resume for thread {existing_thread_id}: thread listener command channel is closed"
                 )));
@@ -4042,8 +4610,13 @@ impl ThreadRequestProcessor {
 
         self.thread_manager.remove_thread(&thread_id).await;
         self.outgoing
+            .release_thread_outbound_barrier_for_teardown(thread_id)
+            .await;
+        self.outgoing
             .cancel_requests_for_thread(thread_id, /*error*/ None)
             .await;
+        self.thread_state_manager
+            .unregister_listener_command_tx(thread_id);
         {
             let mut thread_state = thread_state.lock().await;
             thread_state.clear_listener();
@@ -4653,27 +5226,75 @@ impl ThreadRequestProcessor {
 
         let instruction_sources = forked_thread.instruction_sources().await;
 
-        // Auto-attach a conversation listener when forking a thread.
-        log_listener_attach_result(
-            self.ensure_conversation_listener(
+        // Register before listener attach because forked thread traffic can be
+        // emitted before the fork response reaches the client.
+        let thread_subscription_id = self
+            .outgoing
+            .register_thread_subscription(request_id.connection_id, thread_id)
+            .await;
+        let thread_subscription = ThreadSubscriptionTarget::captured(
+            request_id.connection_id,
+            thread_id,
+            thread_subscription_id.clone(),
+        );
+        // A fork response may not publish this identity until its thread
+        // hydration succeeds. Roll the listener and subscription back if the
+        // connection closes or a later read/page operation fails.
+        match self
+            .ensure_conversation_listener(
                 thread_id,
                 request_id.connection_id,
                 /*raw_events_enabled*/ false,
+                Some(&thread_subscription_id),
             )
-            .await,
-            thread_id,
-            request_id.connection_id,
-            "thread",
-        );
-
+            .await
+        {
+            Ok(EnsureConversationListenerResult::Attached) => {}
+            Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+                rollback_failed_thread_attach(
+                    &self.thread_state_manager,
+                    &self.outgoing,
+                    thread_id,
+                    request_id.connection_id,
+                    &thread_subscription_id,
+                )
+                .await;
+                return Ok(());
+            }
+            Err(error) => {
+                rollback_failed_thread_attach(
+                    &self.thread_state_manager,
+                    &self.outgoing,
+                    thread_id,
+                    request_id.connection_id,
+                    &thread_subscription_id,
+                )
+                .await;
+                return Err(error);
+            }
+        }
         let config_snapshot = forked_thread.config_snapshot().await;
 
         // Persistent forks materialize their own rollout immediately. Ephemeral forks stay
         // pathless, so they rebuild their visible history from the copied source history instead.
         let mut thread = if session_configured.rollout_path.is_some() {
-            let stored_thread = self
+            let stored_thread = match self
                 .read_stored_thread_for_new_fork(thread_id, include_turns && !paginated_source)
-                .await?;
+                .await
+            {
+                Ok(stored_thread) => stored_thread,
+                Err(error) => {
+                    rollback_failed_thread_attach(
+                        &self.thread_state_manager,
+                        &self.outgoing,
+                        thread_id,
+                        request_id.connection_id,
+                        &thread_subscription_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
             self.stored_thread_to_api_thread(
                 stored_thread,
                 fallback_model_provider.as_str(),
@@ -4704,7 +5325,20 @@ impl ThreadRequestProcessor {
             thread
         };
         if paginated_source && include_turns {
-            thread.turns = self.paginated_thread_full_turns(thread_id).await?;
+            thread.turns = match self.paginated_thread_full_turns(thread_id).await {
+                Ok(turns) => turns,
+                Err(error) => {
+                    rollback_failed_thread_attach(
+                        &self.thread_state_manager,
+                        &self.outgoing,
+                        thread_id,
+                        request_id.connection_id,
+                        &thread_subscription_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            };
         }
         if let Some(name) = source_thread_name {
             set_thread_name_from_title(&mut thread, name);
@@ -4731,8 +5365,30 @@ impl ThreadRequestProcessor {
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
 
+        if !captured_thread_subscription_is_current(
+            self.outgoing.as_ref(),
+            request_id.connection_id,
+            thread_id,
+            &thread_subscription_id,
+        )
+        .await
+        {
+            rollback_failed_thread_attach(
+                &self.thread_state_manager,
+                &self.outgoing,
+                thread_id,
+                request_id.connection_id,
+                &thread_subscription_id,
+            )
+            .await;
+            return Err(invalid_request(
+                "thread/fork subscription was superseded before publication completed",
+            ));
+        }
+
         let response = ThreadForkResponse {
             thread: thread.clone(),
+            thread_subscription_id: Some(thread_subscription_id),
             model: session_configured.model,
             model_provider: session_configured.model_provider_id,
             service_tier: session_configured.service_tier,
@@ -4748,7 +5404,6 @@ impl ThreadRequestProcessor {
         };
 
         let notif = thread_started_notification(thread);
-        let connection_id = request_id.connection_id;
         let token_usage_turn_id =
             include_turns.then(|| restored_token_usage_turn_id(&history_items, &response.thread));
         self.outgoing
@@ -4759,9 +5414,9 @@ impl ThreadRequestProcessor {
         if let Some(token_usage_turn_id) = token_usage_turn_id {
             // Mirror the resume contract for forks: the new thread is usable as soon
             // as the response arrives, so restored usage must follow immediately.
-            send_thread_token_usage_update_to_connection(
+            send_thread_token_usage_update_to_subscription(
                 &self.outgoing,
-                connection_id,
+                &thread_subscription,
                 thread_id,
                 forked_thread.as_ref(),
                 token_usage_turn_id,
@@ -4770,11 +5425,14 @@ impl ThreadRequestProcessor {
         }
 
         self.outgoing
-            .send_server_notification(ServerNotification::ThreadStarted(notif))
+            .send_server_notification_to_thread_subscriptions(
+                std::slice::from_ref(&thread_subscription),
+                ServerNotification::ThreadStarted(notif),
+            )
             .await;
         if inherited_goal {
             self.thread_goal_processor
-                .emit_thread_goal_snapshot(thread_id)
+                .emit_thread_goal_snapshot(thread_id, vec![thread_subscription])
                 .await;
         }
         Ok(())
@@ -5243,10 +5901,21 @@ pub(super) fn normalize_thread_turns_status(
     }
 }
 
+#[derive(Debug)]
 enum ThreadReadViewError {
     InvalidRequest(String),
     Unsupported(&'static str),
     Internal(String),
+}
+
+impl std::fmt::Display for ThreadReadViewError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest(message) => write!(formatter, "invalid request: {message}"),
+            Self::Unsupported(operation) => write!(formatter, "unsupported operation: {operation}"),
+            Self::Internal(message) => write!(formatter, "internal error: {message}"),
+        }
+    }
 }
 
 fn thread_read_view_error(err: ThreadReadViewError) -> JSONRPCErrorError {
@@ -5570,6 +6239,20 @@ fn summary_from_stored_thread(
     }
 }
 
+/// Revalidate a captured lifecycle token at the final publication fence. Start, cold resume,
+/// running resume, fork, and automatic attachment use it so a concurrent reattach cannot publish
+/// a response or `ThreadStarted` handshake for B after C has become the current owner.
+async fn captured_thread_subscription_is_current(
+    outgoing: &OutgoingMessageSender,
+    connection_id: ConnectionId,
+    thread_id: ThreadId,
+    subscription_id: &str,
+) -> bool {
+    outgoing
+        .thread_subscription_matches(connection_id, thread_id, subscription_id)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 fn summary_from_state_db_metadata(
@@ -5767,7 +6450,7 @@ fn paginate_background_terminals(
     Ok((terminals[start..end].to_vec(), next_cursor))
 }
 
-fn build_thread_from_loaded_snapshot(
+pub(super) fn build_thread_from_loaded_snapshot(
     thread_id: ThreadId,
     config_snapshot: &ThreadConfigSnapshot,
     loaded_thread: &CodexThread,

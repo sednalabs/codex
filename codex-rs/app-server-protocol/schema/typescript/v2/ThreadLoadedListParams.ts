@@ -4,10 +4,19 @@
 
 export type ThreadLoadedListParams = {
 /**
- * Opaque pagination cursor returned by a previous call.
+ * Opaque pagination cursor returned as `nextCursor` by a previous call.
  */
 cursor?: string | null,
 /**
- * Optional page size; defaults to no limit.
+ * Optional page size. The legacy unfiltered form preserves its original semantics: omitted
+ * `limit` returns every loaded thread and supplied values retain their legacy page-size
+ * behavior, including treating zero as one, without a server maximum. With
+ * `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow
+ * `nextCursor` until it is null to continue a filtered result.
  */
-limit?: number | null, };
+limit?: number | null,
+/**
+ * Optional loaded thread-spawn ancestor. When set, returns only currently loaded
+ * descendants of that thread.
+ */
+ancestorThreadId?: string | null, };

@@ -131,6 +131,7 @@ async fn goal_edit_prompt_submits_preserved_status_and_budget() {
                     status,
                     token_budget,
                 },
+            ..
         }) => {
             assert_eq!(event_thread_id, thread_id);
             assert_eq!(
@@ -231,6 +232,7 @@ async fn resume_paused_goal_prompt_default_resumes_goal() {
         Ok(AppEvent::SetThreadGoalStatus {
             thread_id: event_thread_id,
             status,
+            ..
         }) => {
             assert_eq!(event_thread_id, thread_id);
             assert_eq!(status, AppThreadGoalStatus::Active);

@@ -3923,6 +3923,10 @@ class SubAgentActivityKind(Enum):
     interrupted = "interrupted"
 
 
+class SubAgentActivityTerminalState(Enum):
+    errored = "errored"
+
+
 class SubAgentSourceValue(Enum):
     review = "review"
     compact = "compact"
@@ -4274,6 +4278,24 @@ class SubAgentActivityThreadItem(BaseModel):
     agent_thread_id: Annotated[str, Field(alias="agentThreadId")]
     id: str
     kind: SubAgentActivityKind
+    model: Annotated[
+        str | None,
+        Field(description="Effective model selected for the affected child, when known."),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Effective reasoning effort selected for the affected child, when known.",
+        ),
+    ] = None
+    terminal_state: Annotated[
+        SubAgentActivityTerminalState | None,
+        Field(
+            alias="terminalState",
+            description="Additive terminal detail for the affected child, when available.",
+        ),
+    ] = None
     type: Annotated[Literal["subAgentActivity"], Field(title="SubAgentActivityThreadItemType")]
 
 
@@ -4344,11 +4366,23 @@ class ThreadLoadedListParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    ancestor_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="ancestorThreadId",
+            description="Optional loaded thread-spawn ancestor. When set, returns only currently loaded descendants of that thread.",
+        ),
+    ] = None
     cursor: Annotated[
-        str | None, Field(description="Opaque pagination cursor returned by a previous call.")
+        str | None,
+        Field(description="Opaque pagination cursor returned as `nextCursor` by a previous call."),
     ] = None
     limit: Annotated[
-        int | None, Field(description="Optional page size; defaults to no limit.", ge=0)
+        int | None,
+        Field(
+            description="Optional page size. The legacy unfiltered form preserves its original semantics: omitted `limit` returns every loaded thread and supplied values retain their legacy page-size behavior, including treating zero as one, without a server maximum. With `ancestorThreadId`, the server applies a bounded default and maximum of 100. Follow `nextCursor` until it is null to continue a filtered result.",
+            ge=0,
+        ),
     ] = None
 
 
@@ -4356,6 +4390,13 @@ class ThreadLoadedListResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
     data: Annotated[
         list[str], Field(description="Thread ids for sessions currently loaded in memory.")
     ]
@@ -4363,7 +4404,7 @@ class ThreadLoadedListResponse(BaseModel):
         str | None,
         Field(
             alias="nextCursor",
-            description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+            description="Opaque cursor to pass unchanged as `cursor` on the next call. Its representation and page boundary are server-defined. If it is null, there are no more items to return.",
         ),
     ] = None
 
@@ -4702,6 +4743,14 @@ class ThreadStatusChangedNotification(BaseModel):
         populate_by_name=True,
     )
     status: ThreadStatus
+    status_revision: Annotated[
+        int | None,
+        Field(
+            alias="statusRevision",
+            description="Monotonically increasing revision for this thread's status notifications within the current app-server session. Older servers omit this field.",
+            ge=0,
+        ),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
 
 
@@ -5901,6 +5950,8 @@ class CollabAgentState(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    agent_nickname: Annotated[str | None, Field(alias="agentNickname")] = None
+    agent_role: Annotated[str | None, Field(alias="agentRole")] = None
     message: str | None = None
     status: CollabAgentStatus
 
@@ -7212,7 +7263,7 @@ class CollabAgentToolCallThreadItem(BaseModel):
     ]
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
     model: Annotated[
-        str | None, Field(description="Model requested for the spawned agent, when applicable.")
+        str | None, Field(description="Effective model selected for the spawned agent, when available.")
     ] = None
     prompt: Annotated[
         str | None,
@@ -7222,7 +7273,21 @@ class CollabAgentToolCallThreadItem(BaseModel):
         ReasoningEffort | None,
         Field(
             alias="reasoningEffort",
-            description="Reasoning effort requested for the spawned agent, when applicable.",
+            description="Effective reasoning effort selected for the spawned agent, when available.",
+        ),
+    ] = None
+    requested_model: Annotated[
+        str | None,
+        Field(
+            alias="requestedModel",
+            description="Caller-provided model override for a spawned agent, when one was supplied.",
+        ),
+    ] = None
+    requested_reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="requestedReasoningEffort",
+            description="Caller-provided reasoning-effort override for a spawned agent, when one was supplied.",
         ),
     ] = None
     receiver_thread_ids: Annotated[
@@ -8903,12 +8968,26 @@ class ThreadForkResponse(BaseModel):
     ]
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
     thread: Thread
+    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
 
 
 class ThreadListResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    ancestor_filter_applied: Annotated[
+        bool | None,
+        Field(
+            alias="ancestorFilterApplied",
+            description="True only when the server applied the requested `ancestorThreadId` filter. Older servers omit this field. Clients must treat an omitted acknowledgement as false.",
+        ),
+    ] = None
     backwards_cursor: Annotated[
         str | None,
         Field(
@@ -8971,6 +9050,13 @@ class ThreadResumeResponse(BaseModel):
     ]
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
     thread: Thread
+    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
 
 
 class ThreadRollbackResponse(BaseModel):
@@ -9024,6 +9110,13 @@ class ThreadStartResponse(BaseModel):
     ]
     service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
     thread: Thread
+    thread_subscription_id: Annotated[
+        str | None,
+        Field(
+            alias="threadSubscriptionId",
+            description="Immutable identity for this connection's thread-event subscription.\n\nOptional for compatibility with older app-server versions.",
+        ),
+    ] = None
 
 
 class ThreadStartedNotification(BaseModel):

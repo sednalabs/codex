@@ -1,4 +1,5 @@
 use crate::app::app_server_requests::ResolvedAppServerRequest;
+use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::render::renderable::Renderable;
@@ -56,6 +57,14 @@ pub(crate) trait BottomPaneView: Renderable {
         None
     }
 
+    /// Current plain-text filter for a searchable list view.
+    ///
+    /// Refreshing a live view should keep an explicit user filter intact rather
+    /// than silently restoring every row and losing the context of the view.
+    fn search_query(&self) -> Option<&str> {
+        None
+    }
+
     /// Handle Ctrl-C while this view is active.
     fn on_ctrl_c(&mut self) -> CancellationEvent {
         CancellationEvent::NotHandled
@@ -107,8 +116,9 @@ pub(crate) trait BottomPaneView: Renderable {
     fn try_consume_approval_request(
         &mut self,
         request: ApprovalRequest,
-    ) -> Option<ApprovalRequest> {
-        Some(request)
+        app_event_tx: AppEventSender,
+    ) -> Option<(ApprovalRequest, AppEventSender)> {
+        Some((request, app_event_tx))
     }
 
     /// Try to handle request_user_input; return the original value if not
@@ -127,6 +137,17 @@ pub(crate) trait BottomPaneView: Renderable {
         request: McpServerElicitationFormRequest,
     ) -> Option<McpServerElicitationFormRequest> {
         Some(request)
+    }
+
+    /// As above, but preserves a sender scoped to the request's target lifecycle when a view
+    /// queues the request behind another one.
+    fn try_consume_mcp_server_elicitation_request_with_sender(
+        &mut self,
+        request: McpServerElicitationFormRequest,
+        app_event_tx: AppEventSender,
+    ) -> Option<(McpServerElicitationFormRequest, AppEventSender)> {
+        self.try_consume_mcp_server_elicitation_request(request)
+            .map(|request| (request, app_event_tx))
     }
 
     /// Dismiss a request that was resolved by another client.

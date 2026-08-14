@@ -26,10 +26,11 @@
 //! # Backpressure
 //!
 //! Command submission uses `try_send` and can return `WouldBlock`, while event
-//! fanout may drop notifications under saturation. Server requests are never
-//! silently abandoned: if they cannot be queued they are failed back into
-//! `MessageProcessor` with overload or internal errors so approval flows do
-//! not hang indefinitely.
+//! fanout may drop best-effort notifications under saturation. Authoritative
+//! transcript, lifecycle, goal, and usage state blocks until it can be
+//! delivered. Server requests are never silently abandoned: if they cannot be
+//! queued they are failed back into `MessageProcessor` with overload or
+//! internal errors so approval flows do not hang indefinitely.
 //!
 //! # Relationship to `codex-app-server-client`
 //!
@@ -105,12 +106,97 @@ pub const DEFAULT_IN_PROCESS_CHANNEL_CAPACITY: usize = CHANNEL_CAPACITY;
 type PendingClientRequestResponse = std::result::Result<Result, JSONRPCErrorError>;
 
 fn server_notification_requires_delivery(notification: &ServerNotification) -> bool {
+    // Keep this in exact parity with the facade classifier in
+    // `codex-app-server-client`: this runtime queue is upstream of that
+    // facade, so it cannot discard transcript, lifecycle, goal, usage, or rename
+    // state that the facade later treats as lossless.
     matches!(
         notification,
-        ServerNotification::TurnCompleted(_)
+        ServerNotification::ThreadStarted(_)
+            | ServerNotification::ThreadClosed(_)
+            | ServerNotification::ThreadDeleted(_)
+            | ServerNotification::ThreadArchived(_)
+            | ServerNotification::ThreadUnarchived(_)
+            | ServerNotification::ThreadStatusChanged(_)
+            | ServerNotification::ThreadGoalUpdated(_)
+            | ServerNotification::ThreadGoalCleared(_)
+            | ServerNotification::ThreadTokenUsageUpdated(_)
+            | ServerNotification::ThreadNameUpdated(_)
+            | ServerNotification::ServerRequestResolved(_)
+            | ServerNotification::TurnCompleted(_)
             | ServerNotification::ThreadSettingsUpdated(_)
+            | ServerNotification::ItemCompleted(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::AgentMessageDelta(_)
+            | ServerNotification::PlanDelta(_)
+            | ServerNotification::ReasoningSummaryTextDelta(_)
+            | ServerNotification::ReasoningTextDelta(_)
     )
+}
+
+/// The result of attempting to forward one server notification to the in-process client.
+///
+/// `Pending` is retained by the runtime loop itself. That preserves authoritative delivery and
+/// bounded backpressure without parking the loop on `event_tx.send`, which would otherwise make
+/// the client shutdown/control channel unresponsive.
+enum InProcessNotificationForward {
+    Forwarded,
+    Pending(InProcessTaggedServerEvent),
+    Closed,
+}
+
+struct PendingInProcessNotificationForward {
+    event: InProcessTaggedServerEvent,
+    write_complete_tx: Option<oneshot::Sender<()>>,
+}
+
+/// Attempts a non-blocking in-process notification forward. Authoritative notifications remain
+/// pending under saturation; progress-only notifications stay best-effort so a slow consumer
+/// does not stall unrelated live output.
+fn try_forward_in_process_server_notification(
+    event_tx: &mpsc::Sender<InProcessTaggedServerEvent>,
+    event: InProcessTaggedServerEvent,
+) -> InProcessNotificationForward {
+    let notification = match &event {
+        InProcessTaggedServerEvent::ServerNotification(notification)
+        | InProcessTaggedServerEvent::ThreadServerNotification { notification, .. } => notification,
+        _ => unreachable!("only notification events reach the notification queue"),
+    };
+
+    if server_notification_requires_delivery(notification) {
+        return match event_tx.try_send(event) {
+            Ok(()) => InProcessNotificationForward::Forwarded,
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                InProcessNotificationForward::Pending(event)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => InProcessNotificationForward::Closed,
+        };
+    }
+
+    match event_tx.try_send(event) {
+        Ok(()) => InProcessNotificationForward::Forwarded,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!("dropping best-effort in-process server notification (queue full)");
+            InProcessNotificationForward::Forwarded
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => InProcessNotificationForward::Closed,
+    }
+}
+
+/// Delivers authoritative app-server notification state without allowing a saturated in-process
+/// queue to discard it. This direct helper remains useful for focused queue tests; the runtime
+/// uses [`try_forward_in_process_server_notification`] so it can keep polling client control
+/// messages while the same bounded pending event waits for capacity.
+#[cfg(test)]
+async fn forward_in_process_server_notification(
+    event_tx: &mpsc::Sender<InProcessTaggedServerEvent>,
+    event: InProcessTaggedServerEvent,
+) -> bool {
+    match try_forward_in_process_server_notification(event_tx, event) {
+        InProcessNotificationForward::Forwarded => true,
+        InProcessNotificationForward::Pending(event) => event_tx.send(event).await.is_ok(),
+        InProcessNotificationForward::Closed => false,
+    }
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -165,6 +251,46 @@ pub enum InProcessServerEvent {
     ServerNotification(ServerNotification),
     /// Indicates one or more events were dropped due to backpressure.
     Lagged { skipped: usize },
+}
+
+/// Event emitted from the app-server to consumers that need the immutable
+/// thread-subscription identity captured at transport ingress.
+///
+/// This is additive. [`InProcessServerEvent`] retains its original three
+/// variants and remains the result of [`InProcessClientHandle::next_event`]
+/// for source-compatible embedders. Consumers that enforce listener lifecycle
+/// identity should use [`InProcessClientHandle::next_tagged_event`] instead.
+#[derive(Debug, Clone)]
+pub enum InProcessTaggedServerEvent {
+    Lagged {
+        skipped: usize,
+    },
+    ServerNotification(ServerNotification),
+    ServerRequest(ServerRequest),
+    ThreadServerNotification {
+        thread_subscription_id: String,
+        notification: ServerNotification,
+    },
+    ThreadServerRequest {
+        thread_subscription_id: String,
+        request: ServerRequest,
+    },
+}
+
+impl From<InProcessTaggedServerEvent> for InProcessServerEvent {
+    fn from(value: InProcessTaggedServerEvent) -> Self {
+        match value {
+            InProcessTaggedServerEvent::Lagged { skipped } => Self::Lagged { skipped },
+            InProcessTaggedServerEvent::ServerNotification(notification)
+            | InProcessTaggedServerEvent::ThreadServerNotification { notification, .. } => {
+                Self::ServerNotification(notification)
+            }
+            InProcessTaggedServerEvent::ServerRequest(request)
+            | InProcessTaggedServerEvent::ThreadServerRequest { request, .. } => {
+                Self::ServerRequest(request)
+            }
+        }
+    }
 }
 
 /// Internal message sent from [`InProcessClientHandle`] methods to the runtime task.
@@ -262,10 +388,12 @@ impl InProcessClientSender {
 /// request/response helpers, and surface-specific startup policy.
 pub struct InProcessClientHandle {
     client: InProcessClientSender,
-    event_rx: mpsc::Receiver<InProcessServerEvent>,
+    event_rx: mpsc::Receiver<InProcessTaggedServerEvent>,
     runtime_handle: tokio::task::JoinHandle<()>,
     #[cfg(test)]
     _test_codex_home: Option<tempfile::TempDir>,
+    #[cfg(test)]
+    _test_outgoing_message_sender: Option<Arc<OutgoingMessageSender>>,
 }
 
 impl InProcessClientHandle {
@@ -309,11 +437,17 @@ impl InProcessClientHandle {
         self.client.fail_server_request(request_id, error)
     }
 
-    /// Receives the next server event from the in-process runtime.
+    /// Receives the next legacy server event from the in-process runtime.
     ///
     /// Returns `None` when the runtime task exits and no more events are
     /// available.
     pub async fn next_event(&mut self) -> Option<InProcessServerEvent> {
+        self.next_tagged_event().await.map(Into::into)
+    }
+
+    /// Receives the next server event with its captured thread-subscription
+    /// identity when the event is thread-scoped.
+    pub async fn next_tagged_event(&mut self) -> Option<InProcessTaggedServerEvent> {
         self.event_rx.recv().await
     }
 
@@ -323,6 +457,8 @@ impl InProcessClientHandle {
     /// if graceful drain does not complete in time.
     pub async fn shutdown(self) -> IoResult<()> {
         let mut runtime_handle = self.runtime_handle;
+        #[cfg(test)]
+        let test_outgoing_message_sender = self._test_outgoing_message_sender;
         let (done_tx, done_rx) = oneshot::channel();
 
         if self
@@ -334,6 +470,11 @@ impl InProcessClientHandle {
         {
             let _ = timeout(SHUTDOWN_ACK_TIMEOUT, done_rx).await;
         }
+
+        // Test-only injection retains an otherwise-live sender. Drop it before joining the
+        // outbound router so the test observes the same graceful-close contract as production.
+        #[cfg(test)]
+        drop(test_outgoing_message_sender);
 
         if let Err(_elapsed) = timeout(SHUTDOWN_TIMEOUT, &mut runtime_handle).await {
             runtime_handle.abort();
@@ -387,7 +528,9 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
     let channel_capacity = args.channel_capacity.max(1);
     let installation_id = resolve_installation_id(&args.config.codex_home).await?;
     let (client_tx, mut client_rx) = mpsc::channel::<InProcessClientMessage>(channel_capacity);
-    let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);
+    let (event_tx, event_rx) = mpsc::channel::<InProcessTaggedServerEvent>(channel_capacity);
+    #[cfg(test)]
+    let (test_outgoing_message_tx, test_outgoing_message_rx) = oneshot::channel();
 
     let runtime_handle = tokio::spawn(async move {
         let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(channel_capacity);
@@ -401,6 +544,8 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
             outgoing_tx,
             analytics_events_client.clone(),
         ));
+        #[cfg(test)]
+        let _ = test_outgoing_message_tx.send(Arc::clone(&outgoing_message_sender));
 
         let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(channel_capacity);
         let outbound_initialized = Arc::new(AtomicBool::new(false));
@@ -537,9 +682,24 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         let mut pending_request_responses =
             HashMap::<RequestId, oneshot::Sender<PendingClientRequestResponse>>::new();
         let mut shutdown_ack = None;
+        let mut pending_authoritative_notification = None::<PendingInProcessNotificationForward>;
 
         loop {
             tokio::select! {
+                permit = event_tx.reserve(), if pending_authoritative_notification.is_some() => {
+                    match permit {
+                        Ok(permit) => {
+                            let pending = pending_authoritative_notification
+                                .take()
+                                .expect("pending authoritative notification should exist");
+                            permit.send(pending.event);
+                            if let Some(write_complete_tx) = pending.write_complete_tx {
+                                let _ = write_complete_tx.send(());
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
                 message = client_rx.recv() => {
                     match message {
                         Some(InProcessClientMessage::Request { request, response_tx }) => {
@@ -613,11 +773,12 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                         }
                     }
                 }
-                queued_message = writer_rx.recv() => {
+                queued_message = writer_rx.recv(), if pending_authoritative_notification.is_none() => {
                     let Some(queued_message) = queued_message else {
                         break;
                     };
                     let outgoing_message = queued_message.message;
+                    let write_complete_tx = queued_message.write_complete_tx;
                     match outgoing_message {
                         OutgoingMessage::Response(response) => {
                             if let Some(response_tx) = pending_request_responses.remove(&response.id) {
@@ -643,7 +804,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             // Send directly to avoid cloning; on failure the
                             // original value is returned inside the error.
                             if let Err(send_error) = event_tx
-                                .try_send(InProcessServerEvent::ServerRequest(request))
+                                .try_send(InProcessTaggedServerEvent::ServerRequest(request))
                             {
                                 let (error, inner) = match send_error {
                                     mpsc::error::TrySendError::Full(inner) => (
@@ -663,8 +824,47 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                                     ),
                                 };
                                 let request_id = match inner {
-                                    InProcessServerEvent::ServerRequest(req) => req.id().clone(),
+                                    InProcessTaggedServerEvent::ServerRequest(req) => {
+                                        req.id().clone()
+                                    }
                                     _ => unreachable!("we just sent a ServerRequest variant"),
+                                };
+                                outgoing_message_sender
+                                    .notify_client_error(request_id, error)
+                                .await;
+                            }
+                        }
+                        OutgoingMessage::ThreadScopedRequest(request) => {
+                            let request_id = request.request.id().clone();
+                            if let Err(send_error) = event_tx.try_send(
+                                InProcessTaggedServerEvent::ThreadServerRequest {
+                                    request: request.request,
+                                    thread_subscription_id: request.thread_subscription_id,
+                                },
+                            ) {
+                                let (error, inner) = match send_error {
+                                    mpsc::error::TrySendError::Full(inner) => (
+                                        JSONRPCErrorError {
+                                            code: OVERLOADED_ERROR_CODE,
+                                            message: "in-process server request queue is full".to_string(),
+                                            data: None,
+                                        },
+                                        inner,
+                                    ),
+                                    mpsc::error::TrySendError::Closed(inner) => (
+                                        internal_error(
+                                            "in-process server request consumer is closed",
+                                        ),
+                                        inner,
+                                    ),
+                                };
+                                let request_id = match inner {
+                                    InProcessTaggedServerEvent::ThreadServerRequest {
+                                        request, ..
+                                    } => {
+                                        request.id().clone()
+                                    }
+                                    _ => request_id,
                                 };
                                 outgoing_message_sender
                                     .notify_client_error(request_id, error)
@@ -672,36 +872,56 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
-                            let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(notification))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
+                            match try_forward_in_process_server_notification(
+                                &event_tx,
+                                InProcessTaggedServerEvent::ServerNotification(
+                                    envelope.notification,
+                                ),
+                            ) {
+                                InProcessNotificationForward::Forwarded => {}
+                                InProcessNotificationForward::Pending(event) => {
+                                    pending_authoritative_notification =
+                                        Some(PendingInProcessNotificationForward {
+                                            event,
+                                            write_complete_tx,
+                                        });
+                                    continue;
                                 }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(notification))
-                            {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
+                                InProcessNotificationForward::Closed => break,
+                            }
+                        }
+                        OutgoingMessage::ThreadScopedNotification(notification) => {
+                            let event = InProcessTaggedServerEvent::ThreadServerNotification {
+                                notification: notification.envelope.notification,
+                                thread_subscription_id: notification.thread_subscription_id,
+                            };
+                            match try_forward_in_process_server_notification(&event_tx, event) {
+                                InProcessNotificationForward::Forwarded => {}
+                                InProcessNotificationForward::Pending(event) => {
+                                    pending_authoritative_notification =
+                                        Some(PendingInProcessNotificationForward {
+                                            event,
+                                            write_complete_tx,
+                                        });
+                                    continue;
                                 }
+                                InProcessNotificationForward::Closed => break,
                             }
                         }
                     }
-                    if let Some(write_complete_tx) = queued_message.write_complete_tx {
+                    if let Some(write_complete_tx) = write_complete_tx {
                         let _ = write_complete_tx.send(());
                     }
                 }
             }
         }
 
+        if pending_authoritative_notification.is_some() {
+            warn!(
+                "discarding a pending authoritative in-process notification during explicit \
+                 runtime shutdown or closed client event stream"
+            );
+        }
         drop(writer_rx);
         drop(processor_tx);
         outgoing_message_sender
@@ -734,29 +954,43 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
         }
     });
 
+    #[cfg(test)]
+    let test_outgoing_message_sender = test_outgoing_message_rx.await.map_err(|err| {
+        IoError::new(
+            ErrorKind::BrokenPipe,
+            format!("in-process runtime exited before exposing test outgoing sender: {err}"),
+        )
+    })?;
+
     Ok(InProcessClientHandle {
         client: InProcessClientSender { client_tx },
         event_rx,
         runtime_handle,
         #[cfg(test)]
         _test_codex_home: None,
+        #[cfg(test)]
+        _test_outgoing_message_sender: Some(test_outgoing_message_sender),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
+    use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
+    use codex_app_server_protocol::ThreadStartedNotification;
     use codex_app_server_protocol::Turn;
     use codex_app_server_protocol::TurnCompletedNotification;
     use codex_app_server_protocol::TurnItemsView;
     use codex_app_server_protocol::TurnStatus;
     use codex_core::config::ConfigBuilder;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::path::Path;
     use tempfile::TempDir;
@@ -818,6 +1052,65 @@ mod tests {
 
     async fn start_test_client(session_source: SessionSource) -> InProcessClientHandle {
         start_test_client_with_capacity(session_source, DEFAULT_IN_PROCESS_CHANNEL_CAPACITY).await
+    }
+
+    fn thread_goal_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadGoalUpdated(
+            codex_app_server_protocol::ThreadGoalUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: Some("turn".to_string()),
+                goal: codex_app_server_protocol::ThreadGoal {
+                    thread_id: "thread".to_string(),
+                    objective: "finish the task".to_string(),
+                    status: codex_app_server_protocol::ThreadGoalStatus::Active,
+                    token_budget: Some(100),
+                    tokens_used: 25,
+                    time_used_seconds: 1,
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            },
+        )
+    }
+
+    fn thread_token_usage_updated_notification() -> ServerNotification {
+        let usage = codex_app_server_protocol::TokenUsageBreakdown {
+            total_tokens: 25,
+            input_tokens: 20,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 5,
+            reasoning_output_tokens: 0,
+        };
+        ServerNotification::ThreadTokenUsageUpdated(
+            codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                token_usage: codex_app_server_protocol::ThreadTokenUsage {
+                    total: usage.clone(),
+                    last: usage,
+                    model_context_window: Some(100),
+                },
+            },
+        )
+    }
+
+    fn thread_name_updated_notification() -> ServerNotification {
+        ServerNotification::ThreadNameUpdated(
+            codex_app_server_protocol::ThreadNameUpdatedNotification {
+                thread_id: "thread".to_string(),
+                thread_name: Some("renamed thread".to_string()),
+            },
+        )
+    }
+
+    fn server_request_resolved_notification() -> ServerNotification {
+        ServerNotification::ServerRequestResolved(
+            codex_app_server_protocol::ServerRequestResolvedNotification {
+                thread_id: "thread".to_string(),
+                request_id: codex_app_server_protocol::RequestId::Integer(7),
+            },
+        )
     }
 
     #[tokio::test]
@@ -896,6 +1189,38 @@ mod tests {
             .expect("in-process runtime should shutdown cleanly");
     }
 
+    #[tokio::test]
+    async fn full_authoritative_event_queue_still_allows_orderly_runtime_shutdown() {
+        let client =
+            start_test_client_with_capacity(SessionSource::Cli, /*channel_capacity*/ 1).await;
+        let outgoing = Arc::clone(
+            client
+                ._test_outgoing_message_sender
+                .as_ref()
+                .expect("test runtime should expose its outbound sender"),
+        );
+
+        // The first authoritative state fills the only client event slot. The second must remain
+        // pending with bounded backpressure, not await inside the runtime loop and starve the
+        // Shutdown control message. Do not consume either event before shutdown.
+        outgoing
+            .send_server_notification(thread_goal_updated_notification())
+            .await;
+        outgoing
+            .send_server_notification(thread_goal_updated_notification())
+            .await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        // Do not retain the test-only clone while shutdown joins the outbound router.
+        drop(outgoing);
+
+        timeout(Duration::from_secs(1), client.shutdown())
+            .await
+            .expect("a full authoritative event queue must not delay shutdown acknowledgement")
+            .expect("runtime should complete orderly shutdown without parent-task abort");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn in_process_shutdown_waits_for_analytics_flush_budget() {
         let (client_tx, mut client_rx) = mpsc::channel(/*buffer*/ 1);
@@ -916,6 +1241,7 @@ mod tests {
             event_rx,
             runtime_handle,
             _test_codex_home: None,
+            _test_outgoing_message_sender: None,
         };
 
         client
@@ -927,6 +1253,104 @@ mod tests {
 
     #[test]
     fn guaranteed_delivery_helpers_cover_terminal_server_notifications() {
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadStarted(ThreadStartedNotification {
+                thread: Thread {
+                    id: "thread-1".to_string(),
+                    extra: None,
+                    session_id: "thread-1".to_string(),
+                    forked_from_id: None,
+                    parent_thread_id: Some("parent".to_string()),
+                    preview: "child".to_string(),
+                    ephemeral: false,
+                    is_pinned: false,
+                    history_mode: Default::default(),
+                    model_provider: "openai".to_string(),
+                    model: Some("gpt-test".to_string()),
+                    reasoning_effort: None,
+                    created_at: 0,
+                    updated_at: 0,
+                    recency_at: None,
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    path: None,
+                    cwd: AbsolutePathBuf::from_absolute_path("/tmp")
+                        .expect("test cwd should be absolute"),
+                    cli_version: "test".to_string(),
+                    source: ApiSessionSource::Unknown,
+                    can_accept_direct_input: None,
+                    thread_source: None,
+                    agent_nickname: Some("Child".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                    git_info: None,
+                    name: None,
+                    turns: Vec::new(),
+                },
+            })
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadClosed(
+                codex_app_server_protocol::ThreadClosedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadDeleted(
+                codex_app_server_protocol::ThreadDeletedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadArchived(
+                codex_app_server_protocol::ThreadArchivedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadUnarchived(
+                codex_app_server_protocol::ThreadUnarchivedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadStatusChanged(
+                codex_app_server_protocol::ThreadStatusChangedNotification {
+                    thread_id: "thread-1".to_string(),
+                    status: codex_app_server_protocol::ThreadStatus::Idle,
+                    status_revision: Some(1),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &thread_goal_updated_notification()
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::ThreadGoalCleared(
+                codex_app_server_protocol::ThreadGoalClearedNotification {
+                    thread_id: "thread-1".to_string(),
+                },
+            )
+        ));
+        assert!(server_notification_requires_delivery(
+            &thread_token_usage_updated_notification()
+        ));
+        assert!(server_notification_requires_delivery(
+            &thread_name_updated_notification()
+        ));
+        assert!(server_notification_requires_delivery(
+            &server_request_resolved_notification()
+        ));
+        assert!(server_notification_requires_delivery(
+            &ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "item-1".to_string(),
+                delta: "hello".to_string(),
+            })
+        ));
         assert!(server_notification_requires_delivery(
             &ServerNotification::TurnCompleted(TurnCompletedNotification {
                 thread_id: "thread-1".to_string(),
@@ -952,5 +1376,69 @@ mod tests {
                 },
             )
         ));
+    }
+
+    #[tokio::test]
+    async fn in_process_queue_blocks_for_goal_usage_name_and_request_resolution_backpressure() {
+        for (notification, expected_kind) in [
+            (thread_goal_updated_notification(), "goal"),
+            (thread_token_usage_updated_notification(), "usage"),
+            (thread_name_updated_notification(), "name"),
+            (server_request_resolved_notification(), "request resolution"),
+        ] {
+            let (event_tx, mut event_rx) = mpsc::channel(1);
+            event_tx
+                .send(InProcessTaggedServerEvent::Lagged { skipped: 1 })
+                .await
+                .expect("initial event should enqueue");
+
+            let delivery = forward_in_process_server_notification(
+                &event_tx,
+                InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id: "thread-subscription".to_string(),
+                    notification,
+                },
+            );
+            tokio::pin!(delivery);
+
+            assert!(
+                timeout(Duration::from_millis(20), &mut delivery)
+                    .await
+                    .is_err(),
+                "{expected_kind} state must block rather than be dropped"
+            );
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(InProcessTaggedServerEvent::Lagged { skipped: 1 })
+            ));
+            assert!(delivery.await);
+            match event_rx.recv().await {
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadGoalUpdated(_),
+                }) if expected_kind == "goal" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadTokenUsageUpdated(_),
+                }) if expected_kind == "usage" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ThreadNameUpdated(_),
+                }) if expected_kind == "name" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                Some(InProcessTaggedServerEvent::ThreadServerNotification {
+                    thread_subscription_id,
+                    notification: ServerNotification::ServerRequestResolved(_),
+                }) if expected_kind == "request resolution" => {
+                    assert_eq!(thread_subscription_id, "thread-subscription");
+                }
+                event => panic!("expected retained {expected_kind} state, got {event:?}"),
+            }
+        }
     }
 }

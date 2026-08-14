@@ -46,6 +46,14 @@ pub trait AgentGraphStore: Send + Sync {
         status_filter: Option<ThreadSpawnEdgeStatus>,
     ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>>;
 
+    /// Returns whether `candidate_thread_id` is a descendant of `ancestor_thread_id` without
+    /// materializing the ancestor's full persisted subtree.
+    fn is_thread_spawn_descendant(
+        &self,
+        ancestor_thread_id: ThreadId,
+        candidate_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, bool>;
+
     /// List spawned descendants breadth-first by depth, then by thread id.
     ///
     /// `status_filter` is applied to every traversed edge, not just to the returned descendants.

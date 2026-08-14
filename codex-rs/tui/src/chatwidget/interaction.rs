@@ -169,7 +169,7 @@ impl ChatWidget {
                 && self.bottom_pane.no_modal_or_popup_active() =>
             {
                 if self.blocks_direct_input {
-                    self.add_error_message(PARENT_OWNED_INPUT_MESSAGE.to_string());
+                    self.add_error_message(self.direct_input_blocked_message().to_string());
                 } else {
                     self.cycle_collaboration_mode();
                     self.refresh_plan_mode_nudge();
@@ -231,6 +231,40 @@ impl ChatWidget {
         self.bottom_pane.show_selection_view(params);
         self.refresh_plan_mode_nudge();
         self.request_redraw();
+    }
+
+    /// Rebuild an active picker in place, or show it when it is not open.
+    ///
+    /// Callers can pair this with [`Self::selection_view_search_query`] to
+    /// preserve an explicit filter while asynchronously refreshed data arrives.
+    pub(crate) fn replace_or_show_selection_view(
+        &mut self,
+        view_id: &'static str,
+        params: SelectionViewParams,
+    ) {
+        if self.bottom_pane.is_selection_view_active(view_id) {
+            let replaced = self
+                .bottom_pane
+                .replace_selection_view_if_active(view_id, params);
+            debug_assert!(replaced, "active selection view should be replaceable");
+        } else {
+            self.bottom_pane.show_selection_view(params);
+        }
+        self.refresh_plan_mode_nudge();
+        self.request_redraw();
+    }
+
+    pub(crate) fn selection_view_search_query(&self, view_id: &'static str) -> Option<String> {
+        self.bottom_pane.search_query_for_active_view(view_id)
+    }
+
+    /// Returns the current selection for the active picker so a background metadata refresh can
+    /// rebuild its rows without changing the user's keyboard focus.
+    pub(crate) fn selected_index_for_active_selection_view(
+        &self,
+        view_id: &'static str,
+    ) -> Option<usize> {
+        self.bottom_pane.selected_index_for_active_view(view_id)
     }
 
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
@@ -538,6 +572,7 @@ impl ChatWidget {
         };
         self.app_event_tx.send(AppEvent::SetThreadGoalStatus {
             thread_id,
+            lifecycle_generation: self.thread_lifecycle_generation,
             status: AppThreadGoalStatus::Paused,
         });
     }

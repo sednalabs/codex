@@ -7,6 +7,10 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ErrorEvent;
+use codex_protocol::protocol::Event;
+#[cfg(test)]
+use codex_protocol::protocol::TurnCompleteEvent;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -24,6 +28,27 @@ struct SpawnAgentThreadInheritance {
 enum SpawnInitialInput {
     UserInput(Vec<UserInput>),
     InterAgentCommunication(InterAgentCommunication, AgentCommunicationContext),
+}
+
+/// The observed result of resolving cancellation after a child accepted its initial input.
+///
+/// A natural child terminal state must remain distinct from an interrupt performed by the
+/// spawning operation. That distinction drives the lifecycle projection published to the
+/// parent, while the embedded status remains the child authority.
+enum SpawnCancellationResolution {
+    Interrupted(AgentStatus),
+    NaturallyTerminal(AgentStatus),
+}
+
+fn is_naturally_terminal_spawn_status(status: &AgentStatus) -> bool {
+    matches!(status, AgentStatus::Completed(_) | AgentStatus::Errored(_))
+}
+
+fn is_benign_spawn_cancellation_cleanup_error(error: &CodexErr) -> bool {
+    matches!(
+        error.details(),
+        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+    )
 }
 
 /// Restore the agent's latest durable model selection before reopening an evicted V2 runtime.
@@ -250,7 +275,7 @@ impl AgentControl {
             SpawnAgentOptions::default(),
         ))
         .await?;
-        Ok(spawned_agent.thread_id)
+        Ok(spawned_agent.into_result()?.thread_id)
     }
 
     /// Spawn an agent thread with some metadata.
@@ -261,6 +286,27 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions, // TODO(jif) drop with new fork.
     ) -> CodexResult<LiveAgent> {
+        Box::pin(self.spawn_agent_with_metadata_outcome(
+            config,
+            initial_input,
+            session_source,
+            options,
+        ))
+        .await?
+        .into_result()
+    }
+
+    /// Spawn an agent while preserving a child committed before its initial input failed.
+    ///
+    /// Most callers retain the historical `CodexResult<LiveAgent>` contract above. Lifecycle
+    /// owners can use this richer outcome to terminalize the parent record truthfully.
+    pub(crate) async fn spawn_agent_with_metadata_outcome(
+        &self,
+        config: Config,
+        initial_input: Vec<UserInput>,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<SpawnAgentOutcome> {
         Box::pin(self.spawn_agent_internal(
             config,
             SpawnInitialInput::UserInput(initial_input),
@@ -278,6 +324,27 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        Box::pin(self.spawn_agent_with_communication_outcome(
+            config,
+            communication,
+            context,
+            session_source,
+            options,
+        ))
+        .await?
+        .into_result()
+    }
+
+    /// Spawn an agent with an initial communication while preserving a committed child if the
+    /// communication cannot be delivered.
+    pub(crate) async fn spawn_agent_with_communication_outcome(
+        &self,
+        config: Config,
+        communication: InterAgentCommunication,
+        context: AgentCommunicationContext,
+        session_source: Option<SessionSource>,
+        options: SpawnAgentOptions,
+    ) -> CodexResult<SpawnAgentOutcome> {
         Box::pin(self.spawn_agent_internal(
             config,
             SpawnInitialInput::InterAgentCommunication(communication, context),
@@ -439,8 +506,14 @@ impl AgentControl {
         initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
-    ) -> CodexResult<LiveAgent> {
+    ) -> CodexResult<SpawnAgentOutcome> {
+        if spawn_cancellation_requested(&options) {
+            return Err(CodexErr::TurnAborted);
+        }
         let state = self.upgrade()?;
+        if spawn_cancellation_requested(&options) {
+            return Err(CodexErr::TurnAborted);
+        }
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -545,10 +618,50 @@ impl AgentControl {
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
+        #[cfg(test)]
+        self.wait_for_next_spawn_cancellation_cleanup(
+            SpawnCancellationCleanupPhase::BeforeRegistryCommit,
+        )
+        .await;
+        if spawn_cancellation_requested(&options) {
+            // The thread manager may finish creating a child concurrently with its caller's
+            // cancellation. It has not entered the agent registry yet, so shut it down and
+            // remove it instead of committing an unobservable reservation.
+            let shutdown_result = state.send_op(new_thread.thread_id, Op::Shutdown {}).await;
+            new_thread.thread.wait_until_terminated().await;
+            let _ = state.remove_thread(&new_thread.thread_id).await;
+            if let Err(error) = shutdown_result
+                && !(is_benign_spawn_cancellation_cleanup_error(&error)
+                    && self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await)
+            {
+                return Err(error);
+            }
+            return Err(CodexErr::TurnAborted);
+        }
         agent_metadata.agent_id = Some(new_thread.thread_id);
         reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot {
             residency_slot.commit(new_thread.thread_id);
+        }
+        #[cfg(test)]
+        self.wait_for_next_spawn_cancellation_cleanup(
+            SpawnCancellationCleanupPhase::AfterRegistryCommit,
+        )
+        .await;
+        if spawn_cancellation_requested(&options) {
+            // After the reservation is committed, use the regular control-plane shutdown path
+            // so registry and residency ownership are released together.
+            if let Err(error) = self.shutdown_live_agent(new_thread.thread_id).await
+                && !(is_benign_spawn_cancellation_cleanup_error(&error)
+                    && self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await)
+            {
+                return Err(error);
+            }
+            return Err(CodexErr::TurnAborted);
         }
 
         if let Some(SessionSource::SubAgent(
@@ -596,21 +709,27 @@ impl AgentControl {
         )
         .await;
 
-        match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
-                    .await?;
-            }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
-                    new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
-                )
-                .await?;
-            }
+        let initial_input_result = self
+            .deliver_spawn_initial_input(new_thread.thread_id, &state, initial_input)
+            .await;
+        if self
+            .spawned_child_was_removed(&state, new_thread.thread_id)
+            .await
+        {
+            self.close_thread_spawn_edge_after_unexpected_child_exit(
+                new_thread.thread.as_ref(),
+                new_thread.thread_id,
+            )
+            .await?;
+            let error = initial_input_result
+                .err()
+                .unwrap_or(CodexErr::ThreadNotFound(new_thread.thread_id));
+            return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error });
         }
+        let initial_input_delivered = initial_input_result.is_ok();
+        let cancellation_after_initial_delivery =
+            initial_input_delivered && spawn_cancellation_requested(&options);
+        let effective_config = new_thread.thread.config_snapshot().await;
         if multi_agent_version != MultiAgentVersion::V2 {
             let child_reference = agent_metadata
                 .agent_path
@@ -625,11 +744,285 @@ impl AgentControl {
             );
         }
 
-        Ok(LiveAgent {
+        // A fork snapshot or watcher setup can yield after delivery. Check once more immediately
+        // before publishing the child so an already-observed cancellation never leaves it running.
+        let mut cancellation_after_initial_delivery = cancellation_after_initial_delivery
+            || (initial_input_delivered && spawn_cancellation_requested(&options));
+        let mut status = match &initial_input_result {
+            Ok(()) => self.get_status(new_thread.thread_id).await,
+            Err(error) => {
+                let message = format!("initial input delivery failed: {error}");
+                let status = AgentStatus::Errored(message.clone());
+                new_thread
+                    .thread
+                    .session
+                    .send_event_raw(Event {
+                        id: crate::session::new_submission_id(),
+                        msg: EventMsg::Error(ErrorEvent {
+                            message,
+                            codex_error_info: None,
+                        }),
+                    })
+                    .await;
+                status
+            }
+        };
+        let mut terminal_before_cancellation = false;
+        if cancellation_after_initial_delivery {
+            match self
+                .interrupt_spawned_agent_for_cancellation(new_thread.thread_id)
+                .await
+            {
+                Ok(SpawnCancellationResolution::Interrupted(interrupted_status)) => {
+                    status = interrupted_status;
+                }
+                Ok(SpawnCancellationResolution::NaturallyTerminal(natural_status)) => {
+                    terminal_before_cancellation = true;
+                    status = natural_status;
+                }
+                Err(error) => {
+                    if self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await
+                    {
+                        self.close_thread_spawn_edge_after_unexpected_child_exit(
+                            new_thread.thread.as_ref(),
+                            new_thread.thread_id,
+                        )
+                        .await?;
+                        return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error });
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        if self
+            .spawned_child_was_removed(&state, new_thread.thread_id)
+            .await
+        {
+            self.close_thread_spawn_edge_after_unexpected_child_exit(
+                new_thread.thread.as_ref(),
+                new_thread.thread_id,
+            )
+            .await?;
+            return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn {
+                error: CodexErr::ThreadNotFound(new_thread.thread_id),
+            });
+        }
+
+        #[cfg(test)]
+        self.wait_for_next_spawn_final_status().await;
+
+        // The final status and liveness checks above can yield. Re-sample cancellation at the
+        // publication boundary so a cancellation observed during that window follows the same
+        // interruption, natural-terminal, and removed-child reconciliation as an earlier one.
+        if initial_input_delivered
+            && !cancellation_after_initial_delivery
+            && spawn_cancellation_requested(&options)
+        {
+            cancellation_after_initial_delivery = true;
+            match self
+                .interrupt_spawned_agent_for_cancellation(new_thread.thread_id)
+                .await
+            {
+                Ok(SpawnCancellationResolution::Interrupted(interrupted_status)) => {
+                    status = interrupted_status;
+                }
+                Ok(SpawnCancellationResolution::NaturallyTerminal(natural_status)) => {
+                    terminal_before_cancellation = true;
+                    status = natural_status;
+                }
+                Err(error) => {
+                    if self
+                        .spawned_child_was_removed(&state, new_thread.thread_id)
+                        .await
+                    {
+                        self.close_thread_spawn_edge_after_unexpected_child_exit(
+                            new_thread.thread.as_ref(),
+                            new_thread.thread_id,
+                        )
+                        .await?;
+                        return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn { error });
+                    }
+                    return Err(error);
+                }
+            }
+            if self
+                .spawned_child_was_removed(&state, new_thread.thread_id)
+                .await
+            {
+                self.close_thread_spawn_edge_after_unexpected_child_exit(
+                    new_thread.thread.as_ref(),
+                    new_thread.thread_id,
+                )
+                .await?;
+                return Ok(SpawnAgentOutcome::ChildDiedDuringSpawn {
+                    error: CodexErr::ThreadNotFound(new_thread.thread_id),
+                });
+            }
+        }
+        let agent = LiveAgent {
             thread_id: new_thread.thread_id,
             metadata: agent_metadata,
-            status: self.get_status(new_thread.thread_id).await,
-        })
+            status,
+            effective_model: effective_config.model,
+            effective_reasoning_effort: effective_config.reasoning_effort,
+        };
+        match initial_input_result {
+            Ok(()) if terminal_before_cancellation => {
+                Ok(SpawnAgentOutcome::TerminalBeforeCancellation { agent })
+            }
+            Ok(()) if cancellation_after_initial_delivery => {
+                Ok(SpawnAgentOutcome::Cancelled { agent })
+            }
+            Ok(()) => Ok(SpawnAgentOutcome::Spawned(agent)),
+            Err(error) => Ok(SpawnAgentOutcome::InitialInputDeliveryFailed { agent, error }),
+        }
+    }
+
+    /// Stop a child whose initial input was accepted after its owning spawn call was cancelled.
+    /// `Interrupted` is a terminal state for that initial turn even though the child remains
+    /// available for a later explicit follow-up.
+    async fn interrupt_spawned_agent_for_cancellation(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<SpawnCancellationResolution> {
+        let mut status_rx = self.subscribe_status(agent_id).await?;
+        #[cfg(test)]
+        if self.take_kill_next_spawn_cancellation_interrupt_child().await {
+            let state = self.upgrade()?;
+            state
+                .get_thread(agent_id)
+                .await?
+                .shutdown_and_wait()
+                .await?;
+        }
+        #[cfg(test)]
+        if let Some(status) = self.take_next_spawn_cancellation_terminal_status().await {
+            let state = self.upgrade()?;
+            let thread = state.get_thread(agent_id).await?;
+            let msg = match status {
+                AgentStatus::Completed(last_agent_message) => {
+                    EventMsg::TurnComplete(TurnCompleteEvent {
+                        turn_id: "spawn-cancellation-window".to_string(),
+                        started_at: None,
+                        last_agent_message,
+                        compaction_events_in_turn: 0,
+                        final_model: None,
+                        model_snapshot: None,
+                        provider_usage: None,
+                        error: None,
+                        completed_at: None,
+                        duration_ms: None,
+                        time_to_first_token_ms: None,
+                    })
+                }
+                AgentStatus::Errored(message) => EventMsg::Error(ErrorEvent {
+                    message,
+                    codex_error_info: None,
+                }),
+                status => unreachable!("unsupported cancellation-window status: {status:?}"),
+            };
+            thread
+                .session
+                .send_event_raw(Event {
+                    id: crate::session::new_submission_id(),
+                    msg,
+                })
+                .await;
+        }
+        let status = status_rx.borrow().clone();
+        if is_naturally_terminal_spawn_status(&status) {
+            return Ok(SpawnCancellationResolution::NaturallyTerminal(status));
+        }
+        #[cfg(test)]
+        if self.take_remove_next_spawn_cancellation_interrupt_child().await {
+            self.shutdown_live_agent(agent_id).await?;
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+        self.interrupt_agent(agent_id).await?;
+        loop {
+            let status = status_rx.borrow().clone();
+            if !matches!(status, AgentStatus::PendingInit | AgentStatus::Running) {
+                return Ok(if is_naturally_terminal_spawn_status(&status) {
+                    SpawnCancellationResolution::NaturallyTerminal(status)
+                } else {
+                    SpawnCancellationResolution::Interrupted(status)
+                });
+            }
+            if status_rx.changed().await.is_err() {
+                let status = self.get_status(agent_id).await;
+                return Ok(if is_naturally_terminal_spawn_status(&status) {
+                    SpawnCancellationResolution::NaturallyTerminal(status)
+                } else {
+                    SpawnCancellationResolution::Interrupted(status)
+                });
+            }
+        }
+    }
+
+    async fn deliver_spawn_initial_input(
+        &self,
+        agent_id: ThreadId,
+        state: &Arc<ThreadManagerState>,
+        initial_input: SpawnInitialInput,
+    ) -> CodexResult<()> {
+        #[cfg(test)]
+        self.wait_for_next_spawn_initial_input().await;
+
+        #[cfg(test)]
+        if let Some(error) = self.take_next_spawn_initial_input_error().await {
+            return Err(error);
+        }
+
+        #[cfg(test)]
+        if self.take_kill_next_spawn_initial_input_child().await {
+            state
+                .get_thread(agent_id)
+                .await?
+                .shutdown_and_wait()
+                .await?;
+            let (thread, result) = state.send_op_with_thread(agent_id, Op::Interrupt).await;
+            return self
+                .handle_thread_request_result(agent_id, state, thread.as_ref(), result)
+                .await
+                .map(drop);
+        }
+
+        #[cfg(test)]
+        if self.take_remove_next_spawn_initial_input_child().await {
+            self.shutdown_live_agent(agent_id).await?;
+            return Err(CodexErr::ThreadNotFound(agent_id));
+        }
+
+        match initial_input {
+            SpawnInitialInput::UserInput(input) => self
+                .send_input_after_capacity_check(agent_id, state, input)
+                .await
+                .map(drop),
+            SpawnInitialInput::InterAgentCommunication(communication, context) => self
+                .send_inter_agent_communication_after_capacity_check(
+                    agent_id,
+                    state,
+                    communication,
+                    context,
+                )
+                .await
+                .map(drop),
+        }
+    }
+
+    /// A committed child is gone only when both live ownership authorities agree: the thread
+    /// manager no longer has the thread and the agent registry no longer has its metadata.
+    ///
+    /// The submission error is intentionally not part of this classification. Concurrent
+    /// shutdown can race a send or interrupt as either `InternalAgentDied` or `ThreadNotFound`.
+    async fn spawned_child_was_removed(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        agent_id: ThreadId,
+    ) -> bool {
+        state.get_thread(agent_id).await.is_err() && self.get_agent_metadata(agent_id).is_none()
     }
 
     async fn spawn_forked_thread(
@@ -967,4 +1360,11 @@ impl AgentControl {
 
         Ok((resumed_thread.thread_id, multi_agent_version))
     }
+}
+
+fn spawn_cancellation_requested(options: &SpawnAgentOptions) -> bool {
+    options
+        .cancellation_token
+        .as_ref()
+        .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
 }

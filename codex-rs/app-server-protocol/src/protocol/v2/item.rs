@@ -41,6 +41,7 @@ use codex_protocol::protocol::GuardianRiskLevel as CoreGuardianRiskLevel;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState as CoreSubAgentActivityTerminalState;
 use codex_protocol::protocol::TerminalWaitInfo as CoreTerminalWaitInfo;
 use codex_protocol::protocol::TerminalWaitPrimitive as CoreTerminalWaitPrimitive;
 use codex_shell_command::parse_command::shlex_join;
@@ -52,6 +53,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_with::serde_as;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io;
 use std::path::PathBuf;
 use ts_rs::TS;
@@ -375,10 +377,18 @@ pub enum ThreadItem {
         receiver_thread_ids: Vec<String>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
-        /// Model requested for the spawned agent, when applicable.
+        /// Effective model selected for the spawned agent, when available.
         model: Option<String>,
-        /// Reasoning effort requested for the spawned agent, when applicable.
+        /// Effective reasoning effort selected for the spawned agent, when available.
         reasoning_effort: Option<ReasoningEffort>,
+        /// Caller-provided model override for a spawned agent, when one was supplied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        requested_model: Option<String>,
+        /// Caller-provided reasoning-effort override for a spawned agent, when one was supplied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        requested_reasoning_effort: Option<ReasoningEffort>,
         /// Last known status of the target agents, when available.
         agents_states: HashMap<String, CollabAgentState>,
     },
@@ -387,6 +397,11 @@ pub enum ThreadItem {
     SubAgentActivity {
         id: String,
         kind: SubAgentActivityKind,
+        /// Additive terminal detail. `kind` intentionally retains the legacy
+        /// three-variant enum for exhaustive existing consumers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        terminal_state: Option<SubAgentActivityTerminalState>,
         agent_thread_id: String,
         agent_path: String,
         /// Effective model selected for the affected child, when known.
@@ -513,6 +528,110 @@ impl ThreadItem {
             ThreadItem::WebSearch(item) => &item.id,
             ThreadItem::Sleep(item) => &item.id,
             ThreadItem::ImageGeneration(item) => &item.id,
+        }
+    }
+}
+
+/// Carries caller-provided spawn overrides from a matching prior snapshot to its
+/// terminal snapshot without changing the effective values selected at completion.
+///
+/// Canonical item lifecycle events materialize their start and completion snapshots
+/// independently. Core deliberately records the effective model and effort on the
+/// terminal snapshot, so request provenance must be retained from the matching start or an
+/// earlier duplicate terminal snapshot.
+pub fn merge_spawn_request_provenance(completed: &mut ThreadItem, source: &ThreadItem) {
+    let (
+        completed_id,
+        completed_tool,
+        completed_status,
+        completed_requested_model,
+        completed_requested_reasoning_effort,
+    ) = match completed {
+        ThreadItem::CollabAgentToolCall {
+            id,
+            tool,
+            status,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } => (
+            id,
+            tool,
+            status,
+            requested_model,
+            requested_reasoning_effort,
+        ),
+        _ => return,
+    };
+    if *completed_tool != CollabAgentTool::SpawnAgent
+        || !matches!(
+            completed_status,
+            CollabAgentToolCallStatus::Completed | CollabAgentToolCallStatus::Failed
+        )
+    {
+        return;
+    }
+
+    let (
+        source_id,
+        source_tool,
+        source_status,
+        source_model,
+        source_reasoning_effort,
+        source_requested_model,
+        source_requested_reasoning_effort,
+    ) = match source {
+        ThreadItem::CollabAgentToolCall {
+            id,
+            tool,
+            status,
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        } => (
+            id,
+            tool,
+            status,
+            model,
+            reasoning_effort,
+            requested_model,
+            requested_reasoning_effort,
+        ),
+        _ => return,
+    };
+    if completed_id != source_id
+        || *source_tool != CollabAgentTool::SpawnAgent
+        || !matches!(
+            *source_status,
+            CollabAgentToolCallStatus::InProgress
+                | CollabAgentToolCallStatus::Completed
+                | CollabAgentToolCallStatus::Failed
+        )
+    {
+        return;
+    }
+
+    if completed_requested_model.is_none() {
+        completed_requested_model.clone_from(source_requested_model);
+        if completed_requested_model.is_none()
+            && matches!(*source_status, CollabAgentToolCallStatus::InProgress)
+        {
+            // Canonical lifecycle records written before request provenance had dedicated
+            // fields stored the caller's spawn override in the start snapshot's legacy effective
+            // slots. Only an in-progress start has that interpretation: a terminal snapshot's
+            // `model` and `reasoning_effort` are confirmed effective values and must not be
+            // reclassified as a request.
+            completed_requested_model.clone_from(source_model);
+        }
+    }
+    if completed_requested_reasoning_effort.is_none() {
+        completed_requested_reasoning_effort.clone_from(source_requested_reasoning_effort);
+        if completed_requested_reasoning_effort.is_none()
+            && matches!(*source_status, CollabAgentToolCallStatus::InProgress)
+        {
+            completed_requested_reasoning_effort.clone_from(source_reasoning_effort);
         }
     }
 }
@@ -953,28 +1072,56 @@ impl From<CoreTurnItem> for ThreadItem {
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
             },
-            CoreTurnItem::CollabAgentToolCall(call) => ThreadItem::CollabAgentToolCall {
-                id: call.id,
-                tool: call.tool.into(),
-                status: call.status.into(),
-                sender_thread_id: call.sender_thread_id.to_string(),
-                receiver_thread_ids: call
-                    .receiver_thread_ids
+            CoreTurnItem::CollabAgentToolCall(call) => {
+                let receiver_agents = call
+                    .receiver_agents
                     .into_iter()
-                    .map(String::from)
-                    .collect(),
-                prompt: call.prompt,
-                model: call.model,
-                reasoning_effort: call.reasoning_effort,
-                agents_states: call
+                    .map(|agent| {
+                        (
+                            agent.thread_id.to_string(),
+                            (agent.agent_nickname, agent.agent_role),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let agents_states = call
                     .agents_states
                     .into_iter()
-                    .map(|(thread_id, status)| (thread_id.to_string(), status.into()))
-                    .collect(),
+                    .map(|(thread_id, status)| {
+                        (
+                            thread_id.to_string(),
+                            CollabAgentState::from(status),
+                        )
+                    })
+                    .collect();
+                ThreadItem::CollabAgentToolCall {
+                    id: call.id,
+                    tool: call.tool.into(),
+                    status: call.status.into(),
+                    sender_thread_id: call.sender_thread_id.to_string(),
+                    receiver_thread_ids: call
+                        .receiver_thread_ids
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
+                    prompt: call.prompt,
+                    model: call.model,
+                    reasoning_effort: call.reasoning_effort,
+                    requested_model: call.requested_model,
+                    requested_reasoning_effort: call.requested_reasoning_effort,
+                    agents_states: normalize_legacy_collab_agent_states(
+                        agents_states,
+                        receiver_agents.into_iter().map(
+                            |(thread_id, (agent_nickname, agent_role))| {
+                                (thread_id, agent_nickname, agent_role)
+                            },
+                        ),
+                    ),
+                }
             },
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {
                 id: activity.id,
                 kind: activity.kind.into(),
+                terminal_state: activity.terminal_state.map(Into::into),
                 agent_thread_id: activity.agent_thread_id.to_string(),
                 agent_path: String::from(activity.agent_path),
                 model: activity.model,
@@ -1263,6 +1410,23 @@ impl From<CoreSubAgentActivityKind> for SubAgentActivityKind {
     }
 }
 
+/// Additive terminal detail for consumers that distinguish failed sub-agents
+/// from ordinary interruption without extending `SubAgentActivityKind`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum SubAgentActivityTerminalState {
+    Errored,
+}
+
+impl From<CoreSubAgentActivityTerminalState> for SubAgentActivityTerminalState {
+    fn from(value: CoreSubAgentActivityTerminalState) -> Self {
+        match value {
+            CoreSubAgentActivityTerminalState::Errored => Self::Errored,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1282,39 +1446,99 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+    /// V1 lifecycle events identify agents by nickname and role before the child thread starts.
+    /// V2 agent paths remain available through `SubAgentActivity`.
+    #[serde(
+        default,
+        rename = "agentNickname",
+        alias = "agent_nickname",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(rename = "agentNickname")]
+    #[ts(rename = "agentNickname", optional)]
+    pub agent_nickname: Option<String>,
+    #[serde(
+        default,
+        rename = "agentRole",
+        alias = "agent_role",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(rename = "agentRole")]
+    #[ts(rename = "agentRole", optional)]
+    pub agent_role: Option<String>,
+}
+
+impl CollabAgentState {
+    pub(crate) fn with_agent_identity(
+        mut self,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) -> Self {
+        self.agent_nickname = agent_nickname;
+        self.agent_role = agent_role;
+        self
+    }
+
+    fn merge_agent_identity(
+        &mut self,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) {
+        if let Some(agent_nickname) = agent_nickname {
+            self.agent_nickname = Some(agent_nickname);
+        }
+        if let Some(agent_role) = agent_role {
+            self.agent_role = Some(agent_role);
+        }
+    }
+}
+
+/// Carries V1 receiver identity into the v2 state map without changing a reported status.
+///
+/// Older lifecycle records can supply a receiver nickname and role before they have persisted an
+/// `agents_states` entry. Materializing that receiver as pending lets v2 consumers render the
+/// durable identity while preserving explicit terminal state and message data when present.
+pub(crate) fn normalize_legacy_collab_agent_states(
+    mut agents_states: HashMap<String, CollabAgentState>,
+    receiver_agents: impl IntoIterator<Item = (String, Option<String>, Option<String>)>,
+) -> HashMap<String, CollabAgentState> {
+    for (thread_id, agent_nickname, agent_role) in receiver_agents {
+        if agent_nickname.is_none() && agent_role.is_none() {
+            continue;
+        }
+        match agents_states.entry(thread_id) {
+            Entry::Occupied(mut state) => {
+                state
+                    .get_mut()
+                    .merge_agent_identity(agent_nickname, agent_role);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(
+                    CollabAgentState::from(CoreAgentStatus::PendingInit)
+                        .with_agent_identity(agent_nickname, agent_role),
+                );
+            }
+        }
+    }
+    agents_states
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
     fn from(value: CoreAgentStatus) -> Self {
-        match value {
-            CoreAgentStatus::PendingInit => Self {
-                status: CollabAgentStatus::PendingInit,
-                message: None,
-            },
-            CoreAgentStatus::Running => Self {
-                status: CollabAgentStatus::Running,
-                message: None,
-            },
-            CoreAgentStatus::Interrupted => Self {
-                status: CollabAgentStatus::Interrupted,
-                message: None,
-            },
-            CoreAgentStatus::Completed(message) => Self {
-                status: CollabAgentStatus::Completed,
-                message,
-            },
-            CoreAgentStatus::Errored(message) => Self {
-                status: CollabAgentStatus::Errored,
-                message: Some(message),
-            },
-            CoreAgentStatus::Shutdown => Self {
-                status: CollabAgentStatus::Shutdown,
-                message: None,
-            },
-            CoreAgentStatus::NotFound => Self {
-                status: CollabAgentStatus::NotFound,
-                message: None,
-            },
+        let (status, message) = match value {
+            CoreAgentStatus::PendingInit => (CollabAgentStatus::PendingInit, None),
+            CoreAgentStatus::Running => (CollabAgentStatus::Running, None),
+            CoreAgentStatus::Interrupted => (CollabAgentStatus::Interrupted, None),
+            CoreAgentStatus::Completed(message) => (CollabAgentStatus::Completed, message),
+            CoreAgentStatus::Errored(message) => (CollabAgentStatus::Errored, Some(message)),
+            CoreAgentStatus::Shutdown => (CollabAgentStatus::Shutdown, None),
+            CoreAgentStatus::NotFound => (CollabAgentStatus::NotFound, None),
+        };
+        Self {
+            status,
+            message,
+            agent_nickname: None,
+            agent_role: None,
         }
     }
 }

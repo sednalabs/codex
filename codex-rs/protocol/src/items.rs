@@ -20,6 +20,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReviewOutputEvent;
 use crate::protocol::ReviewTarget;
 use crate::protocol::SubAgentActivityKind;
+use crate::protocol::SubAgentActivityTerminalState;
 use crate::protocol::TerminalWaitInfo;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
@@ -320,6 +321,14 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
+    /// Caller-provided model override for a spawned agent, when one was supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub requested_model: Option<String>,
+    /// Caller-provided reasoning-effort override for a spawned agent, when one was supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub requested_reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
 }
@@ -328,6 +337,11 @@ pub struct CollabAgentToolCallItem {
 pub struct SubAgentActivityItem {
     pub id: String,
     pub kind: SubAgentActivityKind,
+    /// Additive terminal state for consumers which distinguish an errored
+    /// child from the legacy interrupted activity kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub terminal_state: Option<SubAgentActivityTerminalState>,
     pub agent_thread_id: ThreadId,
     pub agent_path: AgentPath,
     /// Effective model selected for the affected child, when known.

@@ -3232,8 +3232,10 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             sender_thread_id: thread.id.clone(),
             receiver_thread_ids: Vec::new(),
             prompt: Some(CHILD_PROMPT.to_string()),
-            model: Some(REQUESTED_MODEL.to_string()),
-            reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            model: None,
+            reasoning_effort: None,
+            requested_model: Some(REQUESTED_MODEL.to_string()),
+            requested_reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
             agents_states: HashMap::new(),
         }
     );
@@ -3259,6 +3261,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         prompt,
         model,
         reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
         agents_states,
     } = spawn_completed
     else {
@@ -3276,6 +3280,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
+    assert_eq!(requested_model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(requested_reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");
@@ -3584,6 +3590,8 @@ config_file = "./custom-role.toml"
         prompt,
         model,
         reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
         agents_states,
     } = spawn_completed
     else {
@@ -3601,6 +3609,8 @@ config_file = "./custom-role.toml"
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(ROLE_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
+    assert_eq!(requested_model, Some(ROLE_MODEL.to_string()));
+    assert_eq!(requested_reasoning_effort, Some(ROLE_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");

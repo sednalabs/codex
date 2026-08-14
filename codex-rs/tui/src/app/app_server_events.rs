@@ -1,6 +1,7 @@
 //! App-server event stream handling for the TUI app.
 
 use super::App;
+use super::ThreadLifecycleTarget;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
 use super::app_server_event_targets::server_request_thread_id;
@@ -12,7 +13,7 @@ use crate::app_server_session::AppServerSession;
 use crate::app_server_session::status_account_display_from_auth_mode;
 use crate::computer_use_provider::ComputerUseProviderOutcome;
 use crate::computer_use_provider::handle_computer_use;
-use codex_app_server_client::AppServerEvent;
+use codex_app_server_client::TaggedAppServerEvent;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
@@ -34,10 +35,11 @@ impl App {
     pub(super) async fn handle_app_server_event(
         &mut self,
         app_server_client: &AppServerSession,
-        event: AppServerEvent,
+        event: impl Into<TaggedAppServerEvent>,
     ) {
+        let event = event.into();
         match event {
-            AppServerEvent::Lagged { skipped } => {
+            TaggedAppServerEvent::Lagged { skipped } => {
                 tracing::warn!(
                     skipped,
                     "app-server event consumer lagged; dropping ignored events"
@@ -45,18 +47,434 @@ impl App {
                 self.refresh_mcp_startup_expected_servers_from_config();
                 self.chat_widget.finish_mcp_startup_after_lag();
             }
-            AppServerEvent::ServerNotification(notification) => {
+            TaggedAppServerEvent::ServerNotification(notification) => {
                 self.handle_server_notification_event(app_server_client, notification)
                     .await;
             }
-            AppServerEvent::ServerRequest(request) => {
+            TaggedAppServerEvent::ServerRequest(request) => {
                 self.handle_server_request_event(app_server_client, request)
                     .await;
             }
-            AppServerEvent::Disconnected { message } => {
+            TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                notification,
+            } => {
+                self.handle_thread_subscription_notification(
+                    app_server_client,
+                    thread_subscription_id,
+                    notification,
+                )
+                .await;
+            }
+            TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request,
+            } => {
+                self.handle_thread_subscription_request(
+                    app_server_client,
+                    thread_subscription_id,
+                    request,
+                )
+                .await;
+            }
+            TaggedAppServerEvent::Disconnected { message } => {
                 tracing::warn!("app-server event stream disconnected: {message}");
                 self.chat_widget.add_error_message(message.clone());
                 self.app_event_tx.send(AppEvent::FatalExitRequest(message));
+            }
+        }
+    }
+
+    /// Completes the response-to-event registration handshake. App-server
+    /// registers and returns the identity before it replays pending requests;
+    /// the TUI installs the matching lifecycle before draining frames that may
+    /// have arrived around that response.
+    pub(super) async fn bind_thread_subscription_and_flush(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_id: codex_protocol::ThreadId,
+        thread_subscription_id: Option<String>,
+    ) {
+        let Some(thread_subscription_id) = thread_subscription_id else {
+            return;
+        };
+        self.bind_thread_subscription(thread_id, Some(thread_subscription_id.clone()));
+
+        self.flush_deferred_thread_subscription_events(app_server_client, &thread_subscription_id)
+            .await;
+    }
+
+    /// Drains only frames bearing the already-bound immutable identity. This
+    /// keeps a concurrent attach for another thread or generation deferred
+    /// until its own authoritative handshake arrives.
+    async fn flush_deferred_thread_subscription_events(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: &str,
+    ) {
+        let deferred = std::mem::take(&mut self.deferred_thread_subscription_events);
+        for event in deferred {
+            if thread_subscription_id_for_event(&event)
+                .is_some_and(|candidate| candidate == thread_subscription_id)
+            {
+                match event {
+                    TaggedAppServerEvent::ThreadServerNotification { notification, .. } => {
+                        let Some(target) = self
+                            .thread_subscription_targets
+                            .get(thread_subscription_id)
+                            .copied()
+                            .map(|binding| match binding {
+                                super::ThreadSubscriptionBinding::Active(target)
+                                | super::ThreadSubscriptionBinding::Tombstoned(target) => target,
+                            })
+                        else {
+                            self.defer_thread_subscription_event(
+                                app_server_client,
+                                TaggedAppServerEvent::ThreadServerNotification {
+                                    thread_subscription_id: thread_subscription_id.to_string(),
+                                    notification,
+                                },
+                            )
+                            .await;
+                            continue;
+                        };
+                        self.handle_thread_server_notification_at_ingress(
+                            app_server_client,
+                            target,
+                            notification,
+                        )
+                        .await;
+                    }
+                    TaggedAppServerEvent::ThreadServerRequest { request, .. } => {
+                        let Some(binding) = self
+                            .thread_subscription_targets
+                            .get(thread_subscription_id)
+                            .copied()
+                        else {
+                            self.defer_thread_subscription_event(
+                                app_server_client,
+                                TaggedAppServerEvent::ThreadServerRequest {
+                                    thread_subscription_id: thread_subscription_id.to_string(),
+                                    request,
+                                },
+                            )
+                            .await;
+                            continue;
+                        };
+                        match binding {
+                            super::ThreadSubscriptionBinding::Active(target) => {
+                                self.handle_thread_server_request_at_ingress(
+                                    app_server_client,
+                                    target,
+                                    request,
+                                )
+                                .await;
+                            }
+                            super::ThreadSubscriptionBinding::Tombstoned(target) => {
+                                self.reject_stale_thread_subscription_request_once(
+                                    app_server_client,
+                                    thread_subscription_id.to_string(),
+                                    request,
+                                    format!(
+                                        "The TUI no longer accepts requests for thread {} lifecycle {}.",
+                                        target.thread_id, target.lifecycle_generation
+                                    ),
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                self.defer_thread_subscription_event(app_server_client, event)
+                    .await;
+            }
+        }
+        self.prune_thread_subscription_tombstones();
+    }
+
+    /// Queues traffic whose immutable subscription identity has not yet been
+    /// authoritatively bound. A full deferred queue must never retain an
+    /// unanswered server request, so overflowed requests are rejected once
+    /// using their original JSON-RPC id; notifications are safe to drop
+    /// because no local lifecycle has accepted their token.
+    async fn defer_thread_subscription_event(
+        &mut self,
+        app_server_client: &AppServerSession,
+        event: TaggedAppServerEvent,
+    ) {
+        if self.deferred_thread_subscription_events.len()
+            < super::DEFERRED_THREAD_SUBSCRIPTION_EVENT_LIMIT
+        {
+            self.deferred_thread_subscription_events.push_back(event);
+            return;
+        }
+
+        match event {
+            TaggedAppServerEvent::ThreadServerRequest {
+                thread_subscription_id,
+                request,
+            } => {
+                self.reject_stale_thread_subscription_request_once(
+                    app_server_client,
+                    thread_subscription_id,
+                    request,
+                    "The TUI could not attach this thread request before its bounded subscription queue filled.".to_string(),
+                )
+                .await;
+            }
+            TaggedAppServerEvent::ThreadServerNotification {
+                thread_subscription_id,
+                ..
+            } => {
+                tracing::debug!(
+                    thread_subscription_id,
+                    "dropping deferred app-server notification after bounded subscription queue overflow"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Retains each stale request id long enough to suppress duplicate delayed
+    /// transport delivery while bounding the per-session receipt history.
+    async fn reject_stale_thread_subscription_request_once(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        request: ServerRequest,
+        reason: String,
+    ) {
+        let request_id = request.id().clone();
+        if self
+            .rejected_stale_thread_subscription_requests
+            .iter()
+            .any(|entry| entry == &(thread_subscription_id.clone(), request_id.clone()))
+        {
+            tracing::debug!(
+                request_id = ?request.id(),
+                thread_subscription_id,
+                "dropping duplicate stale app-server request"
+            );
+            return;
+        }
+        if self.rejected_stale_thread_subscription_requests.len()
+            >= super::REJECTED_STALE_THREAD_SUBSCRIPTION_REQUEST_LIMIT
+        {
+            self.rejected_stale_thread_subscription_requests.pop_front();
+        }
+        self.rejected_stale_thread_subscription_requests
+            .push_back((thread_subscription_id.clone(), request_id.clone()));
+        if let Err(err) = self
+            .reject_app_server_request(app_server_client, request_id, reason)
+            .await
+        {
+            tracing::warn!(
+                request_id = ?request.id(),
+                thread_subscription_id,
+                error = %err,
+                "failed to reject stale app-server request"
+            );
+        }
+    }
+
+    /// Removes only unreferenced stale subscription identities. If an old
+    /// token later arrives after pruning, the current/discarded thread
+    /// lifecycle below still fences it instead of treating it as a new attach.
+    pub(super) fn prune_thread_subscription_tombstones(&mut self) {
+        let mut tombstone_count = self
+            .thread_subscription_targets
+            .values()
+            .filter(|binding| matches!(binding, super::ThreadSubscriptionBinding::Tombstoned(_)))
+            .count();
+        while tombstone_count > super::THREAD_SUBSCRIPTION_TOMBSTONE_LIMIT {
+            let removable_subscription_id = self
+                .thread_subscription_targets
+                .iter()
+                .find_map(|(subscription_id, binding)| {
+                    matches!(binding, super::ThreadSubscriptionBinding::Tombstoned(_))
+                        .then_some(subscription_id)
+                })
+                .filter(|subscription_id| {
+                    !self.deferred_thread_subscription_events.iter().any(|event| {
+                        thread_subscription_id_for_event(event)
+                            .is_some_and(|candidate| candidate == subscription_id)
+                    })
+                })
+                .cloned();
+            let Some(subscription_id) = removable_subscription_id else {
+                break;
+            };
+            self.thread_subscription_targets.remove(&subscription_id);
+            tombstone_count -= 1;
+        }
+    }
+
+    fn thread_subscription_lifecycle_is_fenced(
+        &self,
+        thread_id: codex_protocol::ThreadId,
+    ) -> bool {
+        self.thread_is_discarded(thread_id)
+            || self.thread_subscription_targets.values().any(|binding| {
+                matches!(
+                    binding,
+                    super::ThreadSubscriptionBinding::Active(target)
+                        | super::ThreadSubscriptionBinding::Tombstoned(target)
+                        if target.thread_id == thread_id
+                )
+            })
+    }
+
+    /// A spawned child can be attached by the server without a corresponding
+    /// start/resume/fork response. Its tagged `thread/started` notification is
+    /// the server-authoritative lifecycle handshake: bind exactly that token
+    /// before routing the child metadata and any traffic deferred ahead of it.
+    ///
+    /// This is deliberately narrower than ordinary thread-id routing. Once a
+    /// local lifecycle has been discarded or has any active/tombstoned token,
+    /// a different unknown token cannot resurrect it. The normal explicit
+    /// attach response remains the only path that can establish that later
+    /// lifecycle.
+    async fn handle_automatic_thread_subscription_started(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        notification: ServerNotification,
+    ) -> bool {
+        let ServerNotification::ThreadStarted(started) = &notification else {
+            return false;
+        };
+        let Ok(thread_id) = codex_protocol::ThreadId::from_string(&started.thread.id) else {
+            tracing::debug!(
+                thread_subscription_id,
+                thread_id = %started.thread.id,
+                "dropping automatic thread-started subscription with an invalid thread id"
+            );
+            return true;
+        };
+
+        if self.thread_subscription_lifecycle_is_fenced(thread_id) {
+            tracing::debug!(
+                %thread_id,
+                thread_subscription_id,
+                "dropping unknown automatic thread-started subscription for an existing lifecycle"
+            );
+            return true;
+        }
+
+        let target = self.thread_lifecycle_target_at_ingress(thread_id);
+        self.bind_thread_subscription_to_target(target, Some(thread_subscription_id.clone()));
+        self.handle_thread_server_notification_at_ingress(app_server_client, target, notification)
+            .await;
+        self.flush_deferred_thread_subscription_events(app_server_client, &thread_subscription_id)
+            .await;
+        true
+    }
+
+    async fn handle_thread_subscription_notification(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        notification: ServerNotification,
+    ) {
+        match self
+            .thread_subscription_targets
+            .get(&thread_subscription_id)
+            .copied()
+        {
+            Some(super::ThreadSubscriptionBinding::Active(target))
+            | Some(super::ThreadSubscriptionBinding::Tombstoned(target)) => {
+                self.handle_thread_server_notification_at_ingress(
+                    app_server_client,
+                    target,
+                    notification,
+                )
+                .await;
+            }
+            None => {
+                if !self
+                    .handle_automatic_thread_subscription_started(
+                        app_server_client,
+                        thread_subscription_id.clone(),
+                        notification.clone(),
+                    )
+                    .await
+                {
+                    if let ServerNotificationThreadTarget::Thread(thread_id) =
+                        server_notification_thread_target(&notification)
+                        && self.thread_subscription_lifecycle_is_fenced(thread_id)
+                    {
+                        tracing::debug!(
+                            %thread_id,
+                            thread_subscription_id,
+                            "dropping unknown tagged notification for a fenced thread lifecycle"
+                        );
+                    } else {
+                        self.defer_thread_subscription_event(
+                            app_server_client,
+                            TaggedAppServerEvent::ThreadServerNotification {
+                                thread_subscription_id,
+                                notification,
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_thread_subscription_request(
+        &mut self,
+        app_server_client: &AppServerSession,
+        thread_subscription_id: String,
+        request: ServerRequest,
+    ) {
+        match self
+            .thread_subscription_targets
+            .get(&thread_subscription_id)
+            .copied()
+        {
+            Some(super::ThreadSubscriptionBinding::Active(target)) => {
+                self.handle_thread_server_request_at_ingress(app_server_client, target, request)
+                    .await;
+            }
+            Some(super::ThreadSubscriptionBinding::Tombstoned(target)) => {
+                self.reject_stale_thread_subscription_request_once(
+                    app_server_client,
+                    thread_subscription_id,
+                    request,
+                    format!(
+                        "The TUI no longer accepts requests for thread {} lifecycle {}.",
+                        target.thread_id, target.lifecycle_generation
+                    ),
+                )
+                .await;
+            }
+            None => {
+                if let Some(thread_id) = server_request_thread_id(&request)
+                    && self.thread_subscription_lifecycle_is_fenced(thread_id)
+                {
+                    self.reject_stale_thread_subscription_request_once(
+                        app_server_client,
+                        thread_subscription_id,
+                        request,
+                        format!(
+                            "The TUI no longer accepts requests for thread {thread_id}."
+                        ),
+                    )
+                    .await;
+                } else {
+                    self.defer_thread_subscription_event(
+                        app_server_client,
+                        TaggedAppServerEvent::ThreadServerRequest {
+                            thread_subscription_id,
+                            request,
+                        },
+                    )
+                    .await;
+                }
             }
         }
     }
@@ -66,8 +484,87 @@ impl App {
         app_server_client: &AppServerSession,
         notification: ServerNotification,
     ) {
+        let ingress_target = match server_notification_thread_target(&notification) {
+            ServerNotificationThreadTarget::Thread(thread_id) => {
+                Some(self.thread_lifecycle_target_at_ingress(thread_id))
+            }
+            ServerNotificationThreadTarget::InvalidThreadId(_)
+            | ServerNotificationThreadTarget::AppScoped
+            | ServerNotificationThreadTarget::Global => None,
+        };
+        self.handle_server_notification_event_at_ingress(
+            app_server_client,
+            notification,
+            ingress_target,
+        )
+        .await;
+    }
+
+    /// Delivers a notification from a listener which already captured its thread lifecycle.
+    ///
+    /// Listener work must retain this token across asynchronous hand-off; recomputing it here
+    /// would let an old subscription event mutate a same-id reattachment.
+    pub(super) async fn handle_thread_server_notification_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        target: ThreadLifecycleTarget,
+        notification: ServerNotification,
+    ) {
+        self.handle_server_notification_event_at_ingress(
+            app_server_client,
+            notification,
+            Some(target),
+        )
+        .await;
+    }
+
+    async fn handle_server_notification_event_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        notification: ServerNotification,
+        ingress_target: Option<ThreadLifecycleTarget>,
+    ) {
+        let thread_target = server_notification_thread_target(&notification);
+        if let Some(ingress_target) = ingress_target {
+            if !matches!(
+                &thread_target,
+                ServerNotificationThreadTarget::Thread(thread_id)
+                    if *thread_id == ingress_target.thread_id
+            ) || !self.thread_accepts_ingress_target(ingress_target)
+            {
+                tracing::debug!(
+                    thread_id = %ingress_target.thread_id,
+                    lifecycle_generation = ingress_target.lifecycle_generation,
+                    "dropping app-server notification from a stale thread ingress listener"
+                );
+                return;
+            }
+        }
+        if let ServerNotificationThreadTarget::Thread(thread_id) = &thread_target
+            && self.thread_is_discarded(*thread_id)
+        {
+            tracing::debug!(
+                %thread_id,
+                "dropping app-server notification for discarded thread lifecycle"
+            );
+            return;
+        }
         match &notification {
             ServerNotification::ServerRequestResolved(notification) => {
+                if let Some(ingress_target) = ingress_target
+                    && let Some(owner) = self
+                        .pending_app_server_requests
+                        .thread_target_for_request_id(&notification.request_id)
+                    && owner != ingress_target
+                {
+                    tracing::debug!(
+                        thread_id = %ingress_target.thread_id,
+                        lifecycle_generation = ingress_target.lifecycle_generation,
+                        request_id = ?notification.request_id,
+                        "dropping server-request resolution for a different thread lifecycle"
+                    );
+                    return;
+                }
                 if let Some(request) = self
                     .pending_app_server_requests
                     .resolve_notification(&notification.request_id)
@@ -156,12 +653,13 @@ impl App {
             _ => {}
         }
 
-        match server_notification_thread_target(&notification) {
+        match thread_target {
             ServerNotificationThreadTarget::Thread(thread_id) => {
                 let result = if self.primary_thread_id == Some(thread_id)
                     || self.primary_thread_id.is_none()
                 {
-                    self.enqueue_primary_thread_notification(notification).await
+                    self.enqueue_primary_thread_notification(thread_id, notification)
+                        .await
                 } else {
                     self.enqueue_thread_notification(thread_id, notification)
                         .await
@@ -197,6 +695,87 @@ impl App {
         app_server_client: &AppServerSession,
         request: ServerRequest,
     ) {
+        let ingress_target = server_request_thread_id(&request)
+            .map(|thread_id| self.thread_lifecycle_target_at_ingress(thread_id));
+        self.handle_server_request_event_at_ingress(app_server_client, request, ingress_target)
+            .await;
+    }
+
+    /// Delivers a request from a listener which already captured its thread lifecycle.
+    ///
+    /// Unlike notifications, stale requests are explicitly rejected with their original JSON-RPC
+    /// id, so the old server-side call cannot remain pending after the UI has moved on.
+    pub(super) async fn handle_thread_server_request_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        target: ThreadLifecycleTarget,
+        request: ServerRequest,
+    ) {
+        self.handle_server_request_event_at_ingress(app_server_client, request, Some(target))
+            .await;
+    }
+
+    async fn handle_server_request_event_at_ingress(
+        &mut self,
+        app_server_client: &AppServerSession,
+        request: ServerRequest,
+        ingress_target: Option<ThreadLifecycleTarget>,
+    ) {
+        let thread_id = server_request_thread_id(&request);
+        if let Some(ingress_target) = ingress_target
+            && (thread_id != Some(ingress_target.thread_id)
+                || !self.thread_accepts_ingress_target(ingress_target))
+        {
+            tracing::debug!(
+                thread_id = %ingress_target.thread_id,
+                lifecycle_generation = ingress_target.lifecycle_generation,
+                request_id = ?request.id(),
+                "rejecting app-server request from a stale thread ingress listener"
+            );
+            if let Err(err) = self
+                .reject_app_server_request(
+                    app_server_client,
+                    request.id().clone(),
+                    format!(
+                        "The TUI no longer accepts requests for thread {} lifecycle {}.",
+                        ingress_target.thread_id, ingress_target.lifecycle_generation
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    thread_id = %ingress_target.thread_id,
+                    error = %err,
+                    "failed to reject stale app-server request"
+                );
+            }
+            return;
+        }
+        if thread_id.is_some_and(|thread_id| self.thread_is_discarded(thread_id)) {
+            let thread_id = thread_id.expect("checked as present above");
+            tracing::debug!(
+                %thread_id,
+                request_id = ?request.id(),
+                "rejecting app-server request for discarded thread lifecycle"
+            );
+            if let Err(err) = self
+                .reject_app_server_request(
+                    app_server_client,
+                    request.id().clone(),
+                    format!(
+                        "The TUI discarded thread {thread_id} before this request could be handled."
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %thread_id,
+                    error = %err,
+                    "failed to reject discarded app-server request"
+                );
+            }
+            return;
+        }
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
             match handle_computer_use(params).await {
@@ -231,10 +810,14 @@ impl App {
             return;
         }
 
-        if let Some(unsupported) = self
-            .pending_app_server_requests
-            .note_server_request(&request)
-        {
+        let unsupported = if let Some(target) = ingress_target {
+            self.pending_app_server_requests
+                .note_thread_server_request_for_lifecycle(target, &request)
+        } else {
+            self.pending_app_server_requests
+                .note_server_request(&request)
+        };
+        if let Some(unsupported) = unsupported {
             tracing::warn!(
                 request_id = ?unsupported.request_id,
                 message = unsupported.message,
@@ -255,19 +838,34 @@ impl App {
             return;
         }
 
-        let Some(thread_id) = server_request_thread_id(&request) else {
+        let Some(thread_id) = thread_id else {
             tracing::warn!("ignoring threadless app-server request");
             return;
         };
 
         let result =
             if self.primary_thread_id == Some(thread_id) || self.primary_thread_id.is_none() {
-                self.enqueue_primary_thread_request(request).await
+                self.enqueue_primary_thread_request(thread_id, request)
+                    .await
             } else {
                 self.enqueue_thread_request(thread_id, request).await
             };
         if let Err(err) = result {
             tracing::warn!("failed to enqueue app-server request: {err}");
         }
+    }
+}
+
+fn thread_subscription_id_for_event(event: &TaggedAppServerEvent) -> Option<&str> {
+    match event {
+        TaggedAppServerEvent::ThreadServerNotification {
+            thread_subscription_id,
+            ..
+        }
+        | TaggedAppServerEvent::ThreadServerRequest {
+            thread_subscription_id,
+            ..
+        } => Some(thread_subscription_id),
+        _ => None,
     }
 }

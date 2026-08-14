@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 
 use super::App;
+use super::ThreadLifecycleTarget;
 use crate::app_command::AppCommand;
 use crate::app_server_approval_conversions::granted_permission_profile_from_request;
 use crate::app_server_session::AppServerSession;
@@ -12,6 +13,7 @@ use codex_app_server_protocol::McpServerElicitationRequestResponse;
 use codex_app_server_protocol::PermissionsRequestApprovalResponse;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_protocol::ThreadId;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 
 impl App {
@@ -67,6 +69,17 @@ pub(crate) enum ResolvedAppServerRequest {
     },
 }
 
+/// A request removed from a discarded thread's local UI state.
+///
+/// Keep the original JSON-RPC id alongside the UI identity. The id is required to terminate the
+/// pending server request after its prompt has been removed, without keeping a discarded thread
+/// reachable through the normal response path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ClearedAppServerRequest {
+    pub(super) request_id: AppServerRequestId,
+    pub(super) request: ResolvedAppServerRequest,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PendingAppServerRequests {
     exec_approvals: HashMap<String, AppServerRequestId>,
@@ -74,15 +87,27 @@ pub(super) struct PendingAppServerRequests {
     permissions_approvals: HashMap<String, AppServerRequestId>,
     user_inputs: HashMap<String, VecDeque<PendingUserInputRequest>>,
     mcp_requests: HashMap<McpRequestKey, AppServerRequestId>,
+    request_threads: HashMap<AppServerRequestId, ThreadLifecycleTarget>,
 }
 
 impl PendingAppServerRequests {
+    /// Returns every thread that currently owns at least one unresolved server request.
+    pub(super) fn pending_thread_ids(&self) -> Vec<ThreadId> {
+        self.request_threads
+            .values()
+            .map(|target| target.thread_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     pub(super) fn clear(&mut self) {
         self.exec_approvals.clear();
         self.file_change_approvals.clear();
         self.permissions_approvals.clear();
         self.user_inputs.clear();
         self.mcp_requests.clear();
+        self.request_threads.clear();
     }
 
     pub(super) fn note_server_request(
@@ -175,6 +200,77 @@ impl PendingAppServerRequests {
                 })
             }
         }
+    }
+
+    /// Records a request as pending for exactly one TUI thread. Keeping this ownership beside
+    /// the global request-id indexes lets a discarded side thread remove only its own pending
+    /// approvals, inputs, and elicitation requests.
+    pub(super) fn note_thread_server_request(
+        &mut self,
+        thread_id: ThreadId,
+        request: &ServerRequest,
+    ) -> Option<UnsupportedAppServerRequest> {
+        self.note_thread_server_request_for_lifecycle(
+            ThreadLifecycleTarget {
+                thread_id,
+                lifecycle_generation: 0,
+            },
+            request,
+        )
+    }
+
+    /// Records a request against the exact thread presentation which received it. This is kept
+    /// beside the global request-id indexes so an inactive prompt can retain its own response
+    /// generation even while another thread is displayed.
+    pub(super) fn note_thread_server_request_for_lifecycle(
+        &mut self,
+        target: ThreadLifecycleTarget,
+        request: &ServerRequest,
+    ) -> Option<UnsupportedAppServerRequest> {
+        let unsupported = self.note_server_request(request);
+        if unsupported.is_none()
+            && let Some(request_id) = pending_server_request_id(request)
+        {
+            self.request_threads.insert(request_id, target);
+        }
+        unsupported
+    }
+
+    pub(super) fn thread_target_for_request(
+        &self,
+        request: &ServerRequest,
+    ) -> Option<ThreadLifecycleTarget> {
+        self.request_threads.get(request.id()).copied()
+    }
+
+    pub(super) fn thread_target_for_request_id(
+        &self,
+        request_id: &AppServerRequestId,
+    ) -> Option<ThreadLifecycleTarget> {
+        self.request_threads.get(request_id).copied()
+    }
+
+    /// Removes every locally pending interaction belonging to `thread_id` and returns their UI
+    /// identities and server request ids so the caller can dismiss visible prompts and reject
+    /// each server request after the local ownership index is gone.
+    pub(super) fn clear_thread(&mut self, thread_id: ThreadId) -> Vec<ClearedAppServerRequest> {
+        let request_ids = self
+            .request_threads
+            .iter()
+            .filter_map(|(request_id, target)| {
+                (target.thread_id == thread_id).then(|| request_id.clone())
+            })
+            .collect::<Vec<_>>();
+        request_ids
+            .into_iter()
+            .filter_map(|request_id| {
+                self.resolve_notification(&request_id)
+                    .map(|request| ClearedAppServerRequest {
+                        request_id,
+                        request,
+                    })
+            })
+            .collect()
     }
 
     pub(super) fn take_resolution<T>(
@@ -276,6 +372,9 @@ impl PendingAppServerRequests {
                 .transpose()?,
             _ => None,
         };
+        if let Some(resolution) = &resolution {
+            self.request_threads.remove(&resolution.request_id);
+        }
         Ok(resolution)
     }
 
@@ -289,6 +388,7 @@ impl PendingAppServerRequests {
             .find_map(|(id, value)| (value == request_id).then(|| id.clone()))
         {
             self.exec_approvals.remove(&id);
+            self.request_threads.remove(request_id);
             return Some(ResolvedAppServerRequest::ExecApproval { id });
         }
 
@@ -298,6 +398,7 @@ impl PendingAppServerRequests {
             .find_map(|(id, value)| (value == request_id).then(|| id.clone()))
         {
             self.file_change_approvals.remove(&id);
+            self.request_threads.remove(request_id);
             return Some(ResolvedAppServerRequest::FileChangeApproval { id });
         }
 
@@ -307,10 +408,12 @@ impl PendingAppServerRequests {
             .find_map(|(id, value)| (value == request_id).then(|| id.clone()))
         {
             self.permissions_approvals.remove(&id);
+            self.request_threads.remove(request_id);
             return Some(ResolvedAppServerRequest::PermissionsApproval { id });
         }
 
         if let Some(pending) = self.remove_user_input_request(request_id) {
+            self.request_threads.remove(request_id);
             return Some(ResolvedAppServerRequest::UserInput {
                 call_id: pending.item_id,
             });
@@ -322,6 +425,7 @@ impl PendingAppServerRequests {
             .find_map(|(key, value)| (value == request_id).then(|| key.clone()))
         {
             self.mcp_requests.remove(&key);
+            self.request_threads.remove(request_id);
             return Some(ResolvedAppServerRequest::McpElicitation {
                 server_name: key.server_name,
                 request_id: key.request_id,
@@ -403,6 +507,23 @@ impl PendingAppServerRequests {
     }
 }
 
+fn pending_server_request_id(request: &ServerRequest) -> Option<AppServerRequestId> {
+    match request {
+        ServerRequest::CommandExecutionRequestApproval { request_id, .. }
+        | ServerRequest::FileChangeRequestApproval { request_id, .. }
+        | ServerRequest::PermissionsRequestApproval { request_id, .. }
+        | ServerRequest::ToolRequestUserInput { request_id, .. }
+        | ServerRequest::McpServerElicitationRequest { request_id, .. } => Some(request_id.clone()),
+        ServerRequest::DynamicToolCall { .. }
+        | ServerRequest::ComputerUseCall { .. }
+        | ServerRequest::ChatgptAuthTokensRefresh { .. }
+        | ServerRequest::AttestationGenerate { .. }
+        | ServerRequest::CurrentTimeRead { .. }
+        | ServerRequest::ApplyPatchApproval { .. }
+        | ServerRequest::ExecCommandApproval { .. } => None,
+    }
+}
+
 #[derive(Debug)]
 struct PendingUserInputRequest {
     item_id: String,
@@ -417,6 +538,7 @@ struct McpRequestKey {
 
 #[cfg(test)]
 mod tests {
+    use super::ClearedAppServerRequest;
     use super::PendingAppServerRequests;
     use super::ResolvedAppServerRequest;
     use super::UnsupportedAppServerRequest;
@@ -440,6 +562,7 @@ mod tests {
     use codex_app_server_protocol::ToolRequestUserInputAnswer;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_app_server_protocol::ToolRequestUserInputResponse;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::FileSystemPermissions;
     use codex_protocol::models::NetworkPermissions;
     use codex_protocol::request_permissions::RequestPermissionProfile;
@@ -487,6 +610,77 @@ mod tests {
 
         assert_eq!(resolution.request_id, AppServerRequestId::Integer(41));
         assert_eq!(resolution.result, json!({ "decision": "accept" }));
+    }
+
+    #[test]
+    fn clearing_a_discarded_thread_keeps_other_pending_requests() {
+        let mut pending = PendingAppServerRequests::default();
+        let discarded_thread_id = ThreadId::new();
+        let retained_thread_id = ThreadId::new();
+        let request_for = |request_id, approval_id: &str, thread_id: ThreadId| {
+            ServerRequest::CommandExecutionRequestApproval {
+                request_id: AppServerRequestId::Integer(request_id),
+                params: CommandExecutionRequestApprovalParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: approval_id.to_string(),
+                    started_at_ms: 0,
+                    approval_id: Some(approval_id.to_string()),
+                    environment_id: None,
+                    reason: None,
+                    network_approval_context: None,
+                    command: Some("ls".to_string()),
+                    cwd: None,
+                    command_actions: None,
+                    additional_permissions: None,
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    available_decisions: None,
+                },
+            }
+        };
+        let discarded_request = request_for(41, "discarded-approval", discarded_thread_id);
+        let retained_request = request_for(42, "retained-approval", retained_thread_id);
+        assert_eq!(
+            pending.note_thread_server_request(discarded_thread_id, &discarded_request),
+            None
+        );
+        assert_eq!(
+            pending.note_thread_server_request(retained_thread_id, &retained_request),
+            None
+        );
+
+        assert_eq!(
+            pending.clear_thread(discarded_thread_id),
+            vec![ClearedAppServerRequest {
+                request_id: AppServerRequestId::Integer(41),
+                request: ResolvedAppServerRequest::ExecApproval {
+                    id: "discarded-approval".to_string(),
+                },
+            }]
+        );
+        assert!(
+            pending
+                .take_resolution(&Op::ExecApproval {
+                    id: "discarded-approval".to_string(),
+                    turn_id: None,
+                    decision: CommandExecutionApprovalDecision::Accept,
+                })
+                .expect("discarded lookup should not serialize")
+                .is_none()
+        );
+        assert_eq!(
+            pending
+                .take_resolution(&Op::ExecApproval {
+                    id: "retained-approval".to_string(),
+                    turn_id: None,
+                    decision: CommandExecutionApprovalDecision::Accept,
+                })
+                .expect("retained lookup should serialize")
+                .expect("other thread request remains")
+                .request_id,
+            AppServerRequestId::Integer(42)
+        );
     }
 
     #[test]

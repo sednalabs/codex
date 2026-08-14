@@ -434,12 +434,22 @@ Enable `capabilities.experimentalApi` during initialization, then use `thread/li
 
 ### Example: List loaded threads
 
-`thread/loaded/list` returns thread ids currently loaded in memory. This is useful when you want to check which sessions are active without scanning rollouts on disk.
+`thread/loaded/list` returns thread ids currently loaded in memory. This is useful when you want to check which sessions are active without scanning rollouts on disk. The legacy unfiltered form, which omits `ancestorThreadId`, preserves its original contract: omitting `limit` returns every loaded id, while an explicit `limit` retains its legacy page-size behavior (including treating zero as one) without a server maximum. This keeps existing clients that do not consume pagination continuations compatible.
+
+The newer `ancestorThreadId` filter returns only loaded descendants of that thread. Filtered calls are bounded: omitting `limit` defaults to 100, and supplied values are clamped to the inclusive range 1 through 100. Pass the returned `nextCursor` as `cursor` until it is `null` to read all filtered results. `ancestorFilterApplied` is `true` only when the server applied the requested filter.
 
 ```json
-{ "method": "thread/loaded/list", "id": 21 }
+{ "method": "thread/loaded/list", "id": 21, "params": {} }
 { "id": 21, "result": {
-    "data": ["thr_123", "thr_456"]
+    "data": ["thr_123", "thr_456"],
+    "nextCursor": null
+} }
+```
+
+```json
+{ "method": "thread/loaded/list", "id": 22, "params": {
+    "ancestorThreadId": "00000000-0000-0000-0000-000000000100",
+    "limit": 100
 } }
 ```
 

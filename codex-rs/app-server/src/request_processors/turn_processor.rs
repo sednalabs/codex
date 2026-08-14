@@ -15,9 +15,32 @@ use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
+use crate::outgoing_message::ThreadSubscriptionTarget;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
+
+/// The only point at which a detached review may become client-visible.
+/// Keeping this gate separate makes it impossible for the thread mapping,
+/// binding handshake, or `review/start` response below to run on a failed
+/// listener attachment path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DetachedReviewLifecycleGate {
+    Publish,
+    Suppress,
+}
+
+fn detached_review_lifecycle_gate(
+    listener_result: Result<EnsureConversationListenerResult, JSONRPCErrorError>,
+) -> Result<DetachedReviewLifecycleGate, JSONRPCErrorError> {
+    match listener_result {
+        Ok(EnsureConversationListenerResult::Attached) => Ok(DetachedReviewLifecycleGate::Publish),
+        Ok(EnsureConversationListenerResult::ConnectionClosed) => {
+            Ok(DetachedReviewLifecycleGate::Suppress)
+        }
+        Err(error) => Err(error),
+    }
+}
 
 /// Mirrors the direct-input policy in both request validation and thread capability responses.
 pub(super) fn can_accept_direct_input(
@@ -1032,6 +1055,32 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
+        if !thread.enabled(Feature::RealtimeConversation) {
+            return Err(invalid_request(format!(
+                "thread {thread_id} does not support realtime conversation"
+            )));
+        }
+        // Realtime commands can be the first operation through which a
+        // connection reaches this loaded thread. They do not return a thread
+        // subscription id themselves, so a newly created identity requires
+        // the same server-authoritative ThreadStarted handshake as an
+        // automatic child attachment. Explicit start/resume/fork flows have
+        // already registered their identity and therefore do not duplicate
+        // this notification.
+        let (thread_subscription_id, created_subscription) = self
+            .outgoing
+            .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
+            .await;
+        let created_subscription = created_subscription.then(|| {
+            (
+                thread_subscription_id.clone(),
+                ThreadSubscriptionTarget::captured(
+                    request_id.connection_id,
+                    thread_id,
+                    thread_subscription_id,
+                ),
+            )
+        });
 
         match self
             .ensure_conversation_listener(
@@ -1048,10 +1097,40 @@ impl TurnRequestProcessor {
             Err(error) => return Err(error),
         }
 
-        if !thread.enabled(Feature::RealtimeConversation) {
-            return Err(invalid_request(format!(
-                "thread {thread_id} does not support realtime conversation"
-            )));
+        if let Some((thread_subscription_id, thread_subscription)) = created_subscription {
+            let config_snapshot = thread.config_snapshot().await;
+            let mut thread_summary = super::thread_processor::build_thread_from_loaded_snapshot(
+                thread_id,
+                &config_snapshot,
+                thread.as_ref(),
+            );
+            self.thread_watch_manager
+                .upsert_thread_silently(&thread_summary.id)
+                .await;
+            thread_summary.status = resolve_thread_status(
+                self.thread_watch_manager
+                    .loaded_status_for_thread(&thread_summary.id)
+                    .await,
+                matches!(thread.agent_status().await, AgentStatus::Running),
+            );
+            if self
+                .outgoing
+                .thread_subscription_matches(
+                    request_id.connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+            {
+                self.outgoing
+                    .send_server_notification_to_thread_subscriptions(
+                        &[thread_subscription],
+                        ServerNotification::ThreadStarted(thread_started_notification(
+                            thread_summary,
+                        )),
+                    )
+                    .await;
+            }
         }
 
         Ok(Some((thread_id, thread)))
@@ -1315,7 +1394,7 @@ impl TurnRequestProcessor {
             .map_err(|err| internal_error(format!("failed to start detached review: {err}")))?;
 
         let fallback_provider = self.config.model_provider_id.as_str();
-        let stored_thread = match review_thread
+        let mut thread = match review_thread
             .read_thread(
                 /*include_archived*/ true, /*include_history*/ false,
             )
@@ -1324,42 +1403,97 @@ impl TurnRequestProcessor {
             Ok(stored_thread) => {
                 let (thread, _) =
                     thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
-                Some(thread)
+                thread
             }
             Err(err) => {
                 tracing::warn!("failed to load summary for review thread {thread_id}: {err}");
-                None
+                // The review is already running, so a failed persisted read
+                // must not leave a tagged listener without a lifecycle
+                // handshake. Build the authoritative summary from the loaded
+                // runtime instead, just as automatic child attachment does.
+                let config_snapshot = review_thread.config_snapshot().await;
+                super::thread_processor::build_thread_from_loaded_snapshot(
+                    thread_id,
+                    &config_snapshot,
+                    review_thread.as_ref(),
+                )
             }
         };
 
-        if let Some(mut thread) = stored_thread {
-            thread.session_id = review_thread.session_configured().session_id.to_string();
-            self.thread_watch_manager
-                .upsert_thread_silently(&thread.id)
-                .await;
-            thread.status = resolve_thread_status(
-                self.thread_watch_manager
-                    .loaded_status_for_thread(&thread.id)
-                    .await,
-                /*has_in_progress_turn*/ false,
-            );
-            let notif = thread_started_notification(thread);
-            self.outgoing
-                .send_server_notification(ServerNotification::ThreadStarted(notif))
-                .await;
-        }
+        // Review start has no thread attach response, so retain the creator's
+        // connection-scoped identity until attachment succeeds. It then emits
+        // the one authoritative thread/started notification. A concurrent
+        // automatic attach that already created the identity owns that
+        // handshake and must not receive a duplicate here.
+        let (thread_subscription_id, created_subscription) = self
+            .outgoing
+            .ensure_thread_subscription_with_status(request_id.connection_id, thread_id)
+            .await;
+        let created_subscription_id = created_subscription.then(|| thread_subscription_id.clone());
+        let thread_subscription = created_subscription.then(|| {
+            ThreadSubscriptionTarget::captured(
+                request_id.connection_id,
+                thread_id,
+                thread_subscription_id.clone(),
+            )
+        });
 
-        log_listener_attach_result(
+        // The review is already running, but its lifecycle must remain
+        // invisible to this client until the listener is actually attached.
+        // In particular, do not send a binding handshake or review/start
+        // response that points at a connection which could not subscribe.
+        match detached_review_lifecycle_gate(
             self.ensure_conversation_listener(
                 thread_id,
                 request_id.connection_id,
                 /*raw_events_enabled*/ false,
             )
             .await,
-            thread_id,
-            request_id.connection_id,
-            "review thread",
+        ) {
+            Ok(DetachedReviewLifecycleGate::Publish) => {}
+            Ok(DetachedReviewLifecycleGate::Suppress) => return Ok(()),
+            Err(error) => {
+                if let Some(created_subscription_id) = created_subscription_id.as_deref() {
+                    self.outgoing
+                        .unregister_thread_subscription_if_matches(
+                            request_id.connection_id,
+                            thread_id,
+                            created_subscription_id,
+                        )
+                        .await;
+                }
+                return Err(error);
+            }
+        }
+
+        thread.session_id = review_thread.session_configured().session_id.to_string();
+        self.thread_watch_manager
+            .upsert_thread_silently(&thread.id)
+            .await;
+        thread.status = resolve_thread_status(
+            self.thread_watch_manager
+                .loaded_status_for_thread(&thread.id)
+                .await,
+            /*has_in_progress_turn*/ false,
         );
+        if let Some(thread_subscription) = thread_subscription
+            && self
+                .outgoing
+                .thread_subscription_matches(
+                    request_id.connection_id,
+                    thread_id,
+                    &thread_subscription_id,
+                )
+                .await
+        {
+            let notif = thread_started_notification(thread);
+            self.outgoing
+                .send_server_notification_to_thread_subscriptions(
+                    &[thread_subscription],
+                    ServerNotification::ThreadStarted(notif),
+                )
+                .await;
+        }
 
         let turn = Self::build_review_turn(turn_id, prompt);
         let review_thread_id = thread_id.to_string();
@@ -1503,6 +1637,7 @@ impl TurnRequestProcessor {
             conversation_id,
             connection_id,
             raw_events_enabled,
+            None,
         )
         .await
     }
@@ -1517,4 +1652,70 @@ fn xcode_26_4_mcp_elicitations_auto_deny(
     // TODO: Remove this compatibility hack once Xcode 26.4 ages out.
     client_name == Some("Xcode")
         && client_version.is_some_and(|version| version.starts_with("26.4"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outgoing_message::ConnectionId;
+    use crate::outgoing_message::OutgoingMessageSender;
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_protocol::ThreadId;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn detached_review_lifecycle_is_suppressed_when_listener_attachment_fails() {
+        assert_eq!(
+            detached_review_lifecycle_gate(Ok(EnsureConversationListenerResult::ConnectionClosed))
+                .expect("a closed connection is not an RPC failure"),
+            DetachedReviewLifecycleGate::Suppress,
+            "the mapping, ThreadStarted handshake, and ReviewStarted response must not publish"
+        );
+        assert_eq!(
+            detached_review_lifecycle_gate(Ok(EnsureConversationListenerResult::Attached))
+                .expect("an attached listener should allow publication"),
+            DetachedReviewLifecycleGate::Publish,
+            "the successful path binds exactly once before publishing lifecycle output"
+        );
+        assert!(
+            detached_review_lifecycle_gate(Err(invalid_request("listener attach failed"))).is_err(),
+            "a listener error must propagate before any lifecycle output can publish"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_review_attach_error_cleanup_preserves_a_reattached_subscription() {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let (subscription_a, created) = outgoing
+            .ensure_thread_subscription_with_status(connection_id, thread_id)
+            .await;
+        assert!(created, "the detached review path should mint token A");
+        let subscription_b = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        // This is the exact attach-error cleanup used by detached review. It must only remove
+        // the token that its own attempt minted, not the concurrent reattach's current token.
+        assert!(
+            !outgoing
+                .unregister_thread_subscription_if_matches(
+                    connection_id,
+                    thread_id,
+                    &subscription_a,
+                )
+                .await
+        );
+        assert!(
+            outgoing
+                .thread_subscription_matches(connection_id, thread_id, &subscription_b)
+                .await
+        );
+    }
 }

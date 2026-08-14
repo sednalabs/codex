@@ -33,13 +33,14 @@ use codex_app_server_protocol::SkillsListResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_connectors::AppInfo;
 use codex_file_search::FileMatch;
-use codex_message_history::HistoryBatchCursor;
+pub(crate) use codex_message_history::HistoryBatchCursor;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
 
 use crate::app_command::AppCommand;
+use crate::app::agent_picker::AgentPickerRefreshResult;
 use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
@@ -208,12 +209,22 @@ pub(crate) enum KeymapEditIntent {
 pub(crate) enum AppEvent {
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Apply one nonblocking, root-scoped picker refresh after its app-server work completes.
+    AgentPickerThreadsLoaded {
+        primary_thread_id: ThreadId,
+        lifecycle_generation: u64,
+        request_generation: u64,
+        result: AgentPickerRefreshResult,
+    },
+    /// Load the next bounded page of persisted subagent sessions into the active picker.
+    LoadMoreAgentPickerPage,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
     /// Fork the current thread into a persisted side conversation.
     StartSide {
         parent_thread_id: ThreadId,
+        lifecycle_generation: u64,
         user_message: Option<UserMessage>,
     },
 
@@ -223,12 +234,14 @@ pub(crate) enum AppEvent {
     /// Submit an op to the specified thread, regardless of current focus.
     SubmitThreadOp {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         op: AppCommand,
     },
 
     /// Interrupt, fork, and retry a safety-buffered turn with the server-selected model.
     RetrySafetyBufferedTurn {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         turn_id: String,
         model: String,
         turn: AppCommand,
@@ -238,24 +251,28 @@ pub(crate) enum AppEvent {
     /// Deliver a synthetic history lookup response to a specific thread channel.
     ThreadHistoryEntryResponse {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         event: HistoryLookupResponse,
     },
 
     /// Persist a submitted prompt in the cross-session message history.
     AppendMessageHistoryEntry {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         text: String,
     },
 
     /// Persist a branch discovered from an App git-action directive into thread metadata.
     SyncThreadGitBranch {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         branch: String,
     },
 
     /// Fetch a persistent cross-session message history entry by offset.
     LookupMessageHistoryEntry {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         offset: usize,
         log_id: u64,
     },
@@ -263,6 +280,7 @@ pub(crate) enum AppEvent {
     /// Fetch a bounded batch of persistent history entries for reverse search.
     LookupMessageHistoryBatch {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         cursor: HistoryBatchCursor,
         log_id: u64,
     },
@@ -319,6 +337,7 @@ pub(crate) enum AppEvent {
     /// Branch before a selected prompt and reopen it in the new thread's composer.
     ForkSessionForPromptEdit {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         nth_user_message: usize,
         prompt: UserMessage,
     },
@@ -345,6 +364,7 @@ pub(crate) enum AppEvent {
     /// Approve one retry of a recent auto-review denial selected in the TUI.
     ApproveRecentAutoReviewDenial {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         id: String,
     },
 
@@ -369,16 +389,19 @@ pub(crate) enum AppEvent {
     /// Open the current thread goal summary/action menu.
     OpenThreadGoalMenu {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
     },
 
     /// Open an editor for the current thread goal objective.
     OpenThreadGoalEditor {
         thread_id: Option<ThreadId>,
+        lifecycle_generation: u64,
     },
 
     /// Set or replace the current thread goal objective.
     SetThreadGoalObjective {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         objective: String,
         mode: ThreadGoalSetMode,
     },
@@ -386,6 +409,7 @@ pub(crate) enum AppEvent {
     /// Set or replace the current thread goal from a validated draft.
     SetThreadGoalDraft {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         draft: crate::goal_files::GoalDraft,
         mode: ThreadGoalSetMode,
     },
@@ -393,12 +417,14 @@ pub(crate) enum AppEvent {
     /// Pause or resume the current thread goal.
     SetThreadGoalStatus {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
         status: ThreadGoalStatus,
     },
 
     /// Clear the current thread goal.
     ClearThreadGoal {
         thread_id: ThreadId,
+        lifecycle_generation: u64,
     },
 
     /// Result of refreshing rate limits.
@@ -735,6 +761,7 @@ pub(crate) enum AppEvent {
     FetchMcpInventory {
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        lifecycle_generation: Option<u64>,
     },
 
     /// Result of fetching MCP inventory via app-server RPCs.
@@ -742,6 +769,7 @@ pub(crate) enum AppEvent {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
         thread_id: Option<ThreadId>,
+        lifecycle_generation: Option<u64>,
     },
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
@@ -1121,6 +1149,7 @@ pub(crate) enum AppEvent {
     /// Result of a feedback upload request initiated by the TUI.
     FeedbackSubmitted {
         origin_thread_id: Option<ThreadId>,
+        origin_lifecycle_generation: Option<u64>,
         category: FeedbackCategory,
         include_logs: bool,
         result: Result<String, String>,

@@ -27,6 +27,7 @@ import type { McpToolCallStatus } from "./McpToolCallStatus";
 import type { MemoryCitation } from "./MemoryCitation";
 import type { PatchApplyStatus } from "./PatchApplyStatus";
 import type { SubAgentActivityKind } from "./SubAgentActivityKind";
+import type { SubAgentActivityTerminalState } from "./SubAgentActivityTerminalState";
 import type { TerminalWaitInfo } from "./TerminalWaitInfo";
 import type { UserInput } from "./UserInput";
 
@@ -115,17 +116,30 @@ receiverThreadIds: Array<string>,
  */
 prompt: string | null,
 /**
- * Model requested for the spawned agent, when applicable.
+ * Effective model selected for the spawned agent, when available.
  */
 model: string | null,
 /**
- * Reasoning effort requested for the spawned agent, when applicable.
+ * Effective reasoning effort selected for the spawned agent, when available.
  */
 reasoningEffort: ReasoningEffort | null,
 /**
+ * Caller-provided model override for a spawned agent, when one was supplied.
+ */
+requestedModel?: string,
+/**
+ * Caller-provided reasoning-effort override for a spawned agent, when one was supplied.
+ */
+requestedReasoningEffort?: ReasoningEffort,
+/**
  * Last known status of the target agents, when available.
  */
-agentsStates: { [key in string]: CollabAgentState }, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string,
+agentsStates: { [key in string]: CollabAgentState }, } | { "type": "subAgentActivity", id: string, kind: SubAgentActivityKind,
+/**
+ * Additive terminal detail. `kind` intentionally retains the legacy
+ * three-variant enum for exhaustive existing consumers.
+ */
+terminalState?: SubAgentActivityTerminalState, agentThreadId: string, agentPath: string,
 /**
  * Effective model selected for the affected child, when known.
  */

@@ -1,3 +1,4 @@
+use super::thread_lifecycle::send_captured_thread_goal_notification;
 use super::*;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
@@ -6,6 +7,8 @@ use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
+
+use crate::outgoing_message::ThreadSubscriptionTarget;
 
 #[derive(Clone)]
 pub(crate) struct ThreadGoalRequestProcessor {
@@ -69,11 +72,13 @@ impl ThreadGoalRequestProcessor {
         &self,
         thread_id: ThreadId,
         thread: &CodexThread,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
     ) {
         if !self.config.features.enabled(Feature::Goals) {
             return;
         }
-        self.emit_thread_goal_snapshot(thread_id).await;
+        self.emit_thread_goal_snapshot(thread_id, thread_subscriptions)
+            .await;
         // App-server owns resume response and snapshot ordering, so wait until
         // those are sent before letting extensions react to the idle thread.
         thread.emit_thread_idle_lifecycle_if_idle().await;
@@ -126,6 +131,13 @@ impl ThreadGoalRequestProcessor {
         }
 
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        // Capture before the goal storage and rollout writes yield. A delayed
+        // ordered command must retain this lifecycle's token rather than look
+        // up a replacement subscription when it eventually emits.
+        let thread_subscriptions = self
+            .outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
         let state_db = self.state_db_for_materialized_thread(thread_id).await?;
         self.reconcile_thread_goal_rollout(thread_id, &state_db)
             .await?;
@@ -209,8 +221,13 @@ impl ThreadGoalRequestProcessor {
                 ThreadGoalSetResponse { goal: goal.clone() },
             )
             .await;
-        self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
-            .await;
+        self.emit_thread_goal_updated_ordered(
+            thread_id,
+            goal,
+            listener_command_tx,
+            thread_subscriptions,
+        )
+        .await;
         outcome.apply_runtime_effects(&self.goal_service).await;
         Ok(())
     }
@@ -244,6 +261,13 @@ impl ThreadGoalRequestProcessor {
         }
 
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
+        // Capture before storage and rollout writes yield. A delayed clear
+        // must retain this lifecycle's token rather than look up a
+        // replacement subscription when it eventually emits.
+        let thread_subscriptions = self
+            .outgoing
+            .thread_subscription_targets_for_thread(thread_id)
+            .await;
         let state_db = self.state_db_for_materialized_thread(thread_id).await?;
         self.reconcile_thread_goal_rollout(thread_id, &state_db)
             .await?;
@@ -263,8 +287,12 @@ impl ThreadGoalRequestProcessor {
             .send_response(request_id, ThreadGoalClearResponse { cleared })
             .await;
         if cleared {
-            self.emit_thread_goal_cleared_ordered(thread_id, listener_command_tx)
-                .await;
+            self.emit_thread_goal_cleared_ordered(
+                thread_id,
+                listener_command_tx,
+                thread_subscriptions,
+            )
+            .await;
         }
         Ok(())
     }
@@ -336,7 +364,11 @@ impl ThreadGoalRequestProcessor {
         Ok(())
     }
 
-    pub(crate) async fn emit_thread_goal_snapshot(&self, thread_id: ThreadId) {
+    pub(crate) async fn emit_thread_goal_snapshot(
+        &self,
+        thread_id: ThreadId,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
+    ) {
         let state_db = match self.state_db_for_materialized_thread(thread_id).await {
             Ok(state_db) => state_db,
             Err(err) => {
@@ -355,6 +387,7 @@ impl ThreadGoalRequestProcessor {
         if let Some(listener_command_tx) = listener_command_tx {
             let command = crate::thread_state::ThreadListenerCommand::EmitThreadGoalSnapshot {
                 state_db: state_db.clone(),
+                thread_subscriptions: thread_subscriptions.clone(),
             };
             if listener_command_tx.send(command).is_ok() {
                 return;
@@ -363,7 +396,13 @@ impl ThreadGoalRequestProcessor {
                 "failed to enqueue thread goal snapshot for {thread_id}: listener command channel is closed"
             );
         }
-        send_thread_goal_snapshot_notification(&self.outgoing, thread_id, &state_db).await;
+        send_thread_goal_snapshot_notification(
+            &self.outgoing,
+            &thread_subscriptions,
+            thread_id,
+            &state_db,
+        )
+        .await;
     }
 
     async fn emit_thread_goal_updated_ordered(
@@ -371,11 +410,13 @@ impl ThreadGoalRequestProcessor {
         thread_id: ThreadId,
         goal: ThreadGoal,
         listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
     ) {
         if let Some(listener_command_tx) = listener_command_tx {
             let command = crate::thread_state::ThreadListenerCommand::EmitThreadGoalUpdated {
                 turn_id: None,
                 goal: goal.clone(),
+                thread_subscriptions: thread_subscriptions.clone(),
             };
             if listener_command_tx.send(command).is_ok() {
                 return;
@@ -384,24 +425,28 @@ impl ThreadGoalRequestProcessor {
                 "failed to enqueue thread goal update for {thread_id}: listener command channel is closed"
             );
         }
-        self.outgoing
-            .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                ThreadGoalUpdatedNotification {
-                    thread_id: thread_id.to_string(),
-                    turn_id: None,
-                    goal,
-                },
-            ))
-            .await;
+        send_captured_thread_goal_notification(
+            &self.outgoing,
+            &thread_subscriptions,
+            ServerNotification::ThreadGoalUpdated(ThreadGoalUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                turn_id: None,
+                goal,
+            }),
+        )
+        .await;
     }
 
     async fn emit_thread_goal_cleared_ordered(
         &self,
         thread_id: ThreadId,
         listener_command_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadListenerCommand>>,
+        thread_subscriptions: Vec<ThreadSubscriptionTarget>,
     ) {
         if let Some(listener_command_tx) = listener_command_tx {
-            let command = crate::thread_state::ThreadListenerCommand::EmitThreadGoalCleared;
+            let command = crate::thread_state::ThreadListenerCommand::EmitThreadGoalCleared {
+                thread_subscriptions: thread_subscriptions.clone(),
+            };
             if listener_command_tx.send(command).is_ok() {
                 return;
             }
@@ -409,13 +454,14 @@ impl ThreadGoalRequestProcessor {
                 "failed to enqueue thread goal clear for {thread_id}: listener command channel is closed"
             );
         }
-        self.outgoing
-            .send_server_notification(ServerNotification::ThreadGoalCleared(
-                ThreadGoalClearedNotification {
-                    thread_id: thread_id.to_string(),
-                },
-            ))
-            .await;
+        send_captured_thread_goal_notification(
+            &self.outgoing,
+            &thread_subscriptions,
+            ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                thread_id: thread_id.to_string(),
+            }),
+        )
+        .await;
     }
 }
 

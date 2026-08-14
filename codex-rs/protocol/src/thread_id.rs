@@ -9,7 +9,7 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TS, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TS, Hash)]
 #[ts(type = "string")]
 /// Identifier for a Codex thread.
 ///

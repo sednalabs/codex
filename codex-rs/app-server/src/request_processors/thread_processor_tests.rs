@@ -95,6 +95,140 @@ mod background_terminal_pagination_tests {
     }
 }
 
+mod automatic_thread_attachment_tests {
+    use super::super::captured_thread_subscription_is_current;
+    use crate::outgoing_message::ConnectionId;
+    use crate::outgoing_message::OutgoingEnvelope;
+    use crate::outgoing_message::OutgoingMessage;
+    use crate::outgoing_message::OutgoingMessageSender;
+    use crate::outgoing_message::ThreadSubscriptionTarget;
+    use codex_analytics::AnalyticsEventsClient;
+    use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ThreadGoalClearedNotification;
+    use codex_protocol::ThreadId;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn thread_started_publication_uses_one_captured_subscription_across_reattach() {
+        let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let (subscription_a, created) = outgoing
+            .ensure_thread_subscription_with_status(connection_id, thread_id)
+            .await;
+        assert!(created, "automatic attachment should mint its initial token");
+        assert!(
+            captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_a,
+            )
+            .await,
+            "the normal thread/start response and ThreadStarted publication should share A"
+        );
+
+        let thread_started_target = ThreadSubscriptionTarget::captured(
+            connection_id,
+            thread_id,
+            subscription_a.clone(),
+        );
+
+        // Simulate the response-notification window after A won thread/start's publication
+        // check. A concurrent replacement must not relabel ThreadStarted to B: its targeted
+        // transport envelope retains A. The real ThreadStarted call uses this exact captured
+        // target sender; ThreadGoalCleared keeps this assertion independent of a full Thread.
+        let subscription_b = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        assert!(
+            !captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_a,
+            )
+            .await
+        );
+        assert!(
+            captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_b,
+            )
+            .await
+        );
+        outgoing
+            .send_server_notification_to_thread_subscriptions(
+                &[thread_started_target],
+                ServerNotification::ThreadGoalCleared(ThreadGoalClearedNotification {
+                    thread_id: thread_id.to_string(),
+                }),
+            )
+            .await;
+        let OutgoingEnvelope::ToConnection {
+            connection_id: received_connection_id,
+            message: OutgoingMessage::ThreadScopedNotification(notification),
+            ..
+        } = outgoing_rx
+            .recv()
+            .await
+            .expect("captured post-response lifecycle notification should be emitted")
+        else {
+            panic!("expected captured thread-scoped lifecycle notification");
+        };
+        assert_eq!(received_connection_id, connection_id);
+        assert_eq!(notification.thread_subscription_id, subscription_a);
+        assert_ne!(notification.thread_subscription_id, subscription_b);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_publication_fence_rejects_a_token_replaced_during_hydration() {
+        let (outgoing_tx, _outgoing_rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            outgoing_tx,
+            AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let connection_id = ConnectionId(1);
+        let subscription_b = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+
+        // This models cold resume or fork after its listener attached B but before response
+        // hydration completed. The final publication fence must suppress B once C reattaches.
+        let subscription_c = outgoing
+            .register_thread_subscription(connection_id, thread_id)
+            .await;
+        assert!(
+            !captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_b,
+            )
+            .await,
+            "cold resume and fork must not publish a response or ThreadStarted for stale B"
+        );
+        assert!(
+            captured_thread_subscription_is_current(
+                outgoing.as_ref(),
+                connection_id,
+                thread_id,
+                &subscription_c,
+            )
+            .await,
+            "the later lifecycle C remains the only publishable owner"
+        );
+    }
+}
+
 mod thread_processor_behavior_tests {
     async fn forked_from_id_from_rollout(path: &Path) -> Option<String> {
         codex_core::read_session_meta_line(path)
@@ -1305,15 +1439,18 @@ mod thread_processor_behavior_tests {
         let request_message = outgoing_rx.recv().await.expect("request should be sent");
         let OutgoingEnvelope::ToConnection {
             connection_id: request_connection_id,
-            message:
-                OutgoingMessage::Request(ServerRequest::ToolRequestUserInput {
-                    request_id: sent_request_id,
-                    ..
-                }),
+            message: OutgoingMessage::ThreadScopedRequest(request),
             ..
         } = request_message
         else {
             panic!("expected tool request to be sent to the subscribed connection");
+        };
+        let ServerRequest::ToolRequestUserInput {
+            request_id: sent_request_id,
+            ..
+        } = request.request
+        else {
+            panic!("expected tool request payload");
         };
         assert_eq!(request_connection_id, connection_id);
         assert_eq!(sent_request_id, request_id);

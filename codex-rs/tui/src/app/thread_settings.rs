@@ -168,10 +168,45 @@ impl App {
         app_server: &mut AppServerSession,
         params: ThreadSettingsUpdateParams,
     ) {
+        let Ok(thread_id) = ThreadId::from_string(&params.thread_id) else {
+            tracing::warn!(thread_id = %params.thread_id, "skipping settings update with invalid thread id");
+            return;
+        };
+        let lifecycle_generation = self.thread_lifecycle_generation(thread_id);
+        self.send_thread_settings_update_for_lifecycle(app_server, params, lifecycle_generation)
+            .await;
+    }
+
+    /// Sends a thread settings update only if the lifecycle that initiated it is still current.
+    ///
+    /// The explicit generation lets delayed settings work fail closed after a discarded thread is
+    /// reattached with the same server id.
+    pub(super) async fn send_thread_settings_update_for_lifecycle(
+        &mut self,
+        app_server: &mut AppServerSession,
+        params: ThreadSettingsUpdateParams,
+        lifecycle_generation: u64,
+    ) {
         if !thread_settings_update_has_changes(&params) {
             return;
         }
-        if let Err(err) = app_server.thread_settings_update(params).await {
+        let Ok(thread_id) = ThreadId::from_string(&params.thread_id) else {
+            tracing::warn!(thread_id = %params.thread_id, "skipping settings update with invalid thread id");
+            return;
+        };
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            tracing::debug!(%thread_id, lifecycle_generation, "skipping settings update for stale thread lifecycle");
+            return;
+        }
+        if self.reject_replay_only_thread_write(thread_id) {
+            return;
+        }
+        let result = app_server.thread_settings_update(params).await;
+        if !self.thread_accepts_lifecycle_generation(thread_id, lifecycle_generation) {
+            tracing::debug!(%thread_id, lifecycle_generation, "dropping settings result for stale thread lifecycle");
+            return;
+        }
+        if let Err(err) = result {
             tracing::warn!("failed to update app-server thread settings from TUI: {err}");
             self.chat_widget
                 .add_error_message(format!("Failed to update thread settings: {err}"));

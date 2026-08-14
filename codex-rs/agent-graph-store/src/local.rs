@@ -84,6 +84,19 @@ impl AgentGraphStore for LocalAgentGraphStore {
         })
     }
 
+    fn is_thread_spawn_descendant(
+        &self,
+        ancestor_thread_id: ThreadId,
+        candidate_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, bool> {
+        Box::pin(async move {
+            self.state_db
+                .is_thread_spawn_descendant(ancestor_thread_id, candidate_thread_id)
+                .await
+                .map_err(internal_error)
+        })
+    }
+
     fn list_thread_spawn_descendants(
         &self,
         root_thread_id: ThreadId,

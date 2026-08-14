@@ -40,6 +40,15 @@ use wiremock::MockServer;
 
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
+#[test]
+fn loaded_thread_descendant_page_size_is_capped_before_probe_allocation() {
+    assert_eq!(bounded_loaded_thread_list_page_size(/*limit*/ 0), 1);
+    assert_eq!(
+        bounded_loaded_thread_list_page_size(usize::MAX),
+        MAX_LOADED_THREAD_LIST_PAGE_SIZE
+    );
+}
+
 struct FakeAgentGraphStore {
     root_thread_id: ThreadId,
     descendant_thread_ids: Vec<ThreadId>,
@@ -69,6 +78,16 @@ impl codex_agent_graph_store::AgentGraphStore for FakeAgentGraphStore {
         _status_filter: Option<codex_agent_graph_store::ThreadSpawnEdgeStatus>,
     ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Vec<ThreadId>> {
         Box::pin(async { panic!("unexpected direct-child listing") })
+    }
+
+    fn is_thread_spawn_descendant(
+        &self,
+        ancestor_thread_id: ThreadId,
+        candidate_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, bool> {
+        assert_eq!(ancestor_thread_id, self.root_thread_id);
+        let is_descendant = self.descendant_thread_ids.contains(&candidate_thread_id);
+        Box::pin(async move { Ok(is_descendant) })
     }
 
     fn list_thread_spawn_descendants(

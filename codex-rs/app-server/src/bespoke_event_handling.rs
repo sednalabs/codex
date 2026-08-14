@@ -104,6 +104,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentActivityTerminalState;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -1105,11 +1106,25 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &event.item,
             )
             .await;
-            let notification = item_event_to_server_notification(
+            // The thread reducer processes the canonical start before this completion is
+            // forwarded. Use its materialized snapshot so a completed spawn retains optional
+            // caller-provided request fields while the core completion keeps effective values.
+            let materialized_item = thread_state
+                .lock()
+                .await
+                .turn_item_snapshot(&event.turn_id, &event.item.id());
+            let mut notification = item_event_to_server_notification(
                 EventMsg::ItemCompleted(event),
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
+            if let (
+                Some(materialized_item),
+                Some(ServerNotification::ItemCompleted(notification)),
+            ) = (materialized_item, notification.as_mut())
+            {
+                notification.item = materialized_item;
+            }
             if let Some(notification) = notification {
                 outgoing.send_server_notification(notification).await;
             }
@@ -1267,7 +1282,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 goal: thread_goal_event.goal.clone().into(),
             };
             outgoing
-                .send_global_server_notification(ServerNotification::ThreadGoalUpdated(
+                .send_server_notification(ServerNotification::ThreadGoalUpdated(
                     notification,
                 ))
                 .await;
@@ -1407,7 +1422,11 @@ async fn apply_canonical_item_completed_side_effects(
                 .remove(&item.id);
         }
         CoreTurnItem::SubAgentActivity(activity)
-            if activity.kind == SubAgentActivityKind::Interrupted =>
+            if matches!(activity.kind, SubAgentActivityKind::Interrupted)
+                || matches!(
+                    activity.terminal_state,
+                    Some(SubAgentActivityTerminalState::Errored)
+                ) =>
         {
             remove_missing_thread_watch(
                 thread_manager,
@@ -1735,7 +1754,7 @@ async fn on_request_user_input_response(
     user_input_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(user_input_guard);
     let value = match response {
         Ok(Ok(value)) => value,
@@ -1817,7 +1836,7 @@ async fn on_mcp_server_elicitation_response(
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(permission_guard);
     let response = mcp_server_elicitation_response_from_client_result(response);
 
@@ -1891,7 +1910,12 @@ async fn on_request_permissions_response(
         request_permissions_guard,
     } = pending_response;
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id.clone()).await;
+    resolve_server_request_on_thread_listener(
+        &thread_state,
+        &outgoing,
+        pending_request_id.clone(),
+    )
+    .await;
     drop(request_permissions_guard);
     let response = match request_permissions_response_from_client_result(
         requested_permissions,
@@ -2028,7 +2052,7 @@ async fn on_file_change_request_approval_response(
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(permission_guard);
     let decision = match response {
         Ok(Ok(value)) => match serde_json::from_value::<FileChangeRequestApprovalResponse>(value) {
@@ -2075,7 +2099,7 @@ async fn on_command_execution_request_approval_response(
     permission_guard: ThreadWatchActiveGuard,
 ) {
     let response = receiver.await;
-    resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    resolve_server_request_on_thread_listener(&thread_state, &outgoing, pending_request_id).await;
     drop(permission_guard);
     let (decision, completion_status) = match response {
         Ok(Ok(value)) => {
@@ -3491,8 +3515,14 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+    async fn assert_terminal_subagent_activity_removes_missing_thread_watch(
+        kind: SubAgentActivityKind,
+        terminal_state: Option<SubAgentActivityTerminalState>,
+        expected_kind: codex_app_server_protocol::SubAgentActivityKind,
+        expected_terminal_state: Option<
+            codex_app_server_protocol::SubAgentActivityTerminalState,
+        >,
+    ) -> Result<()> {
         let codex_home = TempDir::new()?;
         let config = load_default_config_for_test(&codex_home).await;
         let thread_manager = Arc::new(
@@ -3536,7 +3566,8 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     item: CoreTurnItem::SubAgentActivity(SubAgentActivityItem {
                         id: "activity-1".to_string(),
-                        kind: SubAgentActivityKind::Interrupted,
+                        kind,
+                        terminal_state,
                         agent_thread_id: child_thread_id,
                         agent_path: AgentPath::try_from("/root/worker")
                             .expect("agent path should parse"),
@@ -3573,7 +3604,8 @@ mod tests {
             ItemCompletedNotification {
                 item: ThreadItem::SubAgentActivity {
                     id: "activity-1".to_string(),
-                    kind: codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+                    kind: expected_kind,
+                    terminal_state: expected_terminal_state,
                     agent_thread_id: child_thread_id_string,
                     agent_path: "/root/worker".to_string(),
                     model: None,
@@ -3585,6 +3617,28 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn interrupted_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+        assert_terminal_subagent_activity_removes_missing_thread_watch(
+            SubAgentActivityKind::Interrupted,
+            None,
+            codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn errored_subagent_activity_removes_missing_thread_watch() -> Result<()> {
+        assert_terminal_subagent_activity_removes_missing_thread_watch(
+            SubAgentActivityKind::Interrupted,
+            Some(SubAgentActivityTerminalState::Errored),
+            codex_app_server_protocol::SubAgentActivityKind::Interrupted,
+            Some(codex_app_server_protocol::SubAgentActivityTerminalState::Errored),
+        )
+        .await
     }
 
     #[tokio::test]

@@ -186,9 +186,22 @@ tui-config-refresh-session-targeted:
 
 # Focused /agent picker, thread replay, and side-parent liveness slice.
 tui-agent-picker-targeted:
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_filters_and_paginates_loaded_spawn_descendants -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_list::thread_list_relation_filters_read_spawn_graph_from_state_db -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_query_fails -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::open_agent_picker_marks_loaded_threads_open --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::inactive_thread_started_notification_initializes_replay_session --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::session_lifecycle_avoids_redundant_subagent_metadata_reads --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::select_agent_thread_replays_a_closed_persisted_sidecar --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_backfill_combines_indexed_and_legacy_descendants --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_retries_legacy_fallback_after_transient_scan_failure --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_retries_legacy_fallback_after_transient_loaded_metadata_failure --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_loaded_descendants_when_persisted_list_fails --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_keeps_the_forward_page_after_reopen --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_descendant_over_closed_history --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_prioritizes_loaded_nested_descendant_through_unloaded_parent --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_locally_filters_unacknowledged_ancestor_responses --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::agent_picker_reopen_clears_stale_continuation_when_the_relation_has_no_next_page --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_skips_large_replay_irrelevant_notifications --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::thread_events::tests::thread_event_store_tracks_active_turn_lifecycle --lib -- --exact --test-threads=1
@@ -205,6 +218,9 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::picker_label_keeps_friendly_name_before_canonical_path --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::spawned_agent_shows_effective_identity_and_omits_matching_request --lib -- --exact --test-threads=1
+    cargo test -p codex-tui multi_agents::tests::spawned_agent_keeps_a_different_requested_identity_for_comparison --lib -- --exact --test-threads=1
 
 # Focused shared picker-model tool-description slice for upgradeable legacy
 
@@ -449,6 +465,11 @@ app-server-thread-cwd-targeted:
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol
     cargo test --locked -p codex-app-server-transport serialize_outgoing_message_preserves_wire_shape --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_paginates -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_omitted_limit_returns_all_loaded_thread_ids -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_explicit_limit_above_100_is_not_clamped -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_filters_and_paginates_loaded_spawn_descendants -- --exact --test-threads=1
+    cargo test --locked -p codex-app-server --test all suite::v2::thread_loaded_list::thread_loaded_list_falls_back_to_live_spawn_descendants_when_graph_query_fails -- --exact --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::app_read:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::initialize:: -- --test-threads=1
     cargo test --locked -p codex-app-server --test all suite::v2::plugin_list::plugin_list_force_refetch_waits_for_same_path_local_plugin_upgrade -- --exact --test-threads=1

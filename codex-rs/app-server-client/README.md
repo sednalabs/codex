@@ -32,7 +32,7 @@ The in-process path uses typed channels:
 - server -> client: `InProcessServerEvent`
   - `ServerRequest`
   - `ServerNotification`
-  - `LegacyNotification`
+  - `Lagged`
 
 JSON serialization is still used at external transport boundaries
 (stdio/websocket), but the in-process hot path is typed.
@@ -41,6 +41,20 @@ Typed requests still receive app-server responses through the JSON-RPC
 result envelope internally. That is intentional: the in-process path is
 meant to preserve app-server semantics while removing the process
 boundary, not to introduce a second response contract.
+
+### Event API compatibility and lifecycle tags
+
+`InProcessServerEvent` and `AppServerEvent` are stable legacy event enums.
+Their `next_event()` methods deliberately retain the established variants and
+semantics, so existing downstream exhaustive matches remain source-compatible.
+
+Thread-scoped listeners that need the immutable subscription identity use the
+additive `InProcessTaggedServerEvent` / `TaggedAppServerEvent` APIs through
+`next_tagged_event()`. Tagged events preserve the same notifications and
+requests while retaining `thread_subscription_id`; the legacy methods collapse
+that tag back into their original notification/request variants. TUI uses the
+tagged API for lifecycle fencing, while normal consumers can continue using
+the legacy API unchanged.
 
 ## Bootstrap behavior
 

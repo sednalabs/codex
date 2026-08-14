@@ -2765,6 +2765,7 @@ mod tests {
                     name: None,
                     turns: Vec::new(),
                 },
+                thread_subscription_id: None,
                 model: "gpt-5".to_string(),
                 model_provider: "openai".to_string(),
                 service_tier: None,
@@ -3739,6 +3740,7 @@ mod tests {
             ServerNotification::ThreadStatusChanged(v2::ThreadStatusChangedNotification {
                 thread_id: "thr_123".to_string(),
                 status: v2::ThreadStatus::Idle,
+                status_revision: Some(7),
             });
         assert_eq!(
             json!({
@@ -3748,10 +3750,17 @@ mod tests {
                     "status": {
                         "type": "idle"
                     },
+                    "statusRevision": 7,
                 }
             }),
             serde_json::to_value(&notification)?,
         );
+        let legacy_notification =
+            serde_json::from_value::<v2::ThreadStatusChangedNotification>(json!({
+                "threadId": "thr_legacy",
+                "status": { "type": "idle" },
+            }))?;
+        assert_eq!(legacy_notification.status_revision, None);
         Ok(())
     }
 
