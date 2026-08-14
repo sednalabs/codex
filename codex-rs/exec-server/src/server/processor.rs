@@ -351,6 +351,18 @@ mod tests {
     use crate::server::session_registry::SessionRegistry;
 
     #[test]
+    fn request_routes_return_bounded_protocol_method_names() {
+        let router = crate::server::registry::build_router();
+        assert_eq!(
+            router
+                .request_route(EXEC_TERMINATE_METHOD)
+                .map(|(method, _)| method),
+            Some(EXEC_TERMINATE_METHOD)
+        );
+        assert!(router.request_route("custom/method").is_none());
+    }
+
+    #[test]
     fn request_span_uses_bounded_name_wire_method_and_inbound_trace_parent() {
         let span_exporter = InMemorySpanExporter::default();
         let tracer_provider = SdkTracerProvider::builder()
