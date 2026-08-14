@@ -11,6 +11,7 @@ use codex_rollout::persisted_rollout_items;
 use tokio::sync::Mutex;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::AppendThreadItemsParams;
@@ -40,8 +41,16 @@ pub struct LiveThread {
     thread_store: Arc<dyn ThreadStore>,
     // Keep canonical writes and their derived metadata projection ordered across cloned handles.
     persistence_operation_semaphore: Arc<Semaphore>,
+    // A cancelled caller drops its acknowledgement receiver, not the owned append. Retain that
+    // exact result so retrying the same batch observes the receipt instead of appending twice.
+    lost_append_result: Arc<Mutex<Option<LostAppendResult>>>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
     persistence_telemetry: RolloutPersistenceTelemetry,
+}
+
+struct LostAppendResult {
+    raw_items: Vec<RolloutItem>,
+    result: ThreadStoreResult<()>,
 }
 
 /// Owns a live thread while session initialization is still fallible.
@@ -107,6 +116,7 @@ impl LiveThread {
             history_mode,
             thread_store,
             persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
+            lost_append_result: Arc::new(Mutex::new(None)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -185,6 +195,7 @@ impl LiveThread {
             history_mode,
             thread_store,
             persistence_operation_semaphore: Arc::new(Semaphore::new(1)),
+            lost_append_result: Arc::new(Mutex::new(None)),
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
@@ -196,10 +207,46 @@ impl LiveThread {
         fields(item_count = raw_items.len())
     )]
     pub async fn append_items(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let _operation_permit = self.acquire_persistence_operation().await?;
+        let operation_permit = self.acquire_persistence_operation().await?;
         if raw_items.is_empty() {
             return Ok(());
         }
+        if let Some(lost_result) = self.lost_append_result.lock().await.take() {
+            if lost_result.raw_items == raw_items {
+                return lost_result.result;
+            }
+            if lost_result.result.is_err() {
+                *self.lost_append_result.lock().await = Some(lost_result);
+                return Err(ThreadStoreError::Internal {
+                    message: "a cancelled append failed with an unobserved result; retry its original item batch before appending different items".to_string(),
+                });
+            }
+            // A different next batch proves this is continuation rather than retry. The prior
+            // owned operation already completed both canonical append and metadata projection.
+        }
+
+        let owned_items = raw_items.to_vec();
+        let receipt_items = owned_items.clone();
+        let live_thread = self.clone();
+        let (ack, ack_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            // Keep the serialization permit through both acknowledgement delivery and lost-result
+            // publication. A following caller therefore cannot miss the receipt in between them.
+            let result = live_thread.append_items_serialized(&owned_items).await;
+            if let Err(result) = ack.send(result) {
+                *live_thread.lost_append_result.lock().await = Some(LostAppendResult {
+                    raw_items: receipt_items,
+                    result,
+                });
+            }
+            drop(operation_permit);
+        });
+        ack_rx.await.map_err(|err| ThreadStoreError::Internal {
+            message: format!("append continuation stopped before acknowledgement: {err}"),
+        })?
+    }
+
+    async fn append_items_serialized(&self, raw_items: &[RolloutItem]) -> ThreadStoreResult<()> {
         let mut committed = 0;
         let mut append_error = None;
         while committed < raw_items.len() {
