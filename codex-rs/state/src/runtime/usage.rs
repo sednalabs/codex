@@ -317,7 +317,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 let (requested_model, requested_reasoning_effort) =
                     begin.canonical_requested_identity();
                 let requested_reasoning_effort =
-                    requested_reasoning_effort.map(std::string::ToString::to_string);
+                    requested_reasoning_effort.map(|effort| effort.to_string());
                 self.spawn_requests.insert(
                     begin.call_id.clone(),
                     SpawnRequestState {
