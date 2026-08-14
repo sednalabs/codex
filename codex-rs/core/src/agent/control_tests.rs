@@ -698,6 +698,123 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
     );
 }
 
+async fn unpublished_terminal_spawn_reconciliation_retries_persistence(fail_flush: bool) {
+    let harness = AgentControlHarness::new().await;
+    let state = harness
+        .control
+        .upgrade()
+        .expect("thread manager state should remain available");
+    let child = harness
+        .manager
+        .start_thread(StartThreadOptions::new(harness.config.clone()))
+        .await
+        .expect("post-NewThread test child should start");
+    let mut reservation = Some(
+        harness
+            .control
+            .state
+            .reserve_spawn_slot(/*max_threads*/ None)
+            .expect("reserve cleanup capacity"),
+    );
+    let mut residency_slot = None;
+    let child_turn = child.thread.session.new_default_turn().await;
+    child
+        .thread
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("persist after cleanup retry".to_string()),
+                compaction_events_in_turn: 0,
+                final_model: None,
+                model_snapshot: None,
+                provider_usage: None,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let (cleanup_retained, resume_cleanup) = harness
+        .control
+        .pause_retained_unpublished_spawn_cleanup_for_test();
+    if fail_flush {
+        harness.control.fail_next_unpublished_spawn_flush_for_test();
+    } else {
+        harness
+            .control
+            .fail_next_unpublished_spawn_materialization_for_test();
+    }
+
+    let error = harness
+        .control
+        .reconcile_unpublished_spawn(
+            &state,
+            child.thread_id,
+            &child.thread,
+            &mut reservation,
+            &mut residency_slot,
+        )
+        .await
+        .expect_err("persistence failure must be returned to the cancelled spawn");
+    assert_matches!(error.details(), CodexErrorDetails::Io(_));
+    assert!(reservation.is_none());
+    assert_eq!(
+        timeout(Duration::from_secs(5), cleanup_retained)
+            .await
+            .expect("cleanup owner should retain the child before retrying persistence")
+            .expect("cleanup owner should report the retained child"),
+        child.thread_id
+    );
+    assert!(
+        harness.manager.get_thread(child.thread_id).await.is_ok(),
+        "a persistence failure must leave the terminal child managed until history is durable"
+    );
+
+    resume_cleanup.notify_one();
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if harness.manager.get_thread(child.thread_id).await.is_err() {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("cleanup retry should remove the child after persistence recovers");
+
+    let stored_child = child
+        .thread
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("terminal child history should remain readable after cleanup retry");
+    assert!(
+        stored_child
+            .history
+            .expect("terminal child should retain rollout history")
+            .items
+            .iter()
+            .any(|item| matches!(item, RolloutItem::EventMsg(EventMsg::TurnComplete(_)))),
+        "cleanup retry must flush terminal history before removing the manager entry"
+    );
+}
+
+#[tokio::test]
+async fn unpublished_terminal_spawn_reconciliation_retries_materialization_failure() {
+    unpublished_terminal_spawn_reconciliation_retries_persistence(/*fail_flush*/ false).await;
+}
+
+#[tokio::test]
+async fn unpublished_terminal_spawn_reconciliation_retries_flush_failure() {
+    unpublished_terminal_spawn_reconciliation_retries_persistence(/*fail_flush*/ true).await;
+}
+
 #[tokio::test]
 async fn post_new_thread_cancellation_with_shutdown_failure_retains_manager_and_reservation() {
     let (home, config) = test_config_with_cli_overrides(vec![(
