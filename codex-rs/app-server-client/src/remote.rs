@@ -53,10 +53,10 @@ use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_tungstenite::MaybeTlsStream;
 use tokio_tungstenite::WebSocketStream;
@@ -592,8 +592,10 @@ impl RemoteEventBacklog {
 
         if self.events.len() < self.capacity {
             if let Some(request_id) = server_request_id {
-                self.server_request_dispositions
-                    .insert(request_id.clone(), ServerRequestResponseDisposition::Pending);
+                self.server_request_dispositions.insert(
+                    request_id.clone(),
+                    ServerRequestResponseDisposition::Pending,
+                );
                 self.server_request_order.push_back(request_id);
             }
             self.events.push_back(event);
@@ -651,7 +653,11 @@ impl RemoteEventBacklog {
     }
 
     fn complete_server_request(&mut self, request_id: &RequestId) {
-        if self.server_request_dispositions.remove(request_id).is_some() {
+        if self
+            .server_request_dispositions
+            .remove(request_id)
+            .is_some()
+        {
             self.server_request_order
                 .retain(|pending_request_id| pending_request_id != request_id);
         }
@@ -891,13 +897,7 @@ where
                 return None;
             }
 
-            pending_requests.insert(
-                request_id,
-                PendingRemoteRequest {
-                    response_tx,
-                    _slot,
-                },
-            );
+            pending_requests.insert(request_id, PendingRemoteRequest { response_tx, _slot });
             write_jsonrpc_message(stream, JSONRPCMessage::Request(*request), endpoint)
                 .await
                 .err()
@@ -1882,9 +1882,7 @@ mod tests {
     async fn shutdown_reports_a_bounded_timeout_when_worker_does_not_finish() {
         let (command_tx, _command_rx) = mpsc::channel(1);
         let (shutdown_tx, _shutdown_rx) = oneshot::channel();
-        let worker_handle = tokio::spawn(async {
-            std::future::pending::<IoResult<()>>().await
-        });
+        let worker_handle = tokio::spawn(async { std::future::pending::<IoResult<()>>().await });
         let (_event_tx, event_rx) = mpsc::channel::<AppServerEvent>(1);
         let client = RemoteAppServerClient {
             command_tx,
