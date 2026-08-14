@@ -140,7 +140,7 @@ async fn read_agents_md_with_root(
     if max_total == 0 {
         return Ok(ReadAgentsMdOutcome {
             loaded: None,
-            project_root: cwd.clone(),
+            project_root: discover_project_root(config, cwd, fs).await?,
         });
     }
 
@@ -214,33 +214,7 @@ async fn discover_agents_md_paths(
 ) -> io::Result<AgentsMdPathDiscovery> {
     let dir = cwd.clone();
 
-    let mut merged = TomlValue::Table(toml::map::Map::new());
-    for layer in config.config_layer_stack.get_layers(
-        ConfigLayerStackOrdering::LowestPrecedenceFirst,
-        /*include_disabled*/ false,
-    ) {
-        if matches!(layer.name, ConfigLayerSource::Project { .. }) {
-            continue;
-        }
-        merge_toml_values(&mut merged, &layer.config);
-    }
-    let project_root_markers = match project_root_markers_from_config(&merged) {
-        Ok(Some(markers)) => markers,
-        Ok(None) => default_project_root_markers(),
-        Err(err) => {
-            tracing::warn!("invalid project_root_markers: {err}");
-            default_project_root_markers()
-        }
-    };
-    let project_root = find_nearest_ancestor_with_markers(
-        fs,
-        &dir,
-        project_root_markers,
-        FindUpErrorPolicy::Propagate,
-        /*sandbox*/ None,
-    )
-    .await?;
-    let project_root = project_root.unwrap_or_else(|| dir.clone());
+    let project_root = discover_project_root(config, cwd, fs).await?;
     let search_dirs = {
         let mut dirs = Vec::new();
         let mut cursor = dir.clone();
@@ -286,6 +260,42 @@ async fn discover_agents_md_paths(
         paths: found,
         project_root,
     })
+}
+
+async fn discover_project_root(
+    config: &Config,
+    cwd: &PathUri,
+    fs: &dyn ExecutorFileSystem,
+) -> io::Result<PathUri> {
+    let dir = cwd.clone();
+
+    let mut merged = TomlValue::Table(toml::map::Map::new());
+    for layer in config.config_layer_stack.get_layers(
+        ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ false,
+    ) {
+        if matches!(layer.name, ConfigLayerSource::Project { .. }) {
+            continue;
+        }
+        merge_toml_values(&mut merged, &layer.config);
+    }
+    let project_root_markers = match project_root_markers_from_config(&merged) {
+        Ok(Some(markers)) => markers,
+        Ok(None) => default_project_root_markers(),
+        Err(err) => {
+            tracing::warn!("invalid project_root_markers: {err}");
+            default_project_root_markers()
+        }
+    };
+    let project_root = find_nearest_ancestor_with_markers(
+        fs,
+        &dir,
+        project_root_markers,
+        FindUpErrorPolicy::Propagate,
+        /*sandbox*/ None,
+    )
+    .await?;
+    Ok(project_root.unwrap_or(dir))
 }
 
 fn candidate_filenames(config: &Config) -> Vec<&str> {
