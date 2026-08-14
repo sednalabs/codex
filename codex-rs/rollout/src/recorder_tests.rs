@@ -143,9 +143,16 @@ async fn cancelling_committed_shutdown_reopens_after_retryable_writer_error() {
     drop(first_shutdown);
     release_retryable_error.notify_one();
 
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while writer_task.command_admission.is_terminal() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owned terminal continuation should reopen admission");
     let retry = tokio::time::timeout(Duration::from_secs(5), writer_task.reserve_shutdown(&tx))
         .await
-        .expect("owned terminal continuation should reopen admission");
+        .expect("retry shutdown should complete");
     assert!(matches!(retry, TerminalCommandOutcome::Terminated(Ok(()))));
 }
 
