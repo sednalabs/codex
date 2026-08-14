@@ -67,6 +67,7 @@ impl FileSystemSandboxRunner {
         request: FsHelperRequest,
     ) -> Result<FsHelperPayload, JSONRPCErrorError> {
         let cwd = sandbox_cwd(sandbox)?;
+        let helper = self.helper_exe_for_launch()?;
         let native_workspace_roots = sandbox
             .workspace_roots
             .iter()
@@ -83,7 +84,7 @@ impl FileSystemSandboxRunner {
         let helper_read_roots = if sandbox.use_legacy_landlock {
             Vec::new()
         } else {
-            helper_read_roots(&self.runtime_paths)
+            helper_read_roots(&helper, self.runtime_paths.codex_linux_sandbox_exe.as_ref())
         };
         add_helper_runtime_permissions(
             &mut file_system_policy,
@@ -97,10 +98,40 @@ impl FileSystemSandboxRunner {
             &file_system_policy,
             network_policy,
         );
-        let command =
-            self.sandbox_exec_request(&permission_profile, &cwd, workspace_roots, sandbox)?;
+        let command = self.sandbox_exec_request(
+            &permission_profile,
+            &cwd,
+            workspace_roots,
+            sandbox,
+            &helper,
+        )?;
         let request_json = serde_json::to_vec(&request).map_err(json_error)?;
-        run_command(command, request_json).await
+        run_command(command, request_json, workspace_roots).await
+    }
+
+    fn helper_exe_for_launch(&self) -> Result<AbsolutePathBuf, JSONRPCErrorError> {
+        #[cfg(target_os = "windows")]
+        {
+            let codex_home = codex_utils_home_dir::find_codex_home().map_err(|err| {
+                internal_error(format!(
+                    "windows fs sandbox helper failed to resolve CODEX_HOME: {err}"
+                ))
+            })?;
+            let helper = codex_windows_sandbox::resolve_exe_for_launch(
+                self.runtime_paths.codex_self_exe.as_path(),
+                codex_home.as_path(),
+            );
+            AbsolutePathBuf::from_absolute_path(helper.as_path()).map_err(|err| {
+                internal_error(format!(
+                    "windows fs sandbox helper path is not absolute: {err}"
+                ))
+            })
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(self.runtime_paths.codex_self_exe.clone())
+        }
     }
 
     fn sandbox_exec_request(
@@ -109,8 +140,8 @@ impl FileSystemSandboxRunner {
         cwd: &SandboxCwd,
         workspace_roots: &[AbsolutePathBuf],
         sandbox_context: &FileSystemSandboxContext,
+        helper: &AbsolutePathBuf,
     ) -> Result<SandboxExecRequest, JSONRPCErrorError> {
-        let helper = &self.runtime_paths.codex_self_exe;
         let sandbox_manager = SandboxManager::new();
         let (file_system_policy, network_policy) = permission_profile.to_runtime_permissions();
         let sandbox = sandbox_manager.select_initial(
@@ -185,10 +216,13 @@ fn native_workspace_root(root: &PathUri) -> Result<AbsolutePathBuf, JSONRPCError
     })
 }
 
-fn helper_read_roots(runtime_paths: &ExecServerRuntimePaths) -> Vec<AbsolutePathBuf> {
+fn helper_read_roots(
+    codex_self_exe: &AbsolutePathBuf,
+    codex_linux_sandbox_exe: Option<&AbsolutePathBuf>,
+) -> Vec<AbsolutePathBuf> {
     let mut roots = Vec::new();
-    for path in std::iter::once(runtime_paths.codex_self_exe.as_path())
-        .chain(runtime_paths.codex_linux_sandbox_exe.as_deref())
+    for path in std::iter::once(codex_self_exe.as_path())
+        .chain(codex_linux_sandbox_exe.map(AbsolutePathBuf::as_path))
     {
         if let Some(parent) = path.parent()
             && let Ok(root) = AbsolutePathBuf::from_absolute_path(parent)
@@ -284,7 +318,8 @@ fn helper_env_key_is_allowed(key: &str) -> bool {
         // CoreFoundation consults this before falling back to user lookup during helper startup.
         || (cfg!(target_os = "macos") && key == "__CF_USER_TEXT_ENCODING")
         || bazel_bwrap_env_key_is_allowed(key)
-        || (cfg!(windows) && key.eq_ignore_ascii_case("PATH"))
+        || (cfg!(windows)
+            && (key.eq_ignore_ascii_case("PATH") || key.eq_ignore_ascii_case("SYSTEMROOT")))
 }
 
 #[cfg(debug_assertions)]
@@ -300,18 +335,10 @@ fn bazel_bwrap_env_key_is_allowed(_key: &str) -> bool {
 async fn run_command(
     command: SandboxExecRequest,
     request_json: Vec<u8>,
+    workspace_roots: &[AbsolutePathBuf],
 ) -> Result<FsHelperPayload, JSONRPCErrorError> {
-    let mut child = spawn_command(command)?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| internal_error("failed to open fs sandbox helper stdin".to_string()))?;
-    stdin.write_all(&request_json).await.map_err(io_error)?;
-    stdin.shutdown().await.map_err(io_error)?;
-    drop(stdin);
-
-    let output = child.wait_with_output().await.map_err(io_error)?;
-    if !output.status.success() {
+    let output = run_helper_command(command, request_json, workspace_roots).await?;
+    if !output.success {
         return Err(internal_error(format!(
             "fs sandbox helper failed with status {status}: {stderr}",
             status = output.status,
@@ -325,7 +352,49 @@ async fn run_command(
     }
 }
 
-fn spawn_command(
+struct FsHelperCommandOutput {
+    success: bool,
+    status: String,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+async fn run_helper_command(
+    command: SandboxExecRequest,
+    request_json: Vec<u8>,
+    _workspace_roots: &[AbsolutePathBuf],
+) -> Result<FsHelperCommandOutput, JSONRPCErrorError> {
+    #[cfg(target_os = "windows")]
+    if command.sandbox == codex_sandboxing::SandboxType::WindowsRestrictedToken {
+        return run_windows_sandbox_command(command, request_json, _workspace_roots).await;
+    }
+
+    run_child_command(command, request_json).await
+}
+
+async fn run_child_command(
+    command: SandboxExecRequest,
+    request_json: Vec<u8>,
+) -> Result<FsHelperCommandOutput, JSONRPCErrorError> {
+    let mut child = spawn_child_command(command)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| internal_error("failed to open fs sandbox helper stdin".to_string()))?;
+    stdin.write_all(&request_json).await.map_err(io_error)?;
+    stdin.shutdown().await.map_err(io_error)?;
+    drop(stdin);
+
+    let output = child.wait_with_output().await.map_err(io_error)?;
+    Ok(FsHelperCommandOutput {
+        success: output.status.success(),
+        status: output.status.to_string(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    })
+}
+
+fn spawn_child_command(
     SandboxExecRequest {
         command: argv,
         cwd,
@@ -355,6 +424,134 @@ fn spawn_command(
     command.stderr(std::process::Stdio::piped());
     command.kill_on_drop(true);
     command.spawn().map_err(io_error)
+}
+
+#[cfg(target_os = "windows")]
+fn write_windows_fs_helper_request_file(
+    helper_program: &str,
+    request_json: &[u8],
+) -> Result<std::path::PathBuf, JSONRPCErrorError> {
+    let helper_dir = std::path::Path::new(helper_program)
+        .parent()
+        .ok_or_else(|| {
+            invalid_request("windows fs sandbox helper path has no parent".to_string())
+        })?;
+    let path = helper_dir.join(format!(
+        ".codex-fs-helper-request-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|err| {
+            internal_error(format!(
+                "failed to create windows fs sandbox helper request file {}: {err}",
+                path.display()
+            ))
+        })?;
+    std::io::Write::write_all(&mut file, request_json).map_err(|err| {
+        internal_error(format!(
+            "failed to write windows fs sandbox helper request file {}: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(path)
+}
+
+#[cfg(target_os = "windows")]
+async fn run_windows_sandbox_command(
+    SandboxExecRequest {
+        mut command,
+        cwd,
+        env,
+        windows_sandbox_level,
+        windows_sandbox_private_desktop,
+        permission_profile,
+        ..
+    }: SandboxExecRequest,
+    request_json: Vec<u8>,
+    workspace_roots: &[AbsolutePathBuf],
+) -> Result<FsHelperCommandOutput, JSONRPCErrorError> {
+    if command.is_empty() {
+        return Err(invalid_request("fs sandbox command was empty".to_string()));
+    }
+    let codex_home = codex_utils_home_dir::find_codex_home().map_err(|err| {
+        internal_error(format!(
+            "windows fs sandbox helper failed to resolve CODEX_HOME: {err}"
+        ))
+    })?;
+    let request_file = write_windows_fs_helper_request_file(&command[0], &request_json)?;
+    command.push(request_file.to_string_lossy().into_owned());
+    let cwd = cwd.to_abs_path().map_err(io_error)?;
+    let empty_paths: &[AbsolutePathBuf] = &[];
+    let spawned = codex_windows_sandbox::spawn_windows_sandbox_session_for_level(
+        codex_windows_sandbox::WindowsSandboxSessionRequest {
+            permission_profile: &permission_profile,
+            workspace_roots,
+            codex_home: codex_home.as_path(),
+            command,
+            cwd: cwd.as_path(),
+            env_map: env,
+            windows_sandbox_level,
+            proxy_enforced: false,
+            network_proxy_restricting_sid: None,
+            proxy_settings_mode: codex_windows_sandbox::WindowsSandboxProxySettingsMode::Preserve,
+            timeout_ms: None,
+            read_roots_override: None,
+            read_roots_include_platform_defaults: false,
+            write_roots_override: None,
+            deny_read_paths_override: empty_paths,
+            deny_write_paths_override: empty_paths,
+            tty: false,
+            stdin_open: false,
+            use_private_desktop: windows_sandbox_private_desktop,
+        },
+    )
+    .await;
+    let codex_utils_pty::SpawnedProcess {
+        session: _session,
+        mut stdout_rx,
+        mut stderr_rx,
+        exit_rx,
+    } = match spawned {
+        Ok(spawned) => spawned,
+        Err(err) => {
+            let _ = std::fs::remove_file(&request_file);
+            return Err(internal_error(format!(
+                "windows fs sandbox helper failed to run: {err}"
+            )));
+        }
+    };
+    let stdout_task = tokio::spawn(async move {
+        let mut stdout = Vec::new();
+        while let Some(chunk) = stdout_rx.recv().await {
+            stdout.extend(chunk);
+        }
+        stdout
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut stderr = Vec::new();
+        while let Some(chunk) = stderr_rx.recv().await {
+            stderr.extend(chunk);
+        }
+        stderr
+    });
+    let exit_code = exit_rx.await.unwrap_or(-1);
+    let _ = std::fs::remove_file(&request_file);
+    let stdout = stdout_task
+        .await
+        .map_err(|err| internal_error(format!("windows fs helper stdout task failed: {err}")))?;
+    let stderr = stderr_task
+        .await
+        .map_err(|err| internal_error(format!("windows fs helper stderr task failed: {err}")))?;
+
+    Ok(FsHelperCommandOutput {
+        success: exit_code == 0,
+        status: format!("exit code {exit_code}"),
+        stdout,
+        stderr,
+    })
 }
 
 fn io_error(err: std::io::Error) -> JSONRPCErrorError {
@@ -393,6 +590,8 @@ mod tests {
     use super::helper_env_key_is_allowed;
     use super::helper_read_roots;
     use super::sandbox_cwd;
+    #[cfg(target_os = "windows")]
+    use super::write_windows_fs_helper_request_file;
 
     #[test]
     fn helper_permissions_enable_minimal_reads_for_restricted_profile() {
@@ -442,7 +641,7 @@ mod tests {
 
         add_helper_runtime_permissions(
             &mut policy,
-            &helper_read_roots(&runtime_paths),
+            &helper_read_roots(&runtime_paths.codex_self_exe, None),
             cwd.as_path(),
         );
 
@@ -513,11 +712,13 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn helper_env_preserves_windows_path_key_for_system_bwrap_discovery() {
+    fn helper_env_preserves_windows_runtime_keys_without_leaking_secrets() {
         let env = helper_env_from_vars(
             [
                 ("Path", r"C:\Windows\System32"),
+                ("SYSTEMROOT", r"C:\Windows"),
                 ("PATH_INJECTION", "bad"),
+                ("SYSTEMROOT_BACKUP", r"C:\Windows.old"),
                 ("OPENAI_API_KEY", "secret"),
             ]
             .map(|(key, value)| (OsString::from(key), OsString::from(value))),
@@ -525,7 +726,10 @@ mod tests {
 
         assert_eq!(
             env,
-            HashMap::from([("Path".to_string(), r"C:\Windows\System32".to_string())])
+            HashMap::from([
+                ("Path".to_string(), r"C:\Windows\System32".to_string()),
+                ("SYSTEMROOT".to_string(), r"C:\Windows".to_string()),
+            ])
         );
     }
 
@@ -565,6 +769,7 @@ mod tests {
                 &sandbox_cwd,
                 std::slice::from_ref(&sandbox_cwd.native),
                 &sandbox_context,
+                &runner.runtime_paths.codex_self_exe,
             )
             .expect("sandbox exec request");
 
@@ -651,7 +856,7 @@ mod tests {
 
         add_helper_runtime_permissions(
             &mut policy,
-            &helper_read_roots(&runtime_paths),
+            &helper_read_roots(&runtime_paths.codex_self_exe, None),
             cwd.as_path(),
         );
 
@@ -676,12 +881,37 @@ mod tests {
 
         add_helper_runtime_permissions(
             &mut policy,
-            &helper_read_roots(&runtime_paths),
+            &helper_read_roots(
+                &runtime_paths.codex_self_exe,
+                runtime_paths.codex_linux_sandbox_exe.as_ref(),
+            ),
             cwd.as_path(),
         );
 
         assert!(policy.can_read_path_with_cwd(codex_parent.as_path(), cwd.as_path()));
         assert!(policy.can_read_path_with_cwd(alias_parent.as_path(), cwd.as_path()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_request_file_writes_payload() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let helper = root.path().join("codex.exe");
+        std::fs::write(&helper, b"helper").expect("write helper");
+        let request_json = br#"{"operation":"fs/readFile"}"#;
+
+        let path = write_windows_fs_helper_request_file(
+            helper.to_str().expect("utf-8 helper path"),
+            request_json,
+        )
+        .expect("request file");
+
+        assert_eq!(
+            std::fs::read(&path).expect("read request file"),
+            request_json
+        );
+        let _ = std::fs::remove_file(&path);
+        assert!(!path.exists());
     }
 
     fn restricted_policy(entries: Vec<FileSystemSandboxEntry>) -> FileSystemSandboxPolicy {
