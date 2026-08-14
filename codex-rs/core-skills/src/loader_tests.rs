@@ -2494,7 +2494,12 @@ async fn repo_skill_root_search_limits_concurrent_probes_and_preserves_order() {
         metadata_calls.release.add_permits(expected_probes.len());
     };
     let (roots, ()) = tokio::join!(
-        super::repo_agents_skill_roots(Some(fs), &cfg.config_layer_stack, &cfg.cwd),
+        super::repo_agents_skill_roots(
+            Some(fs),
+            &cfg.config_layer_stack,
+            &cfg.cwd,
+            /*project_root*/ None,
+        ),
         assertions
     );
 
@@ -3004,6 +3009,7 @@ async fn skill_roots_include_admin_with_lowest_priority() {
         Some(Arc::clone(&LOCAL_FS)),
         &cfg.config_layer_stack,
         &cfg.cwd,
+        /*project_root*/ None,
         Vec::new(),
         Vec::new(),
     )

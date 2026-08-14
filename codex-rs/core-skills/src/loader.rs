@@ -241,6 +241,7 @@ pub(crate) async fn skill_roots(
     fs: Option<Arc<dyn ExecutorFileSystem>>,
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
+    project_root: Option<(&AbsolutePathBuf, &AbsolutePathBuf)>,
     plugin_skill_roots: Vec<PluginSkillRoot>,
     extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
@@ -284,7 +285,7 @@ async fn skill_roots_with_home_dir(
         plugin_root: None,
         discovery_mode: SkillDiscoveryMode::Recursive,
     }));
-    roots.extend(repo_agents_skill_roots(fs, config_layer_stack, cwd).await);
+    roots.extend(repo_agents_skill_roots(fs, config_layer_stack, cwd, project_root).await);
     dedupe_skill_roots_by_path(&mut roots);
     roots
 }
@@ -384,12 +385,20 @@ async fn repo_agents_skill_roots(
     fs: Option<Arc<dyn ExecutorFileSystem>>,
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
+    project_root: Option<(&AbsolutePathBuf, &AbsolutePathBuf)>,
 ) -> Vec<SkillRoot> {
     let Some(fs) = fs else {
         return Vec::new();
     };
-    let project_root_markers = project_root_markers_from_stack(config_layer_stack);
-    let project_root = find_project_root(fs.as_ref(), cwd, &project_root_markers).await;
+    let project_root = match project_root.filter(|(discovery_cwd, root)| {
+        *discovery_cwd == cwd && cwd.as_path().starts_with(root.as_path())
+    }) {
+        Some((_, project_root)) => project_root.clone(),
+        None => {
+            let project_root_markers = project_root_markers_from_stack(config_layer_stack);
+            find_project_root(fs.as_ref(), cwd, &project_root_markers).await
+        }
+    };
     let dirs = dirs_between_project_root_and_cwd(cwd, &project_root);
     let mut roots = Vec::new();
     let mut results = futures::stream::iter(dirs)

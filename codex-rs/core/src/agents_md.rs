@@ -33,6 +33,7 @@ use futures::StreamExt;
 use std::io;
 use toml::Value as TomlValue;
 use tracing::error;
+use std::collections::HashMap;
 
 /// Default filename scanned for AGENTS.md instructions.
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
@@ -55,10 +56,26 @@ pub(crate) async fn load_project_instructions(
     user_instructions: Option<UserInstructions>,
     environments: &TurnEnvironmentSnapshot,
 ) -> Option<LoadedAgentsMd> {
+    load_project_instructions_with_roots(config, user_instructions, environments)
+        .await
+        .loaded
+}
+
+pub(crate) struct ProjectInstructionsLoadOutcome {
+    pub(crate) loaded: Option<LoadedAgentsMd>,
+    pub(crate) project_roots: HashMap<String, PathUri>,
+}
+
+pub(crate) async fn load_project_instructions_with_roots(
+    config: &Config,
+    user_instructions: Option<UserInstructions>,
+    environments: &TurnEnvironmentSnapshot,
+) -> ProjectInstructionsLoadOutcome {
     let mut loaded = LoadedAgentsMd::from_user_instructions(user_instructions);
+    let mut project_roots = HashMap::new();
     for turn_environment in environments.turn_environments() {
         let filesystem = turn_environment.environment.get_filesystem();
-        match read_agents_md(
+        match read_agents_md_with_root(
             config,
             filesystem.as_ref(),
             &turn_environment.environment_id,
@@ -66,8 +83,15 @@ pub(crate) async fn load_project_instructions(
         )
         .await
         {
-            Ok(Some(docs)) => loaded.entries.extend(docs.entries),
-            Ok(None) => {}
+            Ok(outcome) => {
+                project_roots.insert(
+                    turn_environment.environment_id.clone(),
+                    outcome.project_root,
+                );
+                if let Some(docs) = outcome.loaded {
+                    loaded.entries.extend(docs.entries);
+                }
+            }
             Err(e) => {
                 error!(
                     environment_id = turn_environment.environment_id,
@@ -77,7 +101,15 @@ pub(crate) async fn load_project_instructions(
         }
     }
 
-    (!loaded.is_empty()).then_some(loaded)
+    ProjectInstructionsLoadOutcome {
+        loaded: (!loaded.is_empty()).then_some(loaded),
+        project_roots,
+    }
+}
+
+struct ReadAgentsMdOutcome {
+    loaded: Option<LoadedAgentsMd>,
+    project_root: PathUri,
 }
 
 /// Attempt to locate and load AGENTS.md documentation.
@@ -92,21 +124,32 @@ async fn read_agents_md(
     environment_id: &str,
     cwd: &PathUri,
 ) -> io::Result<Option<LoadedAgentsMd>> {
+    Ok(read_agents_md_with_root(config, fs, environment_id, cwd)
+        .await?
+        .loaded)
+}
+
+async fn read_agents_md_with_root(
+    config: &Config,
+    fs: &dyn ExecutorFileSystem,
+    environment_id: &str,
+    cwd: &PathUri,
+) -> io::Result<ReadAgentsMdOutcome> {
     let max_total = config.project_doc_max_bytes;
 
     if max_total == 0 {
-        return Ok(None);
+        return Ok(ReadAgentsMdOutcome {
+            loaded: None,
+            project_root: cwd.clone(),
+        });
     }
 
-    let paths = agents_md_paths(config, cwd, fs).await?;
-    if paths.is_empty() {
-        return Ok(None);
-    }
+    let discovery = discover_agents_md_paths(config, cwd, fs).await?;
 
     let mut remaining: u64 = max_total as u64;
     let mut loaded = LoadedAgentsMd::default();
 
-    for p in paths {
+    for p in discovery.paths {
         if remaining == 0 {
             break;
         }
@@ -143,11 +186,15 @@ async fn read_agents_md(
         }
     }
 
-    if loaded.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(loaded))
-    }
+    Ok(ReadAgentsMdOutcome {
+        loaded: (!loaded.is_empty()).then_some(loaded),
+        project_root: discovery.project_root,
+    })
+}
+
+struct AgentsMdPathDiscovery {
+    paths: Vec<PathUri>,
+    project_root: PathUri,
 }
 
 /// Discovers AGENTS.md files from the project root to the current working
@@ -157,6 +204,14 @@ async fn agents_md_paths(
     cwd: &PathUri,
     fs: &dyn ExecutorFileSystem,
 ) -> io::Result<Vec<PathUri>> {
+    Ok(discover_agents_md_paths(config, cwd, fs).await?.paths)
+}
+
+async fn discover_agents_md_paths(
+    config: &Config,
+    cwd: &PathUri,
+    fs: &dyn ExecutorFileSystem,
+) -> io::Result<AgentsMdPathDiscovery> {
     let dir = cwd.clone();
 
     let mut merged = TomlValue::Table(toml::map::Map::new());
@@ -185,12 +240,13 @@ async fn agents_md_paths(
         /*sandbox*/ None,
     )
     .await?;
-    let search_dirs = if let Some(root) = project_root {
+    let project_root = project_root.unwrap_or_else(|| dir.clone());
+    let search_dirs = {
         let mut dirs = Vec::new();
         let mut cursor = dir.clone();
         loop {
             dirs.push(cursor.clone());
-            if cursor == root {
+            if cursor == project_root {
                 break;
             }
             let Some(parent) = cursor.parent() else {
@@ -200,8 +256,6 @@ async fn agents_md_paths(
         }
         dirs.reverse();
         dirs
-    } else {
-        vec![dir]
     };
 
     let candidate_filenames = candidate_filenames(config);
@@ -228,7 +282,10 @@ async fn agents_md_paths(
             found.push(candidate);
         }
     }
-    Ok(found)
+    Ok(AgentsMdPathDiscovery {
+        paths: found,
+        project_root,
+    })
 }
 
 fn candidate_filenames(config: &Config) -> Vec<&str> {
