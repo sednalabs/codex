@@ -1220,6 +1220,7 @@ mod tests {
                         is_secret: false,
                         options: Some(vec![]),
                     }],
+                    is_blocking: true,
                     auto_resolution_ms: None,
                 })
                 .expect("server request params should serialize"),
