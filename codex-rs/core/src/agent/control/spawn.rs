@@ -521,10 +521,8 @@ impl AgentControl {
         {
             Ok(reloaded_thread) => {
                 metadata.clear_cold_status();
-                residency_slot.commit_with_thread(
-                    reloaded_thread.thread_id,
-                    &reloaded_thread.thread,
-                );
+                residency_slot
+                    .commit_with_thread(reloaded_thread.thread_id, &reloaded_thread.thread);
                 state.notify_thread_created(reloaded_thread.thread_id);
                 self.restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
                     .await

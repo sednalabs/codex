@@ -1290,9 +1290,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
         })
         .await;
     assert_eq!(removal, RemoveThreadIfSameResult::Removed);
-    harness
-        .control
-        .forget_v2_residency(spawned_agent.thread_id);
+    harness.control.forget_v2_residency(spawned_agent.thread_id);
     assert_eq!(
         harness.control.get_status(spawned_agent.thread_id).await,
         cold_status

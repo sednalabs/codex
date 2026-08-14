@@ -42,11 +42,7 @@ impl V2ResidencySlot {
         self.active = false;
     }
 
-    pub(super) fn commit_with_thread(
-        mut self,
-        thread_id: ThreadId,
-        thread: &Arc<CodexThread>,
-    ) {
+    pub(super) fn commit_with_thread(mut self, thread_id: ThreadId, thread: &Arc<CodexThread>) {
         self.residency
             .commit_slot(thread_id, Some(Arc::downgrade(thread)));
         self.active = false;
@@ -97,8 +93,7 @@ impl AgentControl {
         thread_id: ThreadId,
         expected_thread: &Arc<CodexThread>,
     ) -> bool {
-        self.v2_residency
-            .remove_if_same(thread_id, expected_thread)
+        self.v2_residency.remove_if_same(thread_id, expected_thread)
     }
 }
 
