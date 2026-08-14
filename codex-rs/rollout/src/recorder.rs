@@ -115,6 +115,10 @@ pub enum RolloutRecorderParams {
 
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
+    AppendItems {
+        items: Vec<RolloutItem>,
+        ack: oneshot::Sender<Result<usize, RolloutAppendError>>,
+    },
     Persist {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
@@ -125,6 +129,26 @@ enum RolloutCmd {
     Shutdown {
         ack: oneshot::Sender<std::io::Result<()>>,
     },
+}
+
+/// Error returned by a commit-aware append, including the durable leading item count.
+///
+/// The count is measured in canonical rollout items. Callers that filter a raw stream can map
+/// this leading canonical prefix back to their raw-item boundary before retrying.
+#[derive(Debug)]
+pub struct RolloutAppendError {
+    committed: usize,
+    source: IoError,
+}
+
+impl RolloutAppendError {
+    pub fn committed(&self) -> usize {
+        self.committed
+    }
+
+    pub fn into_io_error(self) -> IoError {
+        self.source
+    }
 }
 
 /// Observable state for the background rollout writer task.
@@ -868,6 +892,8 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    #[cfg(test)]
+                    fail_after_writes: None,
                 }
             }
             RolloutRecorderParams::Resume { path } => {
@@ -881,6 +907,8 @@ impl RolloutRecorder {
                     rollout_path: path,
                     ordinal_state,
                     last_logged_error: None,
+                    #[cfg(test)]
+                    fail_after_writes: None,
                 }
             }
         };
@@ -935,6 +963,35 @@ impl RolloutRecorder {
                     IoError::other(format!("failed to queue rollout items: {e}"))
                 })
             })
+    }
+
+    /// Append canonical items and report the durable leading prefix on failure.
+    pub async fn append_canonical_items_committed(
+        &self,
+        items: &[RolloutItem],
+    ) -> Result<usize, RolloutAppendError> {
+        if items.is_empty() {
+            return Ok(0);
+        }
+        let (ack, result) = oneshot::channel();
+        self.tx
+            .send(RolloutCmd::AppendItems {
+                items: items.to_vec(),
+                ack,
+            })
+            .await
+            .map_err(|e| RolloutAppendError {
+                committed: 0,
+                source: self.writer_task.terminal_failure().unwrap_or_else(|| {
+                    IoError::other(format!("failed to queue committed rollout items: {e}"))
+                }),
+            })?;
+        result.await.map_err(|e| RolloutAppendError {
+            committed: 0,
+            source: self.writer_task.terminal_failure().unwrap_or_else(|| {
+                IoError::other(format!("failed waiting for committed rollout items: {e}"))
+            }),
+        })?
     }
 
     /// Materialize the rollout file and persist all buffered items.
@@ -1618,6 +1675,8 @@ struct RolloutWriterState {
     rollout_path: PathBuf,
     ordinal_state: RolloutOrdinalState,
     last_logged_error: Option<String>,
+    #[cfg(test)]
+    fail_after_writes: Option<usize>,
 }
 
 impl RolloutWriterState {
@@ -1751,6 +1810,14 @@ impl RolloutWriterState {
         let mut written_count = 0usize;
         let mut write_result = Ok(());
         for item in &self.pending_items {
+            #[cfg(test)]
+            if let Some(remaining) = self.fail_after_writes.as_mut() {
+                if *remaining == 0 {
+                    write_result = Err(IoError::other("injected rollout append failure"));
+                    break;
+                }
+                *remaining -= 1;
+            }
             match self.ordinal_state.current() {
                 Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
                     Ok(()) => self.ordinal_state.advance(),
@@ -1773,6 +1840,50 @@ impl RolloutWriterState {
 
         write_result
     }
+
+    async fn append_items_with_progress(
+        &mut self,
+        items: Vec<RolloutItem>,
+    ) -> Result<usize, RolloutAppendError> {
+        let item_count = items.len();
+        self.pending_items.extend(items);
+
+        let committed_after_attempt = |pending_items: &[RolloutItem]| {
+            item_count.saturating_sub(pending_items.len())
+        };
+        match self.write_pending_once().await {
+            Ok(()) => {
+                self.last_logged_error = None;
+                Ok(item_count)
+            }
+            Err(first_err) => {
+                let first_committed = committed_after_attempt(self.pending_items.as_slice());
+                self.enter_recovery_mode(&first_err);
+                warn!(
+                    "failed to append rollout items; reopening and retrying: {first_err}"
+                );
+                match self.write_pending_once().await {
+                    Ok(()) => {
+                        self.last_logged_error = None;
+                        Ok(item_count)
+                    }
+                    Err(second_err) => {
+                        let second_committed =
+                            committed_after_attempt(self.pending_items.as_slice());
+                        let committed = first_committed.max(second_committed);
+                        self.enter_recovery_mode(&second_err);
+                        // The caller owns retrying the uncommitted suffix. Do not retain it in the
+                        // recorder queue, or the next append would write that suffix twice.
+                        self.pending_items.clear();
+                        Err(RolloutAppendError {
+                            committed,
+                            source: second_err,
+                        })
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn rollout_writer(
@@ -1785,6 +1896,10 @@ async fn rollout_writer(
             RolloutCmd::AddItems(items) => {
                 state.add_items(items);
                 state.flush_if_materialized().await;
+            }
+            RolloutCmd::AppendItems { items, ack } => {
+                let result = state.append_items_with_progress(items).await;
+                let _ = ack.send(result);
             }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
