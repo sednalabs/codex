@@ -996,7 +996,7 @@ impl Session {
             .instrument(info_span!(
                 "session_init.plugin_skill_warmup",
                 otel.name = "session_init.plugin_skill_warmup",
-            ));
+            ))
             .await;
             for err in &plugin_skill_errors {
                 error!(
