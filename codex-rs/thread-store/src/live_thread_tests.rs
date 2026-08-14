@@ -465,7 +465,10 @@ async fn partial_append_retries_only_the_uncommitted_suffix() {
         .load_history(/*include_archived*/ true)
         .await
         .expect("load canonical history");
-    assert_eq!(history.items, vec![first, second]);
+    assert_eq!(
+        serde_json::to_value(history.items).expect("serialize persisted history"),
+        serde_json::to_value(vec![first, second]).expect("serialize expected history")
+    );
 }
 
 fn create_thread_params(thread_id: ThreadId, cwd: &std::path::Path) -> CreateThreadParams {
