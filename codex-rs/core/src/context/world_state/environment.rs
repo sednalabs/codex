@@ -12,6 +12,171 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+pub(crate) const SUBAGENT_CONTEXT_MAX_ROWS: usize = 16;
+pub(crate) const SUBAGENT_CONTEXT_MAX_RENDERED_BYTES: usize = 4 * 1024;
+const SUBAGENT_CONTEXT_FIELD_SCAN_CHARS: usize = 1_024;
+const SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES: usize = 192;
+const SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES: usize = 96;
+const SUBAGENT_CONTEXT_FIXED_RENDERED_BYTES: usize =
+    "  <subagents>\n".len() + "  </subagents>\n".len();
+const SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES: usize = 5;
+const SUBAGENT_CONTEXT_OMITTED_LINE_MAX_BYTES: usize = SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES
+    + "<omitted count=\"\" />".len()
+    + std::mem::size_of::<usize>() * 3;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SubagentContext {
+    rendered: String,
+}
+
+impl SubagentContext {
+    #[cfg(test)]
+    pub(crate) fn as_str(&self) -> &str {
+        self.rendered.as_str()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SubagentContextRow {
+    rendered: String,
+}
+
+impl SubagentContextRow {
+    pub(crate) fn new(reference: &str, nickname: Option<&str>) -> Self {
+        let reference = bounded_xml_text(reference, SUBAGENT_REFERENCE_MAX_ESCAPED_BYTES);
+        let rendered = match nickname.filter(|nickname| !nickname.is_empty()) {
+            Some(nickname) => format!(
+                "- {reference}: {}",
+                bounded_xml_text(nickname, SUBAGENT_NICKNAME_MAX_ESCAPED_BYTES)
+            ),
+            None => format!("- {reference}"),
+        };
+        Self { rendered }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SubagentContextBuilder {
+    rows: Vec<SubagentContextRow>,
+    rendered_bytes: usize,
+    omitted_count: usize,
+}
+
+impl Default for SubagentContextBuilder {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            rendered_bytes: SUBAGENT_CONTEXT_FIXED_RENDERED_BYTES,
+            omitted_count: 0,
+        }
+    }
+}
+
+impl SubagentContextBuilder {
+    pub(crate) fn has_row_capacity(&self) -> bool {
+        self.rows.len() < SUBAGENT_CONTEXT_MAX_ROWS
+    }
+
+    pub(crate) fn push(&mut self, row: SubagentContextRow) -> bool {
+        if !self.has_row_capacity() {
+            return false;
+        }
+        let row_bytes = SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES + row.rendered.len();
+        if self
+            .rendered_bytes
+            .saturating_add(row_bytes)
+            .saturating_add(SUBAGENT_CONTEXT_OMITTED_LINE_MAX_BYTES)
+            > SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
+        {
+            return false;
+        }
+        self.rendered_bytes += row_bytes;
+        self.rows.push(row);
+        true
+    }
+
+    pub(crate) fn note_omitted(&mut self, count: usize) {
+        self.omitted_count = self.omitted_count.saturating_add(count);
+    }
+
+    pub(crate) fn finish(self) -> SubagentContext {
+        if self.rows.is_empty() && self.omitted_count == 0 {
+            return SubagentContext::default();
+        }
+        let mut rows = self
+            .rows
+            .into_iter()
+            .map(|row| row.rendered)
+            .collect::<Vec<_>>();
+        if self.omitted_count > 0 {
+            rows.push(format!("<omitted count=\"{}\" />", self.omitted_count));
+        }
+        let rendered = rows.join("\n");
+        debug_assert!(
+            subagent_context_rendered_bytes(rendered.as_str())
+                <= SUBAGENT_CONTEXT_MAX_RENDERED_BYTES
+        );
+        SubagentContext { rendered }
+    }
+}
+
+fn subagent_context_rendered_bytes(rendered: &str) -> usize {
+    SUBAGENT_CONTEXT_FIXED_RENDERED_BYTES
+        + rendered
+            .lines()
+            .map(|line| SUBAGENT_CONTEXT_LINE_OVERHEAD_BYTES + line.len())
+            .sum::<usize>()
+}
+
+fn bounded_xml_text(value: &str, max_escaped_bytes: usize) -> String {
+    const ELLIPSIS: &str = "...";
+    let content_limit = max_escaped_bytes.saturating_sub(ELLIPSIS.len());
+    let mut rendered = String::new();
+    let mut pending_space = false;
+    let mut truncated = false;
+    let mut chars = value.chars();
+
+    for _ in 0..SUBAGENT_CONTEXT_FIELD_SCAN_CHARS {
+        let Some(ch) = chars.next() else {
+            break;
+        };
+        if ch.is_whitespace() {
+            pending_space = !rendered.is_empty();
+            continue;
+        }
+        let escaped = match ch {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '"' => "&quot;".to_string(),
+            '\'' => "&apos;".to_string(),
+            _ => ch.to_string(),
+        };
+        let separator_bytes = usize::from(pending_space);
+        if rendered
+            .len()
+            .saturating_add(separator_bytes)
+            .saturating_add(escaped.len())
+            > content_limit
+        {
+            truncated = true;
+            break;
+        }
+        if pending_space {
+            rendered.push(' ');
+        }
+        rendered.push_str(&escaped);
+        pending_space = false;
+    }
+    if !truncated && chars.next().is_some() {
+        truncated = true;
+    }
+    if truncated {
+        rendered.push_str(ELLIPSIS);
+    }
+    rendered
+}
+
 /// Environment values visible to the model.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EnvironmentsState {
@@ -45,9 +210,9 @@ impl EnvironmentsState {
         }
     }
 
-    pub(crate) fn with_subagents(mut self, subagents: String) -> Self {
-        if !subagents.is_empty() {
-            self.subagents = Some(subagents);
+    pub(crate) fn with_subagents(mut self, subagents: SubagentContext) -> Self {
+        if !subagents.rendered.is_empty() {
+            self.subagents = Some(subagents.rendered);
         }
         self
     }
