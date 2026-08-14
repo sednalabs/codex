@@ -281,14 +281,7 @@ async fn cancelled_shutdown_keeps_revocation_owned_until_admitted_write_drains()
 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let finished = recorder
-                .writer_task
-                .handle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .is_some_and(|handle| handle.is_finished());
-            if finished {
+            if recorder.tx.is_closed() {
                 return;
             }
             tokio::task::yield_now().await;
