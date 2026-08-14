@@ -62,8 +62,8 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::SubAgentActivityKind;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -676,10 +676,7 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         "a successful spawn must register its child only after the publication CAS"
     );
     assert_eq!(
-        session
-            .services
-            .agent_control
-            .v2_resident_count_for_test(),
+        session.services.agent_control.v2_resident_count_for_test(),
         1,
         "a published V2 child must consume one residency slot"
     );
@@ -738,7 +735,9 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         .await
         .expect("quick terminal child history should flush");
     let stored_child = child
-        .read_thread(/*include_archived*/ true, /*include_history*/ true)
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
         .await
         .expect("quick terminal child history should remain readable");
     assert!(
