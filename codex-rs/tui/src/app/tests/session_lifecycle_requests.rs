@@ -529,6 +529,14 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                     }
                 }
 
+                // The relationship-index repair above loads every discovered rollout into the
+                // embedded server. Restart it so this test measures the bounded persisted page,
+                // not the separate priority path for descendants that are already loaded.
+                app_server.shutdown().await?;
+                proxy.await??;
+                let (mut app_server, _requests, proxy) =
+                    start_recording_app_server(&app.config).await?;
+
                 let root = app_server
                     .resume_thread(
                         app.config.clone(),
