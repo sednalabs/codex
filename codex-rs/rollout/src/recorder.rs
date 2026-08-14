@@ -980,16 +980,20 @@ impl RolloutRecorder {
                 ack,
             })
             .await
-            .map_err(|e| RolloutAppendError {
+            .map_err(|send_error| RolloutAppendError {
                 committed: 0,
                 source: self.writer_task.terminal_failure().unwrap_or_else(|| {
-                    IoError::other(format!("failed to queue committed rollout items: {e}"))
+                    IoError::other(format!(
+                        "failed to queue committed rollout items: {send_error}"
+                    ))
                 }),
             })?;
-        result.await.map_err(|e| RolloutAppendError {
+        result.await.map_err(|receive_error| RolloutAppendError {
             committed: 0,
             source: self.writer_task.terminal_failure().unwrap_or_else(|| {
-                IoError::other(format!("failed waiting for committed rollout items: {e}"))
+                IoError::other(format!(
+                    "failed waiting for committed rollout items: {receive_error}"
+                ))
             }),
         })?
     }

@@ -181,7 +181,9 @@ pub(super) async fn append_items_committed(
         }
     }
 
-    append_result.map_err(|err| thread_store_io_error(err.into_io_error()))
+    append_result
+        .map(|_| ())
+        .map_err(|err| thread_store_io_error(err.into_io_error()))
 }
 
 fn raw_items_committed(
