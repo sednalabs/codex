@@ -238,6 +238,8 @@ struct SpawnTestHooks {
     after_new_thread: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
     after_initial_delivery: std::sync::Mutex<Option<AfterNewThreadTestHook>>,
     fail_unpublished_shutdown_once: AtomicBool,
+    fail_unpublished_materialization_once: AtomicBool,
+    fail_unpublished_flush_once: AtomicBool,
     retained_unpublished_cleanup: std::sync::Mutex<Option<RetainedUnpublishedCleanupTestHook>>,
 }
 
@@ -377,6 +379,20 @@ impl AgentControl {
     }
 
     #[cfg(test)]
+    pub(crate) fn fail_next_unpublished_spawn_materialization_for_test(&self) {
+        self.spawn_test_hooks
+            .fail_unpublished_materialization_once
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_unpublished_spawn_flush_for_test(&self) {
+        self.spawn_test_hooks
+            .fail_unpublished_flush_once
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
     pub(crate) fn pause_retained_unpublished_spawn_cleanup_for_test(
         &self,
     ) -> (
@@ -446,6 +462,20 @@ impl AgentControl {
     pub(crate) fn take_unpublished_shutdown_failure_for_test(&self) -> bool {
         self.spawn_test_hooks
             .fail_unpublished_shutdown_once
+            .swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_unpublished_materialization_failure_for_test(&self) -> bool {
+        self.spawn_test_hooks
+            .fail_unpublished_materialization_once
+            .swap(false, Ordering::AcqRel)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_unpublished_flush_failure_for_test(&self) -> bool {
+        self.spawn_test_hooks
+            .fail_unpublished_flush_once
             .swap(false, Ordering::AcqRel)
     }
 

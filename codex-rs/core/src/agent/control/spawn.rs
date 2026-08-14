@@ -113,6 +113,9 @@ enum UnpublishedSpawnCleanupAttempt {
     /// The exact provisional instance is still live. Its reservation and any pending V2
     /// residency slot must remain held by an explicit cleanup owner.
     StillLive { cleanup_error: CodexErr },
+    /// The exact provisional instance is terminal, but its rollout could not be made durable.
+    /// Keep manager ownership and retry persistence before removing the instance.
+    PersistenceFailed { cleanup_error: CodexErr },
     /// The provisional instance reached terminal state, but a different manager instance now
     /// occupies its ID. The owner must never remove that replacement or release capacity/path
     /// until the replacement's manager lifetime has also ended.
@@ -937,7 +940,7 @@ impl AgentControl {
     /// The reservation must outlive a failed cleanup while the child is still live: dropping it
     /// would make capacity and a requested agent path reusable even though the manager still owns
     /// the runtime. The caller retains its original cancellation or initial-delivery error; a
-    /// cleanup failure is logged and handed to a bounded, explicit cleanup owner instead.
+    /// cleanup failure is logged and handed to an explicit cleanup owner instead.
     pub(super) async fn reconcile_unpublished_spawn(
         &self,
         state: &Arc<ThreadManagerState>,
@@ -966,6 +969,22 @@ impl AgentControl {
                     reservation,
                     residency_slot.take(),
                     /*shutdown_exact_child*/ true,
+                );
+                Err(cleanup_error)
+            }
+            UnpublishedSpawnCleanupAttempt::PersistenceFailed { cleanup_error } => {
+                let reservation = reservation.take().ok_or_else(|| {
+                    CodexErr::Fatal(format!(
+                        "unpublished child {child_thread_id} lost its spawn reservation before persistence cleanup ownership transfer"
+                    ))
+                })?;
+                self.retain_unpublished_spawn_cleanup(
+                    Arc::clone(state),
+                    child_thread_id,
+                    Arc::clone(child_thread),
+                    reservation,
+                    residency_slot.take(),
+                    /*shutdown_exact_child*/ false,
                 );
                 Err(cleanup_error)
             }
@@ -1053,22 +1072,42 @@ impl AgentControl {
         state: &Arc<ThreadManagerState>,
         child_thread_id: ThreadId,
         child_thread: &Arc<CodexThread>,
-        mut cleanup_error: Option<CodexErr>,
+        cleanup_error: Option<CodexErr>,
     ) -> UnpublishedSpawnCleanupAttempt {
-        if let Err(error) = child_thread.session.try_ensure_rollout_materialized().await
-            && cleanup_error.is_none()
-        {
+        #[cfg(test)]
+        let materialization_result = if self.take_unpublished_materialization_failure_for_test() {
+            Err(std::io::Error::other(
+                "injected unpublished spawn materialization failure",
+            ))
+        } else {
+            child_thread.session.try_ensure_rollout_materialized().await
+        };
+        #[cfg(not(test))]
+        let materialization_result = child_thread.session.try_ensure_rollout_materialized().await;
+        if let Err(error) = materialization_result {
             let error = CodexErr::Io(error);
             if !is_benign_unpublished_spawn_cleanup_error(&error) {
-                cleanup_error = Some(error);
+                return UnpublishedSpawnCleanupAttempt::PersistenceFailed {
+                    cleanup_error: cleanup_error.unwrap_or(error),
+                };
             }
         }
-        if let Err(error) = child_thread.flush_rollout().await
-            && cleanup_error.is_none()
-        {
+        #[cfg(test)]
+        let flush_result = if self.take_unpublished_flush_failure_for_test() {
+            Err(std::io::Error::other(
+                "injected unpublished spawn flush failure",
+            ))
+        } else {
+            child_thread.flush_rollout().await
+        };
+        #[cfg(not(test))]
+        let flush_result = child_thread.flush_rollout().await;
+        if let Err(error) = flush_result {
             let error = CodexErr::Io(error);
             if !is_benign_unpublished_spawn_cleanup_error(&error) {
-                cleanup_error = Some(error);
+                return UnpublishedSpawnCleanupAttempt::PersistenceFailed {
+                    cleanup_error: cleanup_error.unwrap_or(error),
+                };
             }
         }
 
@@ -1126,9 +1165,8 @@ impl AgentControl {
         }));
     }
 
-    /// Retry shutdown only a fixed number of times. On exhaustion, do not continue an invisible
-    /// retry loop: keep the durable cleanup owner and wait for the runtime's existing termination
-    /// signal before the final same-instance removal.
+    /// Retry shutdown only a fixed number of times. On exhaustion, keep the durable cleanup owner
+    /// and wait for the runtime's existing termination signal before final same-instance removal.
     async fn retry_unpublished_spawn_shutdown_until_terminated(
         &self,
         state: &Arc<ThreadManagerState>,
@@ -1151,6 +1189,24 @@ impl AgentControl {
                         child_thread_id,
                     )
                     .await;
+                    return;
+                }
+                UnpublishedSpawnCleanupAttempt::PersistenceFailed { cleanup_error } => {
+                    let replaced = self
+                        .retry_unpublished_spawn_persistence_until_removed(
+                            state,
+                            child_thread_id,
+                            child_thread,
+                            cleanup_error,
+                        )
+                        .await;
+                    if replaced {
+                        self.observe_unpublished_spawn_replacements_until_terminal(
+                            state,
+                            child_thread_id,
+                        )
+                        .await;
+                    }
                     return;
                 }
                 UnpublishedSpawnCleanupAttempt::StillLive { cleanup_error } => {
@@ -1186,6 +1242,23 @@ impl AgentControl {
             UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error } => {
                 self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
             }
+            UnpublishedSpawnCleanupAttempt::PersistenceFailed { cleanup_error } => {
+                let replaced = self
+                    .retry_unpublished_spawn_persistence_until_removed(
+                        state,
+                        child_thread_id,
+                        child_thread,
+                        cleanup_error,
+                    )
+                    .await;
+                if replaced {
+                    self.observe_unpublished_spawn_replacements_until_terminal(
+                        state,
+                        child_thread_id,
+                    )
+                    .await;
+                }
+            }
             UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error } => {
                 self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
                 self.observe_unpublished_spawn_replacements_until_terminal(state, child_thread_id)
@@ -1195,6 +1268,50 @@ impl AgentControl {
                 unreachable!(
                     "finalization after session-loop termination cannot report a live child"
                 )
+            }
+        }
+    }
+
+    async fn retry_unpublished_spawn_persistence_until_removed(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        child_thread_id: ThreadId,
+        child_thread: &Arc<CodexThread>,
+        mut cleanup_error: CodexErr,
+    ) -> bool {
+        loop {
+            tokio::time::sleep(UNPUBLISHED_SPAWN_CLEANUP_RETRY_DELAY).await;
+            match self
+                .finalize_unpublished_spawn_cleanup(
+                    state,
+                    child_thread_id,
+                    child_thread,
+                    Some(cleanup_error),
+                )
+                .await
+            {
+                UnpublishedSpawnCleanupAttempt::Terminal { cleanup_error } => {
+                    self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                    return false;
+                }
+                UnpublishedSpawnCleanupAttempt::PersistenceFailed {
+                    cleanup_error: next_error,
+                } => {
+                    cleanup_error = next_error;
+                    tracing::warn!(
+                        %child_thread_id,
+                        "unpublished child rollout persistence is still unavailable; retaining manager ownership"
+                    );
+                }
+                UnpublishedSpawnCleanupAttempt::Replaced { cleanup_error } => {
+                    self.log_unpublished_spawn_cleanup_result(child_thread_id, cleanup_error);
+                    return true;
+                }
+                UnpublishedSpawnCleanupAttempt::StillLive {
+                    cleanup_error: next_error,
+                } => {
+                    cleanup_error = next_error;
+                }
             }
         }
     }
@@ -1231,6 +1348,23 @@ impl AgentControl {
                         %child_thread_id,
                         "same-ID replacement changed again during cleanup observation; retaining reservation for the current manager instance"
                     );
+                }
+                UnpublishedSpawnCleanupAttempt::PersistenceFailed { cleanup_error } => {
+                    let replaced = self
+                        .retry_unpublished_spawn_persistence_until_removed(
+                            state,
+                            child_thread_id,
+                            &replacement,
+                            cleanup_error,
+                        )
+                        .await;
+                    if replaced {
+                        tracing::warn!(
+                            %child_thread_id,
+                            "same-ID replacement changed again during persistence retry"
+                        );
+                    }
+                    return;
                 }
                 UnpublishedSpawnCleanupAttempt::StillLive { .. } => {
                     unreachable!(
