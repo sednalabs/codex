@@ -1,7 +1,6 @@
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
-use serde::Serialize;
 
 use super::ContextualUserFragment;
 use crate::ThreadConfigSnapshot;
@@ -16,17 +15,6 @@ pub(crate) struct SubagentRuntimeIdentity {
     effective_model_provider_id: String,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_service_tier: Option<String>,
-}
-
-#[derive(Serialize)]
-struct SubagentRuntimeIdentityPayload<'a> {
-    effective_model: &'a str,
-    effective_model_provider_id: &'a str,
-    effective_reasoning_effort: &'a Option<ReasoningEffort>,
-    effective_service_tier: &'a Option<String>,
-    identity_source: &'static str,
-    identity_semantics: &'static str,
-    usage_accounting: &'static str,
 }
 
 impl SubagentRuntimeIdentity {
@@ -70,17 +58,15 @@ impl ContextualUserFragment for SubagentRuntimeIdentity {
     }
 
     fn body(&self) -> String {
-        let payload = SubagentRuntimeIdentityPayload {
-            effective_model: &self.effective_model,
-            effective_model_provider_id: &self.effective_model_provider_id,
-            effective_reasoning_effort: &self.effective_reasoning_effort,
-            effective_service_tier: &self.effective_service_tier,
-            identity_source: "thread_config_snapshot",
-            identity_semantics: IDENTITY_SEMANTICS,
-            usage_accounting: USAGE_ACCOUNTING_SEMANTICS,
-        };
-        let payload = serde_json::to_string(&payload)
-            .expect("subagent runtime identity should serialize to JSON");
+        let payload = serde_json::json!({
+            "effective_model": self.effective_model,
+            "effective_model_provider_id": self.effective_model_provider_id,
+            "effective_reasoning_effort": self.effective_reasoning_effort,
+            "effective_service_tier": self.effective_service_tier,
+            "identity_source": "thread_config_snapshot",
+            "identity_semantics": IDENTITY_SEMANTICS,
+            "usage_accounting": USAGE_ACCOUNTING_SEMANTICS,
+        });
         format!("\n{payload}\n")
     }
 }
@@ -97,7 +83,7 @@ mod tests {
             effective_reasoning_effort: None,
             effective_service_tier: Some("priority".to_string()),
         };
-        let item: ResponseItem = identity.into();
+        let item = ContextualUserFragment::into(identity);
         assert!(SubagentRuntimeIdentity::matches_response_item(&item));
         assert!(
             serde_json::to_string(&item)
