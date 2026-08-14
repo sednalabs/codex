@@ -1,9 +1,9 @@
 use super::residency::V2ResidencySlot;
 use super::residency::is_v2_resident_session_source;
 use super::*;
-use crate::context::SubagentRuntimeIdentity;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;
+use crate::context::SubagentRuntimeIdentity;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;

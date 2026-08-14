@@ -148,8 +148,7 @@ pub const X_CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 pub const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 pub const X_OPENAI_MEMGEN_REQUEST_HEADER: &str = "x-openai-memgen-request";
 pub const X_OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
-pub const CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE: &str =
-    "chatgpt_ip_workspace_restricted";
+pub const CHATGPT_IP_WORKSPACE_RESTRICTED_ERROR_CODE: &str = "chatgpt_ip_workspace_restricted";
 const CHATGPT_IP_WORKSPACE_RESTRICTED_MESSAGE: &str = "Your ChatGPT session is no longer authorized for this network or workspace. Please sign in again and choose an allowed workspace.";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
@@ -2211,10 +2210,7 @@ async fn handle_unauthorized(
     {
         let mode = recovery.mode_name();
         let phase = recovery.step_name();
-        let auth_state_changed = match recovery
-            .force_logout_due_to_server_auth_rejection()
-            .await
-        {
+        let auth_state_changed = match recovery.force_logout_due_to_server_auth_rejection().await {
             Ok(changed) => Some(changed),
             Err(err) => {
                 warn!("failed to clear auth after server auth rejection: {err}");
