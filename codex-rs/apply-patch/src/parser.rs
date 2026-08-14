@@ -185,6 +185,7 @@ enum ParseMode {
     Lenient,
 }
 
+#[cfg(test)]
 fn parse_patch_text(patch: &str, mode: ParseMode) -> Result<ApplyPatchArgs, ParseError> {
     parse_patch_text_with_context(patch, mode).map(|parsed| parsed.args)
 }
