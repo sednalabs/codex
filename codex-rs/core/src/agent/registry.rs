@@ -404,7 +404,8 @@ impl AgentRegistry {
                 (metadata.agent_id == Some(thread_id)
                     && Arc::ptr_eq(&metadata.generation, &expected.generation))
                 .then_some(key)
-            });
+            })
+            .cloned();
             removed_key
                 .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
                 .is_some_and(|metadata| {
