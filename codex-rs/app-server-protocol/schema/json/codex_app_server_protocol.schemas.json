@@ -5655,12 +5655,16 @@
       "properties": {
         "autoResolutionMs": {
           "default": null,
+          "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
           "format": "uint64",
           "minimum": 0,
           "type": [
             "integer",
             "null"
           ]
+        },
+        "isBlocking": {
+          "type": "boolean"
         },
         "itemId": {
           "type": "string"
@@ -5682,7 +5686,8 @@
         "threadId",
         "turnId",
         "itemId",
-        "questions"
+        "questions",
+        "isBlocking"
       ],
       "title": "ToolRequestUserInputParams",
       "type": "object"
