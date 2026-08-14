@@ -94,14 +94,22 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         .get_thread(first.thread_id)
         .await
         .expect("reloaded thread should be resident");
-    assert!(
-        reloaded
-            .session
-            .clone_history()
-            .await
-            .raw_items()
-            .contains(&injected_item)
-    );
+    let reloaded_history = reloaded.session.clone_history().await;
+    assert!(reloaded_history.raw_items().iter().any(|item| {
+        matches!(
+            item,
+            ResponseItem::Message {
+                role,
+                content,
+                ..
+            } if role == "assistant"
+                && matches!(
+                    content.as_slice(),
+                    [ContentItem::OutputText { text }]
+                        if text == "injected after idle unload"
+                )
+        )
+    }));
     assert_eq!(
         reloaded
             .session
