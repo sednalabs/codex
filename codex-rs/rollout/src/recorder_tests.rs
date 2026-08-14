@@ -87,7 +87,6 @@ async fn terminal_reservation_preserves_order_and_post_commit_cancel_fails_close
         TerminalCommandOutcome::Terminated(Err(_))
     ));
     exit_gate.wait().await;
-    writer_task.take_handle().unwrap().wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -108,6 +107,45 @@ async fn cancelling_capacity_wait_leaves_admission_and_writer_active() {
     assert!(!writer_task.command_admission.is_terminal());
     reader_gate.wait().await;
     writer_task.take_handle().unwrap().wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_committed_shutdown_reopens_after_retryable_writer_error() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let first_command_received = Arc::new(tokio::sync::Notify::new());
+    let release_retryable_error = Arc::new(tokio::sync::Notify::new());
+    let writer_task = tracked_writer({
+        let first_command_received = Arc::clone(&first_command_received);
+        let release_retryable_error = Arc::clone(&release_retryable_error);
+        async move {
+            let Some(RolloutCmd::Shutdown { ack, continuing }) = rx.recv().await else {
+                panic!("first shutdown command must be committed");
+            };
+            first_command_received.notify_one();
+            release_retryable_error.notified().await;
+            let _ = ack.send(Err(IoError::other("retryable terminal drain")));
+            let _ = continuing.send(());
+
+            let Some(RolloutCmd::Shutdown { ack, .. }) = rx.recv().await else {
+                panic!("retry shutdown command must be admitted");
+            };
+            let _ = ack.send(Ok(()));
+        }
+    });
+
+    let mut first_shutdown = Box::pin(writer_task.reserve_shutdown(&tx));
+    tokio::select! {
+        _ = &mut first_shutdown => panic!("shutdown completed before retryable drain result"),
+        _ = first_command_received.notified() => {}
+    }
+    assert!(writer_task.command_admission.is_terminal());
+    drop(first_shutdown);
+    release_retryable_error.notify_one();
+
+    let retry = tokio::time::timeout(Duration::from_secs(5), writer_task.reserve_shutdown(&tx))
+        .await
+        .expect("owned terminal continuation should reopen admission");
+    assert!(matches!(retry, TerminalCommandOutcome::Terminated(Ok(()))));
 }
 
 async fn recorder_with_deferred_rollout(home: &Path) -> std::io::Result<RolloutRecorder> {
