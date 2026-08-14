@@ -183,7 +183,9 @@ impl DesktopRuntimeConfig {
         file: Option<DesktopRuntimeConfigFile>,
         env: DesktopRuntimeEnv,
     ) -> Option<Self> {
-        if env.provider.as_deref().is_some_and(provider_is_disabled) {
+        if let Some(provider) = env.provider.as_deref()
+            && (provider_is_disabled(provider) || !provider_is_command(provider))
+        {
             return None;
         }
 
@@ -586,6 +588,26 @@ mod tests {
             vec!["env-provider".to_string(), "--stdio".to_string()]
         );
         assert_eq!(provider.timeout, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn desktop_invalid_env_provider_disables_file_fallback() {
+        let config = DesktopRuntimeConfig::from_sources(
+            Some(DesktopRuntimeConfigFile {
+                provider: Some(PROVIDER_COMMAND.to_string()),
+                command: Some(CommandSpec::Array(vec!["file-provider".to_string()])),
+                timeout_secs: None,
+                platforms: None,
+                providers: None,
+                routing: None,
+            }),
+            DesktopRuntimeEnv {
+                provider: Some("unsupported".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.is_none());
     }
 
     #[test]

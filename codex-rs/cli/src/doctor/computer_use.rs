@@ -363,7 +363,7 @@ fn append_desktop_computer_use_details(
 
     let mut configured_providers = Vec::new();
     if desktop_provider_configured_from_env() {
-        configured_providers.push("env".to_string());
+        configured_providers.push("env-command".to_string());
     }
     let mut read_any_config = false;
     for file_name in DESKTOP_COMPUTER_USE_CONFIG_FILES {
