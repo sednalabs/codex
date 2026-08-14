@@ -661,6 +661,8 @@ mod tests {
     use super::sandbox_cwd;
     #[cfg(target_os = "windows")]
     use super::write_windows_fs_helper_request_file;
+    #[cfg(target_os = "windows")]
+    use super::write_windows_fs_helper_request_file_with;
 
     #[test]
     fn helper_permissions_enable_minimal_reads_for_restricted_profile() {
@@ -1012,19 +1014,17 @@ mod tests {
         std::fs::write(&helper, b"helper").expect("write helper");
         let mut request_path = None;
 
-        let setup_result: Result<(), JSONRPCErrorError> = (|| {
+        let setup_result: Result<(), ()> = (|| {
             let request_file = write_windows_fs_helper_request_file(
                 helper.to_str().expect("utf-8 helper path"),
                 b"sensitive request",
-            )?;
+            )
+            .expect("request file");
             request_path = Some(request_file.path().to_owned());
-            Err(internal_error("injected setup failure".to_string()))
+            Err(())
         })();
 
-        assert_eq!(
-            setup_result.expect_err("setup should fail").message,
-            "injected setup failure"
-        );
+        assert_eq!(setup_result, Err(()));
         assert!(!request_path.expect("request path").exists());
     }
 
