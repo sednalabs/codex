@@ -1655,6 +1655,7 @@ impl From<&PendingTurn> for Turn {
 mod tests {
     use super::*;
     use crate::protocol::common::ServerNotification;
+    use crate::protocol::v2::CollabAgentStatus;
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
@@ -4266,23 +4267,35 @@ mod tests {
             })),
         ]);
 
-        let [ThreadItem::CollabAgentToolCall(spawn)] = turns[0].items.as_slice() else {
+        let [
+            ThreadItem::CollabAgentToolCall {
+                status,
+                model,
+                reasoning_effort,
+                requested_model,
+                requested_reasoning_effort,
+                effective_model,
+                effective_reasoning_effort,
+                ..
+            },
+        ] = turns[0].items.as_slice()
+        else {
             panic!("replay should materialize the merged spawn lifecycle");
         };
-        assert_eq!(spawn.status, CollabAgentToolCallStatus::Completed);
-        assert_eq!(spawn.model.as_deref(), Some("gpt-effective"));
+        assert_eq!(*status, CollabAgentToolCallStatus::Completed);
+        assert_eq!(model.as_deref(), Some("gpt-effective"));
         assert_eq!(
-            spawn.reasoning_effort,
+            *reasoning_effort,
             Some(codex_protocol::openai_models::ReasoningEffort::Low)
         );
-        assert_eq!(spawn.requested_model, None);
+        assert_eq!(*requested_model, None);
         assert_eq!(
-            spawn.requested_reasoning_effort,
+            *requested_reasoning_effort,
             Some(codex_protocol::openai_models::ReasoningEffort::Medium)
         );
-        assert_eq!(spawn.effective_model.as_deref(), Some("gpt-effective"));
+        assert_eq!(effective_model.as_deref(), Some("gpt-effective"));
         assert_eq!(
-            spawn.effective_reasoning_effort,
+            *effective_reasoning_effort,
             Some(codex_protocol::openai_models::ReasoningEffort::Low)
         );
     }
@@ -4782,7 +4795,7 @@ mod tests {
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
-                        status: crate::protocol::v2::CollabAgentStatus::Failed,
+                        status: crate::protocol::v2::CollabAgentStatus::Errored,
                         message: Some("spawn failed".into()),
                     },
                 )]
@@ -4843,7 +4856,7 @@ mod tests {
                 agents_states: [(
                     "00000000-0000-0000-0000-000000000002".into(),
                     CollabAgentState {
-                        status: crate::protocol::v2::CollabAgentStatus::Failed,
+                        status: crate::protocol::v2::CollabAgentStatus::Errored,
                         message: Some("historic failure".into()),
                     },
                 )]
