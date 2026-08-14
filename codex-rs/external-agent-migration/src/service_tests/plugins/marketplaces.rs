@@ -692,8 +692,8 @@ async fn import_plugins_supports_project_relative_external_agent_plugin_marketpl
     assert!(config.contains("enabled = true"));
 }
 
-#[tokio::test]
-async fn import_skills_returns_only_new_skill_directory_names() {
+#[test]
+fn import_skills_returns_only_new_skill_directory_names() {
     let (_root, external_agent_home, codex_home) = fixture_paths();
     let agents_skills = codex_home
         .parent()
@@ -723,7 +723,6 @@ async fn import_skills_returns_only_new_skill_directory_names() {
 
     let copied_names = service_for_paths(external_agent_home, codex_home)
         .import_skills(/*cwd*/ None)
-        .await
         .expect("import skills");
 
     assert_eq!(copied_names, vec!["skill-b".to_string()]);
