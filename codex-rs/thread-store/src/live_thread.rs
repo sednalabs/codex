@@ -134,13 +134,13 @@ impl LiveThread {
                 })?,
         );
         let live_thread = Self::create(thread_store, params).await?;
-        let append_result = {
+        let (_, append_error) = {
             let _operation_permit = live_thread.acquire_persistence_operation().await?;
             live_thread
                 .persist_appended_items(inherited_model_context)
                 .await
         };
-        if let Err(err) = append_result {
+        if let Some(err) = append_error {
             if let Err(discard_err) = live_thread.discard().await {
                 warn!(
                     "failed to discard thread persistence after inherited context append failed: {discard_err}"
