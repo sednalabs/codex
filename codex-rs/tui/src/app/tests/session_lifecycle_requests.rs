@@ -79,7 +79,13 @@ fn create_spawn_rollout(
             parent_thread_id,
             depth: 1,
             agent_path: Some(AgentPath::try_from(agent_path).expect("valid agent path")),
-            agent_nickname: Some(agent_path.rsplit('/').next().unwrap_or(agent_path).to_string()),
+            agent_nickname: Some(
+                agent_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(agent_path)
+                    .to_string(),
+            ),
             agent_role: Some("worker".to_string()),
         }),
         root_thread_id.into(),
@@ -155,13 +161,15 @@ async fn start_recording_app_server_with_options(
                     if options.empty_loaded_threads && method == "thread/loaded/list" {
                         websocket
                             .send(Message::Text(
-                                serde_json::to_string(&JSONRPCMessage::Response(JSONRPCResponse {
-                                    id: request_id,
-                                    result: serde_json::json!({
-                                        "data": [],
-                                        "nextCursor": null,
-                                    }),
-                                }))?
+                                serde_json::to_string(&JSONRPCMessage::Response(
+                                    JSONRPCResponse {
+                                        id: request_id,
+                                        result: serde_json::json!({
+                                            "data": [],
+                                            "nextCursor": null,
+                                        }),
+                                    },
+                                ))?
                                 .into(),
                             ))
                             .await?;
@@ -553,8 +561,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                 // This fixture exercises the modern ancestor-scoped picker pages. The legacy
                 // relationship repair deliberately scans every persisted subagent page and is
                 // covered separately below, so keep it from preloading the continuation here.
-                app.agent_navigation
-                    .mark_legacy_relation_fallback_checked();
+                app.agent_navigation.mark_legacy_relation_fallback_checked();
 
                 let root = app_server
                     .resume_thread(
@@ -687,8 +694,7 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
                 let incomplete = app.backfill_loaded_subagent_threads(&mut app_server).await;
                 assert!(!incomplete.completed);
                 assert!(
-                    app.agent_navigation
-                        .needs_legacy_relation_fallback_check(),
+                    app.agent_navigation.needs_legacy_relation_fallback_check(),
                     "a partial legacy scan must remain retryable"
                 );
                 assert!(app.agent_navigation.get(&target_thread_id).is_none());
@@ -710,9 +716,7 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
                 let completed = app.backfill_loaded_subagent_threads(&mut app_server).await;
                 assert!(completed.completed);
                 assert!(
-                    !app
-                        .agent_navigation
-                        .needs_legacy_relation_fallback_check(),
+                    !app.agent_navigation.needs_legacy_relation_fallback_check(),
                     "the legacy fallback may be marked complete only after cursor exhaustion"
                 );
                 assert!(app.agent_navigation.get(&target_thread_id).is_some());

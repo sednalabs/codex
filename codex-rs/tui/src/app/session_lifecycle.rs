@@ -984,12 +984,9 @@ impl App {
         };
 
         let response_next_cursor = response.next_cursor;
-        let (scoped_threads, page_scope_proven) = Self::locally_verify_descendant_page(
-            app_server,
-            primary_thread_id,
-            response.data,
-        )
-        .await;
+        let (scoped_threads, page_scope_proven) =
+            Self::locally_verify_descendant_page(app_server, primary_thread_id, response.data)
+                .await;
         let cursor_scope_proven = if page_scope_proven && response_next_cursor.is_some() {
             Self::server_honors_ancestor_filter(app_server).await
         } else {
