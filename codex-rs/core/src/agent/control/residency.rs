@@ -258,7 +258,10 @@ impl V2Residency {
         {
             return false;
         }
-        let Ok(thread) = manager.get_thread(expected_thread.session.thread_id()).await else {
+        let Ok(thread) = manager
+            .get_thread(expected_thread.session.thread_id())
+            .await
+        else {
             return false;
         };
         if !Arc::ptr_eq(&thread, expected_thread) || !is_resident_candidate(thread.as_ref()) {
