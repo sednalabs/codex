@@ -49,7 +49,7 @@ pub struct LiveThread {
 }
 
 struct LostAppendResult {
-    raw_items: Vec<RolloutItem>,
+    batch_identity: Vec<u8>,
     result: ThreadStoreResult<()>,
 }
 
@@ -211,8 +211,12 @@ impl LiveThread {
         if raw_items.is_empty() {
             return Ok(());
         }
+        let batch_identity =
+            serde_json::to_vec(raw_items).map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to identify append batch: {err}"),
+            })?;
         if let Some(lost_result) = self.lost_append_result.lock().await.take() {
-            if lost_result.raw_items == raw_items {
+            if lost_result.batch_identity == batch_identity {
                 return lost_result.result;
             }
             if lost_result.result.is_err() {
@@ -226,7 +230,7 @@ impl LiveThread {
         }
 
         let owned_items = raw_items.to_vec();
-        let receipt_items = owned_items.clone();
+        let receipt_identity = batch_identity;
         let live_thread = self.clone();
         let (ack, ack_rx) = oneshot::channel();
         tokio::spawn(async move {
@@ -235,7 +239,7 @@ impl LiveThread {
             let result = live_thread.append_items_serialized(&owned_items).await;
             if let Err(result) = ack.send(result) {
                 *live_thread.lost_append_result.lock().await = Some(LostAppendResult {
-                    raw_items: receipt_items,
+                    batch_identity: receipt_identity,
                     result,
                 });
             }

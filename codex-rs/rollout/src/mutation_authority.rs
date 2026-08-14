@@ -91,9 +91,8 @@ impl AuthorityInner {
     fn release_custody(&self) {
         let mut state = self.lock_state();
         let previous = state.in_flight;
-        let next = previous
-            .checked_sub(1)
-            .expect("rollout mutation custody underflow");
+        assert!(previous > 0, "rollout mutation custody underflow");
+        let next = previous - 1;
         state.in_flight = next;
         self.publish_count(previous, next);
     }
