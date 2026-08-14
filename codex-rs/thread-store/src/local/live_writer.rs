@@ -128,12 +128,81 @@ pub(super) async fn append_items(
     store: &LocalThreadStore,
     params: AppendThreadItemsParams,
 ) -> ThreadStoreResult<()> {
-    write_and_project(
-        store,
-        params.thread_id,
-        RolloutWriteOp::AppendItems(params.items),
-    )
-    .await
+    let mut committed = 0;
+    append_items_committed(store, params, &mut committed).await
+}
+
+pub(super) async fn append_items_committed(
+    store: &LocalThreadStore,
+    params: AppendThreadItemsParams,
+    committed: &mut usize,
+) -> ThreadStoreResult<()> {
+    let _live_writer_guard = store.live_writer_locks.lock(params.thread_id).await;
+    let (recorder, history_mode, _generation) = live_writer_parts(store, params.thread_id).await?;
+    let raw_items = params.items;
+    let items = persisted_rollout_items(raw_items.as_slice(), history_mode);
+    if items.is_empty() {
+        *committed = raw_items.len();
+        return Ok(());
+    }
+
+    #[cfg(test)]
+    let injected_failure_after = store
+        .append_failure_after
+        .swap(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(test)]
+    let attempted_items = &items[..items.len().min(injected_failure_after)];
+    #[cfg(not(test))]
+    let attempted_items = items.as_slice();
+
+    let mut durable_committed = 0;
+    let result = recorder
+        .record_canonical_items_committed(attempted_items, &mut durable_committed)
+        .await
+        .map_err(thread_store_io_error);
+    #[cfg(test)]
+    let result = if result.is_ok() && attempted_items.len() < items.len() {
+        Err(ThreadStoreError::Internal {
+            message: "scripted local rollout partial append".to_string(),
+        })
+    } else {
+        result
+    };
+    *committed =
+        raw_prefix_for_durable_count(raw_items.as_slice(), history_mode, durable_committed);
+    result?;
+    if matches!(history_mode, ThreadHistoryMode::Paginated)
+        && let Err(err) = super::thread_history_materialization::materialize_to_sqlite(
+            store,
+            params.thread_id,
+            recorder.rollout_path(),
+        )
+        .await
+    {
+        warn!(
+            "failed to project durable rollout for {}: {err}",
+            params.thread_id
+        );
+    }
+    Ok(())
+}
+
+fn raw_prefix_for_durable_count(
+    raw_items: &[RolloutItem],
+    history_mode: ThreadHistoryMode,
+    durable_count: usize,
+) -> usize {
+    let mut durable_seen = 0usize;
+    for (index, item) in raw_items.iter().enumerate() {
+        if persisted_rollout_items(std::slice::from_ref(item), history_mode).is_empty() {
+            continue;
+        }
+        if durable_seen == durable_count {
+            return index;
+        }
+        durable_seen += 1;
+    }
+    raw_items.len()
 }
 
 pub(super) async fn append_items_committed(
@@ -354,7 +423,6 @@ fn thread_store_io_error(err: std::io::Error) -> ThreadStoreError {
 /// Each can advance the rollout JSONL file on disk, so we need to make sure we materialize the
 /// new data into the SQLite history tables (turns and items) as necessary.
 enum RolloutWriteOp {
-    AppendItems(Vec<RolloutItem>),
     Persist,
     Flush,
 }
@@ -385,17 +453,6 @@ async fn write_and_project(
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     let (recorder, history_mode, _generation) = live_writer_parts(store, thread_id).await?;
     let sync_rollout_path = matches!(&write_op, RolloutWriteOp::Persist | RolloutWriteOp::Flush);
-    let write_op = match write_op {
-        RolloutWriteOp::AppendItems(items) => {
-            let items = persisted_rollout_items(items.as_slice(), history_mode);
-            if items.is_empty() {
-                return Ok(());
-            }
-            RolloutWriteOp::AppendItems(items)
-        }
-        RolloutWriteOp::Persist => RolloutWriteOp::Persist,
-        RolloutWriteOp::Flush => RolloutWriteOp::Flush,
-    };
     if matches!(history_mode, ThreadHistoryMode::Legacy) {
         durable_write(&recorder, write_op).await?;
     } else {
@@ -421,13 +478,6 @@ async fn write_and_project(
 
 async fn durable_write(recorder: &RolloutRecorder, write: RolloutWriteOp) -> ThreadStoreResult<()> {
     match write {
-        RolloutWriteOp::AppendItems(items) => {
-            recorder
-                .record_canonical_items(items.as_slice())
-                .await
-                .map_err(thread_store_io_error)?;
-            recorder.flush().await.map_err(thread_store_io_error)
-        }
         RolloutWriteOp::Persist => recorder.persist().await.map_err(thread_store_io_error),
         RolloutWriteOp::Flush => recorder.flush().await.map_err(thread_store_io_error),
     }

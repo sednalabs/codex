@@ -29,6 +29,8 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
 use tokio::sync::OwnedMutexGuard;
@@ -90,6 +92,8 @@ pub struct LocalThreadStore {
     writer_lock_coordinator: Arc<WriterLockCoordinator>,
     state_db: Option<StateDbHandle>,
     thread_history_db: Arc<OnceCell<sqlx::SqlitePool>>,
+    #[cfg(test)]
+    append_failure_after: Arc<AtomicUsize>,
 }
 
 struct LiveRecorderEntry {
@@ -200,7 +204,15 @@ impl LocalThreadStore {
             writer_lock_coordinator,
             state_db,
             thread_history_db: Arc::new(OnceCell::new()),
+            #[cfg(test)]
+            append_failure_after: Arc::new(AtomicUsize::new(usize::MAX)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_append_after(&self, durable_item_count: usize) {
+        self.append_failure_after
+            .store(durable_item_count, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Return the state DB handle used by local rollout writers.
