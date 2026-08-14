@@ -1,4 +1,7 @@
+use super::super::session_lifecycle::AGENT_PICKER_CURSOR_BUDGET;
 use super::super::session_lifecycle::AGENT_PICKER_PAGE_SIZE;
+use super::super::session_lifecycle::LEGACY_AGENT_PICKER_MAX_PAGES;
+use super::super::session_lifecycle::LEGACY_AGENT_PICKER_MAX_THREADS;
 use super::*;
 use app_test_support::create_fake_parented_rollout_with_source;
 use app_test_support::create_fake_rollout;
@@ -59,12 +62,16 @@ struct RecordingAppServerOptions {
     fail_thread_list_request: Option<usize>,
     empty_loaded_threads: bool,
     picker_cursor_fault: Option<PickerCursorFault>,
+    legacy_unique_cursors: bool,
+    legacy_oversized_page: bool,
+    empty_picker_pages: bool,
 }
 
 #[derive(Clone, Copy)]
 enum PickerCursorFault {
     Repeat,
     ShortCycle,
+    Unique,
 }
 
 impl PickerCursorFault {
@@ -73,6 +80,10 @@ impl PickerCursorFault {
             Self::Repeat => "repeat-cursor",
             Self::ShortCycle if page == 2 => "cycle-b",
             Self::ShortCycle => "cycle-a",
+            Self::Unique => match page {
+                1 => "unique-a",
+                _ => "unique-b",
+            },
         }
     }
 }
@@ -179,6 +190,7 @@ async fn start_recording_app_server_with_options(
         let mut websocket = accept_async(stream).await?;
         let mut thread_list_request_count = 0;
         let mut picker_page_request_count = 0;
+        let mut legacy_page_request_count = 0;
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
@@ -206,6 +218,11 @@ async fn start_recording_app_server_with_options(
                     let is_picker_page_request = method == "thread/list"
                         && request["params"]["limit"] == AGENT_PICKER_PAGE_SIZE
                         && request["params"]["ancestorThreadId"].is_string();
+                    let is_legacy_page_request = method == "thread/list"
+                        && request["params"]["limit"] == AGENT_PICKER_PAGE_SIZE
+                        && request["params"]["sourceKinds"]
+                            == serde_json::json!(["subAgentThreadSpawn"])
+                        && !request["params"]["ancestorThreadId"].is_string();
                     request_sink
                         .lock()
                         .expect("request recorder lock")
@@ -220,6 +237,23 @@ async fn start_recording_app_server_with_options(
                         thread_list_request_count += 1;
                     }
                     if options.empty_loaded_threads && method == "thread/loaded/list" {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(
+                                    JSONRPCResponse {
+                                        id: request_id,
+                                        result: serde_json::json!({
+                                            "data": [],
+                                            "nextCursor": null,
+                                        }),
+                                    },
+                                ))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
+                    if options.empty_picker_pages && is_picker_page_request {
                         websocket
                             .send(Message::Text(
                                 serde_json::to_string(&JSONRPCMessage::Response(
@@ -278,6 +312,13 @@ async fn start_recording_app_server_with_options(
                             .and_then(serde_json::Value::as_object_mut)
                             .map(|params| params.remove("cursor"));
                     }
+                    if options.legacy_unique_cursors && is_legacy_page_request {
+                        legacy_page_request_count += 1;
+                        request
+                            .get_mut("params")
+                            .and_then(serde_json::Value::as_object_mut)
+                            .map(|params| params.remove("cursor"));
+                    }
                     let request = serde_json::from_value::<ClientRequest>(request)?;
                     let mut response = match embedded.request(request).await? {
                         Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
@@ -301,6 +342,29 @@ async fn start_recording_app_server_with_options(
                         result["nextCursor"] = serde_json::json!(
                             cursor_fault.cursor_for_page(picker_page_request_count)
                         );
+                    }
+                    if is_legacy_page_request
+                        && let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) =
+                            &mut response
+                    {
+                        if options.legacy_unique_cursors {
+                            result["nextCursor"] =
+                                serde_json::json!(format!("legacy-{legacy_page_request_count}"));
+                        }
+                        let oversized_page_thread = options
+                            .legacy_oversized_page
+                            .then(|| {
+                                result["data"]
+                                    .as_array()
+                                    .and_then(|data| data.first())
+                                    .cloned()
+                            })
+                            .flatten();
+                        if let Some(thread) = oversized_page_thread {
+                            result["data"] = serde_json::Value::Array(
+                                vec![thread.clone(); LEGACY_AGENT_PICKER_MAX_THREADS + 1],
+                            );
+                        }
                     }
                     websocket
                         .send(Message::Text(serde_json::to_string(&response)?.into()))
@@ -739,6 +803,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
 async fn assert_picker_cursor_fault_fails_closed(
     cursor_fault: PickerCursorFault,
     continuation_attempts: usize,
+    preseed_after_first_page: usize,
 ) -> Result<()> {
     let mut app = make_test_app().await;
     let codex_home = tempdir()?;
@@ -809,6 +874,12 @@ async fn assert_picker_cursor_fault_fails_closed(
     let first_page = app.backfill_loaded_subagent_threads(&mut app_server).await;
     assert!(first_page.completed);
     assert!(app.agent_navigation.next_picker_page_cursor().is_some());
+    for index in 0..preseed_after_first_page {
+        assert!(
+            app.agent_navigation
+                .set_next_picker_page_cursor(Some(format!("preseed-{index}")))
+        );
+    }
     for _ in 0..continuation_attempts {
         Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
     }
@@ -847,7 +918,7 @@ async fn assert_picker_cursor_fault_fails_closed(
 }
 
 #[test]
-fn agent_picker_stops_repeated_and_short_cycle_continuations() -> Result<()> {
+fn agent_picker_stops_repeated_cycling_and_over_budget_continuations() -> Result<()> {
     const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
     std::thread::Builder::new()
@@ -858,8 +929,15 @@ fn agent_picker_stops_repeated_and_short_cycle_continuations() -> Result<()> {
                 .enable_all()
                 .build()?;
             runtime.block_on(async {
-                assert_picker_cursor_fault_fails_closed(PickerCursorFault::Repeat, 1).await?;
-                assert_picker_cursor_fault_fails_closed(PickerCursorFault::ShortCycle, 2).await
+                assert_picker_cursor_fault_fails_closed(PickerCursorFault::Repeat, 1, 0).await?;
+                assert_picker_cursor_fault_fails_closed(PickerCursorFault::ShortCycle, 2, 0)
+                    .await?;
+                assert_picker_cursor_fault_fails_closed(
+                    PickerCursorFault::Unique,
+                    1,
+                    AGENT_PICKER_CURSOR_BUDGET - 1,
+                )
+                .await
             })
         })?
         .join()
@@ -1141,6 +1219,112 @@ fn legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion() -> Resu
         })?
         .join()
         .expect("legacy relation repair pagination test thread")
+}
+
+async fn assert_legacy_relation_budget_fails_closed(
+    legacy_unique_cursors: bool,
+    legacy_oversized_page: bool,
+    expected_legacy_requests: usize,
+) -> Result<()> {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-01-09T03-00-00",
+            "2026-01-09T03:00:00Z",
+            "Legacy budget root",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(test_support_error)?,
+    )?;
+    let target_thread_id = create_spawn_rollout(
+        codex_home.path(),
+        app.config.model_provider_id.as_str(),
+        "2026-01-09T03-00-01",
+        "2026-01-09T03:00:01Z",
+        "Legacy budget child",
+        root_thread_id,
+        root_thread_id,
+        "/root/legacy_budget_child",
+    )?;
+    let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+        &app.config,
+        RecordingAppServerOptions {
+            empty_loaded_threads: true,
+            empty_picker_pages: true,
+            legacy_unique_cursors,
+            legacy_oversized_page,
+            ..RecordingAppServerOptions::default()
+        },
+    )
+    .await?;
+    let root = app_server
+        .resume_thread(
+            app.config.clone(),
+            root_thread_id,
+            app.resume_model_settings(),
+        )
+        .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
+        .await?;
+
+    let incomplete = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    assert!(!incomplete.completed);
+    assert!(app.agent_navigation.needs_legacy_relation_fallback_check());
+    assert!(
+        app.agent_navigation.get(&target_thread_id).is_none(),
+        "an over-budget legacy scan must not partially admit descendants"
+    );
+    let legacy_request_count = requests
+        .lock()
+        .expect("request recorder lock")
+        .iter()
+        .filter(|request| {
+            request.method == "thread/list"
+                && request.params["sourceKinds"]
+                    == serde_json::json!(["subAgentThreadSpawn"])
+                && !request.params["ancestorThreadId"].is_string()
+        })
+        .count();
+    assert_eq!(legacy_request_count, expected_legacy_requests);
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[test]
+fn legacy_agent_picker_scan_enforces_page_and_thread_budgets() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-legacy-budget-isolation".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                assert_legacy_relation_budget_fails_closed(
+                    /*legacy_unique_cursors*/ true,
+                    /*legacy_oversized_page*/ false,
+                    LEGACY_AGENT_PICKER_MAX_PAGES,
+                )
+                .await?;
+                assert_legacy_relation_budget_fails_closed(
+                    /*legacy_unique_cursors*/ false,
+                    /*legacy_oversized_page*/ true,
+                    /*expected_legacy_requests*/ 1,
+                )
+                .await
+            })
+        })?
+        .join()
+        .expect("legacy relation repair budget test thread")
 }
 
 #[test]

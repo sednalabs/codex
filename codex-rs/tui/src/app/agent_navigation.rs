@@ -24,12 +24,11 @@ use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
+use super::session_lifecycle::AGENT_PICKER_CURSOR_BUDGET;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::collections::HashSet;
-
-const MAX_PICKER_PAGE_CURSORS: usize = 128;
 
 /// Small state container for multi-agent picker ordering and labeling.
 ///
@@ -313,7 +312,7 @@ impl AgentNavigationState {
             self.seen_picker_page_cursors.clear();
             return true;
         };
-        if self.seen_picker_page_cursors.len() >= MAX_PICKER_PAGE_CURSORS
+        if self.seen_picker_page_cursors.len() >= AGENT_PICKER_CURSOR_BUDGET
             || !self.seen_picker_page_cursors.insert(next_cursor.clone())
         {
             self.next_picker_page_cursor = None;
@@ -837,6 +836,24 @@ mod tests {
 
         assert_eq!(state.next_picker_page_cursor(), None);
         assert!(state.needs_legacy_relation_fallback_check());
+    }
+
+    #[test]
+    fn picker_page_cursor_budget_rejects_129th_and_resets_for_reuse() {
+        let mut state = AgentNavigationState::default();
+        for index in 0..AGENT_PICKER_CURSOR_BUDGET {
+            assert!(state.set_next_picker_page_cursor(Some(format!("cursor-{index}"))));
+        }
+
+        assert!(!state.set_next_picker_page_cursor(Some("cursor-over-budget".to_string())));
+        assert_eq!(state.next_picker_page_cursor(), None);
+
+        state.clear();
+        assert!(state.set_next_picker_page_cursor(Some("cursor-after-clear".to_string())));
+        assert_eq!(
+            state.next_picker_page_cursor().as_deref(),
+            Some("cursor-after-clear")
+        );
     }
 
     #[test]
