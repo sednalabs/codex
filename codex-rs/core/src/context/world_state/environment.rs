@@ -140,6 +140,7 @@ fn bounded_xml_text(value: &str, max_escaped_bytes: usize) -> String {
         let Some(ch) = chars.next() else {
             break;
         };
+        let ch = if is_xml_1_0_char(ch) { ch } else { '\u{FFFD}' };
         if ch.is_whitespace() {
             pending_space = !rendered.is_empty();
             continue;
@@ -175,6 +176,18 @@ fn bounded_xml_text(value: &str, max_escaped_bytes: usize) -> String {
         rendered.push_str(ELLIPSIS);
     }
     rendered
+}
+
+fn is_xml_1_0_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{9}'
+            | '\u{A}'
+            | '\u{D}'
+            | '\u{20}'..='\u{D7FF}'
+            | '\u{E000}'..='\u{FFFD}'
+            | '\u{10000}'..='\u{10FFFF}'
+    )
 }
 
 /// Environment values visible to the model.
