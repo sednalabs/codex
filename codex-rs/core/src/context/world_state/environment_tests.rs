@@ -16,6 +16,31 @@ fn subagent_context_preserves_ordinary_rows() {
 }
 
 #[test]
+fn subagent_context_replaces_xml_invalid_controls() {
+    let mut builder = SubagentContextBuilder::default();
+    assert!(builder.push(SubagentContextRow::new(
+        "agent\0one\u{1}two",
+        Some("nick\u{1}name\0end"),
+    )));
+
+    assert_eq!(
+        builder.finish().as_str(),
+        "- agent\u{FFFD}one\u{FFFD}two: nick\u{FFFD}name\u{FFFD}end"
+    );
+}
+
+#[test]
+fn subagent_context_normalizes_allowed_xml_whitespace() {
+    let mut builder = SubagentContextBuilder::default();
+    assert!(builder.push(SubagentContextRow::new(
+        "agent\tone\ntwo",
+        Some("nick\tname\nend"),
+    )));
+
+    assert_eq!(builder.finish().as_str(), "- agent one two: nick name end");
+}
+
+#[test]
 fn subagent_context_escapes_normalizes_and_truncates_dynamic_fields() {
     let hostile = format!("  <agent attr=\"x\">\n{}", "<&\"' oversized ".repeat(100));
     let mut builder = SubagentContextBuilder::default();
