@@ -483,7 +483,7 @@ async fn delivery_owned_initial_input_failure_reconciles_and_preserves_the_deliv
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let call_id = "delivery-failure";
     let child_path = AgentPath::root()
-        .join("delivery-failure")
+        .join("delivery_failure")
         .expect("child path should be valid");
     let mut created_threads = harness.manager.subscribe_thread_created();
     harness
@@ -699,7 +699,7 @@ async fn post_new_thread_cancellation_with_shutdown_failure_retains_manager_and_
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let child_path = AgentPath::root()
-        .join("retained-cleanup")
+        .join("retained_cleanup")
         .expect("child path should be valid");
     let call_id = "post-new-thread-cancel";
     let mut created_threads = harness.manager.subscribe_thread_created();

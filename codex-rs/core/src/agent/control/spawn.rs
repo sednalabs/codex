@@ -50,10 +50,14 @@ fn spawn_cancellation_owns_child(
 }
 
 fn is_benign_unpublished_spawn_cleanup_error(error: &CodexErr) -> bool {
-    matches!(
-        error.details(),
-        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
-    )
+    match error.details() {
+        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied => true,
+        CodexErrorDetails::Io(error) => error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<CodexErr>())
+            .is_some_and(is_benign_unpublished_spawn_cleanup_error),
+        _ => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

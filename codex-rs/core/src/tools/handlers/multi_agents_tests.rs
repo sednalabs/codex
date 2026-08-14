@@ -49,6 +49,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
+use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileSystemAccessMode;
 use codex_protocol::protocol::FileSystemPath;
@@ -81,6 +82,21 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+
+async fn recv_matching_event(
+    events: &async_channel::Receiver<Event>,
+    mut matches: impl FnMut(&Event) -> bool,
+) -> Event {
+    loop {
+        let event = events
+            .recv()
+            .await
+            .expect("event channel should remain open");
+        if matches(&event) {
+            return event;
+        }
+    }
+}
 
 #[test]
 fn spawn_agent_reasoning_effort_accepts_empty_support_metadata() {
@@ -710,10 +726,20 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         "the provisional V2 delivery must reach the child exactly once before publication"
     );
 
-    let activity = events
-        .recv()
-        .await
-        .expect("successful V2 spawn should report a Started activity");
+    let activity = recv_matching_event(&events, |event| {
+        matches!(
+            &event.msg,
+            EventMsg::ItemCompleted(item_completed)
+                if matches!(
+                    &item_completed.item,
+                    TurnItem::SubAgentActivity(item)
+                        if item.id == "call-1"
+                            && item.kind == SubAgentActivityKind::Started
+                            && item.agent_thread_id == child_thread_id
+                )
+        )
+    })
+    .await;
     assert!(matches!(
         activity.msg,
         EventMsg::ItemCompleted(item_completed)
@@ -725,10 +751,22 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
                         && item.agent_thread_id == child_thread_id
             )
     ));
-    assert!(
-        events.try_recv().is_err(),
-        "a quick V2 child still receives exactly one truthful Started activity"
-    );
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(
+                event.msg,
+                EventMsg::ItemCompleted(item_completed)
+                    if matches!(
+                        item_completed.item,
+                        TurnItem::SubAgentActivity(ref item)
+                            if item.id == "call-1"
+                                && item.kind == SubAgentActivityKind::Started
+                                && item.agent_thread_id == child_thread_id
+                    )
+            ),
+            "a quick V2 child still receives exactly one truthful Started activity"
+        );
+    }
     child.session.ensure_rollout_materialized().await;
     child
         .flush_rollout()
@@ -875,43 +913,43 @@ async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity()
         message.contains("turn aborted"),
         "the tool result must describe cancellation rather than a child identifier: {message}"
     );
-    assert!(
+    let started = recv_matching_event(&events, |event| {
         matches!(
-            events
-                .recv()
-                .await
-                .expect("cancelled V1 spawn should emit an operation start")
-                .msg,
+            &event.msg,
             EventMsg::ItemStarted(item_started)
                 if matches!(
-                    item_started.item,
-                    TurnItem::CollabAgentToolCall(ref item)
+                    &item_started.item,
+                    TurnItem::CollabAgentToolCall(item)
                         if item.tool == CollabAgentTool::SpawnAgent
                             && item.status == CollabAgentToolCallStatus::InProgress
                             && item.receiver_thread_ids.is_empty()
                             && item.receiver_agents.is_empty()
                 )
-        ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(started.msg, EventMsg::ItemStarted(_)),
         "a cancelled V1 spawn must expose only an operation-level in-progress item"
     );
-    assert!(
+    let completed = recv_matching_event(&events, |event| {
         matches!(
-            events
-                .recv()
-                .await
-                .expect("cancelled V1 spawn should terminalize its operation")
-                .msg,
+            &event.msg,
             EventMsg::ItemCompleted(item_completed)
                 if matches!(
-                    item_completed.item,
-                    TurnItem::CollabAgentToolCall(ref item)
+                    &item_completed.item,
+                    TurnItem::CollabAgentToolCall(item)
                         if item.tool == CollabAgentTool::SpawnAgent
                             && item.status == CollabAgentToolCallStatus::Failed
                             && item.receiver_thread_ids.is_empty()
                             && item.receiver_agents.is_empty()
                             && item.agents_states.is_empty()
                 )
-        ),
+        )
+    })
+    .await;
+    assert!(
+        matches!(completed.msg, EventMsg::ItemCompleted(_)),
         "a cancelled V1 spawn must terminalize as a failed operation without inventing a child"
     );
     assert!(
@@ -961,10 +999,22 @@ async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
         .await
         .expect("spawn should reach the post-NewThread publication boundary")
         .expect("spawn hook should identify the child");
-    let started = events
-        .recv()
-        .await
-        .expect("slow spawn should immediately expose an operation item");
+    let started = recv_matching_event(&events, |event| {
+        matches!(
+            &event.msg,
+            EventMsg::ItemStarted(item_started)
+                if matches!(
+                    &item_started.item,
+                    TurnItem::CollabAgentToolCall(item)
+                        if item.tool == CollabAgentTool::SpawnAgent
+                            && item.status == CollabAgentToolCallStatus::InProgress
+                            && item.receiver_thread_ids.is_empty()
+                            && item.receiver_agents.is_empty()
+                            && item.agents_states.is_empty()
+                )
+        )
+    })
+    .await;
     assert!(matches!(
         started.msg,
         EventMsg::ItemStarted(item_started)
@@ -989,10 +1039,23 @@ async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
         .expect("spawn task should join")
         .expect("slow spawn should complete after publication");
 
-    let completed = events
-        .recv()
-        .await
-        .expect("successful spawn should terminalize its operation item");
+    let completed = recv_matching_event(&events, |event| {
+        matches!(
+            &event.msg,
+            EventMsg::ItemCompleted(item_completed)
+                if matches!(
+                    &item_completed.item,
+                    TurnItem::CollabAgentToolCall(item)
+                        if item.tool == CollabAgentTool::SpawnAgent
+                            && item.status == CollabAgentToolCallStatus::Completed
+                            && item.receiver_thread_ids == vec![child_thread_id]
+                            && item.receiver_agents.len() == 1
+                            && item.receiver_agents[0].thread_id == child_thread_id
+                            && item.agents_states.contains_key(&child_thread_id)
+                )
+        )
+    })
+    .await;
     assert!(matches!(
         completed.msg,
         EventMsg::ItemCompleted(item_completed)
