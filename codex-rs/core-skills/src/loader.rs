@@ -252,6 +252,7 @@ pub(crate) async fn skill_roots(
         config_layer_stack,
         cwd,
         home_dir.as_ref(),
+        project_root,
         plugin_skill_roots,
         extra_skill_roots,
     )
@@ -263,6 +264,7 @@ async fn skill_roots_with_home_dir(
     config_layer_stack: &ConfigLayerStack,
     cwd: &AbsolutePathBuf,
     home_dir: Option<&AbsolutePathBuf>,
+    project_root: Option<(&AbsolutePathBuf, &AbsolutePathBuf)>,
     plugin_skill_roots: Vec<PluginSkillRoot>,
     extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<SkillRoot> {
@@ -1261,6 +1263,7 @@ pub(crate) async fn skill_roots_from_layer_stack(
         config_layer_stack,
         cwd,
         home_dir,
+        /*project_root*/ None,
         Vec::new(),
         Vec::new(),
     )
