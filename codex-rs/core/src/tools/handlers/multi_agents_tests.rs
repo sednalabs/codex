@@ -2357,11 +2357,16 @@ async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent(
     else {
         panic!("replayed legacy spawn start should map to a canonical item start");
     };
-    let AppServerThreadItem::CollabAgentToolCall(mapped_started) = mapped_started.item else {
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = mapped_started.item
+    else {
         panic!("replayed legacy spawn start should map to a collab tool item");
     };
-    assert_eq!(mapped_started.requested_model, None);
-    assert_eq!(mapped_started.requested_reasoning_effort, None);
+    assert_eq!(requested_model, None);
+    assert_eq!(requested_reasoning_effort, None);
 
     let replay_turns = build_turns_from_rollout_items(&[
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
@@ -2374,14 +2379,20 @@ async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent(
         RolloutItem::EventMsg(replayed),
     ]);
     assert_eq!(replay_turns.len(), 1);
-    let [AppServerThreadItem::CollabAgentToolCall(replayed_started)] =
-        replay_turns[0].items.as_slice()
+    let [
+        AppServerThreadItem::CollabAgentToolCall {
+            sender_thread_id,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        },
+    ] = replay_turns[0].items.as_slice()
     else {
         panic!("replayed legacy spawn start should materialize one collab tool item");
     };
-    assert_eq!(replayed_started.sender_thread_id, thread_id.to_string());
-    assert_eq!(replayed_started.requested_model, None);
-    assert_eq!(replayed_started.requested_reasoning_effort, None);
+    assert_eq!(sender_thread_id, &thread_id.to_string());
+    assert_eq!(*requested_model, None);
+    assert_eq!(*requested_reasoning_effort, None);
 
     let mut historic_markerless = legacy_started;
     historic_markerless.requested_reasoning_effort_present = None;
@@ -2403,11 +2414,16 @@ async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent(
     else {
         panic!("historic markerless spawn start should map to a canonical item start");
     };
-    let AppServerThreadItem::CollabAgentToolCall(historic_started) = historic_started.item else {
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = historic_started.item
+    else {
         panic!("historic markerless spawn start should map to a collab tool item");
     };
-    assert_eq!(historic_started.requested_model, None);
-    assert_eq!(historic_started.requested_reasoning_effort, None);
+    assert_eq!(requested_model, None);
+    assert_eq!(requested_reasoning_effort, None);
 }
 
 #[tokio::test]
