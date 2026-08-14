@@ -2273,9 +2273,13 @@ mod tests {
     #[test]
     fn required_event_byte_admission_failure_terminalizes_active_worker() {
         let budget = RemoteEventByteBudget::shared();
-        let held = budget
-            .try_reserve(REMOTE_EVENT_AGGREGATE_RETAINED_BYTES)
-            .expect("the aggregate budget should be reservable for the failure setup");
+        let held: Vec<_> = (0..4)
+            .map(|_| {
+                budget
+                    .try_reserve(REMOTE_EVENT_AGGREGATE_RETAINED_BYTES / 4)
+                    .expect("each quarter of the aggregate budget should be reservable")
+            })
+            .collect();
         let mut backlog = RemoteEventBacklog::with_byte_budget(/*capacity*/ 1, budget);
         let request_id = RequestId::Integer(1);
         assert!(
@@ -2288,7 +2292,7 @@ mod tests {
         let terminal = enqueue_remote_worker_event_claimed(
             &mut backlog,
             "test://byte-budget",
-            server_request(1),
+            server_request(/*id*/ 1),
             &mut deferred_events,
         )
         .expect("a required event that cannot reserve bytes must terminalize the worker");
