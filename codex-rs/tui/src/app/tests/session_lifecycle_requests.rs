@@ -402,7 +402,7 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                                 parent_thread_id: root_thread_id,
                                 depth: 1,
                                 agent_path: Some(
-                                    AgentPath::try_from(format!("/root/worker-{index}"))
+                                    AgentPath::try_from(format!("/root/worker_{index}"))
                                         .expect("valid agent path"),
                                 ),
                                 agent_nickname: Some(format!("worker-{index}")),
