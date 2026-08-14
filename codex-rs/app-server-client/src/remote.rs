@@ -11,6 +11,7 @@ higher-level session logic.
 */
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
@@ -552,6 +553,7 @@ struct RemoteEventBacklog {
     byte_budget: Arc<RemoteEventByteBudget>,
     server_request_dispositions: HashMap<RequestId, ServerRequestResponseDisposition>,
     server_request_order: VecDeque<RequestId>,
+    deferred_server_request_ids: HashSet<RequestId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,6 +704,7 @@ impl RemoteEventBacklog {
             byte_budget,
             server_request_dispositions: HashMap::with_capacity(capacity.saturating_mul(4)),
             server_request_order: VecDeque::with_capacity(capacity.saturating_mul(4)),
+            deferred_server_request_ids: HashSet::with_capacity(capacity.saturating_mul(2)),
         }
     }
 
@@ -713,7 +716,7 @@ impl RemoteEventBacklog {
         if let Some(request_id) = &server_request_id {
             // A repeated peer request ID denotes the same in-flight request.
             // Do not publish a second prompt or generate a second response.
-            match self.claim_server_request_id(request_id) {
+            match self.claim_server_request_id(request_id, false) {
                 Ok(false) => {
                     warn!(%request_id, "ignoring duplicate remote app-server server request");
                     return Ok(());
@@ -731,11 +734,19 @@ impl RemoteEventBacklog {
         self.enqueue_claimed(event, server_request_id)
     }
 
-    fn claim_server_request_id(&mut self, request_id: &RequestId) -> Result<bool, ()> {
+    fn claim_server_request_id(
+        &mut self,
+        request_id: &RequestId,
+        allow_deferred: bool,
+    ) -> Result<bool, ()> {
         if self.server_request_dispositions.contains_key(request_id) {
             return Ok(false);
         }
-        if self.server_request_dispositions.len() >= self.max_pending_server_requests() {
+        let direct_count = self.direct_server_request_count();
+        if direct_count >= self.direct_server_request_capacity()
+            && (!allow_deferred
+                || self.deferred_server_request_ids.len() >= self.deferred_capacity())
+        {
             return Err(());
         }
         self.server_request_dispositions.insert(
@@ -744,6 +755,16 @@ impl RemoteEventBacklog {
         );
         self.server_request_order.push_back(request_id.clone());
         Ok(true)
+    }
+
+    fn direct_server_request_count(&self) -> usize {
+        self.server_request_dispositions
+            .len()
+            .saturating_sub(self.deferred_server_request_ids.len())
+    }
+
+    fn direct_server_request_capacity(&self) -> usize {
+        self.capacity.saturating_mul(2).max(1)
     }
 
     fn enqueue_claimed(
@@ -756,7 +777,10 @@ impl RemoteEventBacklog {
             .byte_budget
             .try_reserve(remote_event_retained_bytes(&event));
 
-        if self.events.len() < self.capacity {
+        if self.events.len() < self.capacity
+            && (server_request_id.is_none()
+                || self.direct_server_request_count() <= self.direct_server_request_capacity())
+        {
             if let Some(reservation) = reservation {
                 self.events
                     .push_back(RetainedRemoteEvent::peer(event, reservation));
@@ -792,12 +816,11 @@ impl RemoteEventBacklog {
         match &event.event {
             AppServerEvent::ServerRequest(request)
                 if self.server_request_dispositions.contains_key(request.id()) =>
-            {
-                true
-            }
+                self.events.len() < self.capacity
+                    && self.direct_server_request_count() < self.direct_server_request_capacity(),
             AppServerEvent::ServerRequest(_) => {
                 self.events.len() < self.capacity
-                    && self.server_request_dispositions.len() < self.max_pending_server_requests()
+                    && self.direct_server_request_count() < self.direct_server_request_capacity()
             }
             _ => self.events.len() < self.capacity,
         }
@@ -807,11 +830,12 @@ impl RemoteEventBacklog {
         self.capacity.saturating_mul(2).max(1)
     }
 
-    fn max_pending_server_requests(&self) -> usize {
-        self.capacity
-            .saturating_add(self.capacity)
-            .saturating_add(self.deferred_capacity())
-            .max(1)
+    fn mark_server_request_deferred(&mut self, request_id: &RequestId) {
+        self.deferred_server_request_ids.insert(request_id.clone());
+    }
+
+    fn mark_server_request_promoted(&mut self, request_id: &RequestId) {
+        self.deferred_server_request_ids.remove(request_id);
     }
 
     fn has_pending_public_event(&self) -> bool {
@@ -854,6 +878,7 @@ impl RemoteEventBacklog {
             .remove(request_id)
             .is_some()
         {
+            self.deferred_server_request_ids.remove(request_id);
             self.server_request_order
                 .retain(|pending_request_id| pending_request_id != request_id);
         }
@@ -862,6 +887,7 @@ impl RemoteEventBacklog {
     fn take_unanswered_server_request_ids(&mut self) -> Vec<RequestId> {
         let mut unanswered = Vec::new();
         while let Some(request_id) = self.server_request_order.pop_front() {
+            self.deferred_server_request_ids.remove(&request_id);
             match self.server_request_dispositions.remove(&request_id) {
                 Some(ServerRequestResponseDisposition::Pending) => unanswered.push(request_id),
                 Some(ServerRequestResponseDisposition::ResponseAttempted) | None => {}
@@ -1276,7 +1302,7 @@ where
             Ok(JSONRPCMessage::Request(request)) => {
                 let request_id = request.id.clone();
                 let method = request.method.clone();
-                match backlog.claim_server_request_id(&request_id) {
+                match backlog.claim_server_request_id(&request_id, true) {
                     Ok(false) => {
                         warn!(%request_id, "ignoring duplicate remote app-server server request");
                         #[cfg(test)]
@@ -1371,7 +1397,7 @@ fn enqueue_remote_worker_event(
     };
 
     if let Some(request_id) = &server_request_id {
-        match backlog.claim_server_request_id(request_id) {
+        match backlog.claim_server_request_id(request_id, true) {
             Ok(false) => {
                 warn!(%request_id, "ignoring duplicate remote app-server server request");
                 #[cfg(test)]
@@ -1405,10 +1431,12 @@ fn enqueue_remote_worker_event_claimed(
         | AppServerEvent::ServerNotification(_)
         | AppServerEvent::Disconnected { .. } => None,
     };
-    match backlog.enqueue_claimed(event, server_request_id.clone()) {
+    #[cfg(test)]
+    let server_request_id_for_test = server_request_id.clone();
+    match backlog.enqueue_claimed(event, server_request_id) {
         Ok(()) => {
             #[cfg(test)]
-            if let Some(request_id) = server_request_id {
+            if let Some(request_id) = server_request_id_for_test {
                 record_remote_worker_test_event(
                     endpoint,
                     RemoteWorkerTestEvent::ServerRequestQueued(request_id),
@@ -1429,10 +1457,13 @@ fn enqueue_remote_worker_event_claimed(
                 Some(terminal)
             } else {
                 if let Some(event) = overflow.event {
+                    if let Some(request_id) = &server_request_id {
+                        backlog.mark_server_request_deferred(request_id);
+                    }
                     deferred_events.push_back(event);
                 }
                 #[cfg(test)]
-                if let Some(request_id) = &server_request_id {
+                if let Some(request_id) = &server_request_id_for_test {
                     record_remote_worker_test_event(
                         endpoint,
                         RemoteWorkerTestEvent::ServerRequestDeferred(request_id.clone()),
@@ -1454,6 +1485,9 @@ fn promote_deferred_event(
             ErrorKind::InvalidData,
             format!("remote app server at `{endpoint}` deferred event could not be admitted"),
         ));
+    }
+    if let AppServerEvent::ServerRequest(request) = &event.event {
+        backlog.mark_server_request_promoted(request.id());
     }
     backlog.events.push_back(event);
     None
@@ -1809,7 +1843,7 @@ where
                         JSONRPCMessage::Request(request) => {
                             let request_id = request.id.clone();
                             let method = request.method.clone();
-                            match backlog.claim_server_request_id(&request_id) {
+                            match backlog.claim_server_request_id(&request_id, false) {
                                 Ok(false) => {
                                     warn!(%request_id, "ignoring duplicate remote app-server server request during initialize");
                                 }
