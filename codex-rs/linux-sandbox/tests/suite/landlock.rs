@@ -534,6 +534,64 @@ async fn detached_children_survive_parent_exit_under_bwrap() {
 }
 
 #[tokio::test]
+async fn detached_child_cannot_create_protected_metadata_after_parent_exit() {
+    if should_skip_bwrap_tests().await {
+        eprintln!("skipping bwrap test: bwrap sandbox prerequisites are unavailable");
+        return;
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let repository = tempdir.path().join("repository");
+    let workspace = repository.join("workspace");
+    std::fs::create_dir_all(repository.join(".git")).expect("create parent git metadata");
+    std::fs::write(repository.join(".git/HEAD"), "ref: refs/heads/main\n")
+        .expect("write parent git HEAD");
+    std::fs::create_dir(&workspace).expect("create writable workspace");
+    let protected_path = workspace.join(".git");
+    let ordinary_path = workspace.join("ordinary.txt");
+    let result_path = workspace.join("detached-result.txt");
+    let command = format!(
+        "nohup sh -c 'sleep 0.5; mkdir \"{protected}\" 2>/dev/null || true; \
+         for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+         [ ! -e \"{protected}\" ] && break; sleep 0.05; done; \
+         if [ -e \"{protected}\" ]; then printf allowed; else printf denied; fi > \"{result}\"; \
+         printf ordinary > \"{ordinary}\"' >/dev/null 2>&1 </dev/null &",
+        protected = protected_path.to_string_lossy(),
+        result = result_path.to_string_lossy(),
+        ordinary = ordinary_path.to_string_lossy(),
+    );
+
+    let output = run_cmd_result_with_writable_roots(
+        &["bash", "-lc", &command],
+        &[workspace],
+        LONG_TIMEOUT_MS,
+        /*use_legacy_landlock*/ false,
+        /*network_access*/ true,
+    )
+    .await
+    .expect("sandboxed command should execute");
+    assert_eq!(output.exit_code, 0);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !result_path.exists() || !ordinary_path.exists() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("detached child should report its post-parent behavior");
+
+    assert_eq!(
+        std::fs::read_to_string(&result_path).expect("read detached result"),
+        "denied"
+    );
+    assert!(!protected_path.exists());
+    assert_eq!(
+        std::fs::read_to_string(&ordinary_path).expect("read ordinary output"),
+        "ordinary"
+    );
+}
+
+#[tokio::test]
 async fn test_no_new_privs_is_enabled() {
     if should_skip_sandbox_helper_tests().await {
         eprintln!("skipping sandbox helper test: helper executable is unavailable");

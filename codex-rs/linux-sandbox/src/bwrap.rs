@@ -122,6 +122,7 @@ pub(crate) struct BwrapArgs {
     pub preserved_files: Vec<File>,
     pub synthetic_mount_targets: Vec<SyntheticMountTarget>,
     pub protected_create_targets: Vec<ProtectedCreateTarget>,
+    pub process_lifetime: BwrapProcessLifetime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +263,7 @@ pub(crate) fn create_bwrap_command_args(
                 preserved_files: Vec::new(),
                 synthetic_mount_targets: Vec::new(),
                 protected_create_targets: Vec::new(),
+                process_lifetime: options.process_lifetime,
             })
         } else {
             Ok(create_bwrap_flags_full_filesystem(command, options))
@@ -305,6 +307,7 @@ fn create_bwrap_flags_full_filesystem(command: Vec<String>, options: BwrapOption
         preserved_files: Vec::new(),
         synthetic_mount_targets: Vec::new(),
         protected_create_targets: Vec::new(),
+        process_lifetime: options.process_lifetime,
     }
 }
 
@@ -321,6 +324,7 @@ fn create_bwrap_flags(
         preserved_files,
         synthetic_mount_targets,
         protected_create_targets,
+        process_lifetime: _,
     } = create_filesystem_args(
         file_system_sandbox_policy,
         sandbox_policy_cwd,
@@ -362,6 +366,7 @@ fn create_bwrap_flags(
         preserved_files,
         synthetic_mount_targets,
         protected_create_targets,
+        process_lifetime: options.process_lifetime,
     })
 }
 
@@ -532,6 +537,7 @@ fn create_filesystem_args(
         preserved_files: Vec::new(),
         synthetic_mount_targets: Vec::new(),
         protected_create_targets: Vec::new(),
+        process_lifetime: BwrapProcessLifetime::TerminateWithParent,
     };
     let mut allowed_write_paths = Vec::with_capacity(writable_roots.len());
     for writable_root in &writable_roots {
