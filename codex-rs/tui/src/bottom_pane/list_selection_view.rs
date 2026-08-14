@@ -171,6 +171,8 @@ pub(crate) struct SelectionViewParams {
     pub tabs: Vec<SelectionTab>,
     pub initial_tab_id: Option<String>,
     pub is_searchable: bool,
+    /// Filter text to restore when rebuilding a live searchable picker.
+    pub initial_search_query: Option<String>,
     pub search_placeholder: Option<String>,
     pub col_width_mode: ColumnWidthMode,
     pub row_display: SelectionRowDisplay,
@@ -222,6 +224,7 @@ impl Default for SelectionViewParams {
             tabs: Vec::new(),
             initial_tab_id: None,
             is_searchable: false,
+            initial_search_query: None,
             search_placeholder: None,
             col_width_mode: ColumnWidthMode::AutoVisible,
             row_display: SelectionRowDisplay::Wrapped,
@@ -388,7 +391,7 @@ impl ListSelectionView {
             dismiss_after_child_accept: false,
             app_event_tx,
             is_searchable: params.is_searchable,
-            search_query: String::new(),
+            search_query: params.initial_search_query.unwrap_or_default(),
             search_placeholder: if params.is_searchable {
                 params.search_placeholder
             } else {
@@ -1093,6 +1096,10 @@ impl BottomPaneView for ListSelectionView {
         ListSelectionView::active_tab_id(self)
     }
 
+    fn search_query(&self) -> Option<&str> {
+        self.is_searchable.then_some(self.search_query.as_str())
+    }
+
     fn prefer_esc_to_handle_key_event(&self) -> bool {
         true
     }
@@ -1778,6 +1785,36 @@ mod tests {
 
         assert_eq!(view.filtered_indices, vec![0]);
         view.set_search_query("closed".to_string());
+        assert_eq!(view.filtered_indices, vec![1]);
+    }
+
+    #[test]
+    fn searchable_view_applies_an_initial_filter_before_rendering() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let view = new_view(
+            SelectionViewParams {
+                items: vec![
+                    SelectionItem {
+                        name: "Live worker".to_string(),
+                        search_value: Some("live worker open".to_string()),
+                        ..Default::default()
+                    },
+                    SelectionItem {
+                        name: "Closed worker".to_string(),
+                        search_value: Some("closed worker stale".to_string()),
+                        hidden_when_unfiltered: true,
+                        ..Default::default()
+                    },
+                ],
+                is_searchable: true,
+                initial_search_query: Some("closed".to_string()),
+                ..Default::default()
+            },
+            tx,
+        );
+
+        assert_eq!(view.search_query, "closed");
         assert_eq!(view.filtered_indices, vec![1]);
     }
 

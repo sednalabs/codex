@@ -10,9 +10,17 @@ use crate::app_server_session::thread_blocks_direct_input;
 use crate::multi_agents::AgentPickerThreadUsage;
 use crate::multi_agents::format_agent_picker_item_description;
 use crate::multi_agents::format_agent_picker_item_selected_description;
+use codex_app_server_protocol::SortDirection;
+use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadSortKey;
+use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
+
+const AGENT_PICKER_PAGE_SIZE: u32 = 50;
+const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
 pub(super) enum ThreadAttachPresentation {
@@ -38,7 +46,7 @@ impl App {
             .agent_navigation
             .ordered_path_backed_subagent_threads(self.primary_thread_id)
             .into_iter()
-            .map(|(thread_id, _)| thread_id)
+            .filter_map(|(thread_id, entry)| (!entry.is_closed).then_some(thread_id))
             .collect();
         for thread_id in path_backed_thread_ids.iter().copied() {
             if let Some(channel) = self.thread_event_channels.get(&thread_id)
@@ -106,6 +114,10 @@ impl App {
             if path_backed_thread_ids.contains(&thread_id)
                 || self.side_threads.contains_key(&thread_id)
                 || backfill.refreshed_thread_ids.contains(&thread_id)
+                || self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .is_some_and(|entry| entry.is_closed)
             {
                 continue;
             }
@@ -117,6 +129,23 @@ impl App {
             }
         }
 
+        self.render_agent_picker().await;
+    }
+
+    /// Loads one continuation page without dropping the active `closed` filter.
+    pub(super) async fn load_more_agent_picker_page(&mut self, app_server: &mut AppServerSession) {
+        let Some(cursor) = self.agent_navigation.next_picker_page_cursor() else {
+            return;
+        };
+        let backfill = self
+            .backfill_agent_picker_page(app_server, Some(cursor))
+            .await;
+        if backfill.completed || self.agent_navigation.next_picker_page_cursor().is_none() {
+            self.render_agent_picker().await;
+        }
+    }
+
+    async fn render_agent_picker(&mut self) {
         let has_non_primary_agent_thread = self
             .agent_navigation
             .has_non_primary_thread(self.primary_thread_id);
@@ -131,8 +160,12 @@ impl App {
             return;
         }
 
+        let prior_search_query = self
+            .chat_widget
+            .selection_view_search_query(AGENT_PICKER_VIEW_ID);
         let mut initial_selected_idx = None;
         let mut items = Vec::new();
+        let mut closed_agent_count = 0;
         for (idx, (thread_id, entry)) in self
             .agent_navigation
             .ordered_threads()
@@ -164,6 +197,9 @@ impl App {
             let status_terms = if entry.is_running {
                 "live active open"
             } else {
+                if entry.is_closed && !is_primary {
+                    closed_agent_count += 1;
+                }
                 "closed stale inactive finished"
             };
             let search_value =
@@ -186,16 +222,59 @@ impl App {
             });
         }
 
-        self.chat_widget.show_selection_view(SelectionViewParams {
-            title: Some("Subagents".to_string()),
-            subtitle: Some(AgentNavigationState::picker_subtitle()),
-            footer_hint: Some(standard_popup_hint_line()),
-            is_searchable: true,
-            search_placeholder: Some("Search agents or type 'closed'".to_string()),
-            items,
-            initial_selected_idx,
-            ..Default::default()
-        });
+        let has_more_closed_agents = self.agent_navigation.next_picker_page_cursor().is_some();
+        if has_more_closed_agents {
+            items.push(SelectionItem {
+                name: "Load more historical sidecars".to_string(),
+                description: Some(
+                    "Load the next bounded page, including older finished subagents.".to_string(),
+                ),
+                selected_description: Some(
+                    "Load the next bounded page without clearing this filter.".to_string(),
+                ),
+                hidden_when_unfiltered: true,
+                actions: vec![Box::new(|tx| {
+                    tx.send(AppEvent::LoadMoreAgentPickerPage);
+                })],
+                dismiss_on_select: false,
+                search_value: Some("closed stale finished historical older more page".to_string()),
+                ..Default::default()
+            });
+        }
+
+        let closed_suffix = if closed_agent_count == 1 {
+            "sidecar"
+        } else {
+            "sidecars"
+        };
+        let closed_page_hint = if has_more_closed_agents {
+            " More are available in the next page."
+        } else {
+            ""
+        };
+        let subtitle = if closed_agent_count == 0 && !has_more_closed_agents {
+            AgentNavigationState::picker_subtitle()
+        } else {
+            format!(
+                "{} {closed_agent_count} closed {closed_suffix} cached.{closed_page_hint}",
+                AgentNavigationState::picker_subtitle()
+            )
+        };
+        self.chat_widget.replace_or_show_selection_view(
+            AGENT_PICKER_VIEW_ID,
+            SelectionViewParams {
+                view_id: Some(AGENT_PICKER_VIEW_ID),
+                title: Some("Subagents".to_string()),
+                subtitle: Some(subtitle),
+                footer_hint: Some(standard_popup_hint_line()),
+                is_searchable: true,
+                initial_search_query: prior_search_query,
+                search_placeholder: Some("Search agents or type 'closed'".to_string()),
+                items,
+                initial_selected_idx,
+                ..Default::default()
+            },
+        );
     }
 
     async fn agent_picker_thread_usage(
@@ -247,6 +326,11 @@ impl App {
     pub(super) fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
         err.chain()
             .any(|cause| cause.to_string().contains("thread not loaded:"))
+    }
+
+    fn is_invalid_thread_list_cursor_error(err: &color_eyre::Report) -> bool {
+        err.chain()
+            .any(|cause| cause.to_string().contains("invalid cursor:"))
     }
 
     pub(super) fn closed_state_for_thread_read_error(
@@ -829,25 +913,182 @@ impl App {
         Ok(())
     }
 
-    /// Fetches all loaded threads from the app server and registers descendants of the primary
-    /// thread in the navigation cache and chat widget metadata.
-    ///
-    /// Called when opening the `/agent` picker and after resuming a thread so that the picker and
-    /// keyboard navigation are pre-populated even if the TUI did not witness the original spawn
-    /// events. Fresh and forked threads cannot have pre-existing descendants.
-    ///
-    /// The loaded-thread list is fetched in full (no pagination) and the spawn tree is walked
-    /// by `find_loaded_subagent_threads_for_primary`. Each discovered subagent is registered via
-    /// `upsert_agent_picker_thread`, which writes to both `AgentNavigationState` and the
-    /// `ChatWidget` metadata map.
+    /// Fetches one bounded page of persisted descendants while independently retaining every
+    /// currently loaded descendant. Loaded sessions are registered first so a transient persisted
+    /// list failure cannot hide a healthy sidecar.
     pub(super) async fn backfill_loaded_subagent_threads(
         &mut self,
         app_server: &mut AppServerSession,
+    ) -> LoadedSubagentBackfill {
+        self.backfill_agent_picker_page(app_server, /*cursor*/ None)
+            .await
+    }
+
+    async fn backfill_agent_picker_page(
+        &mut self,
+        app_server: &mut AppServerSession,
+        cursor: Option<String>,
     ) -> LoadedSubagentBackfill {
         let Some(primary_thread_id) = self.primary_thread_id else {
             return LoadedSubagentBackfill::default();
         };
 
+        let is_continuation = cursor.is_some();
+        let mut refreshed_thread_ids = HashSet::new();
+        let loaded_priority_completed = if is_continuation {
+            true
+        } else {
+            self.backfill_loaded_priority_subagent_threads(
+                app_server,
+                primary_thread_id,
+                &mut refreshed_thread_ids,
+            )
+            .await
+        };
+
+        let response = match app_server
+            .thread_list(ThreadListParams {
+                cursor,
+                limit: Some(AGENT_PICKER_PAGE_SIZE),
+                sort_key: Some(ThreadSortKey::UpdatedAt),
+                sort_direction: Some(SortDirection::Desc),
+                model_providers: None,
+                source_kinds: None,
+                thread_sources: None,
+                archived: Some(false),
+                is_pinned: None,
+                cwd: None,
+                use_state_db_only: true,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: Some(primary_thread_id.to_string()),
+            })
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(%err, "failed to list persisted descendants for subagent backfill");
+                if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
+                    self.agent_navigation.set_next_picker_page_cursor(None);
+                }
+                self.sync_active_agent_label();
+                return LoadedSubagentBackfill {
+                    completed: false,
+                    refreshed_thread_ids,
+                };
+            }
+        };
+
+        if is_continuation
+            || response.next_cursor.is_none()
+            || self.agent_navigation.next_picker_page_cursor().is_none()
+        {
+            self.agent_navigation
+                .set_next_picker_page_cursor(response.next_cursor.clone());
+        }
+        for thread in response.data {
+            self.register_agent_picker_thread_from_backend(
+                primary_thread_id,
+                thread,
+                &mut refreshed_thread_ids,
+            );
+        }
+
+        let legacy_fallback_completed =
+            if !is_continuation && self.agent_navigation.needs_legacy_relation_fallback_check() {
+                let completed = self
+                    .backfill_loaded_legacy_subagent_threads(
+                        app_server,
+                        primary_thread_id,
+                        &mut refreshed_thread_ids,
+                    )
+                    .await;
+                if loaded_priority_completed && completed {
+                    self.agent_navigation
+                        .mark_legacy_relation_fallback_checked();
+                }
+                completed
+            } else {
+                true
+            };
+        self.sync_active_agent_label();
+
+        LoadedSubagentBackfill {
+            completed: loaded_priority_completed && legacy_fallback_completed,
+            refreshed_thread_ids,
+        }
+    }
+
+    fn register_agent_picker_thread_from_backend(
+        &mut self,
+        primary_thread_id: ThreadId,
+        thread: Thread,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) {
+        let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+            tracing::warn!(
+                "ignoring persisted descendant with invalid id during subagent backfill"
+            );
+            return;
+        };
+        if thread_id == primary_thread_id {
+            return;
+        }
+
+        let has_live_channel = self
+            .thread_event_channels
+            .get(&thread_id)
+            .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
+        let is_running = matches!(
+            &thread.status,
+            codex_app_server_protocol::ThreadStatus::Active { .. }
+        );
+        let is_closed = !has_live_channel
+            && matches!(
+                &thread.status,
+                codex_app_server_protocol::ThreadStatus::NotLoaded
+            );
+        if thread_blocks_direct_input(&thread) {
+            self.agent_navigation.mark_parent_owned(thread_id);
+        }
+        self.upsert_agent_picker_thread(
+            thread_id,
+            thread.agent_nickname,
+            thread.agent_role,
+            is_closed,
+        );
+        self.agent_navigation
+            .set_agent_path(thread_id, source_agent_path(&thread.source));
+        self.agent_navigation.update_identity(
+            thread_id,
+            thread.model,
+            thread.reasoning_effort,
+            Some(thread.model_provider),
+            thread.name,
+        );
+        self.agent_navigation.set_timestamps(
+            thread_id,
+            Some(thread.created_at),
+            Some(thread.updated_at),
+        );
+        self.sync_agent_picker_identity(thread_id);
+        if !has_live_channel {
+            if is_running {
+                self.agent_navigation.mark_running(thread_id);
+            } else {
+                self.agent_navigation
+                    .set_running(thread_id, /*is_running*/ false);
+            }
+            refreshed_thread_ids.insert(thread_id);
+        }
+    }
+
+    async fn backfill_loaded_priority_subagent_threads(
+        &mut self,
+        app_server: &mut AppServerSession,
+        primary_thread_id: ThreadId,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) -> bool {
         let loaded_thread_ids = match app_server
             .thread_loaded_list(ThreadLoadedListParams {
                 cursor: None,
@@ -857,72 +1098,100 @@ impl App {
         {
             Ok(response) => response.data,
             Err(err) => {
-                tracing::warn!(%err, "failed to list loaded threads for subagent backfill");
-                return LoadedSubagentBackfill::default();
+                tracing::debug!(%err, "loaded descendant priority lookup was unavailable");
+                return false;
             }
         };
 
-        let mut threads = Vec::new();
-        let mut had_read_error = false;
+        let mut loaded_metadata_completed = true;
+        let mut threads = Vec::with_capacity(loaded_thread_ids.len());
         for thread_id in loaded_thread_ids {
             let Ok(thread_id) = ThreadId::from_string(&thread_id) else {
-                tracing::warn!("ignoring loaded thread with invalid id during subagent backfill");
+                loaded_metadata_completed = false;
                 continue;
             };
-
             if thread_id == primary_thread_id {
                 continue;
             }
-
             match app_server
                 .thread_read(thread_id, /*include_turns*/ false)
                 .await
             {
                 Ok(thread) => threads.push(thread),
                 Err(err) => {
-                    had_read_error = true;
-                    tracing::warn!(thread_id = %thread_id, %err, "failed to read loaded thread");
+                    loaded_metadata_completed = false;
+                    tracing::debug!(thread_id = %thread_id, %err, "loaded descendant metadata read failed");
                 }
             }
         }
 
-        let mut refreshed_thread_ids = HashSet::new();
-        for thread in find_loaded_subagent_threads_for_primary(threads, primary_thread_id) {
-            let agent_path = thread.agent_path;
-            let has_live_channel = self
-                .thread_event_channels
-                .get(&thread.thread_id)
-                .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::Live);
-            let is_closed = !has_live_channel && thread.is_closed;
-            if thread.blocks_direct_input {
-                self.agent_navigation.mark_parent_owned(thread.thread_id);
-            }
-            self.upsert_agent_picker_thread(
-                thread.thread_id,
-                thread.agent_nickname,
-                thread.agent_role,
-                is_closed,
-            );
-            self.agent_navigation
-                .set_agent_path(thread.thread_id, agent_path);
-            // A live channel can have an empty store after a successful spawn. Only apply server
-            // status for channels that would otherwise need another liveness read.
-            if !has_live_channel {
-                if thread.is_running {
-                    self.agent_navigation.mark_running(thread.thread_id);
-                } else {
-                    self.agent_navigation
-                        .set_running(thread.thread_id, /*is_running*/ false);
-                }
-                refreshed_thread_ids.insert(thread.thread_id);
+        let descendants =
+            find_loaded_subagent_threads_for_primary(threads.clone(), primary_thread_id)
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<HashSet<_>>();
+        for thread in threads {
+            if ThreadId::from_string(&thread.id)
+                .is_ok_and(|thread_id| descendants.contains(&thread_id))
+            {
+                self.register_agent_picker_thread_from_backend(
+                    primary_thread_id,
+                    thread,
+                    refreshed_thread_ids,
+                );
             }
         }
-        self.sync_active_agent_label();
+        loaded_metadata_completed
+    }
 
-        LoadedSubagentBackfill {
-            completed: !had_read_error,
-            refreshed_thread_ids,
+    async fn backfill_loaded_legacy_subagent_threads(
+        &mut self,
+        app_server: &mut AppServerSession,
+        primary_thread_id: ThreadId,
+        refreshed_thread_ids: &mut HashSet<ThreadId>,
+    ) -> bool {
+        let scanned_threads = match app_server
+            .thread_list(ThreadListParams {
+                cursor: None,
+                limit: Some(AGENT_PICKER_PAGE_SIZE),
+                sort_key: Some(ThreadSortKey::UpdatedAt),
+                sort_direction: Some(SortDirection::Desc),
+                model_providers: None,
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                thread_sources: None,
+                archived: Some(false),
+                is_pinned: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+            })
+            .await
+        {
+            Ok(response) => response.data,
+            Err(err) => {
+                tracing::debug!(%err, "legacy subagent relation repair was unavailable");
+                return false;
+            }
+        };
+        let descendants =
+            find_loaded_subagent_threads_for_primary(scanned_threads.clone(), primary_thread_id)
+                .into_iter()
+                .map(|thread| thread.thread_id)
+                .collect::<HashSet<_>>();
+        for thread in scanned_threads {
+            if ThreadId::from_string(&thread.id)
+                .is_ok_and(|thread_id| descendants.contains(&thread_id))
+            {
+                self.register_agent_picker_thread_from_backend(
+                    primary_thread_id,
+                    thread,
+                    refreshed_thread_ids,
+                );
+            }
         }
+        true
     }
 
     /// Returns the adjacent thread id for keyboard navigation, backfilling from the server if the
