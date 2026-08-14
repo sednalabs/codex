@@ -2072,7 +2072,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_terminal_rejects_public_private_and_overflowed_server_requests_once() {
+    async fn remote_shutdown_rejects_public_private_and_deferred_server_requests_once() {
         let (rejected_tx, rejected_rx) = tokio::sync::oneshot::channel();
         let (advance_tx, mut advance_rx) = tokio::sync::mpsc::channel(2);
         let websocket_url = start_test_remote_server(|mut websocket| async move {
@@ -2159,6 +2159,14 @@ mod tests {
             .send(())
             .await
             .expect("server should accept the private-backlog confirmation");
+        assert_eq!(
+            timeout(Duration::from_secs(2), worker_hooks.next())
+                .await
+                .expect("request 2 should be retained as bounded deferred work"),
+            RemoteWorkerTestEvent::ServerRequestDeferred(RequestId::Integer(2))
+        );
+
+        let shutdown = tokio::spawn(client.shutdown());
 
         let rejected = timeout(Duration::from_secs(2), rejected_rx)
             .await
@@ -2167,34 +2175,14 @@ mod tests {
         assert_eq!(
             rejected,
             vec![
-                (RequestId::Integer(0), -32001),
-                (RequestId::Integer(1), -32001),
-                (RequestId::Integer(2), -32001),
+                (RequestId::Integer(0), -32603),
+                (RequestId::Integer(1), -32603),
+                (RequestId::Integer(2), -32603),
             ]
         );
-
-        for request_id in [RequestId::Integer(0), RequestId::Integer(1)] {
-            let AppServerEvent::ServerRequest(request) =
-                timeout(Duration::from_secs(2), client.next_event())
-                    .await
-                    .expect("retained public request should arrive before terminal")
-                    .expect("event stream should stay open until disconnect")
-            else {
-                panic!("expected retained server request before disconnect");
-            };
-            assert_eq!(request.id(), &request_id);
-        }
-        assert!(matches!(
-            timeout(Duration::from_secs(2), client.next_event())
-                .await
-                .expect("disconnect event should arrive before timeout"),
-            Some(AppServerEvent::Disconnected { .. })
-        ));
-        assert!(client.next_event().await.is_none());
-
-        client
-            .shutdown()
+        shutdown
             .await
+            .expect("shutdown task should join")
             .expect("terminal shutdown should complete");
     }
 
