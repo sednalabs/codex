@@ -110,6 +110,237 @@ async fn cancelling_capacity_wait_leaves_admission_and_writer_active() {
     writer_task.take_handle().unwrap().wait().await.unwrap();
 }
 
+async fn recorder_with_deferred_rollout(home: &Path) -> std::io::Result<RolloutRecorder> {
+    RolloutRecorder::new(
+        &test_config(home),
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test_originator".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await
+}
+
+async fn wait_until_authority_is_closed(authority: &RolloutMutationAuthority) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match authority.admit() {
+                Err(MutationAdmissionError::AdmissionClosed) => return,
+                Err(MutationAdmissionError::CounterOverflow) => {
+                    panic!("mutation admission counter overflow")
+                }
+                Ok(custody) => drop(custody),
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("mutation authority should close");
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_exact_admitted_write_and_blocks_stale_generation() {
+    let home = TempDir::new().expect("temp dir");
+    let recorder = recorder_with_deferred_rollout(home.path()).await.unwrap();
+    let admitted_path = home.path().join("admitted-write.jsonl");
+    File::create(&admitted_path).expect("create admitted-write target");
+    let admitted_file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&admitted_path)
+        .expect("open admitted-write target");
+    let gate = JsonlWriteGate {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let mut admitted_writer = JsonlWriter::new(
+        tokio::fs::File::from_std(admitted_file),
+        recorder.mutation_authority.clone(),
+    );
+    admitted_writer.write_gate = Some(gate.clone());
+    let write = tokio::spawn(async move {
+        admitted_writer
+            .write_rollout_item(&agent_message_item("admitted write"), None)
+            .await
+    });
+    gate.entered.notified().await;
+    let shutdown = tokio::spawn({
+        let recorder = recorder.clone();
+        async move { recorder.shutdown().await }
+    });
+
+    wait_until_authority_is_closed(&recorder.mutation_authority).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown completed before its exact admitted write drained"
+    );
+    write.abort();
+    assert!(
+        !shutdown.is_finished(),
+        "cancelling the outer append released mutation custody"
+    );
+    gate.release.notify_one();
+    shutdown.await.expect("join shutdown").expect("shutdown");
+    assert!(
+        fs::read_to_string(&admitted_path)
+            .expect("read admitted write")
+            .contains("admitted write"),
+        "owned continuation must finish the admitted write after caller cancellation"
+    );
+    assert_eq!(
+        recorder.mutation_authority.admit().err(),
+        Some(MutationAdmissionError::AdmissionClosed)
+    );
+    let stale_path = home.path().join("stale-generation.jsonl");
+    File::create(&stale_path).expect("create stale target");
+    let stale_file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&stale_path)
+        .expect("open stale target");
+    let mut stale_writer = JsonlWriter::new(
+        tokio::fs::File::from_std(stale_file),
+        recorder.mutation_authority.clone(),
+    );
+    stale_writer
+        .write_rollout_item(&agent_message_item("stale write"), None)
+        .await
+        .expect_err("revoked generation must reject actual filesystem append");
+    assert!(fs::read(&stale_path).expect("read stale target").is_empty());
+    recorder
+        .record_canonical_items(&[agent_message_item("stale command")])
+        .await
+        .expect_err("terminal recorder must reject stale-generation append");
+}
+
+#[tokio::test]
+async fn cancelled_shutdown_keeps_revocation_owned_until_admitted_write_drains() {
+    let home = TempDir::new().expect("temp dir");
+    let recorder = recorder_with_deferred_rollout(home.path()).await.unwrap();
+    let custody = recorder
+        .mutation_authority
+        .admit()
+        .expect("admit simulated filesystem write");
+    let shutdown = tokio::spawn({
+        let recorder = recorder.clone();
+        async move { recorder.shutdown().await }
+    });
+    wait_until_authority_is_closed(&recorder.mutation_authority).await;
+    shutdown.abort();
+    drop(custody);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let finished = recorder
+                .writer_task
+                .handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished());
+            if finished {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("writer should finish after admitted write drains");
+    assert_eq!(
+        recorder.mutation_authority.admit().err(),
+        Some(MutationAdmissionError::AdmissionClosed)
+    );
+}
+
+#[tokio::test]
+async fn failed_precommit_open_releases_mutation_custody_for_retry() {
+    let home = TempDir::new().expect("temp dir");
+    let authority = RolloutMutationAuthority::new();
+    let blocker = home.path().join("not-a-directory");
+    File::create(&blocker).expect("create parent blocker");
+    open_log_file_with_authority(&blocker.join("rollout.jsonl"), authority.clone())
+        .expect_err("blocked parent must fail before writer commit");
+    drop(authority.admit().expect("failed open must release custody"));
+}
+
+#[tokio::test]
+async fn failed_async_write_releases_mutation_custody_for_retry() {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    File::create(&rollout_path).expect("create rollout");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&rollout_path)
+        .expect("open read-only rollout");
+    let authority = RolloutMutationAuthority::new();
+    let mut writer = JsonlWriter::new(tokio::fs::File::from_std(file), authority.clone());
+    writer
+        .write_rollout_item(&agent_message_item("write failure"), None)
+        .await
+        .expect_err("read-only writer must fail");
+    drop(
+        authority
+            .admit()
+            .expect("failed write must release custody"),
+    );
+}
+
+#[tokio::test]
+async fn failed_shutdown_drain_keeps_authority_open_until_successful_retry() {
+    let home = TempDir::new().expect("temp dir");
+    let blocker = home.path().join("not-a-directory");
+    File::create(&blocker).expect("create parent blocker");
+    let rollout_path = blocker.join("rollout.jsonl");
+    let read_only_path = home.path().join("read-only.jsonl");
+    File::create(&read_only_path).expect("create read-only rollout");
+    let read_only_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&read_only_path)
+        .expect("open read-only rollout");
+    let mutation_authority = RolloutMutationAuthority::new();
+    let mut state = RolloutWriterState {
+        writer: Some(JsonlWriter::new(
+            tokio::fs::File::from_std(read_only_file),
+            mutation_authority.clone(),
+        )),
+        deferred_log_file_info: None,
+        pending_items: vec![agent_message_item("retry terminal drain")],
+        meta: None,
+        cwd: home.path().to_path_buf(),
+        rollout_path: rollout_path.clone(),
+        ordinal_state: RolloutOrdinalState::Legacy,
+        last_logged_error: None,
+        mutation_authority: mutation_authority.clone(),
+    };
+
+    state
+        .shutdown()
+        .await
+        .expect_err("write and reopen failures must leave shutdown retryable");
+    drop(
+        mutation_authority
+            .admit()
+            .expect("failed terminal drain must keep authority open"),
+    );
+
+    fs::remove_file(&blocker).expect("remove parent blocker");
+    fs::create_dir(&blocker).expect("replace blocker with directory");
+    state.shutdown().await.expect("retry terminal drain");
+    assert_eq!(
+        mutation_authority.admit().err(),
+        Some(MutationAdmissionError::AdmissionClosed)
+    );
+    assert!(
+        fs::read_to_string(&rollout_path)
+            .expect("read retried terminal drain")
+            .contains("retry terminal drain")
+    );
+}
+
 fn test_config(codex_home: &Path) -> RolloutConfig {
     RolloutConfig {
         codex_home: codex_home.to_path_buf(),
@@ -862,10 +1093,12 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
     let rollout_path = home.path().join("rollout.jsonl");
     File::create(&rollout_path)?;
     let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
+    let mutation_authority = RolloutMutationAuthority::new();
     let mut state = RolloutWriterState {
-        writer: Some(JsonlWriter {
-            file: tokio::fs::File::from_std(read_only_file),
-        }),
+        writer: Some(JsonlWriter::new(
+            tokio::fs::File::from_std(read_only_file),
+            mutation_authority.clone(),
+        )),
         deferred_log_file_info: None,
         pending_items: Vec::new(),
         meta: None,
@@ -873,6 +1106,7 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
         rollout_path: rollout_path.clone(),
         ordinal_state: RolloutOrdinalState::Legacy,
         last_logged_error: None,
+        mutation_authority,
     };
     state.add_items(vec![RolloutItem::EventMsg(EventMsg::AgentMessage(
         AgentMessageEvent {
