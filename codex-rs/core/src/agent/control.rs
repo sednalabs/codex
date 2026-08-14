@@ -12,11 +12,13 @@ use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
+use crate::context::world_state::SubagentContext;
+use crate::context::world_state::SubagentContextBuilder;
+use crate::context::world_state::SubagentContextRow;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
-use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
 use crate::thread_manager::RemoveThreadIfSameResult;
@@ -717,23 +719,30 @@ impl AgentControl {
     pub(crate) async fn format_environment_context_subagents(
         &self,
         parent_thread_id: ThreadId,
-    ) -> String {
+    ) -> SubagentContext {
         let Ok(agents) = self.open_thread_spawn_children(parent_thread_id).await else {
-            return String::new();
+            return SubagentContext::default();
         };
 
-        agents
-            .into_iter()
-            .map(|(thread_id, metadata)| {
-                let reference = metadata
-                    .agent_path
-                    .as_ref()
-                    .map(|agent_path| agent_path.name().to_string())
-                    .unwrap_or_else(|| thread_id.to_string());
-                format_subagent_context_line(reference.as_str(), metadata.agent_nickname.as_deref())
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut builder = SubagentContextBuilder::default();
+        let mut agents = agents.into_iter();
+        while let Some((thread_id, metadata)) = agents.next() {
+            if !builder.has_row_capacity() {
+                builder.note_omitted(1 + agents.len());
+                break;
+            }
+            let row = if let Some(agent_path) = metadata.agent_path.as_ref() {
+                SubagentContextRow::new(agent_path.name(), metadata.agent_nickname.as_deref())
+            } else {
+                let reference = thread_id.to_string();
+                SubagentContextRow::new(reference.as_str(), metadata.agent_nickname.as_deref())
+            };
+            if !builder.push(row) {
+                builder.note_omitted(1 + agents.len());
+                break;
+            }
+        }
+        builder.finish()
     }
 
     pub(crate) async fn list_agents(

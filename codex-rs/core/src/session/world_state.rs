@@ -33,7 +33,7 @@ impl Session {
                 .format_environment_context_subagents(self.thread_id)
                 .await
         } else {
-            String::new()
+            Default::default()
         };
         let mut world_state = WorldState::default();
         world_state.add_section(RealtimeState::new(
