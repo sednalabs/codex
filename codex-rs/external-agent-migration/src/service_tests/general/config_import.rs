@@ -243,7 +243,153 @@ async fn import_skills_rejects_invalid_skill_without_copying() {
             .message
             .contains("missing YAML frontmatter delimited by ---")
     );
-    assert!(!agents_skills.join("broken-skill").exists());
+    assert!(!agents_skills.exists());
+}
+
+#[tokio::test]
+async fn import_skills_uses_canonical_name_fallback_and_scalar_repair() {
+    let (_root, external_agent_home, codex_home) = fixture_paths();
+    let source_skill = external_agent_home.join("skills").join("compatible-skill");
+    let target_skill = codex_home
+        .parent()
+        .map(|parent| parent.join(".agents").join("skills"))
+        .unwrap_or_else(|| PathBuf::from(".agents").join("skills"))
+        .join("compatible-skill");
+    fs::create_dir_all(&source_skill).expect("create source skill");
+    let contents =
+        "---\ndescription: AWS deployment patterns: ECS Fargate\n---\nUse the patterns.\n";
+    fs::write(source_skill.join("SKILL.md"), contents).expect("write compatible skill");
+
+    let outcome = service_for_paths(external_agent_home, codex_home)
+        .import(vec![ExternalAgentConfigMigrationItem {
+            item_type: ExternalAgentConfigMigrationItemType::Skills,
+            description: "Import skills".to_string(),
+            cwd: None,
+            details: None,
+        }])
+        .await;
+
+    let item_result = outcome
+        .item_results
+        .into_iter()
+        .next()
+        .expect("skills import result");
+    assert_eq!(item_result.success_count, 1);
+    assert_eq!(item_result.error_count, 0);
+    assert_eq!(
+        fs::read_to_string(target_skill.join("SKILL.md")).expect("read imported skill"),
+        contents
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn import_skills_rejects_symlinked_manifest_without_copying() {
+    use std::os::unix::fs::symlink;
+
+    let (root, external_agent_home, codex_home) = fixture_paths();
+    let source_skill = external_agent_home.join("skills").join("linked-skill");
+    let target_skills = codex_home
+        .parent()
+        .expect("codex home parent")
+        .join(".agents")
+        .join("skills");
+    let outside_manifest = root.path().join("outside-SKILL.md");
+    fs::create_dir_all(&source_skill).expect("create source skill");
+    fs::write(
+        &outside_manifest,
+        "---\nname: outside\ndescription: Outside source root\n---\n",
+    )
+    .expect("write outside manifest");
+    symlink(&outside_manifest, source_skill.join("SKILL.md")).expect("symlink manifest");
+
+    let outcome = service_for_paths(external_agent_home, codex_home)
+        .import(vec![ExternalAgentConfigMigrationItem {
+            item_type: ExternalAgentConfigMigrationItemType::Skills,
+            description: "Import skills".to_string(),
+            cwd: None,
+            details: None,
+        }])
+        .await;
+
+    let item_result = outcome
+        .item_results
+        .into_iter()
+        .next()
+        .expect("skills import result");
+    assert_eq!(item_result.success_count, 0);
+    assert_eq!(item_result.error_count, 1);
+    assert!(item_result.raw_errors[0].message.contains("regular file"));
+    assert!(!target_skills.exists());
+}
+
+#[tokio::test]
+async fn import_skills_rejects_non_regular_manifest_without_copying() {
+    let (_root, external_agent_home, codex_home) = fixture_paths();
+    let source_skill = external_agent_home
+        .join("skills")
+        .join("directory-manifest");
+    let target_skills = codex_home
+        .parent()
+        .expect("codex home parent")
+        .join(".agents")
+        .join("skills");
+    fs::create_dir_all(source_skill.join("SKILL.md")).expect("create directory manifest");
+
+    let outcome = service_for_paths(external_agent_home, codex_home)
+        .import(vec![ExternalAgentConfigMigrationItem {
+            item_type: ExternalAgentConfigMigrationItemType::Skills,
+            description: "Import skills".to_string(),
+            cwd: None,
+            details: None,
+        }])
+        .await;
+
+    let item_result = outcome
+        .item_results
+        .into_iter()
+        .next()
+        .expect("skills import result");
+    assert_eq!(item_result.success_count, 0);
+    assert_eq!(item_result.error_count, 1);
+    assert!(item_result.raw_errors[0].message.contains("regular file"));
+    assert!(!target_skills.exists());
+}
+
+#[tokio::test]
+async fn import_skills_rejects_oversized_manifest_without_copying() {
+    let (_root, external_agent_home, codex_home) = fixture_paths();
+    let source_skill = external_agent_home.join("skills").join("oversized-skill");
+    let target_skills = codex_home
+        .parent()
+        .expect("codex home parent")
+        .join(".agents")
+        .join("skills");
+    fs::create_dir_all(&source_skill).expect("create source skill");
+    fs::write(
+        source_skill.join("SKILL.md"),
+        vec![b'x'; MAX_SKILL_MANIFEST_BYTES as usize + 1],
+    )
+    .expect("write oversized manifest");
+
+    let outcome = service_for_paths(external_agent_home, codex_home)
+        .import(vec![ExternalAgentConfigMigrationItem {
+            item_type: ExternalAgentConfigMigrationItemType::Skills,
+            description: "Import skills".to_string(),
+            cwd: None,
+            details: None,
+        }])
+        .await;
+
+    let item_result = outcome
+        .item_results
+        .into_iter()
+        .next()
+        .expect("skills import result");
+    assert_eq!(item_result.success_count, 0);
+    assert_eq!(item_result.error_count, 1);
+    assert!(item_result.raw_errors[0].message.contains("exceeds"));
+    assert!(!target_skills.exists());
 }
 
 #[tokio::test]
