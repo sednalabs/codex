@@ -405,9 +405,7 @@ impl ThreadStore for LocalThreadStore {
         params: AppendThreadItemsParams,
         committed: &'a mut usize,
     ) -> ThreadStoreFuture<'a, ()> {
-        Box::pin(async move {
-            live_writer::append_items_committed(self, params, committed).await
-        })
+        Box::pin(async move { live_writer::append_items_committed(self, params, committed).await })
     }
 
     fn persist_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {

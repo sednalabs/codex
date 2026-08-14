@@ -1852,9 +1852,8 @@ impl RolloutWriterState {
         let item_count = items.len();
         self.pending_items.extend(items);
 
-        let committed_after_attempt = |pending_items: &[RolloutItem]| {
-            item_count.saturating_sub(pending_items.len())
-        };
+        let committed_after_attempt =
+            |pending_items: &[RolloutItem]| item_count.saturating_sub(pending_items.len());
         match self.write_pending_once().await {
             Ok(()) => {
                 self.last_logged_error = None;
@@ -1863,9 +1862,7 @@ impl RolloutWriterState {
             Err(first_err) => {
                 let first_committed = committed_after_attempt(self.pending_items.as_slice());
                 self.enter_recovery_mode(&first_err);
-                warn!(
-                    "failed to append rollout items; reopening and retrying: {first_err}"
-                );
+                warn!("failed to append rollout items; reopening and retrying: {first_err}");
                 match self.write_pending_once().await {
                     Ok(()) => {
                         self.last_logged_error = None;
