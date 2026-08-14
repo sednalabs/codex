@@ -28,7 +28,7 @@ struct V2ResidencyState {
     pending_slots: usize,
 }
 
-pub(super) struct V2ResidencySlot {
+pub(crate) struct V2ResidencySlot {
     residency: Arc<V2Residency>,
     active: bool,
 }
