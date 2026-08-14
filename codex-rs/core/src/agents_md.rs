@@ -30,10 +30,10 @@ use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::io;
 use toml::Value as TomlValue;
 use tracing::error;
-use std::collections::HashMap;
 
 /// Default filename scanned for AGENTS.md instructions.
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
