@@ -108,7 +108,11 @@ impl ThreadStore for GatedThreadStore {
             if append_index == self.gated_append_index {
                 self.gated_append_persisted.notify_one();
                 self.release_gated_append.notified().await;
-            } else if append_index == self.gated_append_index + 1 {
+            } else if self
+                .gated_append_index
+                .checked_add(1)
+                .is_some_and(|next_index| append_index == next_index)
+            {
                 self.next_append_persisted.notify_one();
             }
             Ok(())
@@ -376,7 +380,10 @@ async fn cancelled_append_finishes_and_same_batch_retry_uses_lost_receipt() {
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, 0));
+    let gated_store = Arc::new(GatedThreadStore::new(
+        local_store,
+        /*gated_append_index*/ 0,
+    ));
     let thread_id = ThreadId::new();
     let live_thread = LiveThread::create(
         gated_store.clone(),
@@ -426,7 +433,10 @@ async fn cancelled_metadata_projection_finishes_and_retry_does_not_duplicate_app
     .await
     .expect("state db should initialize");
     let local_store = Arc::new(LocalThreadStore::new(config, Some(runtime)));
-    let gated_store = Arc::new(GatedThreadStore::new(local_store, usize::MAX));
+    let gated_store = Arc::new(GatedThreadStore::new(
+        local_store,
+        /*gated_append_index*/ usize::MAX,
+    ));
     gated_store
         .gate_second_metadata
         .store(true, Ordering::SeqCst);
