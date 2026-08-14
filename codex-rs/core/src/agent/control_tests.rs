@@ -321,8 +321,13 @@ async fn wait_for_subagent_notification(parent_thread: &Arc<CodexThread>) -> boo
 }
 
 async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str) {
+    let turn_context = thread.session.new_default_turn().await;
+    let item = thread
+        .session
+        .response_item_from_user_input(text_input(message));
     thread
-        .inject_user_message_without_turn(message.to_string())
+        .session
+        .record_conversation_items(turn_context.as_ref(), &[item])
         .await;
     thread.session.ensure_rollout_materialized().await;
     thread
