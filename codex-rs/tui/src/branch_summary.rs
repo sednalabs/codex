@@ -479,7 +479,7 @@ async fn run_git_command(
     argv.extend(args.iter().map(|arg| (*arg).to_string()));
     runner
         .run(
-            WorkspaceCommand::new(argv)
+            WorkspaceCommand::local_only_git(argv)
                 .cwd(cwd.to_path_buf())
                 .env("GIT_OPTIONAL_LOCKS", "0"),
         )
