@@ -562,6 +562,103 @@ def _make_chatgpt_account_email_nullable(schema: dict[str, Any]) -> None:
     raise RuntimeError("Schema bundle is missing the ChatGPT account variant")
 
 
+def _make_collab_spawn_identity_phase_compatible(schema: dict[str, Any]) -> None:
+    """Add the downstream identity contract when the pinned runtime predates it."""
+
+    def find_collab_item(value: Any) -> dict[str, Any] | None:
+        if isinstance(value, list):
+            for item in value:
+                if found := find_collab_item(item):
+                    return found
+            return None
+        if not isinstance(value, dict):
+            return None
+
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            item_type = properties.get("type")
+            if isinstance(item_type, dict) and (
+                item_type.get("const") == "collabAgentToolCall"
+                or item_type.get("enum") == ["collabAgentToolCall"]
+            ):
+                return value
+
+        for child in value.values():
+            if found := find_collab_item(child):
+                return found
+        return None
+
+    item = find_collab_item(schema)
+    if item is None:
+        raise RuntimeError("Schema bundle is missing the collab agent tool-call item")
+    properties = item.get("properties")
+    required = item.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        raise RuntimeError("Collab agent tool-call schema has an unexpected shape")
+
+    model = properties.get("model")
+    reasoning_effort = properties.get("reasoningEffort")
+    if not isinstance(model, dict) or not isinstance(reasoning_effort, dict):
+        raise RuntimeError("Collab agent tool-call schema is missing legacy identity aliases")
+    model["description"] = (
+        "Established model alias for a spawned-agent lifecycle item.\n\n"
+        "On spawn start, this is the caller-requested model. On a terminal spawn item, "
+        "this is the observed effective model. An unknown terminal effective model is null."
+    )
+    reasoning_effort["description"] = (
+        "Established reasoning-effort alias for a spawned-agent lifecycle item.\n\n"
+        "On spawn start, this is the caller-requested effort. On a terminal spawn item, "
+        "this is the observed effective effort. An unknown terminal effective effort is null."
+    )
+
+    identity_fields = {
+        "requestedModel": {
+            "description": (
+                "Additive explicit provenance for the requested model.\n\n"
+                "This remains available on terminal spawn items even though the legacy "
+                "`model` alias then represents the observed effective model. This required "
+                "nullable field is null when request provenance is unavailable."
+            ),
+            "type": ["string", "null"],
+        },
+        "requestedReasoningEffort": {
+            "anyOf": [
+                {"$ref": "#/definitions/ReasoningEffort"},
+                {"type": "null"},
+            ],
+            "description": (
+                "Additive explicit provenance for the requested reasoning effort.\n\n"
+                "This remains available on terminal spawn items even though the legacy "
+                "`reasoningEffort` alias then represents the observed effective effort. "
+                "This required nullable field is null when request provenance is unavailable."
+            ),
+        },
+        "effectiveModel": {
+            "description": (
+                "Effective model observed for a spawned agent at terminal lifecycle time.\n\n"
+                "This required nullable field is null when unknown and must not be filled "
+                "from thread metadata or a request."
+            ),
+            "type": ["string", "null"],
+        },
+        "effectiveReasoningEffort": {
+            "anyOf": [
+                {"$ref": "#/definitions/ReasoningEffort"},
+                {"type": "null"},
+            ],
+            "description": (
+                "Effective reasoning effort observed for a spawned agent at terminal lifecycle "
+                "time.\n\nThis required nullable field is null when unknown and must not be "
+                "filled from thread metadata or a request."
+            ),
+        },
+    }
+    for field_name, field_schema in identity_fields.items():
+        properties[field_name] = field_schema
+        if field_name not in required:
+            required.append(field_name)
+
+
 def generate_schema_from_pinned_runtime(schema_dir: Path) -> Path:
     """Generate app-server schemas by invoking the installed pinned runtime binary."""
     codex_path = pinned_runtime_codex_path()
@@ -585,6 +682,7 @@ def _normalized_schema_bundle_text(schema_dir: Path) -> str:
     """Normalize the schema bundle before feeding it to the Python type generator."""
     schema = json.loads(schema_bundle_path(schema_dir).read_text())
     _make_chatgpt_account_email_nullable(schema)
+    _make_collab_spawn_identity_phase_compatible(schema)
     definitions = schema.get("definitions", {})
     if isinstance(definitions, dict):
         for definition in definitions.values():

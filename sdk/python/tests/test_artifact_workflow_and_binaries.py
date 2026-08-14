@@ -461,6 +461,41 @@ def test_generate_v2_all_uses_titles_for_generated_names() -> None:
     assert "ruff-format" in source
 
 
+def test_collab_spawn_identity_schema_prepass_upgrades_pinned_runtime_shape() -> None:
+    script = _load_update_script_module()
+    collab_item = {
+        "properties": {
+            "model": {"type": ["string", "null"]},
+            "reasoningEffort": {
+                "anyOf": [
+                    {"$ref": "#/definitions/ReasoningEffort"},
+                    {"type": "null"},
+                ]
+            },
+            "type": {"enum": ["collabAgentToolCall"]},
+        },
+        "required": ["type"],
+        "type": "object",
+    }
+    schema = {"definitions": {"ThreadItem": {"oneOf": [collab_item]}}}
+
+    script._make_collab_spawn_identity_phase_compatible(schema)
+    script._make_collab_spawn_identity_phase_compatible(schema)
+
+    identity_fields = {
+        "requestedModel",
+        "requestedReasoningEffort",
+        "effectiveModel",
+        "effectiveReasoningEffort",
+    }
+    assert identity_fields <= collab_item["properties"].keys()
+    assert all(collab_item["required"].count(field) == 1 for field in identity_fields)
+    assert "caller-requested model" in collab_item["properties"]["model"]["description"]
+    assert (
+        "observed effective effort" in collab_item["properties"]["reasoningEffort"]["description"]
+    )
+
+
 def test_generated_chatgpt_account_email_is_required_nullable() -> None:
     from openai_codex.generated.v2_all import ChatgptAccount
 
