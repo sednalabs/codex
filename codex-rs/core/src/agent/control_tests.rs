@@ -1632,7 +1632,7 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     let mut direct_resume_config = harness.config.clone();
     direct_resume_config
         .multi_agent_v2
-        .max_concurrent_threads_per_session = 1;
+        .max_concurrent_threads_per_session = 2;
     direct_resume_config
         .multi_agent_v2
         .terminal_idle_unload_timeout_ms = 1;
