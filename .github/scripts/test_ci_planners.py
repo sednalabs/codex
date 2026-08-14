@@ -148,6 +148,22 @@ def workflow_step_by_name(workflow_path: Path, job_name: str, step_name: str) ->
     raise AssertionError(f"missing step {step_name!r} in {workflow_path}")
 
 
+def workflow_checkout_identity_script(workflow_path: Path) -> str:
+    run_script = workflow_step_by_name(
+        workflow_path,
+        "metadata",
+        "Compute checkout ref",
+    ).get("run") or ""
+    start_marker = "# BEGIN checkout identity"
+    end_marker = "# END checkout identity"
+    start = run_script.index(start_marker)
+    end = run_script.index(end_marker, start) + len(end_marker)
+    return "\n".join(
+        line[10:] if line.startswith("          ") else line
+        for line in run_script[start:end].splitlines()
+    )
+
+
 def run_workflow_step_script(
     script: str, event: dict, *, event_name: str = "push"
 ) -> tuple[subprocess.CompletedProcess, dict]:
@@ -1683,6 +1699,156 @@ class DownstreamDivergenceAuditTests(unittest.TestCase):
             )
 
 
+class SednaHeavyCheckoutIdentityTests(unittest.TestCase):
+    workflow_path = REPO_ROOT / ".github/workflows/sedna-heavy-tests.yml"
+
+    def _run_identity_fixture(
+        self,
+        repo: TempGitRepo,
+        *,
+        event_name: str,
+        checkout_ref: str,
+        input_ref: str = "",
+        pr_head_sha: str = "",
+        pr_head_ref: str = "",
+        merge_group_sha: str = "",
+    ) -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+        script = workflow_checkout_identity_script(self.workflow_path)
+        command = (
+            "set -euo pipefail\n"
+            f"{script}\n"
+            'printf \'checkout_ref=%s\\ncheckout_sha=%s\\n\' "${checkout_ref}" "${checkout_sha}"\n'
+        )
+        env = {
+            **os.environ,
+            "GITHUB_EVENT_NAME": event_name,
+            "CHECKOUT_REF": checkout_ref,
+            "DISPLAY_REF": "main",
+            "INPUT_REF": input_ref,
+            "PR_HEAD_SHA": pr_head_sha,
+            "PR_HEAD_REF": pr_head_ref,
+            "MERGE_GROUP_SHA": merge_group_sha,
+        }
+        proc = subprocess.run(
+            ["nice", "-n", "19", "ionice", "-c", "3", "bash", "-c", command],
+            cwd=repo.root,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        outputs: dict[str, str] = {}
+        for line in proc.stdout.splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                outputs[key] = value
+        return proc, outputs
+
+    def _fixture_repo(self) -> tuple[TempGitRepo, str]:
+        repo = TempGitRepo()
+        commit = repo.commit("fixture", {"payload.txt": "fixture\n"})
+        repo._git("tag", "lightweight")
+        repo._git("tag", "-a", "annotated", "-m", "annotated fixture")
+        origin_tmpdir = tempfile.TemporaryDirectory(prefix="ci-planner-origin-")
+        origin = Path(origin_tmpdir.name) / "origin.git"
+        repo._git("clone", "--bare", str(repo.root), str(origin))
+        repo._git("remote", "add", "origin", str(origin))
+        repo._origin_tmpdir = origin_tmpdir
+        return repo, commit
+
+    def _cleanup_fixture_repo(self, repo: TempGitRepo) -> None:
+        repo.cleanup()
+        origin_tmpdir = getattr(repo, "_origin_tmpdir", None)
+        if origin_tmpdir is not None:
+            origin_tmpdir.cleanup()
+
+    def test_identity_binds_event_defaults_and_manual_refs_to_resolved_commits(self) -> None:
+        repo, commit = self._fixture_repo()
+        try:
+            workflow_sha = "c" * 40
+            pr_head_sha = "a" * 40
+            merge_group_sha = "b" * 40
+            cases = [
+                (
+                    "pull_request",
+                    "",
+                    pr_head_sha,
+                    "feature/head",
+                    "",
+                    pr_head_sha,
+                    pr_head_sha,
+                ),
+                (
+                    "merge_group",
+                    "",
+                    "",
+                    "",
+                    merge_group_sha,
+                    merge_group_sha,
+                    merge_group_sha,
+                ),
+                (
+                    "workflow_dispatch",
+                    "",
+                    "",
+                    "",
+                    "",
+                    workflow_sha,
+                    workflow_sha,
+                ),
+                (
+                    "workflow_dispatch",
+                    "d" * 40,
+                    "",
+                    "",
+                    "",
+                    "d" * 40,
+                    "d" * 40,
+                ),
+                ("workflow_dispatch", "main", "", "", "", "main", commit),
+                ("workflow_dispatch", "lightweight", "", "", "", "lightweight", commit),
+                ("workflow_dispatch", "annotated", "", "", "", "annotated", commit),
+            ]
+            for (
+                event_name,
+                input_ref,
+                pr_head,
+                pr_ref,
+                merge_sha,
+                expected_ref,
+                expected_sha,
+            ) in cases:
+                with self.subTest(event_name=event_name, input_ref=input_ref):
+                    proc, outputs = self._run_identity_fixture(
+                        repo,
+                        event_name=event_name,
+                        checkout_ref=workflow_sha,
+                        input_ref=input_ref,
+                        pr_head_sha=pr_head,
+                        pr_head_ref=pr_ref,
+                        merge_group_sha=merge_sha,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(outputs.get("checkout_ref"), expected_ref)
+                    self.assertEqual(outputs.get("checkout_sha"), expected_sha)
+        finally:
+            self._cleanup_fixture_repo(repo)
+
+    def test_identity_fails_closed_when_a_manual_ref_does_not_resolve_to_a_commit(self) -> None:
+        repo, _ = self._fixture_repo()
+        try:
+            proc, _ = self._run_identity_fixture(
+                repo,
+                event_name="workflow_dispatch",
+                checkout_ref="c" * 40,
+                input_ref="does-not-exist",
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("does-not-exist", proc.stderr)
+        finally:
+            self._cleanup_fixture_repo(repo)
+
+
 class ValidationPlanScriptTests(unittest.TestCase):
     maxDiff = None
 
@@ -3196,11 +3362,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "Compute checkout ref",
         )
         env = metadata_step.get("env") or {}
-        self.assertEqual(env.get("CHECKOUT_REF"), "${{ github.sha }}")
+        self.assertEqual(env.get("CHECKOUT_REF"), "${{ github.workflow_sha || github.sha }}")
         self.assertEqual(env.get("DISPLAY_REF"), "${{ github.ref_name }}")
         self.assertEqual(env.get("INPUT_REF"), "${{ inputs.ref }}")
         self.assertEqual(env.get("PR_HEAD_SHA"), "${{ github.event.pull_request.head.sha }}")
         self.assertEqual(env.get("PR_HEAD_REF"), "${{ github.event.pull_request.head.ref }}")
+        self.assertEqual(env.get("MERGE_GROUP_SHA"), "${{ github.sha }}")
         self.assertEqual(env.get("REQUESTED_LANE"), "${{ inputs.lane }}")
         self.assertEqual(env.get("INPUT_RUST_BATCHING"), "${{ inputs.rust_batching || 'auto' }}")
         self.assertEqual(
@@ -3208,6 +3375,9 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "${{ vars.SEDNA_HEAVY_RUST_BATCHING }}",
         )
         run_script = metadata_step.get("run") or ""
+        self.assertIn("# BEGIN checkout identity", run_script)
+        self.assertIn("resolve_checkout_identity", run_script)
+        self.assertIn("FETCH_HEAD^{commit}", run_script)
         self.assertIn('checkout_ref="${CHECKOUT_REF}"', run_script)
         self.assertIn('checkout_ref="${PR_HEAD_SHA}"', run_script)
         self.assertIn('checkout_sha="${PR_HEAD_SHA}"', run_script)
