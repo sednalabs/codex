@@ -61,6 +61,25 @@ pub trait ThreadStore: Any + Send + Sync {
     /// replay history and before updating any implementation-owned projections.
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()>;
 
+    /// Commit-aware form of [`ThreadStore::append_items`] used by live retry logic.
+    ///
+    /// Implementations that can fail after partial progress set `committed` to the number of
+    /// leading raw items durably appended before returning. The default preserves the existing
+    /// all-or-error contract.
+    #[doc(hidden)]
+    fn append_items_committed<'a>(
+        &'a self,
+        params: AppendThreadItemsParams,
+        committed: &'a mut usize,
+    ) -> ThreadStoreFuture<'a, ()> {
+        Box::pin(async move {
+            let item_count = params.items.len();
+            self.append_items(params).await?;
+            *committed = item_count;
+            Ok(())
+        })
+    }
+
     /// Materializes the thread if persistence is lazy, then persists all queued items.
     fn persist_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
