@@ -19,7 +19,7 @@ use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
 use std::collections::HashSet;
 
-const AGENT_PICKER_PAGE_SIZE: u32 = 50;
+pub(super) const AGENT_PICKER_PAGE_SIZE: u32 = 50;
 const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
