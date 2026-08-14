@@ -22,7 +22,9 @@ pub use parser::ParseError;
 use parser::ParseError::*;
 pub use parser::UpdateFileChunk;
 pub use parser::parse_patch;
+use parser::parse_patch_with_context;
 use similar::TextDiff;
+use streaming_parser::ParsedPatchContext;
 pub use streaming_parser::StreamingPatchParser;
 use text_file::Replacement;
 use text_file::SourceFile;
@@ -284,8 +286,8 @@ pub async fn apply_patch(
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> Result<AppliedPatchDelta, ApplyPatchFailure> {
-    let hunks = match parse_patch(patch) {
-        Ok(source) => source.hunks,
+    let parsed = match parse_patch_with_context(patch) {
+        Ok(parsed) => parsed,
         Err(e) => {
             match &e {
                 InvalidPatchError(message) => {
@@ -311,7 +313,16 @@ pub async fn apply_patch(
         }
     };
 
-    apply_hunks(&hunks, cwd, stdout, stderr, fs, sandbox).await
+    apply_hunks_with_context(
+        &parsed.args.hunks,
+        Some(&parsed.context),
+        cwd,
+        stdout,
+        stderr,
+        fs,
+        sandbox,
+    )
+    .await
 }
 
 /// Applies hunks and continues to update stdout/stderr
@@ -323,8 +334,20 @@ pub async fn apply_hunks(
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> Result<AppliedPatchDelta, ApplyPatchFailure> {
+    apply_hunks_with_context(hunks, None, cwd, stdout, stderr, fs, sandbox).await
+}
+
+async fn apply_hunks_with_context(
+    hunks: &[Hunk],
+    parsed_context: Option<&ParsedPatchContext>,
+    cwd: &PathUri,
+    stdout: &mut impl std::io::Write,
+    stderr: &mut impl std::io::Write,
+    fs: &dyn ExecutorFileSystem,
+    sandbox: Option<&FileSystemSandboxContext>,
+) -> Result<AppliedPatchDelta, ApplyPatchFailure> {
     let mut delta = AppliedPatchDelta::empty();
-    match apply_hunks_to_files(hunks, cwd, fs, sandbox, &mut delta).await {
+    match apply_hunks_to_files(hunks, parsed_context, cwd, fs, sandbox, &mut delta).await {
         Ok(affected_paths) => {
             print_summary(&affected_paths, stdout).map_err(|error| {
                 ApplyPatchFailure::new(ApplyPatchError::from(error), delta.clone())
@@ -379,6 +402,7 @@ pub struct AffectedPaths {
 /// Returns an error if the patch could not be applied.
 async fn apply_hunks_to_files(
     hunks: &[Hunk],
+    parsed_context: Option<&ParsedPatchContext>,
     cwd: &PathUri,
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
@@ -406,7 +430,7 @@ async fn apply_hunks_to_files(
         };
     }
 
-    for hunk in hunks {
+    for (hunk_index, hunk) in hunks.iter().enumerate() {
         let affected_path = hunk.path().to_path_buf();
         let path_uri = hunk.resolve_path(cwd)?;
         match hunk {
@@ -487,7 +511,14 @@ async fn apply_hunks_to_files(
                 let AppliedPatch {
                     original_contents,
                     new_contents,
-                } = derive_new_contents_from_chunks(&path_uri, chunks, fs, sandbox).await?;
+                } = derive_new_contents_from_chunks(
+                    &path_uri,
+                    chunks,
+                    parsed_context.map(|context| (context, hunk_index)),
+                    fs,
+                    sandbox,
+                )
+                .await?;
                 if let Some(dest) = move_path {
                     let dest_uri = cwd.join(&dest.to_string_lossy())?;
                     let overwritten_move_content =
@@ -693,6 +724,7 @@ struct AppliedPatch {
 async fn derive_new_contents_from_chunks(
     path: &PathUri,
     chunks: &[UpdateFileChunk],
+    parsed_context: Option<(&ParsedPatchContext, usize)>,
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
@@ -710,7 +742,7 @@ async fn derive_new_contents_from_chunks(
     let original_lines = source_file.line_texts();
 
     let path_text = path.inferred_native_path_string();
-    let replacements = compute_replacements(&original_lines, &path_text, chunks)?;
+    let replacements = compute_replacements(&original_lines, &path_text, chunks, parsed_context)?;
     source_file.apply_replacements(&replacements);
     let new_contents = source_file.into_contents();
     Ok(AppliedPatch {
@@ -726,11 +758,12 @@ fn compute_replacements(
     original_lines: &[String],
     path: &str,
     chunks: &[UpdateFileChunk],
+    parsed_context: Option<(&ParsedPatchContext, usize)>,
 ) -> std::result::Result<Vec<Replacement>, ApplyPatchError> {
     let mut replacements: Vec<Replacement> = Vec::new();
     let mut line_index: usize = 0;
 
-    for chunk in chunks {
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
         // If a chunk has a `change_context`, we use seek_sequence to find it, then
         // adjust our `line_index` to continue from there.
         if let Some(ctx_line) = &chunk.change_context {
@@ -799,7 +832,10 @@ fn compute_replacements(
             // survive, especially when the file has mixed line endings.
             let mut old_start = 0;
             let mut new_start = 0;
-            for &(old_context, new_context) in &chunk.context_line_indices {
+            let context_lines = parsed_context
+                .map(|(context, hunk_index)| context.context_lines(hunk_index, chunk_index))
+                .unwrap_or_default();
+            for &(old_context, new_context) in context_lines {
                 // A trailing empty context line can be removed from `pattern`
                 // and `new_slice` above when it represents the final newline.
                 if old_context >= pattern.len() || new_context >= new_slice.len() {
@@ -864,7 +900,7 @@ pub async fn unified_diff_from_chunks_with_context(
     let AppliedPatch {
         original_contents,
         new_contents,
-    } = derive_new_contents_from_chunks(path, chunks, fs, sandbox).await?;
+    } = derive_new_contents_from_chunks(path, chunks, None, fs, sandbox).await?;
     let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
     let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
     Ok(ApplyPatchFileUpdate {
