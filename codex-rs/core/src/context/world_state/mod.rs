@@ -31,6 +31,7 @@ pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
 pub(crate) use collaboration_mode::CollaborationModeState;
 pub(crate) use environment::EnvironmentsState;
+pub(crate) use environment::SUBAGENT_CONTEXT_MAX_ROWS;
 pub(crate) use environment::SubagentContext;
 pub(crate) use environment::SubagentContextBuilder;
 pub(crate) use environment::SubagentContextRow;

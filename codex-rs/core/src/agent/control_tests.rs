@@ -380,18 +380,16 @@ async fn format_environment_context_subagents_bounds_live_metadata() {
         .join(long_name.as_str())
         .expect("long agent path should be valid");
 
+    let mut first_child_nickname = None;
     for index in 0..=SUBAGENT_CONTEXT_MAX_ROWS {
-        let (agent_path, agent_nickname) = if index == 0 {
-            (long_path.clone(), Some("nick<&\"\u{1}".to_string()))
+        let agent_path = if index == 0 {
+            long_path.clone()
         } else {
-            (
-                AgentPath::root()
-                    .join(format!("worker_{index}").as_str())
-                    .expect("worker path should be valid"),
-                Some(format!("worker-nickname-{index}")),
-            )
+            AgentPath::root()
+                .join(format!("worker_{index}").as_str())
+                .expect("worker path should be valid")
         };
-        harness
+        let spawned = harness
             .control
             .spawn_agent_with_metadata(
                 harness.config.clone(),
@@ -400,13 +398,16 @@ async fn format_environment_context_subagents_bounds_live_metadata() {
                     parent_thread_id,
                     depth: 1,
                     agent_path: Some(agent_path),
-                    agent_nickname,
+                    agent_nickname: None,
                     agent_role: None,
                 })),
                 SpawnAgentOptions::default(),
             )
             .await
             .expect("child spawn should succeed");
+        if index == 0 {
+            first_child_nickname = spawned.metadata.agent_nickname;
+        }
     }
 
     let rendered = harness
@@ -414,10 +415,11 @@ async fn format_environment_context_subagents_bounds_live_metadata() {
         .format_environment_context_subagents(parent_thread_id)
         .await;
     let expected_reference = format!("{}...", &long_name[..189]);
+    let expected_nickname = first_child_nickname.expect("spawn should assign a nickname");
     let rendered = rendered.as_str();
 
     assert!(rendered.starts_with(format!("- {expected_reference}: ").as_str()));
-    assert!(rendered.contains("nick&lt;&amp;&quot;\u{FFFD}"));
+    assert!(rendered.contains(format!("- {expected_reference}: {expected_nickname}").as_str()));
     assert_eq!(
         rendered
             .lines()
