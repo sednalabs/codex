@@ -9,8 +9,8 @@ fn keeps_requested_and_effective_spawn_identities_separate_before_materializing_
         "spawn-1",
         CollabAgentToolCallStatus::InProgress,
         Vec::new(),
-        /* model */ None,
-        /* reasoning_effort */ None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
         Some("gpt-requested"),
         Some(codex_protocol::openai_models::ReasoningEffort::High),
         HashMap::new(),
@@ -21,8 +21,8 @@ fn keeps_requested_and_effective_spawn_identities_separate_before_materializing_
         vec!["child-1".to_string()],
         Some("gpt-effective"),
         Some(codex_protocol::openai_models::ReasoningEffort::Medium),
-        /* requested_model */ None,
-        /* requested_reasoning_effort */ None,
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
         [(
             "child-1".to_string(),
             CollabAgentState {
@@ -84,8 +84,8 @@ fn preserves_legacy_spawn_request_provenance_without_inventing_an_effective_iden
         CollabAgentTool::SpawnAgent,
         CollabAgentToolCallStatus::Failed,
         Vec::new(),
-        /* model */ None,
-        /* reasoning_effort */ None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
         HashMap::new(),
     );
 
@@ -130,8 +130,8 @@ fn terminal_spawn_compatibility_records_preserve_only_missing_requested_provenan
         Vec::new(),
         Some("gpt-legacy-effective"),
         Some(codex_protocol::openai_models::ReasoningEffort::Low),
-        /* requested_model */ None,
-        /* requested_reasoning_effort */ None,
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
         HashMap::new(),
     );
 
@@ -226,10 +226,10 @@ fn unknown_terminal_collab_spawn_serializes_all_identity_fields_as_null() {
         "spawn-unknown-terminal",
         CollabAgentToolCallStatus::Failed,
         Vec::new(),
-        /* model */ None,
-        /* reasoning_effort */ None,
-        /* requested_model */ None,
-        /* requested_reasoning_effort */ None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
         HashMap::new(),
     );
 
@@ -256,8 +256,8 @@ fn preserves_wait_and_resume_receivers_only_when_terminal_snapshot_omits_them() 
             tool.clone(),
             CollabAgentToolCallStatus::InProgress,
             vec!["child-1".to_string(), "child-2".to_string()],
-            /* model */ None,
-            /* reasoning_effort */ None,
+            /*model*/ None,
+            /*reasoning_effort*/ None,
             HashMap::new(),
         );
         let terminal = collab_item(
@@ -265,8 +265,8 @@ fn preserves_wait_and_resume_receivers_only_when_terminal_snapshot_omits_them() 
             tool.clone(),
             CollabAgentToolCallStatus::Completed,
             Vec::new(),
-            /* model */ None,
-            /* reasoning_effort */ None,
+            /*model*/ None,
+            /*reasoning_effort*/ None,
             [(
                 "child-1".to_string(),
                 CollabAgentState {
@@ -321,8 +321,8 @@ fn never_copies_a_prior_receiver_into_a_terminal_spawn() {
         CollabAgentTool::SpawnAgent,
         CollabAgentToolCallStatus::Failed,
         Vec::new(),
-        /* model */ None,
-        /* reasoning_effort */ None,
+        /*model*/ None,
+        /*reasoning_effort*/ None,
         HashMap::new(),
     );
 
@@ -332,8 +332,8 @@ fn never_copies_a_prior_receiver_into_a_terminal_spawn() {
             "spawn-1",
             CollabAgentToolCallStatus::Failed,
             Vec::new(),
-            /* model */ None,
-            /* reasoning_effort */ None,
+            /*model*/ None,
+            /*reasoning_effort*/ None,
             Some("gpt-requested"),
             Some(codex_protocol::openai_models::ReasoningEffort::High),
             HashMap::new(),
