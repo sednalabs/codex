@@ -2071,6 +2071,7 @@ mod tests {
             Some(InProcessServerEvent::Lagged { skipped: 1 })
         ));
         assert_eq!(delivery.await, ForwardEventResult::Continue);
+        drop(delivery);
         assert_eq!(skipped_events, 0);
         assert!(matches!(
             event_rx.recv().await,
@@ -2112,6 +2113,7 @@ mod tests {
                 Some(InProcessServerEvent::Lagged { skipped: 1 })
             ));
             assert_eq!(delivery.await, ForwardEventResult::Continue);
+            drop(delivery);
             assert_eq!(skipped_events, 0);
             let delivered = event_rx.recv().await.expect("required event should arrive");
             let InProcessServerEvent::ServerNotification(delivered) = delivered else {
