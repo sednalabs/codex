@@ -579,10 +579,13 @@ impl AgentControl {
                 agent_role,
                 ..
             })) => {
+                let Some(reservation) = reservation.as_mut() else {
+                    return Err(CodexErr::Fatal(
+                        "spawn reservation missing before publication".to_string(),
+                    ));
+                };
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
-                    reservation
-                        .as_mut()
-                        .expect("spawn reservation should exist before publication"),
+                    reservation,
                     &config,
                     parent_thread_id,
                     depth,
@@ -828,10 +831,12 @@ impl AgentControl {
         // Capacity and residency reservations remain private until the publication CAS above
         // wins, so `/agents` cannot observe a child while cancellation still owns the outcome.
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        reservation
-            .take()
-            .expect("spawn reservation should exist until publication")
-            .commit(agent_metadata.clone());
+        let Some(reservation) = reservation.take() else {
+            return Err(CodexErr::Fatal(
+                "spawn reservation missing at publication".to_string(),
+            ));
+        };
+        reservation.commit(agent_metadata.clone());
         if let Some(residency_slot) = residency_slot.take() {
             residency_slot.commit(new_thread.thread_id);
         }
@@ -910,7 +915,7 @@ impl AgentControl {
     /// would make capacity and a requested agent path reusable even though the manager still owns
     /// the runtime. The caller retains its original cancellation or initial-delivery error; a
     /// cleanup failure is logged and handed to a bounded, explicit cleanup owner instead.
-    async fn reconcile_unpublished_spawn(
+    pub(crate) async fn reconcile_unpublished_spawn(
         &self,
         state: &Arc<ThreadManagerState>,
         child_thread_id: ThreadId,
@@ -1060,8 +1065,13 @@ impl AgentControl {
         residency_slot: Option<V2ResidencySlot>,
         shutdown_exact_child: bool,
     ) {
-        let reservation =
-            reservation.expect("unpublished cleanup must retain its spawn reservation");
+        let Some(reservation) = reservation else {
+            tracing::error!(
+                %child_thread_id,
+                "unpublished cleanup lost its spawn reservation"
+            );
+            return;
+        };
         let control = self.clone();
         std::mem::drop(tokio::spawn(async move {
             let _retained = RetainedUnpublishedSpawnCleanup {
