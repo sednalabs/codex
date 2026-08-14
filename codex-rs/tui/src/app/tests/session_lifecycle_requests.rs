@@ -550,6 +550,11 @@ fn agent_picker_pages_persisted_subagents_with_explicit_source_filter() -> Resul
                         break;
                     }
                 }
+                // This fixture exercises the modern ancestor-scoped picker pages. The legacy
+                // relationship repair deliberately scans every persisted subagent page and is
+                // covered separately below, so keep it from preloading the continuation here.
+                app.agent_navigation
+                    .mark_legacy_relation_fallback_checked();
 
                 let root = app_server
                     .resume_thread(
