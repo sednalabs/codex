@@ -91,9 +91,7 @@ fn workspace_restricted_401_is_detected_from_structured_error_body() {
         status: http::StatusCode::UNAUTHORIZED,
         url: None,
         headers: None,
-        body: Some(
-            r#"{"error":{"code":"chatgpt_ip_workspace_restricted"}}"#.to_string(),
-        ),
+        body: Some(r#"{"error":{"code":"chatgpt_ip_workspace_restricted"}}"#.to_string()),
     };
     let debug = codex_response_debug_context::extract_response_debug_context(&transport);
     assert!(super::is_chatgpt_ip_workspace_restricted_unauthorized(
