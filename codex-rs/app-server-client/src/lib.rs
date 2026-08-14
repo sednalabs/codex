@@ -2753,6 +2753,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_unknown_requests_release_live_capacity_after_response_attempt() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            for id in 0_i64..3 {
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Request(JSONRPCRequest {
+                        id: RequestId::Integer(id),
+                        method: "thread/unknown".to_string(),
+                        params: None,
+                        trace: None,
+                    }),
+                )
+                .await;
+            }
+            for id in 0_i64..3 {
+                let JSONRPCMessage::Error(response) = read_websocket_message(&mut websocket).await
+                else {
+                    panic!("expected unsupported request rejection");
+                };
+                assert_eq!(response.id, RequestId::Integer(id));
+                assert_eq!(response.error.code, -32601);
+            }
+
+            let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected request after unsupported request reuse");
+            };
+            assert_eq!(request.method, "account/read");
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: request.id,
+                    result: serde_json::json!({
+                        "account": null,
+                        "requiresOpenaiAuth": false,
+                    }),
+                }),
+            )
+            .await;
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("remote client should connect");
+
+        let response = client
+            .request_typed::<GetAccountResponse>(ClientRequest::GetAccount {
+                request_id: RequestId::Integer(1),
+                params: codex_app_server_protocol::GetAccountParams {
+                    refresh_token: false,
+                },
+            })
+            .await
+            .expect("request after unsupported request reuse should succeed");
+        assert_eq!(response.account, None);
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_unknown_requests_release_initialize_capacity_after_response_attempt() {
+        let websocket_url = start_test_remote_server(|mut websocket| async move {
+            let JSONRPCMessage::Request(initialize) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected initialize request");
+            };
+            for id in 0_i64..3 {
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Request(JSONRPCRequest {
+                        id: RequestId::Integer(id),
+                        method: "thread/unknown".to_string(),
+                        params: None,
+                        trace: None,
+                    }),
+                )
+                .await;
+            }
+            for id in 0_i64..3 {
+                let JSONRPCMessage::Error(response) = read_websocket_message(&mut websocket).await
+                else {
+                    panic!("expected unsupported initialize request rejection");
+                };
+                assert_eq!(response.id, RequestId::Integer(id));
+                assert_eq!(response.error.code, -32601);
+            }
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: initialize.id,
+                    result: serde_json::json!({}),
+                }),
+            )
+            .await;
+            let JSONRPCMessage::Notification(notification) =
+                read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected initialized notification");
+            };
+            assert_eq!(notification.method, "initialized");
+        })
+        .await;
+
+        let client = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            channel_capacity: 1,
+            ..test_remote_connect_args(websocket_url)
+        })
+        .await
+        .expect("initialize should survive unsupported request capacity reuse");
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
     async fn remote_disconnect_surfaces_as_event() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;

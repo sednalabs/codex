@@ -1334,7 +1334,7 @@ where
                     Err(err) => {
                         warn!(%err, method, "rejecting unknown remote app-server request");
                         let _ = backlog.begin_server_request_response(&request_id);
-                        write_jsonrpc_message(
+                        let response_result = write_jsonrpc_message(
                             stream,
                             JSONRPCMessage::Error(JSONRPCError {
                                 error: JSONRPCErrorError {
@@ -1344,13 +1344,17 @@ where
                                     ),
                                     data: None,
                                 },
-                                id: request_id,
+                                id: request_id.clone(),
                             }),
                             endpoint,
                         )
-                        .await
-                        .err()
-                        .map(|err| RemoteTerminal::write_failed(endpoint, err))
+                        .await;
+                        // Release the request accounting after the response attempt, including
+                        // failed writes, while preserving response-before-reuse ordering.
+                        backlog.complete_server_request(&request_id);
+                        response_result
+                            .err()
+                            .map(|err| RemoteTerminal::write_failed(endpoint, err))
                     }
                 }
             }
@@ -1448,22 +1452,29 @@ fn enqueue_remote_worker_event_claimed(
         }
         Err(overflow) => {
             let server_request_id = overflow.server_request_id.clone();
+            let Some(event) = overflow.event else {
+                // A required event with no retained payload means admission failed
+                // before it could enter the deferred FIFO (for example, the byte
+                // budget rejected it). It must terminalize the worker rather than
+                // disappearing silently. Any claimed server request is carried on
+                // the terminal for one final rejection during cleanup.
+                return Some(RemoteTerminal::required_event_overflow(
+                    endpoint,
+                    server_request_id,
+                ));
+            };
             if deferred_events.len() >= backlog.deferred_capacity() {
                 let mut terminal =
                     RemoteTerminal::required_event_overflow(endpoint, server_request_id);
-                if let Some(event) = overflow.event {
-                    if !matches!(&event.event, AppServerEvent::ServerRequest(_)) {
-                        terminal.overflowed_events.push_back(event);
-                    }
+                if !matches!(&event.event, AppServerEvent::ServerRequest(_)) {
+                    terminal.overflowed_events.push_back(event);
                 }
                 Some(terminal)
             } else {
-                if let Some(event) = overflow.event {
-                    if let Some(request_id) = &server_request_id {
-                        backlog.mark_server_request_deferred(request_id);
-                    }
-                    deferred_events.push_back(event);
+                if let Some(request_id) = &server_request_id {
+                    backlog.mark_server_request_deferred(request_id);
                 }
+                deferred_events.push_back(event);
                 #[cfg(test)]
                 if let Some(request_id) = &server_request_id_for_test {
                     record_remote_worker_test_event(
@@ -1866,7 +1877,7 @@ where
                                     Err(err) => {
                                         warn!(%err, method, "rejecting unknown remote app-server request during initialize");
                                         let _ = backlog.begin_server_request_response(&request_id);
-                                        write_jsonrpc_message(
+                                        let response_result = write_jsonrpc_message(
                                             stream,
                                             JSONRPCMessage::Error(JSONRPCError {
                                                 error: JSONRPCErrorError {
@@ -1876,11 +1887,17 @@ where
                                                     ),
                                                     data: None,
                                                 },
-                                                id: request_id,
+                                                id: request_id.clone(),
                                             }),
                                             endpoint,
                                         )
-                                        .await?;
+                                        .await;
+                                        // Release the request accounting after the response
+                                        // attempt, including failed writes. The attempt ordering
+                                        // above still prevents a duplicate response while the
+                                        // request is in flight.
+                                        backlog.complete_server_request(&request_id);
+                                        response_result?;
                                     }
                                 },
                             }
@@ -2251,6 +2268,42 @@ mod tests {
         drop(second);
         drop(first);
         assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn required_event_byte_admission_failure_terminalizes_active_worker() {
+        let budget = RemoteEventByteBudget::shared();
+        let held = budget
+            .try_reserve(REMOTE_EVENT_AGGREGATE_RETAINED_BYTES)
+            .expect("the aggregate budget should be reservable for the failure setup");
+        let mut backlog = RemoteEventBacklog::with_byte_budget(/*capacity*/ 1, budget);
+        let request_id = RequestId::Integer(1);
+        assert!(
+            backlog
+                .claim_server_request_id(&request_id, /*allow_deferred*/ true)
+                .expect("the request should be claimable")
+        );
+        let mut deferred_events = VecDeque::new();
+
+        let terminal = enqueue_remote_worker_event_claimed(
+            &mut backlog,
+            "test://byte-budget",
+            server_request(1),
+            &mut deferred_events,
+        )
+        .expect("a required event that cannot reserve bytes must terminalize the worker");
+
+        assert_eq!(terminal.error_kind, ErrorKind::WouldBlock);
+        assert_eq!(
+            terminal.overflowed_server_request_ids,
+            vec![request_id.clone()]
+        );
+        assert!(deferred_events.is_empty());
+        assert_eq!(
+            backlog.take_unanswered_server_request_ids(),
+            vec![request_id]
+        );
+        drop(held);
     }
 
     #[test]
