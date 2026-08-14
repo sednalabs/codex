@@ -332,10 +332,11 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                         agent_nickname: Some("worker".to_string()),
                         agent_role: Some("worker".to_string()),
                         agent_path: Some("/root/worker".to_string()),
+                        model_provider: Some(app.config.model_provider_id.clone()),
                         is_running: false,
                         is_closed: false,
-                        created_at: None,
-                        updated_at: None,
+                        created_at: Some(1_767_225_601),
+                        updated_at: Some(1_767_225_601),
                         ..AgentPickerThreadEntry::default()
                     })
                 );
