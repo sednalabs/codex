@@ -61,10 +61,11 @@ pub trait ThreadStore: Any + Send + Sync {
     /// replay history and before updating any implementation-owned projections.
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()>;
 
-    /// Internal commit-aware form of [`ThreadStore::append_items`].
+    /// Commit-aware form of [`ThreadStore::append_items`] used by live retry logic.
     ///
-    /// Partial-progress implementations set `committed` to the durable leading raw-item count.
-    /// The default preserves all-or-error behavior for stores without partial-progress reporting.
+    /// Implementations that can fail after partial progress set `committed` to the number of
+    /// leading raw items durably appended before returning. The default preserves the existing
+    /// all-or-error contract.
     #[doc(hidden)]
     fn append_items_committed<'a>(
         &'a self,
