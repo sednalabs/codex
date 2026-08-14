@@ -260,6 +260,21 @@ impl CodexThread {
         self.submit_with_trace(op, /*trace*/ None).await
     }
 
+    pub(crate) async fn submit_with_residency_transition_held(
+        &self,
+        op: Op,
+    ) -> CodexResult<String> {
+        let id = new_submission_id();
+        self.submit_tracked_inner(Submission {
+            id: id.clone(),
+            op,
+            client_user_message_id: None,
+            trace: None,
+        })
+        .await?;
+        Ok(id)
+    }
+
     pub async fn notify_computer_use_response(
         &self,
         call_id: &str,
@@ -493,8 +508,12 @@ impl CodexThread {
     }
 
     async fn submit_tracked(&self, sub: Submission) -> CodexResult<()> {
-        let submission_id = sub.id.clone();
         let _residency_transition = self.session.input_queue.begin_residency_activity().await;
+        self.submit_tracked_inner(sub).await
+    }
+
+    async fn submit_tracked_inner(&self, sub: Submission) -> CodexResult<()> {
+        let submission_id = sub.id.clone();
         let mut pending = PendingResidencySubmission::new(Arc::clone(&self.session), submission_id);
         let result = self.io.submit_with_id(sub).await;
         if result.is_ok() {

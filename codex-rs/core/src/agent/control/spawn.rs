@@ -1536,6 +1536,16 @@ impl AgentControl {
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
+        let uses_v2_residency = multi_agent_version == MultiAgentVersion::V2
+            && is_v2_resident_session_source(&session_source);
+        let residency_slot = if uses_v2_residency {
+            Some(
+                self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+                    .await?,
+            )
+        } else {
+            None
+        };
         let inherited_environments = self
             .inherited_environments_for_source(&state, Some(&session_source))
             .await;
@@ -1557,6 +1567,14 @@ impl AgentControl {
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
         reservation.commit(agent_metadata.clone());
+        if let Some(residency_slot) = residency_slot {
+            residency_slot.commit(resumed_thread.thread_id);
+            self.start_terminal_idle_unload_watcher(
+                Arc::clone(&resumed_thread.thread),
+                agent_metadata.clone(),
+                config.multi_agent_v2.terminal_idle_unload_timeout_ms,
+            );
+        }
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
         state.notify_thread_created(resumed_thread.thread_id);

@@ -40,9 +40,35 @@ pub(crate) async fn validate_config_lock_if_configured(
     let options = ConfigLockReplayOptions {
         allow_codex_version_mismatch: config.config_lock_allow_codex_version_mismatch,
     };
-    validate_config_lock_replay(expected, &actual, options)
+    validate_compatible_config_lock_replay(expected, actual, options)
         .context("config lock replay validation failed")?;
     Ok(())
+}
+
+fn validate_compatible_config_lock_replay(
+    expected: &ConfigLockfileToml,
+    mut actual: ConfigLockfileToml,
+    options: ConfigLockReplayOptions,
+) -> std::io::Result<()> {
+    let expected_idle_timeout = expected
+        .config
+        .features
+        .as_ref()
+        .and_then(|features| features.multi_agent_v2.as_ref())
+        .and_then(|feature| match feature {
+            FeatureToml::Config(config) => config.terminal_idle_unload_timeout_ms,
+            FeatureToml::Enabled(_) => None,
+        });
+    if expected_idle_timeout.is_none()
+        && let Some(FeatureToml::Config(config)) = actual
+            .config
+            .features
+            .as_mut()
+            .and_then(|features| features.multi_agent_v2.as_mut())
+    {
+        config.terminal_idle_unload_timeout_ms = None;
+    }
+    validate_config_lock_replay(expected, &actual, options)
 }
 
 pub(crate) async fn export_config_lock_if_configured(
@@ -537,6 +563,27 @@ sandbox_private_desktop = false
 
         validate_config_lock_replay(&expected, &actual, ConfigLockReplayOptions::default())
             .expect("removed compatibility input should not cause lock drift");
+    }
+
+    #[tokio::test]
+    async fn lock_validation_accepts_pre_idle_timeout_lock_shape() {
+        let sc = crate::session::tests::make_session_configuration_for_tests().await;
+        let actual = sc.to_config_lockfile_toml().expect("lock should serialize");
+        let mut expected_value = toml::Value::try_from(&actual).expect("lock should become TOML");
+        expected_value["config"]["features"]["multi_agent_v2"]
+            .as_table_mut()
+            .expect("multi_agent_v2 should be a table")
+            .remove("terminal_idle_unload_timeout_ms");
+        let expected: ConfigLockfileToml = expected_value
+            .try_into()
+            .expect("older lock shape should deserialize");
+
+        validate_compatible_config_lock_replay(
+            &expected,
+            actual,
+            ConfigLockReplayOptions::default(),
+        )
+        .expect("a field added after lock creation should not cause replay drift");
     }
 
     #[tokio::test]

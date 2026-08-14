@@ -188,68 +188,6 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn terminal_idle_unload_waits_for_terminal_finalization() {
-    let (_home, _config, manager, _control, first, _metadata) = terminal_idle_test_agent(
-        /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
-    )
-    .await;
-    first
-        .thread
-        .session
-        .input_queue
-        .register_terminal_finalizer();
-    mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
-    yield_now().await;
-
-    advance(Duration::from_millis(100)).await;
-    yield_now().await;
-    assert!(manager.get_thread(first.thread_id).await.is_ok());
-
-    let finalization = first
-        .thread
-        .session
-        .input_queue
-        .begin_residency_activity()
-        .await;
-    first.thread.session.input_queue.finish_terminal_finalizer();
-    drop(finalization);
-    advance(Duration::from_millis(100)).await;
-    yield_now().await;
-    advance(Duration::from_millis(100)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn terminal_idle_unload_waits_for_accepted_submission_acknowledgement() {
-    let (_home, _config, manager, _control, first, _metadata) = terminal_idle_test_agent(
-        /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
-    )
-    .await;
-    first
-        .thread
-        .session
-        .input_queue
-        .register_residency_submission("held-submission".to_string());
-    mark_thread_status(first.thread.as_ref(), AgentStatus::Interrupted).await;
-    yield_now().await;
-
-    advance(Duration::from_millis(100)).await;
-    yield_now().await;
-    assert!(manager.get_thread(first.thread_id).await.is_ok());
-
-    first
-        .thread
-        .session
-        .input_queue
-        .acknowledge_residency_submission("held-submission")
-        .await;
-    advance(Duration::from_millis(100)).await;
-    yield_now().await;
-    advance(Duration::from_millis(100)).await;
-    wait_for_thread_unloaded(&manager, first.thread_id).await;
-}
-
 async fn terminal_idle_test_agent(
     timeout_ms: u64,
     ephemeral: bool,

@@ -238,15 +238,22 @@ impl PreparedV2AgentDelivery {
             if let Ok(thread) = self.state.get_thread(self.agent_id).await {
                 let _residency_transition =
                     thread.session.input_queue.begin_residency_activity().await;
-                if interrupt {
-                    self.state
-                        .record_submitted_op(self.agent_id, &Op::Interrupt);
-                    thread.session.interrupt_task().await;
+                let thread_is_current = self
+                    .state
+                    .get_thread(self.agent_id)
+                    .await
+                    .is_ok_and(|current| Arc::ptr_eq(&current, &thread));
+                if thread_is_current {
+                    if interrupt {
+                        self.state
+                            .record_submitted_op(self.agent_id, &Op::Interrupt);
+                        thread.session.interrupt_task().await;
+                    }
+                    let submission_id = self.record_submission(&communication, &context);
+                    let send = crate::session::inter_agent_communication;
+                    send(&thread.session, submission_id.clone(), communication).await;
+                    return Ok(submission_id);
                 }
-                let submission_id = self.record_submission(&communication, &context);
-                let send = crate::session::inter_agent_communication;
-                send(&thread.session, submission_id.clone(), communication).await;
-                return Ok(submission_id);
             }
             if communication.trigger_turn {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));

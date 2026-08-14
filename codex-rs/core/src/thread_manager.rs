@@ -1372,9 +1372,23 @@ impl ThreadManagerState {
             Ok(thread) => thread,
             Err(err) => return (None, Err(err)),
         };
-        self.record_submitted_op(thread_id, &op);
-        let result = thread.submit(op).await;
+        let result = self.send_op_to_current_thread(thread_id, &thread, op).await;
         (Some(thread), result)
+    }
+
+    pub(crate) async fn send_op_to_current_thread(
+        &self,
+        thread_id: ThreadId,
+        thread: &Arc<CodexThread>,
+        op: Op,
+    ) -> CodexResult<String> {
+        let _residency_transition = thread.session.input_queue.begin_residency_activity().await;
+        let current = self.get_thread(thread_id).await?;
+        if !Arc::ptr_eq(&current, thread) {
+            return Err(CodexErr::ThreadNotFound(thread_id));
+        }
+        self.record_submitted_op(thread_id, &op);
+        thread.submit_with_residency_transition_held(op).await
     }
 
     pub(crate) fn record_submitted_op(&self, thread_id: ThreadId, op: &Op) {
