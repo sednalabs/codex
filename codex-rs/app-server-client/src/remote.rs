@@ -221,8 +221,7 @@ impl RemoteAppServerClient {
         let (command_tx, mut command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<AppServerEvent>(channel_capacity);
         #[cfg(test)]
-        let test_pending_required_event =
-            std::sync::Arc::new(tokio::sync::Notify::new());
+        let test_pending_required_event = std::sync::Arc::new(tokio::sync::Notify::new());
         #[cfg(test)]
         let worker_test_pending_required_event =
             std::sync::Arc::clone(&test_pending_required_event);
@@ -1278,10 +1277,7 @@ where
         })
 }
 
-async fn close_remote_stream<S>(
-    stream: &mut WebSocketStream<S>,
-    endpoint: &str,
-) -> IoResult<()>
+async fn close_remote_stream<S>(stream: &mut WebSocketStream<S>, endpoint: &str) -> IoResult<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
