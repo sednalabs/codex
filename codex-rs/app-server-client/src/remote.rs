@@ -1281,15 +1281,13 @@ async fn close_remote_stream<S>(stream: &mut WebSocketStream<S>, endpoint: &str)
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    stream.close(None).await.or_else(|err| {
-        if websocket_close_error_is_already_closed(&err) {
-            Ok(())
-        } else {
-            Err(IoError::other(format!(
-                "failed to close websocket app server `{endpoint}`: {err}"
-            )))
-        }
-    })
+    match stream.close(None).await {
+        Ok(()) => Ok(()),
+        Err(err) if websocket_close_error_is_already_closed(&err) => Ok(()),
+        Err(err) => Err(IoError::other(format!(
+            "failed to close websocket app server `{endpoint}`: {err}"
+        ))),
+    }
 }
 
 fn websocket_close_error_is_already_closed(err: &TungsteniteError) -> bool {
