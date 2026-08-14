@@ -3133,7 +3133,7 @@ impl Session {
             }
             SubagentRuntimeIdentity::from_snapshot(&snapshot)
         };
-        let item = identity.into();
+        let item: ResponseItem = ContextualUserFragment::into(identity);
         self.record_conversation_items(turn_context, std::slice::from_ref(&item))
             .await;
     }
