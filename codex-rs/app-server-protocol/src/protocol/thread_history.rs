@@ -4042,7 +4042,7 @@ mod tests {
                     ),
                     agents_states: HashMap::new(),
                 },
-                true,
+                /* started */ true,
             ),
             canonical_collab_lifecycle_item(
                 sender,
@@ -4061,7 +4061,7 @@ mod tests {
                     requested_reasoning_effort: None,
                     agents_states: [(child, AgentStatus::Running)].into_iter().collect(),
                 },
-                false,
+                /* started */ false,
             ),
             canonical_collab_lifecycle_item(
                 sender,
@@ -4080,7 +4080,7 @@ mod tests {
                     requested_reasoning_effort: None,
                     agents_states: HashMap::new(),
                 },
-                true,
+                /* started */ true,
             ),
             canonical_collab_lifecycle_item(
                 sender,
@@ -4101,7 +4101,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                 },
-                false,
+                /* started */ false,
             ),
             canonical_collab_lifecycle_item(
                 sender,
@@ -4120,7 +4120,7 @@ mod tests {
                     requested_reasoning_effort: None,
                     agents_states: HashMap::new(),
                 },
-                true,
+                /* started */ true,
             ),
             canonical_collab_lifecycle_item(
                 sender,
@@ -4141,7 +4141,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                 },
-                false,
+                /* started */ false,
             ),
             legacy
                 .last()
@@ -4428,7 +4428,7 @@ mod tests {
                     requested_reasoning_effort: None,
                     agents_states: [(child, AgentStatus::Running)].into_iter().collect(),
                 },
-                false,
+                /* started */ false,
             ),
             canonical_collab_lifecycle_item(
                 sender,
@@ -4449,7 +4449,7 @@ mod tests {
                     ),
                     agents_states: HashMap::new(),
                 },
-                true,
+                /* started */ true,
             ),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_id.to_string(),
@@ -4544,8 +4544,8 @@ mod tests {
     #[test]
     fn v1_terminal_compatibility_replay_preserves_requested_and_unknown_effective_spawn_identity() {
         let turns = replay_v1_spawn_terminal_compatibility(
-            None,
-            None,
+            /* canonical_effective_model */ None,
+            /* canonical_effective_reasoning_effort */ None,
             "",
             codex_protocol::openai_models::ReasoningEffort::Medium,
         );
@@ -5603,7 +5603,7 @@ mod tests {
                     ),
                     agents_states: HashMap::new(),
                 },
-                true,
+                /* started */ true,
             ),
             RolloutItem::EventMsg(EventMsg::CollabAgentSpawnBegin(
                 CollabAgentSpawnBeginEvent {
@@ -5635,7 +5635,7 @@ mod tests {
                     ),
                     agents_states: [(child, AgentStatus::Running)].into_iter().collect(),
                 },
-                false,
+                /* started */ false,
             ),
             RolloutItem::EventMsg(EventMsg::CollabAgentSpawnEnd(CollabAgentSpawnEndEvent {
                 call_id: "spawn-v1-compatibility".to_string(),
