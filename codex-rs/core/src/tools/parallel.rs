@@ -14,20 +14,20 @@ use tracing::info;
 use tracing::instrument;
 use tracing::trace_span;
 
-use crate::function_tool::FunctionCallError;
 use crate::agent::SpawnPublicationDecision;
+use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::tools::context::AbortedToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::lifecycle::notify_tool_aborted;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolCall;
 use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
-use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
 
@@ -434,6 +434,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::StartThreadOptions;
+    use crate::ThreadManager;
     use crate::session::step_context::StepContext;
     use crate::tools::context::FunctionToolOutput;
     use crate::tools::context::ToolInvocation;
@@ -444,8 +446,6 @@ mod tests {
     use crate::tools::registry::ToolRegistry;
     use crate::tools::router::ToolRouterParams;
     use crate::turn_diff_tracker::TurnDiffTracker;
-    use crate::StartThreadOptions;
-    use crate::ThreadManager;
     use codex_extension_api::ToolCallOutcome;
     use codex_features::Feature;
     use codex_login::CodexAuth;
@@ -1030,7 +1030,10 @@ mod tests {
             session
                 .services
                 .agent_control
-                .spawn_capacity_and_path_are_available_for_test(/*max_threads*/ 1, &cancelled_path),
+                .spawn_capacity_and_path_are_available_for_test(
+                    /*max_threads*/ 1,
+                    &cancelled_path
+                ),
             "private configured-V2 cancellation must release capacity and the requested path"
         );
 
@@ -1040,8 +1043,7 @@ mod tests {
     #[tokio::test]
     async fn v1_spawn_cancellation_after_initial_delivery_returns_published_result()
     -> anyhow::Result<()> {
-        let (mut session, turn_context) =
-            crate::session::tests::make_session_and_context().await;
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
         let config = (*turn_context.config).clone();
 
         let manager = ThreadManager::with_models_provider_for_tests(
@@ -1075,25 +1077,27 @@ mod tests {
             tracker,
         );
         let cancellation_token = CancellationToken::new();
-        let mut response_task = tokio::spawn(runtime.handle_tool_call(
-            ToolCall {
-                tool_name: ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent"),
-                call_id: "call-1".to_string(),
-                payload: ToolPayload::Function {
-                    arguments: serde_json::json!({
-                        "message": "delivery owns this child"
-                    })
-                    .to_string(),
+        let mut response_task = tokio::spawn(
+            runtime.handle_tool_call(
+                ToolCall {
+                    tool_name: ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent"),
+                    call_id: "call-1".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: serde_json::json!({
+                            "message": "delivery owns this child"
+                        })
+                        .to_string(),
+                    },
                 },
-            },
-            cancellation_token.clone(),
-        ));
+                cancellation_token.clone(),
+            ),
+        );
 
         let child_thread_id =
             tokio::time::timeout(Duration::from_secs(5), initial_delivery_finished)
                 .await
-            .expect("V1 runtime spawn should finish initial delivery")
-            .expect("post-initial-delivery hook should identify the child");
+                .expect("V1 runtime spawn should finish initial delivery")
+                .expect("post-initial-delivery hook should identify the child");
         assert!(
             session
                 .services
@@ -1228,27 +1232,29 @@ mod tests {
         let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
         let runtime = ToolCallRuntime::new(router, Arc::clone(&session), step_context, tracker);
         let cancellation_token = CancellationToken::new();
-        let mut response_task = tokio::spawn(runtime.handle_tool_call(
-            ToolCall {
-                tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
-                call_id: "call-1".to_string(),
-                payload: ToolPayload::Function {
-                    arguments: serde_json::json!({
-                        "message": "delivery owns this child",
-                        "task_name": "delivery_owned_worker",
-                        "fork_turns": "none"
-                    })
-                    .to_string(),
+        let mut response_task = tokio::spawn(
+            runtime.handle_tool_call(
+                ToolCall {
+                    tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
+                    call_id: "call-1".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: serde_json::json!({
+                            "message": "delivery owns this child",
+                            "task_name": "delivery_owned_worker",
+                            "fork_turns": "none"
+                        })
+                        .to_string(),
+                    },
                 },
-            },
-            cancellation_token.clone(),
-        ));
+                cancellation_token.clone(),
+            ),
+        );
 
         let child_thread_id =
             tokio::time::timeout(Duration::from_secs(5), initial_delivery_finished)
                 .await
-            .expect("configured V2 runtime spawn should finish initial delivery")
-            .expect("post-initial-delivery hook should identify the child");
+                .expect("configured V2 runtime spawn should finish initial delivery")
+                .expect("post-initial-delivery hook should identify the child");
         assert!(
             session
                 .services
@@ -1333,8 +1339,7 @@ mod tests {
         let mut call = tool_call("spawn_agent");
         assert!(is_multi_agent_spawn_call(&call, Some("agents")));
 
-        call.tool_name =
-            codex_tools::ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
+        call.tool_name = codex_tools::ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
         assert!(is_multi_agent_spawn_call(&call, Some("agents")));
 
         call.tool_name = codex_tools::ToolName::namespaced("profile_agents", "spawn_agent");

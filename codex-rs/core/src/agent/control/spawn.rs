@@ -45,8 +45,7 @@ fn spawn_cancellation_owns_child(
     publication_key: Option<&SpawnPublicationKey>,
 ) -> bool {
     publication_key.is_some_and(|key| {
-        control.state.spawn_publication_decision(key)
-            == SpawnPublicationDecision::CancellationOwned
+        control.state.spawn_publication_decision(key) == SpawnPublicationDecision::CancellationOwned
     })
 }
 
@@ -83,20 +82,14 @@ pub(super) fn unpublished_spawn_reconciliation(
 enum UnpublishedSpawnCleanupAttempt {
     /// The manager still owns no live instance for this child ID. It is safe for the provisional
     /// reservation to release once this outcome has been observed.
-    Terminal {
-        cleanup_error: Option<CodexErr>,
-    },
+    Terminal { cleanup_error: Option<CodexErr> },
     /// The exact provisional instance is still live. Its reservation and any pending V2
     /// residency slot must remain held by an explicit cleanup owner.
-    StillLive {
-        cleanup_error: CodexErr,
-    },
+    StillLive { cleanup_error: CodexErr },
     /// The provisional instance reached terminal state, but a different manager instance now
     /// occupies its ID. The owner must never remove that replacement or release capacity/path
     /// until the replacement's manager lifetime has also ended.
-    Replaced {
-        cleanup_error: Option<CodexErr>,
-    },
+    Replaced { cleanup_error: Option<CodexErr> },
 }
 
 /// Owns pre-publication capacity while a cleanup path remains in progress.
@@ -664,10 +657,11 @@ impl AgentControl {
         // still win while the child is only provisioned, but once this claim succeeds it must
         // await our real delivery result; an initial prompt can begin a child turn before the
         // child is parent-visible.
-        let delivery_decision = publication_key.as_ref().map_or(
-            SpawnPublicationDecision::Untracked,
-            |key| self.state.claim_spawn_publication_delivery(key),
-        );
+        let delivery_decision = publication_key
+            .as_ref()
+            .map_or(SpawnPublicationDecision::Untracked, |key| {
+                self.state.claim_spawn_publication_delivery(key)
+            });
         if delivery_decision == SpawnPublicationDecision::CancellationOwned {
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
@@ -714,11 +708,10 @@ impl AgentControl {
         }
 
         let initial_input_result = match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
-                    .await
-                    .map(drop)
-            }
+            SpawnInitialInput::UserInput(input) => self
+                .send_input_after_capacity_check(new_thread.thread_id, &state, input)
+                .await
+                .map(drop),
             SpawnInitialInput::InterAgentCommunication(communication, context) => {
                 if multi_agent_version == MultiAgentVersion::V2 {
                     let mut provisional_metadata = agent_metadata.clone();
@@ -731,7 +724,11 @@ impl AgentControl {
                         .await
                     {
                         Ok(delivery) => delivery
-                            .send_after_capacity_check(communication, context, /*interrupt*/ false)
+                            .send_after_capacity_check(
+                                communication,
+                                context,
+                                /*interrupt*/ false,
+                            )
                             .await
                             .map(drop),
                         Err(error) => Err(error),
@@ -776,10 +773,11 @@ impl AgentControl {
         // This compare-and-swap is the parent-visible publication boundary. Initial delivery
         // already owns cancellation at this point, so the only tracked terminal transition here
         // is `DeliveryOwned -> Published`; cancellation can still only win before delivery.
-        let publication_decision = publication_key.as_ref().map_or(
-            SpawnPublicationDecision::Untracked,
-            |key| self.state.publish_spawn_publication(key),
-        );
+        let publication_decision = publication_key
+            .as_ref()
+            .map_or(SpawnPublicationDecision::Untracked, |key| {
+                self.state.publish_spawn_publication(key)
+            });
         if publication_decision == SpawnPublicationDecision::CancellationOwned {
             if let Err(cleanup_error) = self
                 .reconcile_unpublished_spawn(
@@ -1003,13 +1001,8 @@ impl AgentControl {
             };
         }
 
-        self.finalize_unpublished_spawn_cleanup(
-            state,
-            child_thread_id,
-            child_thread,
-            cleanup_error,
-        )
-        .await
+        self.finalize_unpublished_spawn_cleanup(state, child_thread_id, child_thread, cleanup_error)
+            .await
     }
 
     /// Materialize and remove a child only after its session loop has terminated. A `Replaced`
@@ -1155,7 +1148,9 @@ impl AgentControl {
                     .await;
             }
             UnpublishedSpawnCleanupAttempt::StillLive { .. } => {
-                unreachable!("finalization after session-loop termination cannot report a live child")
+                unreachable!(
+                    "finalization after session-loop termination cannot report a live child"
+                )
             }
         }
     }
@@ -1194,7 +1189,9 @@ impl AgentControl {
                     );
                 }
                 UnpublishedSpawnCleanupAttempt::StillLive { .. } => {
-                    unreachable!("finalization after replacement termination cannot report a live child")
+                    unreachable!(
+                        "finalization after replacement termination cannot report a live child"
+                    )
                 }
             }
         }

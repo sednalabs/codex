@@ -543,7 +543,10 @@ async fn delivery_owned_initial_input_failure_reconciles_and_preserves_the_deliv
         "initial-delivery ownership must preserve the real delivery failure rather than turn it into cancellation"
     );
     assert!(
-        harness.control.get_agent_metadata(child_thread_id).is_none(),
+        harness
+            .control
+            .get_agent_metadata(child_thread_id)
+            .is_none(),
         "a failed delivery must not publish a child registry entry"
     );
     assert!(
@@ -667,7 +670,9 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
 
     let stored_child = child
         .thread
-        .read_thread(/*include_archived*/ true, /*include_history*/ true)
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
         .await
         .expect("terminal child history should remain readable after cleanup");
     assert!(
@@ -683,12 +688,10 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
 
 #[tokio::test]
 async fn post_new_thread_cancellation_with_shutdown_failure_retains_manager_and_reservation() {
-    let (home, config) = test_config_with_cli_overrides(vec![
-        (
-            "agents.max_concurrent_threads_per_session".to_string(),
-            TomlValue::Integer(2),
-        ),
-    ])
+    let (home, config) = test_config_with_cli_overrides(vec![(
+        "agents.max_concurrent_threads_per_session".to_string(),
+        TomlValue::Integer(2),
+    )])
     .await;
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
