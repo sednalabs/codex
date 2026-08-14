@@ -10,13 +10,13 @@ use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
+use crate::context::world_state::SubagentContext;
+use crate::context::world_state::SubagentContextBuilder;
+use crate::context::world_state::SubagentContextRow;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::rollout_budget::RolloutBudget;
 use crate::session::emit_subagent_session_started;
 use crate::session_prefix::format_inter_agent_completion_message;
-use crate::context::world_state::SubagentContext;
-use crate::context::world_state::SubagentContextBuilder;
-use crate::context::world_state::SubagentContextRow;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
 use crate::thread_manager::RemoveThreadIfSameResult;
@@ -527,10 +527,8 @@ impl AgentControl {
                 .as_ref()
                 .map(|agent_path| agent_path.name().to_string())
                 .unwrap_or_else(|| thread_id.to_string());
-            let row = SubagentContextRow::new(
-                reference.as_str(),
-                metadata.agent_nickname.as_deref(),
-            );
+            let row =
+                SubagentContextRow::new(reference.as_str(), metadata.agent_nickname.as_deref());
             if !builder.push(row) {
                 builder.note_omitted(1 + agents.len());
                 break;
