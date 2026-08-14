@@ -581,6 +581,7 @@ mod tests {
                     turn_id: "turn-2".to_string(),
                     item_id: "tool-1".to_string(),
                     questions: Vec::new(),
+                    is_blocking: true,
                     auto_resolution_ms: None,
                 },
             }),
@@ -892,6 +893,7 @@ mod tests {
                 turn_id: "turn-1".to_string(),
                 item_id: "tool-1".to_string(),
                 questions: Vec::new(),
+                is_blocking: true,
                 auto_resolution_ms: None,
             },
         });
@@ -915,6 +917,7 @@ mod tests {
                     turn_id: "turn-1".to_string(),
                     item_id: item_id.to_string(),
                     questions: Vec::new(),
+                    is_blocking: true,
                     auto_resolution_ms: None,
                 },
             });
