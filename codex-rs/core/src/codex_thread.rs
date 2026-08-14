@@ -569,6 +569,18 @@ impl CodexThread {
 
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
+        let _residency_transition = self.session.input_queue.begin_residency_activity().await;
+        if !self.is_running() {
+            return Err(CodexErr::InternalAgentDied);
+        }
+        self.inject_response_items_with_residency_transition_held(items)
+            .await
+    }
+
+    pub(crate) async fn inject_response_items_with_residency_transition_held(
+        &self,
+        items: Vec<ResponseItem>,
+    ) -> CodexResult<()> {
         if items.is_empty() {
             return Err(CodexErr::InvalidRequest(
                 "items must not be empty".to_string(),
@@ -587,7 +599,7 @@ impl CodexThread {
                 .await;
         }
         self.session
-            .inject_no_new_turn(items, Some(turn_context.as_ref()))
+            .inject_no_new_turn_with_residency_transition_held(items, Some(turn_context.as_ref()))
             .await;
         self.session.flush_rollout().await?;
         Ok(())

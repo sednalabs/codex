@@ -10,6 +10,7 @@ use crate::thread_manager::ThreadManagerState;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
@@ -136,7 +137,7 @@ impl AgentControl {
         })
     }
 
-    pub(super) async fn uses_v2_lifecycle(
+    pub(crate) async fn uses_v2_lifecycle(
         &self,
         state: &Arc<ThreadManagerState>,
         agent_id: ThreadId,
@@ -178,6 +179,34 @@ impl AgentControl {
 }
 
 impl PreparedV2AgentDelivery {
+    pub(crate) async fn inject_response_items(self, items: Vec<ResponseItem>) -> CodexResult<()> {
+        if !self
+            .control
+            .state
+            .metadata_is_current(self.agent_id, &self.metadata)
+        {
+            return Err(CodexErr::ThreadNotFound(self.agent_id));
+        }
+        let thread = self.state.get_thread(self.agent_id).await?;
+        let _residency_transition = thread.session.input_queue.begin_residency_activity().await;
+        let thread_is_current = self
+            .state
+            .get_thread(self.agent_id)
+            .await
+            .is_ok_and(|current| Arc::ptr_eq(&current, &thread));
+        if !thread_is_current
+            || !self
+                .control
+                .state
+                .metadata_is_current(self.agent_id, &self.metadata)
+        {
+            return Err(CodexErr::ThreadNotFound(self.agent_id));
+        }
+        thread
+            .inject_response_items_with_residency_transition_held(items)
+            .await
+    }
+
     fn record_submission(
         &self,
         communication: &InterAgentCommunication,

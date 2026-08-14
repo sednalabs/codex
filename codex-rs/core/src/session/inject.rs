@@ -145,6 +145,16 @@ impl Session {
         items: Vec<ResponseItem>,
         current_turn_context: Option<&TurnContext>,
     ) {
+        let _residency_transition = self.input_queue.begin_residency_activity().await;
+        self.inject_no_new_turn_with_residency_transition_held(items, current_turn_context)
+            .await;
+    }
+
+    pub(crate) async fn inject_no_new_turn_with_residency_transition_held(
+        &self,
+        items: Vec<ResponseItem>,
+        current_turn_context: Option<&TurnContext>,
+    ) {
         let Err(items) = self.inject_if_running(items).await else {
             return;
         };

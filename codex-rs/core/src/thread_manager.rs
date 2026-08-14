@@ -662,6 +662,27 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    /// Inject response items through the manager so cold V2 agents are reloaded before mutation.
+    pub async fn inject_response_items(
+        &self,
+        config: Config,
+        thread_id: ThreadId,
+        items: Vec<ResponseItem>,
+    ) -> CodexResult<()> {
+        let control = self.agent_control();
+        if control.uses_v2_lifecycle(&self.state, thread_id).await {
+            return control
+                .prepare_v2_agent_delivery_with_reload(config, thread_id)
+                .await?
+                .inject_response_items(items)
+                .await;
+        }
+        self.get_thread(thread_id)
+            .await?
+            .inject_response_items(items)
+            .await
+    }
+
     /// Updates metadata for loaded and cold threads through one entrypoint.
     ///
     /// Loaded threads route through `CodexThread`/`LiveThread`, so metadata changes stay ordered

@@ -874,7 +874,8 @@ impl TurnRequestProcessor {
         &self,
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
-        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
         let items = params
             .items
@@ -888,8 +889,8 @@ impl TurnRequestProcessor {
             .map_err(invalid_request)?;
         validate_response_item_image_urls(&items)?;
 
-        thread
-            .inject_response_items(items)
+        self.thread_manager
+            .inject_response_items((*self.config).clone(), thread_id, items)
             .await
             .map_err(|err| match err.details() {
                 CodexErrorDetails::InvalidRequest(message) => invalid_request(message.clone()),

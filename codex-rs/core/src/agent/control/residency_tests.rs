@@ -13,6 +13,8 @@ use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -57,14 +59,49 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
     );
     assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 2);
 
-    control
-        .ensure_v2_agent_loaded(config, first.thread_id)
+    let stale_injection = first
+        .thread
+        .inject_response_items(vec![ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "stale injection".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }])
         .await
-        .expect("cold agent should reload");
+        .expect_err("an unloaded thread Arc must reject history injection");
+    assert_matches::assert_matches!(
+        stale_injection.details(),
+        CodexErrorDetails::InternalAgentDied
+    );
+
+    let injected_item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "injected after idle unload".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    manager
+        .inject_response_items(config, first.thread_id, vec![injected_item.clone()])
+        .await
+        .expect("manager injection should reload the cold agent");
     let reloaded = manager
         .get_thread(first.thread_id)
         .await
         .expect("reloaded thread should be resident");
+    assert!(
+        reloaded
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .contains(&injected_item)
+    );
     assert_eq!(
         reloaded
             .session
