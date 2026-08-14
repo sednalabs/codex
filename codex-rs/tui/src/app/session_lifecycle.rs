@@ -17,6 +17,7 @@ use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_config::types::ResumeCwdMode;
 use codex_protocol::protocol::TokenUsage as ProtocolTokenUsage;
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub(super) const AGENT_PICKER_PAGE_SIZE: u32 = 50;
@@ -982,14 +983,29 @@ impl App {
             }
         };
 
+        let response_next_cursor = response.next_cursor;
+        let (scoped_threads, page_scope_proven) = Self::locally_verify_descendant_page(
+            app_server,
+            primary_thread_id,
+            response.data,
+        )
+        .await;
+        let cursor_scope_proven = if page_scope_proven && response_next_cursor.is_some() {
+            Self::server_honors_ancestor_filter(app_server).await
+        } else {
+            page_scope_proven
+        };
+        let next_cursor = cursor_scope_proven
+            .then_some(response_next_cursor)
+            .flatten();
         if is_continuation
-            || response.next_cursor.is_none()
+            || next_cursor.is_none()
             || self.agent_navigation.next_picker_page_cursor().is_none()
         {
             self.agent_navigation
-                .set_next_picker_page_cursor(response.next_cursor.clone());
+                .set_next_picker_page_cursor(next_cursor);
         }
-        for thread in response.data {
+        for thread in scoped_threads {
             self.register_agent_picker_thread_from_backend(
                 primary_thread_id,
                 thread,
@@ -1020,6 +1036,150 @@ impl App {
             completed: loaded_priority_completed && legacy_fallback_completed,
             refreshed_thread_ids,
         }
+    }
+
+    /// Older app servers may ignore the experimental ancestor filter. Prove every returned row's
+    /// parent chain locally before exposing it, and report whether the whole page was scoped so an
+    /// opaque continuation cursor from an unscoped response is never retained.
+    async fn locally_verify_descendant_page(
+        app_server: &mut AppServerSession,
+        primary_thread_id: ThreadId,
+        threads: Vec<Thread>,
+    ) -> (Vec<Thread>, bool) {
+        let mut parent_by_thread_id = HashMap::new();
+        let mut malformed_thread_ids = HashSet::new();
+        for thread in &threads {
+            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                continue;
+            };
+            match Self::thread_parent_id(thread) {
+                Ok(parent_thread_id) => {
+                    parent_by_thread_id.insert(thread_id, parent_thread_id);
+                }
+                Err(()) => {
+                    malformed_thread_ids.insert(thread_id);
+                }
+            }
+        }
+
+        let mut scoped_thread_ids = HashSet::new();
+        let mut page_scope_proven = true;
+        for thread in &threads {
+            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
+                page_scope_proven = false;
+                continue;
+            };
+            let mut current_thread_id = thread_id;
+            let mut visited = HashSet::new();
+            let scoped = loop {
+                if current_thread_id == primary_thread_id {
+                    break thread_id != primary_thread_id;
+                }
+                if !visited.insert(current_thread_id)
+                    || malformed_thread_ids.contains(&current_thread_id)
+                {
+                    break false;
+                }
+                if !parent_by_thread_id.contains_key(&current_thread_id) {
+                    let Ok(parent_thread) = app_server
+                        .thread_read(current_thread_id, /*include_turns*/ false)
+                        .await
+                    else {
+                        break false;
+                    };
+                    if parent_thread.id != current_thread_id.to_string() {
+                        break false;
+                    }
+                    match Self::thread_parent_id(&parent_thread) {
+                        Ok(parent_thread_id) => {
+                            parent_by_thread_id.insert(current_thread_id, parent_thread_id);
+                        }
+                        Err(()) => {
+                            malformed_thread_ids.insert(current_thread_id);
+                            break false;
+                        }
+                    }
+                }
+                let Some(parent_thread_id) = parent_by_thread_id
+                    .get(&current_thread_id)
+                    .copied()
+                    .flatten()
+                else {
+                    break false;
+                };
+                current_thread_id = parent_thread_id;
+            };
+            if scoped {
+                scoped_thread_ids.insert(thread_id);
+            } else {
+                page_scope_proven = false;
+                tracing::warn!(
+                    thread_id = %thread_id,
+                    primary_thread_id = %primary_thread_id,
+                    "discarding persisted subagent outside the active thread tree"
+                );
+            }
+        }
+
+        let scoped_threads = threads
+            .into_iter()
+            .filter(|thread| {
+                ThreadId::from_string(&thread.id)
+                    .is_ok_and(|thread_id| scoped_thread_ids.contains(&thread_id))
+            })
+            .collect();
+        (scoped_threads, page_scope_proven)
+    }
+
+    /// `ThreadListResponse` does not acknowledge experimental filters. Before retaining an opaque
+    /// continuation cursor, send a state-only canary for an unknown ancestor: a compatible server
+    /// returns an exhausted empty page, while an older server that ignores the field repeats its
+    /// broad subagent result. Rows remain locally verified independently of this capability probe.
+    async fn server_honors_ancestor_filter(app_server: &mut AppServerSession) -> bool {
+        let probe_ancestor_thread_id = ThreadId::new();
+        match app_server
+            .thread_list(ThreadListParams {
+                cursor: None,
+                limit: Some(1),
+                sort_key: Some(ThreadSortKey::UpdatedAt),
+                sort_direction: Some(SortDirection::Desc),
+                model_providers: None,
+                source_kinds: Some(vec![ThreadSourceKind::SubAgent]),
+                thread_sources: None,
+                archived: Some(false),
+                is_pinned: None,
+                cwd: None,
+                use_state_db_only: true,
+                search_term: None,
+                parent_thread_id: None,
+                ancestor_thread_id: Some(probe_ancestor_thread_id.to_string()),
+            })
+            .await
+        {
+            Ok(response) if response.data.is_empty() && response.next_cursor.is_none() => true,
+            Ok(_) => {
+                tracing::warn!(
+                    "discarding agent picker continuation because ancestor filtering was not enforced"
+                );
+                false
+            }
+            Err(err) => {
+                tracing::warn!(
+                    %err,
+                    "discarding agent picker continuation because ancestor filtering was unavailable"
+                );
+                false
+            }
+        }
+    }
+
+    fn thread_parent_id(thread: &Thread) -> Result<Option<ThreadId>, ()> {
+        thread
+            .parent_thread_id
+            .as_deref()
+            .map(ThreadId::from_string)
+            .transpose()
+            .map_err(|_| ())
     }
 
     fn register_agent_picker_thread_from_backend(
@@ -1153,31 +1313,48 @@ impl App {
         primary_thread_id: ThreadId,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) -> bool {
-        let scanned_threads = match app_server
-            .thread_list(ThreadListParams {
-                cursor: None,
-                limit: Some(AGENT_PICKER_PAGE_SIZE),
-                sort_key: Some(ThreadSortKey::UpdatedAt),
-                sort_direction: Some(SortDirection::Desc),
-                model_providers: None,
-                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
-                thread_sources: None,
-                archived: Some(false),
-                is_pinned: None,
-                cwd: None,
-                use_state_db_only: false,
-                search_term: None,
-                parent_thread_id: None,
-                ancestor_thread_id: None,
-            })
-            .await
-        {
-            Ok(response) => response.data,
-            Err(err) => {
-                tracing::debug!(%err, "legacy subagent relation repair was unavailable");
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        let mut scanned_threads = Vec::new();
+        loop {
+            let response = match app_server
+                .thread_list(ThreadListParams {
+                    cursor,
+                    limit: Some(AGENT_PICKER_PAGE_SIZE),
+                    sort_key: Some(ThreadSortKey::UpdatedAt),
+                    sort_direction: Some(SortDirection::Desc),
+                    model_providers: None,
+                    source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                    thread_sources: None,
+                    archived: Some(false),
+                    is_pinned: None,
+                    cwd: None,
+                    use_state_db_only: false,
+                    search_term: None,
+                    parent_thread_id: None,
+                    ancestor_thread_id: None,
+                })
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::debug!(%err, "legacy subagent relation repair was unavailable");
+                    return false;
+                }
+            };
+            scanned_threads.extend(response.data);
+            let Some(next_cursor) = response.next_cursor else {
+                break;
+            };
+            if !seen_cursors.insert(next_cursor.clone()) {
+                tracing::debug!(
+                    cursor = %next_cursor,
+                    "legacy subagent relation repair returned a repeated cursor"
+                );
                 return false;
             }
-        };
+            cursor = Some(next_cursor);
+        }
         let descendants =
             find_loaded_subagent_threads_for_primary(scanned_threads.clone(), primary_thread_id)
                 .into_iter()
