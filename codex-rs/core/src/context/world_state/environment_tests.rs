@@ -113,6 +113,53 @@ fn subagent_context_enforces_row_and_total_byte_caps_with_omitted_count() {
 }
 
 #[test]
+fn newly_visible_subagents_render_a_diff() {
+    let before = EnvironmentsState::default();
+    let after = environment_with_subagent("agent-1", Some("atlas"));
+
+    assert_eq!(
+        render_environment_diff(&before, &after).as_deref(),
+        Some(
+            "<environment_context>\n  <subagents>\n    - agent-1: atlas\n  </subagents>\n</environment_context>"
+        )
+    );
+}
+
+#[test]
+fn changed_subagents_render_current_rows() {
+    let before = environment_with_subagent("agent-1", Some("atlas"));
+    let after = environment_with_subagent("agent-2", Some("borealis"));
+
+    assert_eq!(
+        render_environment_diff(&before, &after).as_deref(),
+        Some(
+            "<environment_context>\n  <subagents>\n    - agent-2: borealis\n  </subagents>\n</environment_context>"
+        )
+    );
+}
+
+#[test]
+fn removed_subagents_render_an_explicit_clear() {
+    let before = environment_with_subagent("agent-1", Some("atlas"));
+    let after = EnvironmentsState::default();
+
+    assert_eq!(
+        render_environment_diff(&before, &after).as_deref(),
+        Some(
+            "<environment_context>\n  <subagents status=\"unavailable\" />\n</environment_context>"
+        )
+    );
+}
+
+#[test]
+fn unchanged_subagents_do_not_render_a_diff() {
+    let before = environment_with_subagent("agent-1", Some("atlas"));
+    let after = environment_with_subagent("agent-1", Some("atlas"));
+
+    assert_eq!(render_environment_diff(&before, &after), None);
+}
+
+#[test]
 fn snapshots() -> Result<()> {
     use PreviousSectionState::Absent;
     use PreviousSectionState::Known;
@@ -269,4 +316,20 @@ fn starting(cwd: &str) -> Result<EnvironmentState> {
         status: EnvironmentStatus::Starting,
         shell: None,
     })
+}
+
+fn environment_with_subagent(reference: &str, nickname: Option<&str>) -> EnvironmentsState {
+    let mut builder = SubagentContextBuilder::default();
+    assert!(builder.push(SubagentContextRow::new(reference, nickname)));
+    EnvironmentsState::default().with_subagents(builder.finish())
+}
+
+fn render_environment_diff(
+    before: &EnvironmentsState,
+    after: &EnvironmentsState,
+) -> Option<String> {
+    let previous = before.snapshot();
+    after
+        .render_diff(PreviousSectionState::Known(&previous))
+        .map(|fragment| fragment.render())
 }
