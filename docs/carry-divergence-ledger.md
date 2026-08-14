@@ -3244,9 +3244,13 @@ decisions.
   handle-relative protection against concurrent replacement of an already
   checked repository path.
 - Home- and repository-scoped skill imports validate every source `SKILL.md`
-  before destination mutation. Each manifest must contain YAML frontmatter
-  with non-empty `name` and `description` fields; an invalid source set fails
-  before any target directory is created or any skill is copied.
+  before destination mutation. Manifests are opened without following the
+  final symlink, must be regular files no larger than 1 MiB, and are read with
+  a hard byte cap before parsing. Validation uses the canonical loader's
+  compatible frontmatter semantics: missing names fall back to the skill
+  directory and common third-party scalar repair remains accepted, while a
+  non-empty description is required. An invalid source set fails before any
+  target directory is created or any skill is copied.
 - Upstream MEMORY migration remains home-scoped, but its client-selected project
   keys must be exactly one normal path component. Before memory detection or
   import mutates the workspace, the memory root, extension/resource ancestors,
@@ -3271,7 +3275,9 @@ decisions.
   proves a rejected stale-project selection cannot initialize or rewrite the
   memory workspace before the containment error is reported. Separately,
   `import_skills_rejects_invalid_skill_without_copying` proves malformed skill
-  metadata cannot leave a partial destination behind.
+  metadata cannot leave a partial destination behind. The adjacent skill
+  import regressions cover canonical compatibility plus symlinked,
+  non-regular, and oversized manifest denial before destination creation.
 - Recursive copy helpers skip symlink entries and refuse symlinked target
   directories. Empty-text target checks use `symlink_metadata`, so an empty or
   dangling symlink is protected rather than treated as an overwritable file.
@@ -3284,6 +3290,8 @@ decisions.
   - `.github/validation-lanes.json`
   - `.github/workflows/sedna-heavy-tests.yml`
   - `codex-rs/app-server/tests/suite/v2/external_agent_config.rs`
+  - `codex-rs/Cargo.lock`
+  - `codex-rs/core-skills/src/loader.rs`
   - `codex-rs/external-agent-migration/Cargo.toml`
   - `codex-rs/external-agent-migration/src/detect/mod.rs`
   - `codex-rs/external-agent-migration/src/hooks_common.rs`

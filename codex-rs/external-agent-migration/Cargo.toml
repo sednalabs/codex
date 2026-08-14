@@ -26,6 +26,7 @@ codex-protocol = { workspace = true }
 codex-rollout = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-output-truncation = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
