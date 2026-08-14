@@ -636,9 +636,8 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         .get_thread(child_thread_id)
         .await
         .expect("provisional V2 child should remain manager-owned");
-    let terminal_turn = child.thread.session.new_default_turn().await;
+    let terminal_turn = child.session.new_default_turn().await;
     child
-        .thread
         .session
         .send_event(
             terminal_turn.as_ref(),
@@ -730,14 +729,12 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         events.try_recv().is_err(),
         "a quick V2 child still receives exactly one truthful Started activity"
     );
-    child.thread.session.ensure_rollout_materialized().await;
+    child.session.ensure_rollout_materialized().await;
     child
-        .thread
         .flush_rollout()
         .await
         .expect("quick terminal child history should flush");
     let stored_child = child
-        .thread
         .read_thread(
             /*include_archived*/ true, /*include_history*/ true,
         )
@@ -788,7 +785,7 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
         crate::agent::SpawnPublicationDecision::CancellationOwned
     );
 
-    let error = SpawnAgentHandlerV2::default()
+    let result = SpawnAgentHandlerV2::default()
         .handle(invocation(
             Arc::clone(&session),
             Arc::clone(&turn),
@@ -799,8 +796,10 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
                 "fork_turns": "none"
             })),
         ))
-        .await
-        .expect_err("a cancellation-owned spawn should fail before publication");
+        .await;
+    let Err(error) = result else {
+        panic!("a cancellation-owned spawn should fail before publication");
+    };
     let FunctionCallError::RespondToModel(message) = &error else {
         panic!("cancellation should return a model-visible tool error: {error:?}");
     };
@@ -865,10 +864,10 @@ async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity()
     );
     resume_spawn.notify_one();
 
-    let error = spawn
-        .await
-        .expect("V1 spawn task should join")
-        .expect_err("a cancellation-owned V1 spawn should fail before publication");
+    let result = spawn.await.expect("V1 spawn task should join");
+    let Err(error) = result else {
+        panic!("a cancellation-owned V1 spawn should fail before publication");
+    };
     let FunctionCallError::RespondToModel(message) = &error else {
         panic!("cancellation should return a model-visible tool error: {error:?}");
     };
@@ -927,7 +926,7 @@ async fn multi_agent_v1_cancellation_owned_spawn_emits_no_false_child_activity()
 
 #[tokio::test]
 async fn multi_agent_v1_spawn_exposes_in_progress_before_publication() {
-    let (mut session, turn, mut events) = make_session_and_context_with_rx().await;
+    let (mut session, turn, events) = make_session_and_context_with_rx().await;
     let manager = thread_manager();
     let root = manager
         .start_thread(StartThreadOptions::new((*turn.config).clone()))
