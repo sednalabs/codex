@@ -1894,18 +1894,24 @@ fn selected_and_resumed_threads_use_server_capability_for_v1_and_v2_children() -
             backfill.refreshed_thread_ids,
             [child_thread_ids[1]].into_iter().collect()
         );
+        let v1_entry = app
+            .agent_navigation
+            .get(&child_thread_ids[0])
+            .expect("V1 child should remain in agent navigation");
+        assert!(v1_entry.updated_at.is_some());
         assert_eq!(
-            app.agent_navigation.get(&child_thread_ids[0]),
-            Some(&AgentPickerThreadEntry {
+            v1_entry,
+            &AgentPickerThreadEntry {
                 agent_nickname: Some("child-0".to_string()),
                 agent_role: Some("worker".to_string()),
                 agent_path: Some("/root/child-0".to_string()),
+                model_provider: Some(app.config.model_provider_id.clone()),
                 is_running: true,
                 is_closed: false,
-                created_at: None,
-                updated_at: None,
+                created_at: Some(1_767_225_600),
+                updated_at: v1_entry.updated_at,
                 ..AgentPickerThreadEntry::default()
-            })
+            }
         );
         assert!(!app.agent_navigation.is_parent_owned(child_thread_ids[0]));
         assert!(app.agent_navigation.is_parent_owned(child_thread_ids[1]));
