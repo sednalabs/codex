@@ -172,7 +172,7 @@ fn bounded_xml_text(value: &str, max_escaped_bytes: usize) -> String {
         if pending_space {
             rendered.push(' ');
         }
-        rendered.push_str(&escaped);
+        rendered.push_str(escaped);
         pending_space = false;
     }
     if !truncated && chars.next().is_some() {
