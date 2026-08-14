@@ -215,7 +215,11 @@ impl LiveThread {
             serde_json::to_vec(raw_items).map_err(|err| ThreadStoreError::Internal {
                 message: format!("failed to identify append batch: {err}"),
             })?;
-        if let Some(lost_result) = self.lost_append_result.lock().await.take() {
+        let lost_result = {
+            let mut lost_append_result = self.lost_append_result.lock().await;
+            lost_append_result.take()
+        };
+        if let Some(lost_result) = lost_result {
             if lost_result.batch_identity == batch_identity {
                 return lost_result.result;
             }
