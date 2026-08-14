@@ -51,6 +51,7 @@ const MAX_CONCURRENT_ANCESTOR_PROBES: usize = 256;
 
 /// Loads project AGENTS.md content and combines it with host-provided user
 /// instructions.
+#[cfg(test)]
 pub(crate) async fn load_project_instructions(
     config: &Config,
     user_instructions: Option<UserInstructions>,
@@ -118,6 +119,7 @@ struct ReadAgentsMdOutcome {
 /// discovered doc. If no documentation file is found the function returns
 /// `Ok(None)`. Unexpected I/O failures bubble up as `Err` so callers can
 /// decide how to handle them.
+#[cfg(test)]
 async fn read_agents_md(
     config: &Config,
     fs: &dyn ExecutorFileSystem,
@@ -199,6 +201,7 @@ struct AgentsMdPathDiscovery {
 
 /// Discovers AGENTS.md files from the project root to the current working
 /// directory, inclusive. Symlinks are allowed.
+#[cfg(test)]
 async fn agents_md_paths(
     config: &Config,
     cwd: &PathUri,
