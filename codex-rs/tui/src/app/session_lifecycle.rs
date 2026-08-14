@@ -972,7 +972,7 @@ impl App {
             Err(err) => {
                 tracing::warn!(%err, "failed to list persisted descendants for subagent backfill");
                 if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
-                    self.agent_navigation.set_next_picker_page_cursor(None);
+                    let _ = self.agent_navigation.set_next_picker_page_cursor(None);
                 }
                 self.sync_active_agent_label();
                 return LoadedSubagentBackfill {
@@ -998,8 +998,14 @@ impl App {
             || next_cursor.is_none()
             || self.agent_navigation.next_picker_page_cursor().is_none()
         {
-            self.agent_navigation
-                .set_next_picker_page_cursor(next_cursor);
+            if !self
+                .agent_navigation
+                .set_next_picker_page_cursor(next_cursor)
+            {
+                tracing::warn!(
+                    "discarding agent picker continuation because its cursor repeated or exceeded the bounded page limit"
+                );
+            }
         }
         for thread in scoped_threads {
             self.register_agent_picker_thread_from_backend(
