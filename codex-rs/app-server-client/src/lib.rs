@@ -2753,6 +2753,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_oversized_inbound_id_terminalizes_without_echoing_the_id() {
+        let oversized_id = "x".repeat(16 * 1024 + 1);
+        let websocket_url = start_test_remote_server({
+            let oversized_id = oversized_id.clone();
+            move |mut websocket| async move {
+                expect_remote_initialize(&mut websocket).await;
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Request(JSONRPCRequest {
+                        id: RequestId::String(oversized_id),
+                        method: "thread/unknown".to_string(),
+                        params: None,
+                        trace: None,
+                    }),
+                )
+                .await;
+            }
+        })
+        .await;
+        let mut client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect before the oversized live request");
+
+        let Some(AppServerEvent::Disconnected { message }) = client.next_event().await else {
+            panic!("oversized inbound ID should terminalize the remote connection");
+        };
+        assert!(message.contains("longer than 16384 bytes"));
+        assert!(message.contains("received 16385 bytes"));
+        assert!(!message.contains(&oversized_id));
+    }
+
+    #[tokio::test]
+    async fn remote_oversized_initialize_id_fails_without_echoing_the_id() {
+        let oversized_id = "x".repeat(16 * 1024 + 1);
+        let websocket_url = start_test_remote_server({
+            let oversized_id = oversized_id.clone();
+            move |mut websocket| async move {
+                let JSONRPCMessage::Request(_initialize) =
+                    read_websocket_message(&mut websocket).await
+                else {
+                    panic!("expected initialize request");
+                };
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Request(JSONRPCRequest {
+                        id: RequestId::String(oversized_id),
+                        method: "thread/unknown".to_string(),
+                        params: None,
+                        trace: None,
+                    }),
+                )
+                .await;
+            }
+        })
+        .await;
+        let error =
+            match RemoteAppServerClient::connect(test_remote_connect_args(websocket_url)).await {
+                Ok(_) => panic!("oversized initialize ID should fail connection"),
+                Err(error) => error,
+            };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("longer than 16384 bytes"));
+        assert!(error.to_string().contains("received 16385 bytes"));
+        assert!(!error.to_string().contains(&oversized_id));
+    }
+
+    #[tokio::test]
     async fn remote_unknown_requests_release_live_capacity_after_response_attempt() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
