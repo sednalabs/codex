@@ -647,10 +647,13 @@ async fn unpublished_terminal_spawn_reconciliation_preserves_buffered_history_an
         .expect("terminal unpublished child should reconcile cleanly");
     drop(reservation);
 
-    assert_matches!(
-        harness.manager.get_thread(child.thread_id).await,
-        Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(id) if *id == child.thread_id)
-    );
+    match harness.manager.get_thread(child.thread_id).await {
+        Err(error) => assert_matches!(
+            error.details(),
+            CodexErrorDetails::ThreadNotFound(id) if *id == child.thread_id
+        ),
+        Ok(_) => panic!("reconciled child should no longer be registered"),
+    }
     assert!(
         created_threads.try_recv().is_err(),
         "a cancellation-owned child must remain invisible to thread-created subscribers"

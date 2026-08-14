@@ -636,9 +636,8 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         .get_thread(child_thread_id)
         .await
         .expect("provisional V2 child should remain manager-owned");
-    let terminal_turn = child.thread.session.new_default_turn().await;
+    let terminal_turn = child.session.new_default_turn().await;
     child
-        .thread
         .session
         .send_event(
             terminal_turn.as_ref(),
@@ -733,14 +732,12 @@ async fn multi_agent_v2_spawn_delivers_before_one_publication_notification() {
         events.try_recv().is_err(),
         "a quick V2 child still receives exactly one truthful Started activity"
     );
-    child.thread.session.ensure_rollout_materialized().await;
+    child.session.ensure_rollout_materialized().await;
     child
-        .thread
         .flush_rollout()
         .await
         .expect("quick terminal child history should flush");
     let stored_child = child
-        .thread
         .read_thread(/*include_archived*/ true, /*include_history*/ true)
         .await
         .expect("quick terminal child history should remain readable");
@@ -789,7 +786,7 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
         crate::agent::SpawnPublicationDecision::CancellationOwned
     );
 
-    let error = SpawnAgentHandlerV2::default()
+    let error = match SpawnAgentHandlerV2::default()
         .handle(invocation(
             Arc::clone(&session),
             Arc::clone(&turn),
@@ -801,7 +798,10 @@ async fn multi_agent_v2_cancellation_owned_spawn_emits_no_started_activity_or_li
             })),
         ))
         .await
-        .expect_err("a cancellation-owned spawn should fail before publication");
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a cancellation-owned spawn should fail before publication"),
+    };
     let FunctionCallError::RespondToModel(message) = &error else {
         panic!("cancellation should return a model-visible tool error: {error:?}");
     };
