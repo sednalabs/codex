@@ -24,6 +24,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
+use codex_protocol::protocol::UserMessageEvent;
 use codex_utils_absolute_path::test_support::PathExt;
 use tempfile::TempDir;
 use tokio::sync::Notify;
@@ -61,7 +62,7 @@ struct GatedThreadStore {
     release_gated_append: Notify,
     persist_completed: Notify,
     second_metadata_applied: Notify,
-    partial_append_once: AtomicBool,
+    partial_once: AtomicBool,
 }
 
 impl GatedThreadStore {
@@ -76,7 +77,7 @@ impl GatedThreadStore {
             release_gated_append: Notify::new(),
             persist_completed: Notify::new(),
             second_metadata_applied: Notify::new(),
-            partial_append_once: AtomicBool::new(false),
+            partial_once: AtomicBool::new(false),
         }
     }
 
@@ -119,19 +120,12 @@ impl ThreadStore for GatedThreadStore {
         committed: &'a mut usize,
     ) -> ThreadStoreFuture<'a, ()> {
         Box::pin(async move {
-            if self.partial_append_once.swap(false, Ordering::SeqCst) && !params.items.is_empty() {
-                let first = params.items.remove(0);
-                ThreadStore::append_items(
-                    self.inner.as_ref(),
-                    AppendThreadItemsParams {
-                        thread_id: params.thread_id,
-                        items: vec![first],
-                    },
-                )
-                .await?;
+            if self.partial_once.swap(false, Ordering::SeqCst) && params.items.len() > 1 {
+                params.items.truncate(1);
+                self.append_items(params).await?;
                 *committed = 1;
                 return Err(crate::ThreadStoreError::Internal {
-                    message: "injected partial append".to_string(),
+                    message: "scripted partial append".to_string(),
                 });
             }
             let item_count = params.items.len();
@@ -363,6 +357,52 @@ async fn concurrent_appends_keep_sqlite_metadata_in_canonical_history_order() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_progress_retries_only_the_uncommitted_suffix() {
+    let home = TempDir::new().expect("temp dir");
+    let config = LocalThreadStoreConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+        default_model_provider_id: "test-provider".to_string(),
+    };
+    let local_store = Arc::new(LocalThreadStore::new(config, /*state_db*/ None));
+    let gated_store = Arc::new(GatedThreadStore::new(
+        local_store,
+        /*gated_append_index*/ usize::MAX,
+    ));
+    gated_store.partial_once.store(true, Ordering::SeqCst);
+    let thread_id = ThreadId::new();
+    let live_thread = LiveThread::create(
+        gated_store.clone(),
+        create_thread_params(thread_id, home.path()),
+    )
+    .await
+    .expect("create live thread");
+
+    live_thread
+        .append_items(&[
+            user_message_item("one"),
+            user_message_item("two"),
+            user_message_item("three"),
+        ])
+        .await
+        .expect("retry uncommitted suffix");
+    assert_eq!(gated_store.append_count.load(Ordering::SeqCst), 2);
+    let history = live_thread
+        .load_history(/*include_archived*/ true)
+        .await
+        .expect("load history");
+    let messages = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::EventMsg(EventMsg::UserMessage(event)) => Some(event.message.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(messages, vec!["one", "two", "three"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn persist_waits_for_append_observation_before_flushing_pending_metadata() {
     let home = TempDir::new().expect("temp dir");
     let config = LocalThreadStoreConfig {
@@ -531,6 +571,17 @@ fn thread_settings_item(
             },
         },
     ))
+}
+
+fn user_message_item(message: &str) -> RolloutItem {
+    RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+        client_id: None,
+        message: message.to_string(),
+        images: None,
+        local_images: Vec::new(),
+        text_elements: Vec::new(),
+        ..Default::default()
+    }))
 }
 
 fn compacted_item() -> RolloutItem {
