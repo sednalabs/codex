@@ -863,7 +863,6 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator"""
         class_end = len(source)
 
     validator = """
-
     @model_validator(mode="before")
     @classmethod
     def _normalize_legacy_identity_fields(cls, value: Any) -> Any:
