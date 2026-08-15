@@ -3,6 +3,7 @@ use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadInjectItemsResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -257,8 +258,11 @@ async fn thread_inject_items_reports_unknown_valid_thread_as_invalid_request() -
         })
         .await?;
 
-    let error: JSONRPCError =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
     assert_eq!(error.error.code, -32600);
     assert_eq!(
         error.error.message,
@@ -294,8 +298,11 @@ async fn thread_inject_items_rejects_per_item_and_aggregate_size_limits() -> Res
             })?],
         })
         .await?;
-    let oversized_error: JSONRPCError =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(oversized_request)).await??;
+    let oversized_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(oversized_request)),
+    )
+    .await??;
     assert_eq!(oversized_error.error.code, -32600);
     assert_eq!(
         oversized_error.error.message,
@@ -320,8 +327,11 @@ async fn thread_inject_items_rejects_per_item_and_aggregate_size_limits() -> Res
             ],
         })
         .await?;
-    let aggregate_error: JSONRPCError =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(aggregate_request)).await??;
+    let aggregate_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(aggregate_request)),
+    )
+    .await??;
     assert_eq!(aggregate_error.error.code, -32600);
     assert_eq!(
         aggregate_error.error.message,

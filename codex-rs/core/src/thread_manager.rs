@@ -683,7 +683,11 @@ impl ThreadManager {
         items: Vec<ResponseItem>,
     ) -> CodexResult<()> {
         for control in self.state.resident_agent_controls().await {
-            if control.uses_v2_lifecycle(&self.state, thread_id).await {
+            // V2 roots are live threads but are not necessarily registered agents. Only
+            // registered V2 agents need lifecycle-gated reload before injection.
+            if control.get_agent_metadata(thread_id).is_some()
+                && control.uses_v2_lifecycle(&self.state, thread_id).await
+            {
                 crate::codex_thread::validate_injected_response_items(&items)?;
                 return control
                     .prepare_v2_agent_delivery_with_reload(config, thread_id)
