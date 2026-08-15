@@ -2887,6 +2887,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_oversized_initialize_metadata_is_rejected_without_retention() {
+        for (field, result) in [
+            (
+                "server version",
+                serde_json::json!({
+                    "userAgent": format!("codex/{}", "x".repeat(16 * 1024 + 1)),
+                }),
+            ),
+            (
+                "Codex home",
+                serde_json::json!({
+                    "codexHome": "x".repeat(16 * 1024 + 1),
+                }),
+            ),
+        ] {
+            let websocket_url = start_test_remote_server(move |mut websocket| async move {
+                let JSONRPCMessage::Request(initialize) =
+                    read_websocket_message(&mut websocket).await
+                else {
+                    panic!("expected initialize request");
+                };
+                write_websocket_message(
+                    &mut websocket,
+                    JSONRPCMessage::Response(JSONRPCResponse {
+                        id: initialize.id,
+                        result,
+                    }),
+                )
+                .await;
+            })
+            .await;
+            let error =
+                match RemoteAppServerClient::connect(test_remote_connect_args(websocket_url)).await {
+                    Ok(_) => panic!("oversized initialize metadata should fail connection"),
+                    Err(error) => error,
+                };
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains(field));
+            assert!(error.to_string().contains("longer than 16384 bytes"));
+            assert!(error.to_string().contains("received 16385 bytes"));
+        }
+    }
+
+    #[tokio::test]
     async fn remote_unknown_requests_release_live_capacity_after_response_attempt() {
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;

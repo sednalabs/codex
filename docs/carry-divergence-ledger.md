@@ -1757,6 +1757,44 @@ decisions.
   send the full request. It preserves a server message when supplied and uses
   the upstream fallback only when that message is absent. Provider-confirmed
   model identity remains emitted alongside this upstream retry mapping.
+- PR609 adds a bounded remote-client custody and lifecycle boundary around the
+  upstream request/response path. Peer-controlled inbound WebSocket messages
+  are capped at 8 MiB, while caller-controlled outbound payload compatibility
+  is unchanged. Each inbound text message takes a provisional wire-byte
+  reservation before JSON parsing; retained events and pending responses use
+  separate 32 MiB aggregate wire-byte budgets, with exact-byte RAII release.
+  Inbound and outbound string request IDs are capped at 16 KiB. Active
+  requests, deferred lossless events, and server-request ownership are bounded
+  independently. Cancellation tombstones never evict older entries and fail
+  closed with `WouldBlock` at capacity. Terminal admission and cleanup retain
+  late-response absorption and exactly-once response/rejection behavior.
+  Preserve this carry until upstream supplies equivalent wire limits, custody
+  accounting, ownership/admission, tombstone, and terminal-lifecycle
+  semantics; then remove the carry and its focused tests together.
+- Primary files:
+  - `codex-rs/app-server-client/src/lib.rs`
+  - `codex-rs/app-server-client/src/remote.rs`
+- Focused PR609 tests include
+  `remote_typed_request_rejects_inbound_response_one_byte_above_wire_limit`,
+  `remote_typed_request_accepts_inbound_response_at_wire_limit`,
+  `remote_oversized_initialize_metadata_is_rejected_without_retention`,
+  `initialize_response_budget_rejection_happens_before_json_parsing`,
+  `remote_websocket_config_and_inbound_response_wire_limit_are_locked_to_eight_mib`,
+  `response_byte_budget_rejects_oversize_and_fourth_max_charge_then_releases`,
+  `response_budget_rejections_terminalize_before_json_parsing`,
+  `nonretained_text_paths_release_response_provisional_custody`,
+  `remote_event_byte_budget_enforces_per_event_and_aggregate_boundaries`,
+  `required_server_request_overflow_keeps_all_unanswered_ids_for_rejection`,
+  `public_server_request_ownership_is_released_only_after_client_completion`,
+  `unanswered_public_server_requests_remain_bounded_by_both_event_channels`,
+  `oversized_outbound_string_request_id_is_rejected_before_worker_insertion_or_write`,
+  `canceled_request_tombstones_fail_closed_at_capacity_without_eviction`,
+  `canceled_request_tombstone_exhaustion_terminalizes_the_worker_before_id_reuse`,
+  and `canceled_remote_request_releases_slot_and_absorbs_late_response`.
+- Hosted guardrails are `codex.app-server-protocol-test`,
+  `codex.app-server-v2-contract-targeted`,
+  `codex.app-server-thread-cwd-targeted`, `rust-ci-full`, and the GitHub
+  `blocking-ci` Bazel tests.
 - Native `ComputerUseCall`, dynamic-tool protocol methods, generated-schema
   compatibility, and TypeScript response export remain additive to upstream's
   explicit request wire names. `codex.app-server-protocol-test`,
