@@ -206,6 +206,11 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_remaining_context_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_compact_age_when_known --lib -- --exact --test-threads=1
     cargo test -p codex-tui multi_agents::tests::picker_description_includes_model_effort_and_task_when_available --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_stops_repeated_cycling_and_over_budget_continuations --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::legacy_agent_picker_relation_repair_retries_until_cursor_exhaustion --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::legacy_agent_picker_scan_enforces_page_and_thread_budgets --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_rejects_non_spawn_descendants_when_server_broadens_source_filter --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_rejects_mixed_roots_when_server_ignores_ancestor_filter --lib -- --exact --test-threads=1
 
 # Focused shared picker-model tool-description slice for upgradeable legacy
 
