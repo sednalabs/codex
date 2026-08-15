@@ -311,6 +311,96 @@ fn preserves_wait_and_resume_receivers_only_when_terminal_snapshot_omits_them() 
 }
 
 #[test]
+fn late_starts_fill_missing_terminal_context_without_overwriting_terminal_state() {
+    for tool in [
+        CollabAgentTool::SpawnAgent,
+        CollabAgentTool::Wait,
+        CollabAgentTool::ResumeAgent,
+        CollabAgentTool::SendInput,
+        CollabAgentTool::CloseAgent,
+    ] {
+        let started = collab_item(
+            "call-1",
+            tool.clone(),
+            CollabAgentToolCallStatus::InProgress,
+            Vec::new(),
+            /*model*/ None,
+            /*reasoning_effort*/ None,
+            [
+                (
+                    "child-1".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Running,
+                        message: None,
+                    },
+                ),
+                (
+                    "child-2".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Running,
+                        message: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let mut terminal = collab_item(
+            "call-1",
+            tool,
+            CollabAgentToolCallStatus::Completed,
+            Vec::new(),
+            /*model*/ None,
+            /*reasoning_effort*/ None,
+            [(
+                "child-1".to_string(),
+                CollabAgentState {
+                    status: CollabAgentStatus::Completed,
+                    message: Some("finished".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let ThreadItem::CollabAgentToolCall { prompt, .. } = &mut terminal else {
+            unreachable!("collab test helper must create a collab item");
+        };
+        *prompt = None;
+
+        let ThreadItem::CollabAgentToolCall {
+            prompt,
+            agents_states,
+            ..
+        } = merge_collab_agent_lifecycle(&terminal, started)
+        else {
+            unreachable!("collab test helper must create a collab item");
+        };
+        assert_eq!(prompt.as_deref(), Some("inspect"));
+        assert_eq!(
+            agents_states,
+            [
+                (
+                    "child-1".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Completed,
+                        message: Some("finished".to_string()),
+                    },
+                ),
+                (
+                    "child-2".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Running,
+                        message: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+}
+
+#[test]
 fn never_copies_a_prior_receiver_into_a_terminal_spawn() {
     let started = collab_item(
         "spawn-1",

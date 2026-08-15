@@ -60,6 +60,28 @@ pub(crate) fn merge_collab_agent_lifecycle(
             let mut terminal = previous.clone();
             if let (
                 ThreadItem::CollabAgentToolCall {
+                    prompt: terminal_prompt,
+                    agents_states: terminal_agents_states,
+                    ..
+                },
+                ThreadItem::CollabAgentToolCall {
+                    prompt: started_prompt,
+                    agents_states: started_agents_states,
+                    ..
+                },
+            ) = (&mut terminal, &incoming)
+            {
+                if terminal_prompt.is_none() {
+                    terminal_prompt.clone_from(started_prompt);
+                }
+                for (thread_id, state) in started_agents_states {
+                    terminal_agents_states
+                        .entry(thread_id.clone())
+                        .or_insert_with(|| state.clone());
+                }
+            }
+            if let (
+                ThreadItem::CollabAgentToolCall {
                     tool: CollabAgentTool::SpawnAgent,
                     requested_model: terminal_requested_model,
                     requested_reasoning_effort: terminal_requested_reasoning_effort,
