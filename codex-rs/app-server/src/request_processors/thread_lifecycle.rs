@@ -307,6 +307,32 @@ pub(super) async fn ensure_listener_task_running(
                         Ok(event) => event,
                         Err(err) => {
                             tracing::warn!("thread.next_event() failed with: {err}");
+                            pending_thread_unloads.lock().await.insert(conversation_id);
+                            let result = thread_manager
+                                .unload_v2_thread_for_external_teardown(&conversation, |result| {
+                                    let outgoing = outgoing_for_task.clone();
+                                    let pending_thread_unloads = pending_thread_unloads.clone();
+                                    let thread_state_manager = thread_state_manager.clone();
+                                    let thread_watch_manager = thread_watch_manager.clone();
+                                    async move {
+                                        finalize_v2_external_unload(
+                                            outgoing,
+                                            pending_thread_unloads,
+                                            thread_state_manager,
+                                            thread_watch_manager,
+                                            conversation_id,
+                                            matches!(result, V2ThreadUnloadResult::Unloaded),
+                                        )
+                                        .await;
+                                    }
+                                })
+                                .await;
+                            if !matches!(
+                                result,
+                                V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing
+                            ) {
+                                pending_thread_unloads.lock().await.remove(&conversation_id);
+                            }
                             break;
                         }
                     };

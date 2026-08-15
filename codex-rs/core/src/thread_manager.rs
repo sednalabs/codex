@@ -1071,6 +1071,21 @@ impl ThreadManager {
             .await
     }
 
+    /// Submits only while the exact expected runtime remains current, serialized against V2
+    /// residency teardown. This preserves app-server trace context without allowing an operation
+    /// resolved before teardown to enqueue after shutdown begins.
+    pub async fn send_op_to_current_thread_with_trace(
+        &self,
+        expected_thread: &CodexThread,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
+        let thread_id = expected_thread.session.thread_id();
+        self.state
+            .send_op_to_expected_thread_with_trace(thread_id, expected_thread, op, trace)
+            .await
+    }
+
     /// Tries to shut down all tracked threads concurrently within the provided timeout.
     /// Threads that complete shutdown are removed from the manager; incomplete shutdowns
     /// remain tracked so callers can retry or inspect them later.
@@ -1468,13 +1483,31 @@ impl ThreadManagerState {
         thread: &Arc<CodexThread>,
         op: Op,
     ) -> CodexResult<String> {
+        self.send_op_to_expected_thread_with_trace(
+            thread_id,
+            thread.as_ref(),
+            op,
+            /*trace*/ None,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_op_to_expected_thread_with_trace(
+        &self,
+        thread_id: ThreadId,
+        thread: &CodexThread,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
         let _residency_transition = thread.session.input_queue.begin_residency_activity().await;
         let current = self.get_thread(thread_id).await?;
-        if !Arc::ptr_eq(&current, thread) {
+        if !std::ptr::eq(current.as_ref(), thread) {
             return Err(CodexErr::ThreadNotFound(thread_id));
         }
         self.record_submitted_op(thread_id, &op);
-        thread.submit_with_residency_transition_held(op).await
+        thread
+            .submit_with_residency_transition_held_and_trace(op, trace)
+            .await
     }
 
     pub(crate) fn record_submitted_op(&self, thread_id: ThreadId, op: &Op) {

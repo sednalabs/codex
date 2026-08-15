@@ -364,7 +364,7 @@ async fn external_v2_unload_leaves_root_teardown_to_the_app_server() {
 
     assert_eq!(
         manager
-            .unload_v2_thread_for_external_teardown(&root.thread)
+            .unload_v2_thread_for_external_teardown(&root.thread, |_| async {})
             .await,
         V2ThreadUnloadResult::NotApplicable
     );

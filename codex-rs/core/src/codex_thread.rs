@@ -268,12 +268,21 @@ impl CodexThread {
         &self,
         op: Op,
     ) -> CodexResult<String> {
+        self.submit_with_residency_transition_held_and_trace(op, /*trace*/ None)
+            .await
+    }
+
+    pub(crate) async fn submit_with_residency_transition_held_and_trace(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<String> {
         let id = new_submission_id();
         self.submit_tracked_inner(Submission {
             id: id.clone(),
             op,
             client_user_message_id: None,
-            trace: None,
+            trace,
         })
         .await?;
         Ok(id)

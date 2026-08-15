@@ -226,7 +226,15 @@ impl AgentControl {
                 match manager.get_thread(thread_id).await {
                     Err(_) => {
                         self.forget_v2_residency(thread_id);
-                        V2ThreadUnloadResult::Missing
+                        if self
+                            .state
+                            .cold_status(thread_id, /*live_thread*/ None)
+                            .is_some()
+                        {
+                            V2ThreadUnloadResult::Unloaded
+                        } else {
+                            V2ThreadUnloadResult::Missing
+                        }
                     }
                     Ok(thread) if !Arc::ptr_eq(&thread, expected_thread) => {
                         V2ThreadUnloadResult::Superseded
@@ -251,7 +259,15 @@ impl AgentControl {
                             match manager.get_thread(thread_id).await {
                                 Err(_) => {
                                     self.forget_v2_residency(thread_id);
-                                    V2ThreadUnloadResult::Missing
+                                    if self
+                                        .state
+                                        .cold_status(thread_id, /*live_thread*/ None)
+                                        .is_some()
+                                    {
+                                        V2ThreadUnloadResult::Unloaded
+                                    } else {
+                                        V2ThreadUnloadResult::Missing
+                                    }
                                 }
                                 Ok(current) if Arc::ptr_eq(&current, expected_thread) => {
                                     V2ThreadUnloadResult::Deferred
