@@ -30,6 +30,17 @@ struct V2ResidencyState {
     pending_slots: usize,
 }
 
+/// Private terminal-idle watcher outcomes. These deliberately retain more information than the
+/// public external-teardown result so a stale timer does not look like an identity replacement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalIdleUnloadAttempt {
+    Unloaded,
+    Missing,
+    SupersededIdentity,
+    DeadlineInvalidated,
+    Deferred,
+}
+
 pub(crate) struct V2ResidencySlot {
     residency: Arc<V2Residency>,
     active: bool,
@@ -81,12 +92,17 @@ impl AgentControl {
         self.v2_residency.remove(thread_id);
     }
 
-    pub(super) fn start_terminal_idle_unload_watcher(
+    pub(super) async fn start_terminal_idle_unload_watcher(
         &self,
         thread: Arc<CodexThread>,
         metadata: crate::agent::registry::AgentMetadata,
         timeout_ms: u64,
     ) {
+        let (watcher_generation, watcher_cancellation) = metadata
+            .lifecycle
+            .lock()
+            .await
+            .replace_terminal_idle_unload_watcher();
         if timeout_ms == 0
             || !is_resident_candidate(thread.as_ref())
             || thread.session.live_thread().is_none()
@@ -106,21 +122,28 @@ impl AgentControl {
                     | AgentStatus::Interrupted => {
                         let timer_generation = {
                             let mut lifecycle = metadata.lifecycle.lock().await;
-                            if !control.state.metadata_is_current(thread_id, &metadata) {
+                            if !control.state.metadata_is_current(thread_id, &metadata)
+                                || !lifecycle
+                                    .terminal_idle_unload_watcher_is_current(watcher_generation)
+                            {
                                 return;
                             }
                             lifecycle.arm_terminal_idle_unload()
                         };
                         let runtime_activity_generation =
                             thread.session.input_queue.residency_activity_generation();
-                        tokio::select! {
-                            () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {}
+                        let deadline_elapsed = tokio::select! {
+                            () = watcher_cancellation.cancelled() => return,
+                            () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => true,
                             changed = status_rx.changed() => {
                                 if changed.is_err() {
                                     return;
                                 }
-                                continue;
+                                false
                             }
+                        };
+                        if !deadline_elapsed {
+                            continue;
                         }
                         let Ok(manager) = control.upgrade() else {
                             return;
@@ -132,22 +155,28 @@ impl AgentControl {
                                 control.state.as_ref(),
                                 &metadata,
                                 &thread,
+                                watcher_generation,
                                 timer_generation,
                                 runtime_activity_generation,
                             )
                             .await
                         {
-                            V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing => {
+                            TerminalIdleUnloadAttempt::Unloaded
+                            | TerminalIdleUnloadAttempt::Missing => {
                                 control.forget_v2_residency(thread_id);
                                 return;
                             }
-                            V2ThreadUnloadResult::Superseded => return,
-                            V2ThreadUnloadResult::Deferred
-                            | V2ThreadUnloadResult::NotApplicable => {}
+                            TerminalIdleUnloadAttempt::SupersededIdentity => return,
+                            TerminalIdleUnloadAttempt::DeadlineInvalidated
+                            | TerminalIdleUnloadAttempt::Deferred => {}
                         }
                     }
                     AgentStatus::PendingInit | AgentStatus::Running => {
-                        if status_rx.changed().await.is_err() {
+                        let changed = tokio::select! {
+                            () = watcher_cancellation.cancelled() => return,
+                            changed = status_rx.changed() => changed,
+                        };
+                        if changed.is_err() {
                             return;
                         }
                     }
@@ -306,29 +335,36 @@ impl V2Residency {
         registry: &AgentRegistry,
         metadata: &crate::agent::registry::AgentMetadata,
         expected_thread: &Arc<CodexThread>,
+        watcher_generation: u64,
         timer_generation: u64,
         runtime_activity_generation: u64,
-    ) -> V2ThreadUnloadResult {
+    ) -> TerminalIdleUnloadAttempt {
         let _reload = metadata.lifecycle.lock_reload().await;
         let mut lifecycle = metadata.lifecycle.lock().await;
         if !registry.metadata_is_current(expected_thread.session.thread_id(), metadata)
-            || !lifecycle.terminal_idle_unload_is_current(timer_generation)
+            || !lifecycle.terminal_idle_unload_watcher_is_current(watcher_generation)
         {
-            return V2ThreadUnloadResult::Superseded;
+            return TerminalIdleUnloadAttempt::SupersededIdentity;
+        }
+        if !lifecycle.terminal_idle_unload_is_current(timer_generation) {
+            return TerminalIdleUnloadAttempt::DeadlineInvalidated;
         }
         let Ok(thread) = manager
             .get_thread(expected_thread.session.thread_id())
             .await
         else {
-            return V2ThreadUnloadResult::Missing;
+            return TerminalIdleUnloadAttempt::Missing;
         };
-        if !Arc::ptr_eq(&thread, expected_thread) || !is_resident_candidate(thread.as_ref()) {
-            return V2ThreadUnloadResult::Superseded;
+        if !Arc::ptr_eq(&thread, expected_thread) {
+            return TerminalIdleUnloadAttempt::SupersededIdentity;
+        }
+        if !is_resident_candidate(thread.as_ref()) {
+            return TerminalIdleUnloadAttempt::Deferred;
         }
         let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
         if thread.session.input_queue.residency_activity_generation() != runtime_activity_generation
         {
-            return V2ThreadUnloadResult::Deferred;
+            return TerminalIdleUnloadAttempt::Deferred;
         }
         if self
             .try_unload_candidate(
@@ -340,9 +376,18 @@ impl V2Residency {
             )
             .await
         {
-            V2ThreadUnloadResult::Unloaded
+            TerminalIdleUnloadAttempt::Unloaded
         } else {
-            V2ThreadUnloadResult::Deferred
+            match manager
+                .get_thread(expected_thread.session.thread_id())
+                .await
+            {
+                Err(_) => TerminalIdleUnloadAttempt::Missing,
+                Ok(current) if Arc::ptr_eq(&current, expected_thread) => {
+                    TerminalIdleUnloadAttempt::Deferred
+                }
+                Ok(_) => TerminalIdleUnloadAttempt::SupersededIdentity,
+            }
         }
     }
 

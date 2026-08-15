@@ -507,7 +507,8 @@ impl AgentControl {
                     Arc::clone(&reloaded_thread.thread),
                     metadata.clone(),
                     terminal_idle_unload_timeout_ms,
-                );
+                )
+                .await;
                 state.notify_thread_created(reloaded_thread.thread_id);
                 self.restore_cold_mail_to_loaded_thread(state, thread_id, lifecycle)
                     .await
@@ -860,7 +861,8 @@ impl AgentControl {
                 Arc::clone(&new_thread.thread),
                 agent_metadata.clone(),
                 terminal_idle_unload_timeout_ms,
-            );
+            )
+            .await;
         }
 
         if let Some(SessionSource::SubAgent(
@@ -1573,7 +1575,8 @@ impl AgentControl {
                 Arc::clone(&resumed_thread.thread),
                 agent_metadata.clone(),
                 config.multi_agent_v2.terminal_idle_unload_timeout_ms,
-            );
+            )
+            .await;
         }
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.

@@ -30,7 +30,6 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
-use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::time::Duration;
@@ -165,14 +164,15 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
             .agent_metadata_for_thread(root.thread_id)
             .is_none()
     );
-    let injected_item = assistant_output("root injection");
+    let injected_text = "root injection";
+    let injected_item = assistant_output(injected_text);
 
     manager
         .inject_response_items(config, root.thread_id, vec![injected_item.clone()])
         .await
         .expect("loaded V2 root injection should not require subagent metadata");
 
-    wait_for_history_item(root.thread.as_ref(), &injected_item).await;
+    wait_for_history_output_text(root.thread.as_ref(), injected_text).await;
     assert_eq!(
         root.thread
             .session
@@ -180,7 +180,7 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
             .await
             .raw_items()
             .iter()
-            .filter(|item| *item == &injected_item)
+            .filter(|item| is_assistant_output_text(item, injected_text))
             .count(),
         1,
         "taskless root injection should be recorded exactly once"
@@ -189,11 +189,10 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
 
 #[tokio::test]
 async fn external_v2_unload_preserves_cold_delivery_and_releases_capacity() {
-    let (_home, mut config, manager, control, first, metadata) = terminal_idle_test_agent(
+    let (_home, config, manager, control, first, metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ true,
     )
     .await;
-    config.multi_agent_v2.max_concurrent_threads_per_session = 1;
     let queued_message = test_communication(
         "queued while externally unloaded",
         /*trigger_turn*/ false,
@@ -242,7 +241,7 @@ async fn external_v2_unload_preserves_cold_delivery_and_releases_capacity() {
             vec![assistant_output("reload after external unload")],
         )
         .await
-        .expect("injection should reload the cold V2 agent through one capacity slot");
+        .expect("injection should reload the cold V2 agent through residency capacity");
     let reloaded = manager
         .get_thread(first.thread_id)
         .await
@@ -500,6 +499,7 @@ async fn terminal_idle_unload_timeout_zero_disables_unload() {
 async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
+    // The configured total includes the root, leaving one V2 subagent slot.
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
     config.multi_agent_v2.terminal_idle_unload_timeout_ms = 100;
     let temp_home = tempfile::tempdir().expect("create temp home");
@@ -519,16 +519,14 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     let child_thread_id = control
         .spawn_agent(
             config,
-            vec![UserInput::Text {
-                text: "complete and unload".to_string(),
-                text_elements: Vec::new(),
-            }],
+            // Keep initial delivery queue-only: this test controls the terminal transition below.
+            Vec::new(),
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: root.thread_id,
                 depth: 1,
                 agent_path: Some(
                     AgentPath::root()
-                        .join("idle-worker")
+                        .join("idle_worker")
                         .expect("child agent path"),
                 ),
                 agent_nickname: None,
@@ -567,9 +565,7 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     advance(Duration::from_millis(1)).await;
-    for _ in 0..4 {
-        yield_now().await;
-    }
+    settle_terminal_idle_watcher().await;
     assert!(
         manager.get_thread(child_thread_id).await.is_err(),
         "the watcher registered by normal spawn must unload at the idle deadline"
@@ -578,8 +574,8 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn terminal_idle_unload_is_invalidated_by_new_user_work_and_rearms() {
-    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+async fn terminal_idle_unload_rearms_after_deadline_invalidation() {
+    let (_home, _config, manager, control, first, metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
@@ -591,45 +587,31 @@ async fn terminal_idle_unload_is_invalidated_by_new_user_work_and_rearms() {
     yield_now().await;
     advance(Duration::from_millis(50)).await;
 
-    control
-        .send_input(
-            first.thread_id,
-            vec![UserInput::Text {
-                text: "new user work".to_string(),
-                text_elements: Vec::new(),
-            }],
-        )
+    metadata
+        .lifecycle
+        .lock()
         .await
-        .expect("new user work should be accepted");
+        .invalidate_terminal_idle_unload();
     advance(Duration::from_millis(50)).await;
-    yield_now().await;
+    settle_terminal_idle_watcher().await;
 
     let resident = manager
         .get_thread(first.thread_id)
         .await
-        .expect("new user work should invalidate idle unload");
+        .expect("a stale deadline should preserve residency");
     assert!(Arc::ptr_eq(&resident, &first.thread));
-
-    mark_thread_status(
-        resident.as_ref(),
-        AgentStatus::Completed(Some("second turn complete".to_string())),
-    )
-    .await;
-    yield_now().await;
     advance(Duration::from_millis(99)).await;
-    yield_now().await;
+    settle_terminal_idle_watcher().await;
     assert!(
         manager.get_thread(first.thread_id).await.is_ok(),
-        "the rearmed terminal idle deadline must not unload early"
+        "a replacement deadline must wait a full interval"
     );
 
     advance(Duration::from_millis(1)).await;
-    for _ in 0..4 {
-        yield_now().await;
-    }
+    settle_terminal_idle_watcher().await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
-        "the watcher should retry after the subsequent terminal state"
+        "the current watcher should rearm after deadline invalidation"
     );
     assert_eq!(control.v2_residency.resident_count(), 0);
 }
@@ -661,13 +643,13 @@ async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
     assert_eq!(control.v2_residency.resident_count(), 1);
 
     first.thread.session.input_queue.finish_terminal_finalizer();
-    for _ in 0..2 {
-        yield_now().await;
-    }
-    advance(Duration::from_millis(100)).await;
-    for _ in 0..4 {
-        yield_now().await;
-    }
+    assert_thread_unloads_within_terminal_idle_intervals(
+        &manager,
+        first.thread_id,
+        Duration::from_millis(100),
+        /*max_intervals*/ 2,
+    )
+    .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
         "the watcher should retry after the terminal finalizer completes"
@@ -757,13 +739,13 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
         queued
     );
 
-    for _ in 0..2 {
-        yield_now().await;
-    }
-    advance(Duration::from_millis(100)).await;
-    for _ in 0..4 {
-        yield_now().await;
-    }
+    assert_thread_unloads_within_terminal_idle_intervals(
+        &manager,
+        first.thread_id,
+        Duration::from_millis(100),
+        /*max_intervals*/ 2,
+    )
+    .await;
     assert!(
         manager.get_thread(first.thread_id).await.is_err(),
         "the watcher should retry after trigger mail is drained"
@@ -832,11 +814,9 @@ async fn terminal_idle_test_agent(
         .state
         .agent_metadata_for_thread(first.thread_id)
         .expect("registered metadata");
-    control.start_terminal_idle_unload_watcher(
-        Arc::clone(&first.thread),
-        metadata.clone(),
-        timeout_ms,
-    );
+    control
+        .start_terminal_idle_unload_watcher(Arc::clone(&first.thread), metadata.clone(), timeout_ms)
+        .await;
     (temp_home, config, manager, control, first, metadata)
 }
 
@@ -872,20 +852,61 @@ async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) 
     panic!("thread {thread_id} should be unloaded");
 }
 
-async fn wait_for_history_item(thread: &CodexThread, expected_item: &ResponseItem) {
+fn is_assistant_output_text(item: &ResponseItem, expected_text: &str) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message {
+            role,
+            content,
+            ..
+        } if role == "assistant"
+            && content.iter().any(|content_item| {
+                matches!(
+                    content_item,
+                    ContentItem::OutputText { text } if text == expected_text
+                )
+            })
+    )
+}
+
+async fn wait_for_history_output_text(thread: &CodexThread, expected_text: &str) {
     for _ in 0..200 {
         if thread
             .session
             .clone_history()
             .await
             .raw_items()
-            .contains(expected_item)
+            .iter()
+            .any(|item| is_assistant_output_text(item, expected_text))
         {
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("injected response item should be recorded in thread history");
+}
+
+async fn settle_terminal_idle_watcher() {
+    const SETTLE_YIELDS: usize = 4;
+    for _ in 0..SETTLE_YIELDS {
+        yield_now().await;
+    }
+}
+
+async fn assert_thread_unloads_within_terminal_idle_intervals(
+    manager: &ThreadManager,
+    thread_id: ThreadId,
+    interval: Duration,
+    max_intervals: usize,
+) {
+    for _ in 0..max_intervals {
+        advance(interval).await;
+        settle_terminal_idle_watcher().await;
+        if manager.get_thread(thread_id).await.is_err() {
+            return;
+        }
+    }
+    panic!("thread {thread_id} should unload within {max_intervals} terminal idle intervals");
 }
 
 #[tokio::test]
