@@ -2715,14 +2715,14 @@ mod tests {
             .collect();
 
         assert_eq!(budget.used(), charge * 3);
-        assert_eq!(
+        assert!(matches!(
             budget.try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES),
             Err(RemoteResponseBudgetError::AggregateExhausted)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             budget.try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES + 1),
             Err(RemoteResponseBudgetError::OversizedWireMessage)
-        );
+        ));
         drop(held);
         assert_eq!(budget.used(), 0);
     }
