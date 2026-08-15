@@ -3133,6 +3133,44 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 }
 
 #[test]
+fn v1_omitted_spawn_identity_sentinels_do_not_become_requested_identity() {
+    let sender_thread_id = codex_protocol::ThreadId::default();
+    let legacy_v1_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "spawn-v1-omitted-identity".to_string(),
+        tool: CoreCollabAgentTool::SpawnAgent,
+        status: CoreCollabAgentToolCallStatus::InProgress,
+        sender_thread_id,
+        receiver_thread_ids: Vec::new(),
+        receiver_agents: Vec::new(),
+        prompt: Some("inspect".to_string()),
+        model: Some(String::new()),
+        reasoning_effort: Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        requested_model: None,
+        requested_reasoning_effort: None,
+        agents_states: HashMap::new(),
+    });
+
+    assert_eq!(
+        ThreadItem::from(legacy_v1_item),
+        ThreadItem::CollabAgentToolCall {
+            id: "spawn-v1-omitted-identity".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some("inspect".to_string()),
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        }
+    );
+}
+
+#[test]
 fn mcp_tool_call_app_context_serializes_connector_id() {
     let item = ThreadItem::McpToolCall {
         id: "mcp-1".to_string(),

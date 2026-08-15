@@ -110,8 +110,12 @@ async fn handle_spawn_agent(
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
                 prompt: Some(prompt.clone()),
-                model: Some(args.model.clone().unwrap_or_default()),
-                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                // Start records own requested provenance only. The established
+                // model/reasoning aliases describe an observed terminal selection;
+                // the legacy serializer supplies its required empty/default
+                // compatibility fields without polluting the canonical item.
+                model: None,
+                reasoning_effort: None,
                 requested_model: args.model.clone(),
                 requested_reasoning_effort: args.reasoning_effort.clone(),
                 agents_states: Default::default(),
