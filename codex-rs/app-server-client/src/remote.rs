@@ -4302,9 +4302,7 @@ mod tests {
         let reused_local_id = tokio::spawn({
             let handle = handle.clone();
             async move {
-                handle
-                    .request_json_rpc(client_request(/*id*/ 1))
-                    .await
+                handle.request_json_rpc(client_request(/*id*/ 1)).await
             }
         });
         let third_message = timeout(Duration::from_secs(2), peer.next())
@@ -4412,9 +4410,7 @@ mod tests {
         let first = tokio::spawn({
             let handle = handle.clone();
             async move {
-                handle
-                    .request_json_rpc(client_request(/*id*/ 7))
-                    .await
+                handle.request_json_rpc(client_request(/*id*/ 7)).await
             }
         });
         let first_wire_id = {
@@ -4455,9 +4451,7 @@ mod tests {
         let second = tokio::spawn({
             let handle = handle.clone();
             async move {
-                handle
-                    .request_json_rpc(client_request(/*id*/ 7))
-                    .await
+                handle.request_json_rpc(client_request(/*id*/ 7)).await
             }
         });
         let second_wire_id = {
