@@ -95,6 +95,9 @@ const REMOTE_EVENT_RETAINED_OVERHEAD_BYTES: usize = 256;
 const REMOTE_RESPONSE_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 const REMOTE_RESPONSE_MAX_WIRE_BYTES: usize = REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE;
 const REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES: usize = 256;
+// These strings are retained for the lifetime of the remote client, unlike
+// initialize response payloads that are released once classification finishes.
+const MAX_RETAINED_INITIALIZE_METADATA_BYTES: usize = 16 * 1024;
 const MAX_INBOUND_REQUEST_ID_STRING_BYTES: usize = 16 * 1024;
 const MAX_OUTBOUND_REQUEST_ID_STRING_BYTES: usize = MAX_INBOUND_REQUEST_ID_STRING_BYTES;
 const MAX_ACTIVE_INBOUND_REQUEST_IDS: usize = 512;
@@ -341,6 +344,7 @@ impl RemoteAppServerClient {
     {
         let mut stream = stream;
         let byte_budget = RemoteEventByteBudget::shared();
+        let response_byte_budget = RemoteResponseByteBudget::shared();
         let initialized = initialize_remote_connection(
             &mut stream,
             &endpoint,
@@ -348,6 +352,7 @@ impl RemoteAppServerClient {
             INITIALIZE_TIMEOUT,
             channel_capacity,
             Arc::clone(&byte_budget),
+            Arc::clone(&response_byte_budget),
         )
         .await?;
         let InitializedRemoteConnection {
@@ -361,7 +366,6 @@ impl RemoteAppServerClient {
         let (event_tx, event_rx) = mpsc::channel::<RetainedRemoteEvent>(channel_capacity);
         let request_slots = Arc::new(Semaphore::new(channel_capacity));
         let request_cancel_notify = Arc::new(Notify::new());
-        let response_byte_budget = RemoteResponseByteBudget::shared();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let worker_request_slots = Arc::clone(&request_slots);
         let worker_request_cancel_notify = Arc::clone(&request_cancel_notify);
@@ -2395,6 +2399,7 @@ async fn initialize_remote_connection<S>(
     initialize_timeout: Duration,
     channel_capacity: usize,
     byte_budget: Arc<RemoteEventByteBudget>,
+    response_byte_budget: Arc<RemoteResponseByteBudget>,
 ) -> IoResult<InitializedRemoteConnection>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -2420,6 +2425,20 @@ where
         loop {
             match stream.next().await {
                 Some(Ok(Message::Text(text))) => {
+                    let _reservation = match response_byte_budget.try_reserve(text.len()) {
+                        Ok(reservation) => reservation,
+                        Err(RemoteResponseBudgetError::OversizedWireMessage) => {
+                            return Err(
+                                RemoteTerminal::oversized_response_message(endpoint, text.len())
+                                    .io_error(),
+                            );
+                        }
+                        Err(RemoteResponseBudgetError::AggregateExhausted) => {
+                            return Err(
+                                RemoteTerminal::response_budget_exhausted(endpoint).io_error(),
+                            );
+                        }
+                    };
                     let message = serde_json::from_str::<JSONRPCMessage>(&text).map_err(|err| {
                         IoError::other(format!(
                             "remote app server at `{endpoint}` sent invalid initialize response: {err}"
@@ -2427,20 +2446,27 @@ where
                     })?;
                     match message {
                         JSONRPCMessage::Response(response) if response.id == initialize_request_id => {
-                            server_version = response
-                                .result
-                                .get("userAgent")
-                                .and_then(serde_json::Value::as_str)
-                                .and_then(|user_agent| {
-                                    let (_, rest) = user_agent.split_once('/')?;
-                                    rest.split_whitespace().next().map(str::to_string)
-                                });
-                            codex_home = response
-                                .result
-                                .get("codexHome")
-                                .and_then(serde_json::Value::as_str)
-                                .filter(|codex_home| !codex_home.is_empty())
-                                .map(str::to_string);
+                            server_version = bounded_initialize_metadata(
+                                endpoint,
+                                "server version",
+                                response
+                                    .result
+                                    .get("userAgent")
+                                    .and_then(serde_json::Value::as_str)
+                                    .and_then(|user_agent| {
+                                        let (_, rest) = user_agent.split_once('/')?;
+                                        rest.split_whitespace().next()
+                                    }),
+                            )?;
+                            codex_home = bounded_initialize_metadata(
+                                endpoint,
+                                "Codex home",
+                                response
+                                    .result
+                                    .get("codexHome")
+                                    .and_then(serde_json::Value::as_str)
+                                    .filter(|codex_home| !codex_home.is_empty()),
+                            )?;
                             break Ok(());
                         }
                         JSONRPCMessage::Error(error) if error.id == initialize_request_id => {
@@ -2599,6 +2625,26 @@ where
         server_version,
         codex_home,
     })
+}
+
+fn bounded_initialize_metadata(
+    endpoint: &str,
+    field: &str,
+    value: Option<&str>,
+) -> IoResult<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.len() > MAX_RETAINED_INITIALIZE_METADATA_BYTES {
+        return Err(IoError::new(
+            ErrorKind::InvalidData,
+            format!(
+                "remote app server at `{endpoint}` sent initialize {field} metadata longer than {MAX_RETAINED_INITIALIZE_METADATA_BYTES} bytes (received {} bytes)",
+                value.len()
+            ),
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
 fn app_server_event_from_notification(notification: JSONRPCNotification) -> Option<AppServerEvent> {
@@ -2934,6 +2980,84 @@ mod tests {
             budget.used(),
             3 * (REMOTE_RESPONSE_MAX_WIRE_BYTES + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES)
         );
+        drop(held);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn initialize_response_budget_rejection_happens_before_json_parsing() {
+        let (client_socket, peer_socket) =
+            tokio::io::duplex(REMOTE_RESPONSE_MAX_WIRE_BYTES.saturating_mul(2));
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let peer = tokio::spawn(async move {
+            let mut peer = WebSocketStream::from_raw_socket(
+                peer_socket,
+                tokio_tungstenite::tungstenite::protocol::Role::Server,
+                None,
+            )
+            .await;
+            let Some(Ok(Message::Text(request))) = peer.next().await else {
+                panic!("initialize request should arrive before the response");
+            };
+            assert!(matches!(
+                serde_json::from_str::<JSONRPCMessage>(&request),
+                Ok(JSONRPCMessage::Request(request)) if request.method == "initialize"
+            ));
+
+            let response_with_padding = |padding: String| {
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: RequestId::String("initialize".to_string()),
+                    result: serde_json::json!({ "padding": padding }),
+                })
+            };
+            let envelope_bytes = serde_json::to_string(&response_with_padding(String::new()))
+                .expect("empty initialize response should serialize")
+                .len();
+            let response = serde_json::to_string(&response_with_padding("x".repeat(
+                REMOTE_RESPONSE_MAX_WIRE_BYTES - envelope_bytes,
+            )))
+            .expect("large initialize response should serialize");
+            assert_eq!(response.len(), REMOTE_RESPONSE_MAX_WIRE_BYTES);
+            peer.send(Message::Text(response.into()))
+                .await
+                .expect("large initialize response should send");
+        });
+        let budget = RemoteResponseByteBudget::shared();
+        let held: Vec<_> = (0..3)
+            .map(|_| {
+                budget
+                    .try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES)
+                    .expect("three maximum retained responses should fit")
+            })
+            .collect();
+
+        let error = match initialize_remote_connection(
+            &mut stream,
+            "test://initialize-response-budget",
+            InitializeParams::default(),
+            Duration::from_secs(2),
+            /*channel_capacity*/ 1,
+            RemoteEventByteBudget::shared(),
+            Arc::clone(&budget),
+        )
+        .await
+        {
+            Ok(_) => {
+                panic!("saturated response budget must reject before parsing the initialize text")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            budget.used(),
+            3 * (REMOTE_RESPONSE_MAX_WIRE_BYTES + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES)
+        );
+        peer.await.expect("peer task should complete");
         drop(held);
         assert_eq!(budget.used(), 0);
     }
@@ -3536,10 +3660,10 @@ mod tests {
             None,
         )
         .await;
-        let (command_tx, command_rx) = mpsc::channel(/*capacity*/ 2);
+        let (command_tx, command_rx) = mpsc::channel(/*capacity*/ 3);
         let (event_tx, event_rx) = mpsc::channel(/*capacity*/ 1);
         let (_shutdown_tx, shutdown_rx) = oneshot::channel();
-        let request_slots = Arc::new(Semaphore::new(2));
+        let request_slots = Arc::new(Semaphore::new(3));
         let request_cancel_notify = Arc::new(Notify::new());
         let worker = tokio::spawn(remote_worker(
             stream,
@@ -3572,8 +3696,14 @@ mod tests {
                 handle.request_json_rpc(client_request(/*id*/ 2)).await
             }
         });
+        let third = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*id*/ 3)).await
+            }
+        });
         let mut received_ids = HashSet::new();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let message = timeout(Duration::from_secs(2), peer.next())
                 .await
                 .expect("request should be admitted before cancellation")
@@ -3591,7 +3721,11 @@ mod tests {
         }
         assert_eq!(
             received_ids,
-            HashSet::from([RequestId::Integer(1), RequestId::Integer(2)])
+            HashSet::from([
+                RequestId::Integer(1),
+                RequestId::Integer(2),
+                RequestId::Integer(3),
+            ])
         );
 
         first.abort();
@@ -3599,12 +3733,18 @@ mod tests {
         let _ = first.await;
         let _ = second.await;
 
-        let worker_error = timeout(Duration::from_secs(2), worker)
+        let third_error = timeout(Duration::from_secs(2), third)
             .await
-            .expect("tombstone exhaustion should terminalize the worker")
-            .expect("worker task should join")
+            .expect("tombstone exhaustion should fail the live request")
+            .expect("live request task should join")
             .expect_err("tombstone exhaustion should fail closed");
-        assert_eq!(worker_error.kind(), ErrorKind::WouldBlock);
+        assert_eq!(third_error.kind(), ErrorKind::WouldBlock);
+
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("tombstone exhaustion should stop the worker")
+            .expect("worker task should join")
+            .expect("terminal socket cleanup should complete");
 
         let reuse_error = handle
             .request_json_rpc(client_request(/*id*/ 1))
