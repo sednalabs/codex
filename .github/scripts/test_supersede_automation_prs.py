@@ -60,6 +60,10 @@ class SupersessionPlanTest(unittest.TestCase):
                 [pull_request(3, version="2.0.0-rc.1"), pull_request(4, version="2.0.0")],
                 [action(3, 4)],
             ),
+            "newer stable supersedes prerelease of older release": (
+                [pull_request(30, version="2.0.0-rc.1"), pull_request(31, version="2.1.0")],
+                [action(30, 31)],
+            ),
             "equal versions": (
                 [pull_request(5, version="3.1.0"), pull_request(6, version="3.1.0")],
                 [],
@@ -122,11 +126,18 @@ class SupersessionPlanTest(unittest.TestCase):
                 head_ref="bot/sync-models-json-author-lookalike",
                 author="untrusted-user",
             ),
+            pull_request(
+                25,
+                created_at="2026-08-02T00:00:00Z",
+                head_ref="bot/sync-models-json-case-insensitive",
+                head_repo="SednaLabs/Codex",
+                author="GitHub-Actions[bot]",
+            ),
         ]
 
         self.assertEqual(
             supersede.supersession_plan(pull_requests, "models-json"),
-            [action(20, 22, "models.json"), action(21, 22, "models.json")],
+            [action(22, 25, "models.json"), action(20, 25, "models.json"), action(21, 25, "models.json")],
         )
 
 

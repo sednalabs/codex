@@ -129,15 +129,17 @@ def normalize_release(version: str) -> tuple[int, ...]:
 
 
 def strictly_supersedes(candidate: DependabotVersion, other: DependabotVersion) -> bool:
-    if not candidate.prerelease and not other.prerelease:
-        return candidate.release > other.release
-    return not candidate.prerelease and other.prerelease and candidate.release == other.release
+    if candidate.prerelease:
+        return False
+    if other.prerelease:
+        return candidate.release >= other.release
+    return candidate.release > other.release
 
 
 def models_key(pr: PullRequest) -> bool:
     return (
-        pr.author == "github-actions[bot]"
-        and pr.head_repo == "sednalabs/codex"
+        pr.author.lower() == "github-actions[bot]"
+        and pr.head_repo.lower() == "sednalabs/codex"
         and pr.head_ref.startswith("bot/sync-models-json-")
     )
 
