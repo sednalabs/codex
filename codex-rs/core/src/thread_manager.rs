@@ -668,7 +668,7 @@ impl ThreadManager {
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         for control in self.state.resident_agent_controls().await {
-            if control.uses_v2_lifecycle(thread_id) {
+            if control.uses_v2_lifecycle(&self.state, thread_id).await {
                 return Ok(());
             }
         }
@@ -683,7 +683,7 @@ impl ThreadManager {
         items: Vec<ResponseItem>,
     ) -> CodexResult<()> {
         for control in self.state.resident_agent_controls().await {
-            if control.uses_v2_lifecycle(thread_id) {
+            if control.uses_v2_lifecycle(&self.state, thread_id).await {
                 crate::codex_thread::validate_injected_response_items(&items)?;
                 return control
                     .prepare_v2_agent_delivery_with_reload(config, thread_id)

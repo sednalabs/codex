@@ -169,14 +169,38 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
         .await
         .expect("loaded V2 root injection should not require subagent metadata");
 
-    assert!(
-        root.thread
-            .session
-            .clone_history()
-            .await
-            .raw_items()
-            .contains(&injected_item)
+    wait_for_history_item(root.thread.as_ref(), &injected_item).await;
+}
+
+#[tokio::test]
+async fn loaded_v1_agent_metadata_does_not_use_v2_lifecycle() {
+    let mut config = test_config().await;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
     );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start V1 root thread");
+    let control = root.thread.session.services.agent_control.clone();
+    let state = control.upgrade().expect("thread manager should be live");
+    let child = spawn_v2_subagent(&control, &state, config, root.thread_id, "v1-worker").await;
+    control
+        .state
+        .reserve_spawn_slot(/*max_threads*/ None)
+        .expect("reserve registry slot")
+        .commit(AgentMetadata {
+            agent_id: Some(child.thread_id),
+            ..Default::default()
+        });
+
+    assert!(!control.uses_v2_lifecycle(&state, child.thread_id).await);
 }
 
 #[tokio::test]
@@ -455,6 +479,22 @@ async fn wait_for_thread_unloaded(manager: &ThreadManager, thread_id: ThreadId) 
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("thread {thread_id} should be unloaded");
+}
+
+async fn wait_for_history_item(thread: &CodexThread, expected_item: &ResponseItem) {
+    for _ in 0..200 {
+        if thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .contains(expected_item)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("injected response item should be recorded in thread history");
 }
 
 #[tokio::test]

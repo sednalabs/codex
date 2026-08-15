@@ -518,7 +518,7 @@ impl AgentControl {
         communication: InterAgentCommunication,
         context: AgentCommunicationContext,
     ) -> CodexResult<String> {
-        if self.uses_v2_lifecycle(agent_id) {
+        if self.uses_v2_lifecycle(state, agent_id).await {
             return self
                 .prepare_v2_agent_delivery(agent_id)
                 .await?

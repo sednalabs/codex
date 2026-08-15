@@ -12,6 +12,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use std::sync::Arc;
 use tokio::sync::OwnedMutexGuard;
@@ -136,8 +137,18 @@ impl AgentControl {
         })
     }
 
-    pub(crate) fn uses_v2_lifecycle(&self, agent_id: ThreadId) -> bool {
-        self.state.agent_metadata_for_thread(agent_id).is_some()
+    pub(crate) async fn uses_v2_lifecycle(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        agent_id: ThreadId,
+    ) -> bool {
+        match state.get_thread(agent_id).await {
+            Ok(thread) => thread.multi_agent_version() == Some(MultiAgentVersion::V2),
+            Err(_) => self
+                .state
+                .cold_status(agent_id, /*live_thread*/ None)
+                .is_some(),
+        }
     }
 
     pub(super) async fn restore_cold_mail_to_loaded_thread(
