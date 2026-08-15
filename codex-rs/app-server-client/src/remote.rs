@@ -3008,7 +3008,7 @@ mod tests {
             shutdown_rx,
             Arc::clone(&request_slots),
             RemoteEventBacklog::new(/*capacity*/ 1),
-            None,
+            /*terminal*/ None,
             Arc::clone(&request_cancel_notify),
             /*request_tombstone_capacity*/ 4,
         ));
