@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::config::test_config;
 use crate::init_state_db;
 use crate::thread_manager::ThreadManagerState;
+use crate::thread_manager::V2ThreadUnloadResult;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
@@ -170,6 +171,182 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
         .expect("loaded V2 root injection should not require subagent metadata");
 
     wait_for_history_item(root.thread.as_ref(), &injected_item).await;
+}
+
+#[tokio::test]
+async fn external_v2_unload_preserves_cold_delivery_and_releases_capacity() {
+    let (_home, mut config, manager, control, first, metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ true,
+    )
+    .await;
+    config.multi_agent_v2.max_concurrent_threads_per_session = 1;
+    let queued_message = test_communication(
+        "queued while externally unloaded",
+        /*trigger_turn*/ false,
+    );
+    first
+        .thread
+        .session
+        .input_queue
+        .enqueue_mailbox_communications(vec![queued_message.clone()])
+        .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("done".to_string())),
+    )
+    .await;
+
+    assert_eq!(
+        manager
+            .unload_v2_thread_for_external_teardown(&first.thread)
+            .await,
+        V2ThreadUnloadResult::Unloaded
+    );
+    assert!(manager.get_thread(first.thread_id).await.is_err());
+    assert_eq!(
+        control.get_status(first.thread_id).await,
+        AgentStatus::Completed(Some("done".to_string()))
+    );
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 1);
+    assert_eq!(control.v2_residency.resident_count(), 0);
+
+    control
+        .send_inter_agent_communication(
+            first.thread_id,
+            test_communication("queue-only cold delivery", /*trigger_turn*/ false),
+            AgentCommunicationContext::new(AgentCommunicationKind::Message, ThreadId::new()),
+        )
+        .await
+        .expect("queue-only delivery should not reload a cold V2 agent");
+    assert!(manager.get_thread(first.thread_id).await.is_err());
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 2);
+
+    manager
+        .inject_response_items(
+            config,
+            first.thread_id,
+            vec![assistant_output("reload after external unload")],
+        )
+        .await
+        .expect("injection should reload the cold V2 agent through one capacity slot");
+    let reloaded = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("injection should reload the externally unloaded agent");
+    assert_eq!(control.v2_residency.resident_count(), 1);
+    assert!(Arc::ptr_eq(
+        &reloaded,
+        &manager
+            .get_thread(first.thread_id)
+            .await
+            .expect("reload should retain one resident thread")
+    ));
+    assert_eq!(metadata.lifecycle.lock().await.cold_mail_len(), 0);
+}
+
+#[tokio::test]
+async fn external_v2_unload_defers_for_pending_finalizers_and_submissions() {
+    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 0, /*ephemeral*/ false, /*sqlite*/ false,
+    )
+    .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("done".to_string())),
+    )
+    .await;
+    first
+        .thread
+        .session
+        .input_queue
+        .register_terminal_finalizer();
+    first
+        .thread
+        .session
+        .input_queue
+        .register_residency_submission("external-unload".to_string());
+
+    assert_eq!(
+        manager
+            .unload_v2_thread_for_external_teardown(&first.thread)
+            .await,
+        V2ThreadUnloadResult::Deferred
+    );
+    assert!(manager.get_thread(first.thread_id).await.is_ok());
+    assert_eq!(control.v2_residency.resident_count(), 1);
+
+    first.thread.session.input_queue.finish_terminal_finalizer();
+    assert_eq!(
+        manager
+            .unload_v2_thread_for_external_teardown(&first.thread)
+            .await,
+        V2ThreadUnloadResult::Deferred
+    );
+    first
+        .thread
+        .session
+        .input_queue
+        .finish_residency_submission("external-unload");
+    assert_eq!(
+        manager
+            .unload_v2_thread_for_external_teardown(&first.thread)
+            .await,
+        V2ThreadUnloadResult::Unloaded
+    );
+    assert!(manager.get_thread(first.thread_id).await.is_err());
+    assert_eq!(control.v2_residency.resident_count(), 0);
+}
+
+#[tokio::test]
+async fn terminal_idle_unload_drops_stale_residency_when_manager_entry_is_missing() {
+    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 25, /*ephemeral*/ false, /*sqlite*/ false,
+    )
+    .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("done".to_string())),
+    )
+    .await;
+    manager
+        .remove_thread(&first.thread_id)
+        .await
+        .expect("manager should still own the resident before the simulated external removal");
+
+    for _ in 0..200 {
+        if control.v2_residency.resident_count() == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("terminal idle watcher should release a resident missing from the manager");
+}
+
+#[tokio::test]
+async fn external_v2_unload_leaves_root_teardown_to_the_app_server() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("start V2 root thread");
+
+    assert_eq!(
+        manager
+            .unload_v2_thread_for_external_teardown(&root.thread)
+            .await,
+        V2ThreadUnloadResult::NotApplicable
+    );
+    assert!(manager.get_thread(root.thread_id).await.is_ok());
 }
 
 #[tokio::test]

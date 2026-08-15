@@ -1,5 +1,6 @@
 use super::*;
 use crate::extensions::send_thread_warning;
+use codex_core::V2ThreadUnloadResult;
 use codex_protocol::config_types::MultiAgentMode;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
@@ -367,17 +368,59 @@ pub(super) async fn ensure_listener_task_running(
                         }
                         pending_thread_unloads.insert(conversation_id);
                     }
-                    unload_thread_without_subscribers(
-                        thread_manager.clone(),
-                        outgoing_for_task.clone(),
-                        pending_thread_unloads.clone(),
-                        thread_state_manager.clone(),
-                        thread_watch_manager.clone(),
-                        conversation_id,
-                        conversation.clone(),
-                    )
-                    .await;
-                    break;
+                    match thread_manager
+                        .unload_v2_thread_for_external_teardown(&conversation)
+                        .await
+                    {
+                        V2ThreadUnloadResult::NotApplicable => {
+                            unload_thread_without_subscribers(
+                                thread_manager.clone(),
+                                outgoing_for_task.clone(),
+                                pending_thread_unloads.clone(),
+                                thread_state_manager.clone(),
+                                thread_watch_manager.clone(),
+                                conversation_id,
+                                conversation.clone(),
+                            )
+                            .await;
+                            break;
+                        }
+                        V2ThreadUnloadResult::Unloaded => {
+                            finalize_v2_external_unload(
+                                outgoing_for_task.clone(),
+                                pending_thread_unloads.clone(),
+                                thread_state_manager.clone(),
+                                thread_watch_manager.clone(),
+                                conversation_id,
+                                /*emit_closed_notification*/ true,
+                            )
+                            .await;
+                            break;
+                        }
+                        V2ThreadUnloadResult::Missing => {
+                            finalize_v2_external_unload(
+                                outgoing_for_task.clone(),
+                                pending_thread_unloads.clone(),
+                                thread_state_manager.clone(),
+                                thread_watch_manager.clone(),
+                                conversation_id,
+                                /*emit_closed_notification*/ false,
+                            )
+                            .await;
+                            break;
+                        }
+                        V2ThreadUnloadResult::Superseded => {
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
+                            break;
+                        }
+                        V2ThreadUnloadResult::Deferred => {
+                            // The residency lifecycle still owns a terminal completion or a
+                            // queued submission. Keep this listener alive and begin a new idle
+                            // interval instead of bypassing that guard with raw shutdown.
+                            unloading_state.note_thread_activity_observed();
+                            pending_thread_unloads.lock().await.remove(&conversation_id);
+                        }
+                    }
                 }
             }
         }
@@ -449,6 +492,33 @@ pub(super) async fn unload_thread_without_subscribers(
             }
         }
     });
+}
+
+async fn finalize_v2_external_unload(
+    outgoing: Arc<OutgoingMessageSender>,
+    pending_thread_unloads: Arc<Mutex<HashSet<ThreadId>>>,
+    thread_state_manager: ThreadStateManager,
+    thread_watch_manager: ThreadWatchManager,
+    thread_id: ThreadId,
+    emit_closed_notification: bool,
+) {
+    // A V2 residency unload has already shut down and removed the exact thread. Retire only the
+    // app-server side of the listener after that guarded lifecycle transaction succeeds.
+    outgoing
+        .cancel_requests_for_thread(thread_id, /*error*/ None)
+        .await;
+    thread_state_manager.remove_thread_state(thread_id).await;
+    thread_watch_manager
+        .remove_thread(&thread_id.to_string())
+        .await;
+    if emit_closed_notification {
+        outgoing
+            .send_server_notification(ServerNotification::ThreadClosed(ThreadClosedNotification {
+                thread_id: thread_id.to_string(),
+            }))
+            .await;
+    }
+    pending_thread_unloads.lock().await.remove(&thread_id);
 }
 
 #[allow(clippy::too_many_arguments)]

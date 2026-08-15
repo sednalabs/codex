@@ -133,6 +133,21 @@ pub struct NewThread {
     pub session_configured: SessionConfiguredEvent,
 }
 
+/// Outcome of attempting a guarded external teardown for a V2 resident thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum V2ThreadUnloadResult {
+    /// The thread is not a V2 subagent managed by residency lifecycle control.
+    NotApplicable,
+    /// The expected V2 resident thread was shut down and removed.
+    Unloaded,
+    /// The lifecycle guard observed work that must remain resident for now.
+    Deferred,
+    /// The expected thread was already absent from the manager.
+    Missing,
+    /// A different thread or lifecycle generation now owns this thread ID.
+    Superseded,
+}
+
 // TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
 // core can represent sampling boundaries directly instead of relying on
 // whichever items happened to be persisted mid-turn.
@@ -1032,6 +1047,23 @@ impl ThreadManager {
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.state.threads.write().await.remove(thread_id)
+    }
+
+    /// Route external listener teardown for a V2 subagent through the same residency lifecycle
+    /// transaction that owns capacity eviction and terminal-idle unloading.
+    ///
+    /// Roots and V1 threads return [`V2ThreadUnloadResult::NotApplicable`] so their established
+    /// app-server teardown path remains unchanged.
+    pub async fn unload_v2_thread_for_external_teardown(
+        &self,
+        expected_thread: &Arc<CodexThread>,
+    ) -> V2ThreadUnloadResult {
+        expected_thread
+            .session
+            .services
+            .agent_control
+            .unload_v2_thread_for_external_teardown(&self.state, expected_thread)
+            .await
     }
 
     /// Tries to shut down all tracked threads concurrently within the provided timeout.

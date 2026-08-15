@@ -6,6 +6,7 @@ use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::thread_manager::RemoveThreadIfSameResult;
 use crate::thread_manager::ThreadManagerState;
+use crate::thread_manager::V2ThreadUnloadResult;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
@@ -124,7 +125,7 @@ impl AgentControl {
                         let Ok(manager) = control.upgrade() else {
                             return;
                         };
-                        if control
+                        match control
                             .v2_residency
                             .try_unload_terminal_idle(
                                 &manager,
@@ -136,8 +137,13 @@ impl AgentControl {
                             )
                             .await
                         {
-                            control.forget_v2_residency(thread_id);
-                            return;
+                            V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing => {
+                                control.forget_v2_residency(thread_id);
+                                return;
+                            }
+                            V2ThreadUnloadResult::Superseded => return,
+                            V2ThreadUnloadResult::Deferred
+                            | V2ThreadUnloadResult::NotApplicable => {}
                         }
                     }
                     AgentStatus::PendingInit | AgentStatus::Running => {
@@ -149,6 +155,58 @@ impl AgentControl {
                 }
             }
         });
+    }
+
+    pub(crate) async fn unload_v2_thread_for_external_teardown(
+        &self,
+        manager: &Arc<ThreadManagerState>,
+        expected_thread: &Arc<CodexThread>,
+    ) -> V2ThreadUnloadResult {
+        if !is_resident_candidate(expected_thread.as_ref()) {
+            return V2ThreadUnloadResult::NotApplicable;
+        }
+        let thread_id = expected_thread.session.thread_id();
+        let Some(metadata) = self.state.agent_metadata_for_thread(thread_id) else {
+            return V2ThreadUnloadResult::NotApplicable;
+        };
+        let _reload = metadata.lifecycle.lock_reload().await;
+        let mut lifecycle = metadata.lifecycle.lock().await;
+        if !self.state.metadata_is_current(thread_id, &metadata) {
+            return V2ThreadUnloadResult::Superseded;
+        }
+        let thread = match manager.get_thread(thread_id).await {
+            Ok(thread) => thread,
+            Err(_) => {
+                self.forget_v2_residency(thread_id);
+                return V2ThreadUnloadResult::Missing;
+            }
+        };
+        if !Arc::ptr_eq(&thread, expected_thread) {
+            return V2ThreadUnloadResult::Superseded;
+        }
+        let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
+        if self
+            .v2_residency
+            .try_unload_candidate(
+                manager,
+                self.state.as_ref(),
+                Some(&metadata),
+                Some(&mut lifecycle),
+                thread,
+            )
+            .await
+        {
+            self.forget_v2_residency(thread_id);
+            return V2ThreadUnloadResult::Unloaded;
+        }
+        match manager.get_thread(thread_id).await {
+            Err(_) => {
+                self.forget_v2_residency(thread_id);
+                V2ThreadUnloadResult::Missing
+            }
+            Ok(current) if Arc::ptr_eq(&current, expected_thread) => V2ThreadUnloadResult::Deferred,
+            Ok(_) => V2ThreadUnloadResult::Superseded,
+        }
     }
 }
 
@@ -250,36 +308,42 @@ impl V2Residency {
         expected_thread: &Arc<CodexThread>,
         timer_generation: u64,
         runtime_activity_generation: u64,
-    ) -> bool {
+    ) -> V2ThreadUnloadResult {
         let _reload = metadata.lifecycle.lock_reload().await;
         let mut lifecycle = metadata.lifecycle.lock().await;
         if !registry.metadata_is_current(expected_thread.session.thread_id(), metadata)
             || !lifecycle.terminal_idle_unload_is_current(timer_generation)
         {
-            return false;
+            return V2ThreadUnloadResult::Superseded;
         }
         let Ok(thread) = manager
             .get_thread(expected_thread.session.thread_id())
             .await
         else {
-            return false;
+            return V2ThreadUnloadResult::Missing;
         };
         if !Arc::ptr_eq(&thread, expected_thread) || !is_resident_candidate(thread.as_ref()) {
-            return false;
+            return V2ThreadUnloadResult::Superseded;
         }
         let _residency_transition = thread.session.input_queue.lock_residency_transition().await;
         if thread.session.input_queue.residency_activity_generation() != runtime_activity_generation
         {
-            return false;
+            return V2ThreadUnloadResult::Deferred;
         }
-        self.try_unload_candidate(
-            manager,
-            registry,
-            Some(metadata),
-            Some(&mut lifecycle),
-            thread,
-        )
-        .await
+        if self
+            .try_unload_candidate(
+                manager,
+                registry,
+                Some(metadata),
+                Some(&mut lifecycle),
+                thread,
+            )
+            .await
+        {
+            V2ThreadUnloadResult::Unloaded
+        } else {
+            V2ThreadUnloadResult::Deferred
+        }
     }
 
     async fn try_unload_candidate(
