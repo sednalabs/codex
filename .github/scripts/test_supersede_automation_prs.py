@@ -26,15 +26,17 @@ def pull_request(
     head_repo: str = "sednalabs/codex",
     author: str = "dependabot[bot]",
     title_prefix: str = "",
+    title: str | None = None,
+    body: str | None = None,
     include_version_metadata: bool = True,
 ) -> supersede.PullRequest:
-    body = f"Bumps [{dependency}]"
+    body_text = body if body is not None else f"Bumps [{dependency}]"
     if version and include_version_metadata:
-        body += f"\n<!-- dependency-version: {version} -->"
+        body_text += f"\n<!-- dependency-version: {version} -->"
     return supersede.PullRequest(
         number=number,
-        title=f"{title_prefix}Bump {dependency} from old to {version or 'new'}",
-        body=body,
+        title=title or f"{title_prefix}Bump {dependency} from old to {version or 'new'}",
+        body=body_text,
         head_ref=head_ref or f"dependabot/example/{dependency}-{number}",
         head_repo=head_repo,
         created_at=created_at,
@@ -93,6 +95,33 @@ class SupersessionPlanTest(unittest.TestCase):
                     ),
                 ],
                 [action(15, 16)],
+            ),
+            "repository requirement update without metadata": (
+                [
+                    pull_request(
+                        577,
+                        dependency="ruff",
+                        version=">=0.16.1",
+                        title="chore(deps): update ruff requirement from >=0.16.0 to >=0.16.1 in /scripts",
+                        body=(
+                            "Updates the requirements on [ruff]"
+                            "(https://github.com/astral-sh/ruff) to permit the latest version."
+                        ),
+                        include_version_metadata=False,
+                    ),
+                    pull_request(
+                        596,
+                        dependency="ruff",
+                        version=">=0.16.2",
+                        title="chore(deps): update ruff requirement from >=0.16.0 to >=0.16.2 in /scripts",
+                        body=(
+                            "Updates the requirements on [ruff]"
+                            "(https://github.com/astral-sh/ruff) to permit the latest version."
+                        ),
+                        include_version_metadata=False,
+                    ),
+                ],
+                [action(577, 596, "ruff")],
             ),
             "stable supersedes prerelease of same release": (
                 [pull_request(3, version="2.0.0-rc.1"), pull_request(4, version="2.0.0")],

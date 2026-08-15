@@ -30,10 +30,13 @@ class PullRequest:
 class DependabotVersion:
     release: tuple[int, ...]
     prerelease: bool
+    constraint: str = ""
 
 
 DEPENDABOT_TITLE = re.compile(
-    r"^(?:chore\(deps(?:-dev)?\):\s*)?Bump (.+?) from .+? to .+?(?: in (/.+))?$",
+    r"^(?:(?:chore|build)\(deps(?:-dev)?\):\s*)?"
+    r"(?:Bump|Update) (?P<dependency>.+?)(?: requirement)? from \S+ "
+    r"to (?P<target>\S+)(?: in (?P<directory>/.+))?$",
     re.I,
 )
 DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
@@ -100,11 +103,21 @@ def dependabot_key(pr: PullRequest) -> str | None:
         return None
     body_match = DEPENDABOT_BODY.search(pr.body)
     title_match = DEPENDABOT_TITLE.match(pr.title)
-    dependency = body_match.group(1).strip() if body_match else (title_match.group(1).strip() if title_match else None)
+    dependency = (
+        body_match.group(1).strip()
+        if body_match
+        else (title_match.group("dependency").strip() if title_match else None)
+    )
     if not dependency:
         return None
-    directory = title_match.group(2).strip() if title_match and title_match.group(2) else ""
-    return f"{dependency.lower()}::{directory.lower()}"
+    directory = (
+        title_match.group("directory").strip()
+        if title_match and title_match.group("directory")
+        else ""
+    )
+    target = title_match.group("target") if title_match else ""
+    constraint = ">=" if target.startswith(">=") else ""
+    return f"{dependency.lower()}::{directory.lower()}::{constraint}"
 
 
 def dependabot_version(pr: PullRequest) -> DependabotVersion | None:
@@ -113,14 +126,23 @@ def dependabot_version(pr: PullRequest) -> DependabotVersion | None:
         title_match = DEPENDABOT_TITLE.match(pr.title)
         if not title_match:
             return None
-        version = title_match.group(0).rsplit(" to ", 1)[-1].split(" in ", 1)[0]
+        version = title_match.group("target")
     else:
         version = match.group(1)
+    constraint = ">=" if version.startswith(">=") else ""
+    if constraint:
+        version = version[len(constraint) :]
+    elif version[:1] in "<>=!~":
+        return None
     if STABLE_VERSION.fullmatch(version):
-        return DependabotVersion(normalize_release(version), prerelease=False)
+        return DependabotVersion(normalize_release(version), prerelease=False, constraint=constraint)
     prerelease_match = PRERELEASE_VERSION.fullmatch(version)
     if prerelease_match:
-        return DependabotVersion(normalize_release(prerelease_match.group("release")), prerelease=True)
+        return DependabotVersion(
+            normalize_release(prerelease_match.group("release")),
+            prerelease=True,
+            constraint=constraint,
+        )
     return None
 
 
@@ -132,6 +154,8 @@ def normalize_release(version: str) -> tuple[int, ...]:
 
 
 def strictly_supersedes(candidate: DependabotVersion, other: DependabotVersion) -> bool:
+    if candidate.constraint != other.constraint:
+        return False
     if candidate.prerelease:
         return False
     if other.prerelease:
