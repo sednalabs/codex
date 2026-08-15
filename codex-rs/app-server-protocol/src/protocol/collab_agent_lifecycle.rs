@@ -30,8 +30,12 @@ pub(crate) fn merge_collab_agent_lifecycle(
         status: previous_status,
         receiver_thread_ids: previous_receiver_thread_ids,
         prompt: previous_prompt,
+        model: previous_model,
+        reasoning_effort: previous_reasoning_effort,
         requested_model: previous_requested_model,
         requested_reasoning_effort: previous_requested_reasoning_effort,
+        effective_model: previous_effective_model,
+        effective_reasoning_effort: previous_effective_reasoning_effort,
         agents_states: previous_agents_states,
         ..
     } = previous
@@ -184,17 +188,28 @@ pub(crate) fn merge_collab_agent_lifecycle(
                 *item_effective_model = lifecycle_effective_model;
                 *item_effective_reasoning_effort = lifecycle_effective_reasoning_effort;
             } else if previous_status != &CollabAgentToolCallStatus::InProgress {
-                // Legacy SpawnEnd compatibility records are terminal snapshots that do not
-                // carry the additive requested identity. Preserve requested provenance from
-                // the matching terminal snapshot; terminal aliases and explicit effective
-                // fields remain owned exclusively by the incoming observed snapshot. An
-                // explicit incoming request wins, and when both records omit provenance it
-                // remains unknown, so duplicate terminals are idempotent.
+                // Legacy SpawnEnd compatibility records can omit both additive identity
+                // pairs. An explicit incoming value wins, while an omitted value must not
+                // erase identity already observed in the matching terminal snapshot. This
+                // makes stale terminal compatibility replays idempotent without promoting
+                // requested identity into effective identity.
+                if model.is_none() {
+                    model.clone_from(previous_model);
+                }
+                if reasoning_effort.is_none() {
+                    reasoning_effort.clone_from(previous_reasoning_effort);
+                }
                 if requested_model.is_none() {
                     requested_model.clone_from(previous_requested_model);
                 }
                 if requested_reasoning_effort.is_none() {
                     requested_reasoning_effort.clone_from(previous_requested_reasoning_effort);
+                }
+                if item_effective_model.is_none() {
+                    item_effective_model.clone_from(previous_effective_model);
+                }
+                if item_effective_reasoning_effort.is_none() {
+                    item_effective_reasoning_effort.clone_from(previous_effective_reasoning_effort);
                 }
             }
         }

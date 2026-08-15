@@ -167,6 +167,44 @@ fn terminal_spawn_compatibility_records_preserve_only_missing_requested_provenan
 }
 
 #[test]
+fn terminal_spawn_compatibility_replay_does_not_erase_known_effective_identity() {
+    let canonical_terminal = spawn_item(
+        "spawn-stale-compatibility",
+        CollabAgentToolCallStatus::Completed,
+        vec!["child-canonical".to_string()],
+        Some("gpt-known-effective"),
+        Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+        Some("gpt-requested"),
+        Some(codex_protocol::openai_models::ReasoningEffort::High),
+        HashMap::new(),
+    );
+    let legacy_terminal_without_identity = spawn_item(
+        "spawn-stale-compatibility",
+        CollabAgentToolCallStatus::Failed,
+        Vec::new(),
+        /*model*/ None,
+        /*reasoning_effort*/ None,
+        /*requested_model*/ None,
+        /*requested_reasoning_effort*/ None,
+        HashMap::new(),
+    );
+
+    assert_eq!(
+        merge_collab_agent_lifecycle(&canonical_terminal, legacy_terminal_without_identity),
+        spawn_item(
+            "spawn-stale-compatibility",
+            CollabAgentToolCallStatus::Failed,
+            Vec::new(),
+            Some("gpt-known-effective"),
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium),
+            Some("gpt-requested"),
+            Some(codex_protocol::openai_models::ReasoningEffort::High),
+            HashMap::new(),
+        )
+    );
+}
+
+#[test]
 fn collab_spawn_identity_is_phase_compatible_camel_case_and_old_payloads_parse() {
     let item = spawn_item(
         "spawn-1",
