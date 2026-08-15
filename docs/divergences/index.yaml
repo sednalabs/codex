@@ -448,6 +448,7 @@
         "codex-rs/tui/src/chatwidget/tests/app_server.rs",
         "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
         "sdk/python/scripts/update_sdk_artifacts.py",
+        "sdk/python/src/openai_codex/client.py",
         "sdk/python/src/openai_codex/generated/v2_all.py",
         "sdk/python/tests/test_client_rpc_methods.py",
         "justfile"
@@ -458,7 +459,7 @@
         "carry_commit": null,
         "upstream_commit": null
       },
-      "guardrail_lane": "codex.core-subagent-model-pinning-targeted; codex.core-subagent-surface-targeted; codex.core-subagent-inspect-tree-fallback-targeted; codex.core-multi-agent-orchestration-targeted; codex.app-server-protocol-test; codex.app-server-collab-spawn-identity-targeted; codex.tui-collab-spawn-identity-targeted; codex.tui-agent-picker-targeted",
+      "guardrail_lane": "codex.core-subagent-model-pinning-targeted; codex.core-subagent-surface-targeted; codex.core-subagent-inspect-tree-fallback-targeted; codex.core-multi-agent-orchestration-targeted; codex.app-server-protocol-test; codex.app-server-collab-spawn-identity-targeted; codex.tui-collab-spawn-identity-targeted; codex.collab-spawn-identity-consumers-targeted; codex.tui-agent-picker-targeted",
       "tests": [
         "spawn_agent_requested_model_and_reasoning_override_inherited_settings_without_role",
         "spawn_agent_role_overrides_requested_model_and_reasoning_settings",
