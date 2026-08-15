@@ -1767,7 +1767,8 @@ decisions.
   client assigns connection-unique integer wire IDs so a delayed duplicate
   response cannot match a later caller request that reused its local ID.
   Deferred lossless events retain their arrival position on either side of a
-  coalesced `Lagged` boundary. Active
+  coalesced `Lagged` boundary, and cosmetic loss behind a full deferred FIFO
+  remains a bounded scalar until one marker can be published. Active
   requests, deferred lossless events, and server-request ownership are bounded
   independently. Cancellation tombstones never evict older entries and fail
   closed with `WouldBlock` at capacity. Terminal admission and cleanup retain
@@ -1795,8 +1796,9 @@ decisions.
   `canceled_request_tombstones_fail_closed_at_capacity_without_eviction`,
   `canceled_request_tombstone_exhaustion_terminalizes_the_worker_before_id_reuse`,
   `canceled_remote_request_releases_slot_and_absorbs_late_response`,
-  `lagged_boundary_preserves_deferred_event_arrival_order`, and
-  `reused_local_request_id_gets_unique_wire_id_and_rejects_stale_response`.
+  `lagged_boundary_preserves_deferred_event_arrival_order`,
+  `reused_local_request_id_gets_unique_wire_id_and_rejects_stale_response`, and
+  `full_deferred_fifo_accounts_best_effort_loss_without_terminalizing`.
 - Hosted guardrails are `codex.app-server-client-targeted`,
   `codex.app-server-protocol-test`,
   `codex.app-server-v2-contract-targeted`,

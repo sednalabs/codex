@@ -780,6 +780,8 @@ acceptance and agent acknowledgement or completion.
 
 | Remote app-server client ordering extends custody coverage with connection-unique wire IDs that isolate reused caller-local IDs from delayed responses and deferred lossless events that preserve arrival position across coalesced `Lagged` boundaries | `codex.app-server-client-targeted`; `codex.app-server-protocol-test`; `codex.app-server-v2-contract-targeted`; `codex.app-server-thread-cwd-targeted`; `rust-ci-full`; hosted `blocking-ci` Bazel tests | `lagged_boundary_preserves_deferred_event_arrival_order`; `reused_local_request_id_gets_unique_wire_id_and_rejects_stale_response` |
 
+| Remote deferred-event FIFO accounting preserves cosmetic loss behind a full retained queue as a bounded scalar without terminalizing the remote worker | `codex.app-server-client-targeted`; `rust-ci-full`; hosted `blocking-ci` Bazel tests | `full_deferred_fifo_accounts_best_effort_loss_without_terminalizing` |
+
 Windows hosted harness note:
 
 - The deletion characterization uses PowerShell 7, and the direct-loopback
