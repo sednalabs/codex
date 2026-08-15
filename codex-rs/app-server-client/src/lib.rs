@@ -1549,8 +1549,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_typed_request_accepts_large_single_frame_response() {
+    async fn remote_typed_request_rejects_response_above_wire_limit() {
         let padding = "x".repeat((17 << 20) + 1024);
+        let websocket_url = start_test_remote_server(move |mut websocket| async move {
+            expect_remote_initialize(&mut websocket).await;
+            let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected account/read request");
+            };
+            assert_eq!(request.method, "account/read");
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: request.id,
+                    result: serde_json::json!({
+                        "account": null,
+                        "requiresOpenaiAuth": false,
+                        "padding": padding,
+                    }),
+                }),
+            )
+            .await;
+            websocket.close(None).await.expect("close should succeed");
+        })
+        .await;
+        let client = RemoteAppServerClient::connect(test_remote_connect_args(websocket_url))
+            .await
+            .expect("remote client should connect");
+
+        let error = client
+            .request_typed::<GetAccountResponse>(ClientRequest::GetAccount {
+                request_id: RequestId::Integer(1),
+                params: codex_app_server_protocol::GetAccountParams {
+                    refresh_token: false,
+                },
+            })
+            .await
+            .expect_err("response above the remote wire limit should fail");
+        let TypedRequestError::Transport { method, source } = error else {
+            panic!("expected transport error, got {error}");
+        };
+        assert_eq!(method, "account/read");
+        assert_eq!(source.kind(), ErrorKind::InvalidData);
+        assert!(source.to_string().contains("Message too long"));
+
+        client.shutdown().await.expect("shutdown should complete");
+    }
+
+    #[tokio::test]
+    async fn remote_typed_request_accepts_response_below_wire_limit() {
+        let padding = "x".repeat((7 << 20) + 1024);
         let websocket_url = start_test_remote_server(move |mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
@@ -1585,7 +1633,7 @@ mod tests {
                 },
             })
             .await
-            .expect("large typed request should succeed");
+            .expect("response below the remote wire limit should succeed");
         assert_eq!(
             response,
             GetAccountResponse {
