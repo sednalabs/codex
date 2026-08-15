@@ -4482,6 +4482,34 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("mayCancelHeadPushRuns &&", script)
         self.assertIn("Post-merge push runs on ${baseBranch}", script)
 
+    def test_supersede_automation_prs_uses_pr_write_and_idempotent_comments(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/supersede-automation-prs.yml"
+        )
+        reconcile = ((payload.get("jobs") or {}).get("reconcile") or {})
+
+        self.assertEqual(
+            reconcile.get("permissions"),
+            {"contents": "read", "pull-requests": "write"},
+        )
+
+        apply_steps = [
+            step
+            for step in reconcile.get("steps") or []
+            if (step.get("name") or "").startswith("Apply ")
+        ]
+        self.assertEqual(len(apply_steps), 2)
+        for step in apply_steps:
+            with self.subTest(step=step.get("name")):
+                script = (step.get("with") or {}).get("script") or ""
+                self.assertIn("github.paginate(", script)
+                self.assertIn("github.rest.issues.listComments", script)
+                self.assertIn("comment.body === action.message", script)
+                self.assertIn("github.rest.issues.createComment", script)
+                self.assertIn("github.rest.pulls.update", script)
+                self.assertIn("pull_number: action.number", script)
+                self.assertNotIn("github.rest.issues.update", script)
+
     def test_sedna_sync_upstream_uses_github_app_token_and_shared_helper(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-sync-upstream.yml")
         sync_job = ((payload.get("jobs") or {}).get("sync") or {})

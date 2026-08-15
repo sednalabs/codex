@@ -17,7 +17,7 @@ jobs:
   reconcile:
     permissions:
       contents: read
-      issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,16 +40,25 @@ jobs:
             const fs = require('fs');
             const plan = JSON.parse(fs.readFileSync(process.env.PLAN_FILE, 'utf8'));
             for (const action of plan.actions) {
-              await github.rest.issues.createComment({
+              const commentRequest = {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: action.number,
-                body: action.message,
-              });
-              await github.rest.issues.update({
+              };
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                commentRequest,
+              );
+              if (!comments.some((comment) => comment.body === action.message)) {
+                await github.rest.issues.createComment({
+                  ...commentRequest,
+                  body: action.message,
+                });
+              }
+              await github.rest.pulls.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: action.number,
+                pull_number: action.number,
                 state: 'closed',
               });
             }
@@ -69,16 +78,25 @@ jobs:
             const fs = require('fs');
             const plan = JSON.parse(fs.readFileSync(process.env.PLAN_FILE, 'utf8'));
             for (const action of plan.actions) {
-              await github.rest.issues.createComment({
+              const commentRequest = {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: action.number,
-                body: action.message,
-              });
-              await github.rest.issues.update({
+              };
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                commentRequest,
+              );
+              if (!comments.some((comment) => comment.body === action.message)) {
+                await github.rest.issues.createComment({
+                  ...commentRequest,
+                  body: action.message,
+                });
+              }
+              await github.rest.pulls.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: action.number,
+                pull_number: action.number,
                 state: 'closed',
               });
             }
