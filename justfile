@@ -464,6 +464,10 @@ app-server-thread-cwd-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_treats_explicit_null_thread_instructions_as_missing -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
 
+# Focused remote app-server client transport and lifecycle slice.
+app-server-client-targeted:
+    cargo test --locked -p codex-app-server-client -- --test-threads=1
+
 # Focused app-server v2 contract slice for high-signal client-facing RPCs.
 app-server-v2-contract-targeted:
     cargo test --locked -p codex-app-server-protocol

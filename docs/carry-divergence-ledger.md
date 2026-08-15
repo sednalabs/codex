@@ -1763,7 +1763,11 @@ decisions.
   is unchanged. Each inbound text message takes a provisional wire-byte
   reservation before JSON parsing; retained events and pending responses use
   separate 32 MiB aggregate wire-byte budgets, with exact-byte RAII release.
-  Inbound and outbound string request IDs are capped at 16 KiB. Active
+  Inbound and outbound string request IDs are capped at 16 KiB. The remote
+  client assigns connection-unique integer wire IDs so a delayed duplicate
+  response cannot match a later caller request that reused its local ID.
+  Deferred lossless events retain their arrival position on either side of a
+  coalesced `Lagged` boundary. Active
   requests, deferred lossless events, and server-request ownership are bounded
   independently. Cancellation tombstones never evict older entries and fail
   closed with `WouldBlock` at capacity. Terminal admission and cleanup retain
@@ -1790,8 +1794,11 @@ decisions.
   `oversized_outbound_string_request_id_is_rejected_before_worker_insertion_or_write`,
   `canceled_request_tombstones_fail_closed_at_capacity_without_eviction`,
   `canceled_request_tombstone_exhaustion_terminalizes_the_worker_before_id_reuse`,
-  and `canceled_remote_request_releases_slot_and_absorbs_late_response`.
-- Hosted guardrails are `codex.app-server-protocol-test`,
+  `canceled_remote_request_releases_slot_and_absorbs_late_response`,
+  `lagged_boundary_preserves_deferred_event_arrival_order`, and
+  `reused_local_request_id_gets_unique_wire_id_and_rejects_stale_response`.
+- Hosted guardrails are `codex.app-server-client-targeted`,
+  `codex.app-server-protocol-test`,
   `codex.app-server-v2-contract-targeted`,
   `codex.app-server-thread-cwd-targeted`, `rust-ci-full`, and the GitHub
   `blocking-ci` Bazel tests.
