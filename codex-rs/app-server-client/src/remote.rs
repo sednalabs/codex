@@ -80,7 +80,10 @@ use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
-const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+// This only limits peer-controlled websocket messages received by this client.
+// Other caller-controlled outbound messages deliberately retain their existing
+// compatibility behavior.
+pub(super) const REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
 // This aggregate event budget covers the private backlog, deferred FIFO, and
 // public channel together. Response custody is deliberately separate below.
 const REMOTE_EVENT_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
@@ -90,9 +93,10 @@ const REMOTE_EVENT_RETAINED_OVERHEAD_BYTES: usize = 256;
 // be retained by a caller that has stopped awaiting a request, so account for
 // that ownership independently from `RemoteEventByteBudget`.
 const REMOTE_RESPONSE_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
-const REMOTE_RESPONSE_MAX_WIRE_BYTES: usize = REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE;
+const REMOTE_RESPONSE_MAX_WIRE_BYTES: usize = REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE;
 const REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES: usize = 256;
 const MAX_INBOUND_REQUEST_ID_STRING_BYTES: usize = 16 * 1024;
+const MAX_OUTBOUND_REQUEST_ID_STRING_BYTES: usize = MAX_INBOUND_REQUEST_ID_STRING_BYTES;
 const MAX_ACTIVE_INBOUND_REQUEST_IDS: usize = 512;
 const MAX_RECENT_REMOTE_REQUEST_IDS: usize = 512;
 const REQUEST_PENDING: u8 = 0;
@@ -1283,7 +1287,6 @@ impl Drop for RemoteResponseReservation {
 
 struct RecentRemoteRequestIds {
     ids: HashSet<RequestId>,
-    order: VecDeque<RequestId>,
     capacity: usize,
 }
 
@@ -1291,7 +1294,6 @@ impl RecentRemoteRequestIds {
     fn new(capacity: usize) -> Self {
         Self {
             ids: HashSet::new(),
-            order: VecDeque::new(),
             capacity,
         }
     }
@@ -1300,16 +1302,15 @@ impl RecentRemoteRequestIds {
         self.ids.contains(request_id)
     }
 
-    fn remember(&mut self, request_id: RequestId) {
-        if self.capacity == 0 || !self.ids.insert(request_id.clone()) {
-            return;
+    fn remember(&mut self, request_id: RequestId) -> Result<(), ()> {
+        if self.ids.contains(&request_id) {
+            return Ok(());
         }
-        self.order.push_back(request_id);
-        while self.order.len() > self.capacity {
-            if let Some(expired) = self.order.pop_front() {
-                self.ids.remove(&expired);
-            }
+        if self.ids.len() >= self.capacity {
+            return Err(());
         }
+        self.ids.insert(request_id);
+        Ok(())
     }
 }
 
@@ -1369,6 +1370,15 @@ impl RemoteTerminal {
             ErrorKind::WouldBlock,
             format!(
                 "remote app server at `{endpoint}` exceeded the bounded pending response byte budget"
+            ),
+        )
+    }
+
+    fn canceled_request_tombstone_capacity_exhausted(endpoint: &str) -> Self {
+        Self::new(
+            ErrorKind::WouldBlock,
+            format!(
+                "remote app server at `{endpoint}` exhausted the bounded canceled request ID set"
             ),
         )
     }
@@ -1451,9 +1461,10 @@ where
                 ));
             }
             _ = request_cancel_notify.notified() => {
-                cancel_pending_remote_requests(
+                terminal = cancel_pending_remote_requests(
                     &mut pending_requests,
                     &mut canceled_request_ids,
+                    &endpoint,
                 );
             }
             command = command_rx.recv() => {
@@ -1574,7 +1585,8 @@ where
 fn cancel_pending_remote_requests(
     pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
     canceled_request_ids: &mut RecentRemoteRequestIds,
-) {
+    endpoint: &str,
+) -> Option<RemoteTerminal> {
     let canceled_ids: Vec<_> = pending_requests
         .iter()
         .filter(|(_, pending)| pending.lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED)
@@ -1582,9 +1594,14 @@ fn cancel_pending_remote_requests(
         .collect();
     for request_id in canceled_ids {
         if pending_requests.remove(&request_id).is_some() {
-            canceled_request_ids.remember(request_id);
+            if canceled_request_ids.remember(request_id).is_err() {
+                return Some(
+                    RemoteTerminal::canceled_request_tombstone_capacity_exhausted(endpoint),
+                );
+            }
         }
     }
+    None
 }
 
 async fn handle_remote_command<S>(
@@ -1607,6 +1624,26 @@ where
         } => {
             let request_id = request.id.clone();
             if lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED {
+                return None;
+            }
+            if matches!(&request_id, RequestId::String(value) if value.len() > MAX_OUTBOUND_REQUEST_ID_STRING_BYTES)
+            {
+                if lifecycle
+                    .compare_exchange(
+                        REQUEST_PENDING,
+                        REQUEST_COMPLETED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    let _ = response_tx.send(Err(IoError::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "remote app-server request ID exceeds {MAX_OUTBOUND_REQUEST_ID_STRING_BYTES} bytes"
+                        ),
+                    )));
+                }
                 return None;
             }
             if pending_requests.contains_key(&request_id)
@@ -1795,8 +1832,12 @@ where
                                 result: Ok(response.result),
                                 _bytes: reservation,
                             }));
-                        } else {
-                            canceled_request_ids.remember(response.id);
+                        } else if canceled_request_ids.remember(response.id).is_err() {
+                            return Some(
+                                RemoteTerminal::canceled_request_tombstone_capacity_exhausted(
+                                    endpoint,
+                                ),
+                            );
                         }
                     } else if canceled_request_ids.contains(&response.id) {
                         // A response racing caller cancellation belongs to the
@@ -1821,8 +1862,12 @@ where
                                 result: Err(error.error),
                                 _bytes: reservation,
                             }));
-                        } else {
-                            canceled_request_ids.remember(error.id);
+                        } else if canceled_request_ids.remember(error.id).is_err() {
+                            return Some(
+                                RemoteTerminal::canceled_request_tombstone_capacity_exhausted(
+                                    endpoint,
+                                ),
+                            );
                         }
                     } else if canceled_request_ids.contains(&error.id) {
                         // See the response branch: absorb late errors for
@@ -2339,8 +2384,8 @@ async fn connect_unix_socket_endpoint(
 
 fn remote_websocket_config() -> WebSocketConfig {
     WebSocketConfig::default()
-        .max_frame_size(Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE))
-        .max_message_size(Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE))
+        .max_frame_size(Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE))
+        .max_message_size(Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE))
 }
 
 async fn initialize_remote_connection<S>(
@@ -2684,21 +2729,21 @@ mod tests {
     }
 
     #[test]
-    fn remote_websocket_config_and_response_wire_limit_are_locked_to_eight_mib() {
+    fn remote_websocket_config_and_inbound_response_wire_limit_are_locked_to_eight_mib() {
         let config = remote_websocket_config();
 
         assert_eq!(
-            REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE,
+            REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE,
             8 * 1024 * 1024
         );
         assert_eq!(REMOTE_RESPONSE_MAX_WIRE_BYTES, 8 * 1024 * 1024);
         assert_eq!(
             config.max_frame_size,
-            Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
+            Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE)
         );
         assert_eq!(
             config.max_message_size,
-            Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
+            Some(REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE)
         );
     }
 
@@ -2905,7 +2950,9 @@ mod tests {
         let budget = RemoteResponseByteBudget::shared();
         let mut pending_requests = HashMap::new();
         let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
-        tombstones.remember(RequestId::Integer(4));
+        tombstones
+            .remember(RequestId::Integer(4))
+            .expect("first tombstone should fit");
         let request_slots = Arc::new(Semaphore::new(1));
         let (response_tx, response_rx) = oneshot::channel();
         drop(response_rx);
@@ -3405,18 +3452,167 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
     }
 
+    #[tokio::test]
+    async fn oversized_outbound_string_request_id_is_rejected_before_worker_insertion_or_write() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let request_slots = Arc::new(Semaphore::new(1));
+        let (response_tx, response_rx) = oneshot::channel();
+        let lifecycle = Arc::new(AtomicU8::new(REQUEST_PENDING));
+
+        let terminal = handle_remote_command(
+            RemoteClientCommand::Request {
+                request: Box::new(JSONRPCRequest {
+                    id: RequestId::String("x".repeat(MAX_OUTBOUND_REQUEST_ID_STRING_BYTES + 1)),
+                    method: "account/read".to_string(),
+                    params: None,
+                    trace: None,
+                }),
+                response_tx,
+                lifecycle: Arc::clone(&lifecycle),
+                _slot: Arc::clone(&request_slots)
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+            &mut stream,
+            "test://outbound-request-id",
+            &mut pending_requests,
+            &mut canceled_request_ids,
+            &mut backlog,
+        )
+        .await;
+
+        assert!(terminal.is_none());
+        assert!(pending_requests.is_empty());
+        assert_eq!(lifecycle.load(Ordering::Acquire), REQUEST_COMPLETED);
+        let error = response_rx
+            .await
+            .expect("oversized request ID should complete exactly once")
+            .expect_err("oversized request ID should be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    }
+
     #[test]
-    fn canceled_request_tombstones_are_bounded() {
+    fn canceled_request_tombstones_fail_closed_at_capacity_without_eviction() {
         let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
-        for id in 0..20 {
-            tombstones.remember(RequestId::Integer(id));
+        for id in 0..4 {
+            tombstones
+                .remember(RequestId::Integer(id))
+                .expect("each tombstone within the capacity should fit");
         }
 
         assert_eq!(tombstones.ids.len(), 4);
-        assert_eq!(tombstones.order.len(), 4);
-        assert!(!tombstones.contains(&RequestId::Integer(15)));
-        assert!(tombstones.contains(&RequestId::Integer(16)));
-        assert!(tombstones.contains(&RequestId::Integer(19)));
+        assert!(tombstones.contains(&RequestId::Integer(0)));
+        assert!(tombstones.contains(&RequestId::Integer(3)));
+        assert!(tombstones.remember(RequestId::Integer(0)).is_ok());
+        assert!(tombstones.remember(RequestId::Integer(4)).is_err());
+        assert!(tombstones.contains(&RequestId::Integer(0)));
+        assert!(!tombstones.contains(&RequestId::Integer(4)));
+    }
+
+    #[tokio::test]
+    async fn canceled_request_tombstone_exhaustion_terminalizes_the_worker_before_id_reuse() {
+        let (client_socket, peer_socket) = tokio::io::duplex(64 * 1024);
+        let stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut peer = WebSocketStream::from_raw_socket(
+            peer_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let (command_tx, command_rx) = mpsc::channel(/*capacity*/ 2);
+        let (event_tx, event_rx) = mpsc::channel(/*capacity*/ 1);
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let request_slots = Arc::new(Semaphore::new(2));
+        let request_cancel_notify = Arc::new(Notify::new());
+        let worker = tokio::spawn(remote_worker(
+            stream,
+            "test://tombstone-capacity".to_string(),
+            command_rx,
+            event_tx,
+            shutdown_rx,
+            Arc::clone(&request_slots),
+            RemoteEventBacklog::new(/*capacity*/ 1),
+            /*terminal*/ None,
+            Arc::clone(&request_cancel_notify),
+            RemoteResponseByteBudget::shared(),
+            /*request_tombstone_capacity*/ 1,
+        ));
+        let handle = RemoteAppServerRequestHandle {
+            command_tx,
+            request_slots,
+            request_cancel_notify,
+        };
+
+        let first = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*id*/ 1)).await
+            }
+        });
+        let second = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*id*/ 2)).await
+            }
+        });
+        let mut received_ids = HashSet::new();
+        for _ in 0..2 {
+            let message = timeout(Duration::from_secs(2), peer.next())
+                .await
+                .expect("request should be admitted before cancellation")
+                .expect("peer should receive request")
+                .expect("peer websocket should remain healthy");
+            let Message::Text(text) = message else {
+                panic!("peer should receive a text request");
+            };
+            let JSONRPCMessage::Request(request) =
+                serde_json::from_str(&text).expect("request should be valid JSON-RPC")
+            else {
+                panic!("peer should receive a JSON-RPC request");
+            };
+            assert!(received_ids.insert(request.id));
+        }
+        assert_eq!(
+            received_ids,
+            HashSet::from([RequestId::Integer(1), RequestId::Integer(2)])
+        );
+
+        first.abort();
+        second.abort();
+        let _ = first.await;
+        let _ = second.await;
+
+        let worker_error = timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("tombstone exhaustion should terminalize the worker")
+            .expect("worker task should join")
+            .expect_err("tombstone exhaustion should fail closed");
+        assert_eq!(worker_error.kind(), ErrorKind::WouldBlock);
+
+        let reuse_error = handle
+            .request_json_rpc(client_request(/*id*/ 1))
+            .await
+            .expect_err("terminalized worker must reject ID reuse");
+        assert_eq!(reuse_error.kind(), ErrorKind::BrokenPipe);
+
+        drop(handle);
+        drop(event_rx);
+        drop(peer);
     }
 
     #[tokio::test]
