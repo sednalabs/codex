@@ -1994,6 +1994,77 @@ decisions.
   Descendant counts, status, role, nickname, and live/stale structure remain,
   but inventory output does not expose instruction content.
 - The v1 spawn result retains upstream `agent_id`/`nickname`. The v2 result exposes canonical `task_name`, conditionally visible `agent_id`/`nickname`, and the requested/effective model and reasoning fields after role application. Role, status, identity source, provider ID, and reasoning summary remain inventory or internal metadata rather than spawn-result fields.
+- The live collab-spawn identity carry is phase-compatible across core emission,
+  app-server conversion and lifecycle merging, history replay, TUI rendering,
+  analytics and usage, schemas, and generated clients. At spawn start, the
+  established `model` and `reasoningEffort` aliases carry the caller request.
+  At terminal completion, those aliases carry only the observed effective
+  snapshot. Additive `requestedModel` and `requestedReasoningEffort` preserve
+  request provenance at both phases; additive `effectiveModel` and
+  `effectiveReasoningEffort` repeat only an observed terminal snapshot.
+- The four additive identity fields are required nullable on current V2
+  responses: unknown values serialize as `null`. Historic terminal records
+  may omit all four additive fields; when they retain observed legacy aliases
+  but no request provenance, those aliases are terminal effective identity and
+  never `requested*`. A current terminal item with known requested provenance
+  but no observed effect keeps `effective*` null and must not be backfilled
+  from its legacy aliases or metadata. Replay, TUI, analytics, and usage must
+  neither infer an effective identity from a request or metadata nor
+  reclassify an observed terminal alias as a request.
+- The generated Python V2 model represents the current response contract: all
+  four identity keys are required even though each accepts `null`. Its
+  `CollabAgentToolCallThreadItem` validator materializes `null` only when all
+  four additive wire keys are absent. Scoping compatibility to that model
+  leaves identically named objects inside opaque tool arguments unchanged;
+  partial shapes retain their validation errors, and aliases are not
+  rewritten. Rust serde conversion retains the same historic shape for
+  persisted input before the current contract is projected.
+- Hosted guardrails for this cross-surface contract are
+  `codex.core-subagent-model-pinning-targeted`
+  (`failed_spawn_keeps_requested_identity_separate_from_terminal_effective_identity`
+  and `multi_agent_v2_spawn_without_snapshot_omits_unobserved_effective_identity`),
+  `codex.app-server-protocol-test`
+  (`collab_spawn_identity_is_phase_compatible_across_current_and_historic_protocol_conversions`
+  and `unknown_terminal_collab_spawn_serializes_all_identity_fields_as_null`),
+  `codex.collab-spawn-identity-consumers-targeted`
+  (`analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event`
+  and `runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity`),
+  `codex.sdk-python-targeted`
+  (`test_generated_files_are_up_to_date`,
+  `test_thread_read_response_normalizes_only_legacy_collab_identity`,
+  `test_legacy_collab_normalization_does_not_touch_opaque_tool_arguments`,
+  `test_collab_identity_transport_keeps_current_and_partial_shapes_strict`, and
+  `test_generated_collab_spawn_identity_is_required_nullable`),
+  `codex.app-server-collab-spawn-identity-targeted`
+  (`turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2`
+  and `turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2`),
+  and `codex.tui-collab-spawn-identity-targeted`
+  (`replayed_collab_spawn_terminal_uses_only_explicit_effective_identity`,
+  `replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective`,
+  `replayed_failed_collab_spawn_without_receiver_keeps_requested_identity`,
+  `live_app_server_collab_spawn_completed_renders_requested_model_and_effort`,
+  and `live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata`).
+- `collab-spawn-identity` has priority 10, while unmarked follow-up routes use
+  the safe priority-0 default. Both the heavy-validation and light Rust CI
+  selectors apply the same unique-highest-priority rule. For a change confined to its enumerated
+  protocol, lifecycle, core-spawn, replay/rendering, schema, SDK, and carry
+  paths, an identity implementation or SDK path lets that route win generic
+  overlap and select `codex.core-subagent-model-pinning-targeted`,
+  `codex.app-server-protocol-test`, the two protocol/UI identity lanes, the
+  direct analytics/usage consumer lane, and `codex.sdk-python-targeted`.
+  Core snapshot authority, protocol identity storage/conversion, analytics,
+  state usage, and Python SDK changes are explicitly required route inputs so
+  those authorities and consumers receive direct hosted coverage. Schema-only
+  and docs/config-only changes do not trigger this route;
+  only equal highest-priority matches fail closed. The route includes
+  explicit-only lanes intentionally; it is not a broad default selection for
+  unrelated app-server or TUI changes.
+- Preserve the complete carry during future upstream syncs unless upstream
+  supplies the same phase contract, historic terminal no-request fallback,
+  current and historic conversion/replay behavior, TUI/analytics/usage
+  consumers, schema and generated-client shapes, and equivalent regression
+  coverage. When it does, drop the downstream identity slice and these
+  dedicated guardrails together; do not retain a partial legacy-alias adapter.
 - V2 requires `task_name`; when no effective reasoning effort is known it
   serializes `null` rather than manufacturing a `medium` value. Wait completion
   derives pending target ids from refreshed status snapshots, not the original
@@ -2072,6 +2143,17 @@ decisions.
   | Historical agent-identity auth/task stack reverted by `be757855` | Ignore        | It concerns backend identity and task lifecycle, not this model/configuration receipt seam.        |
 
 - Primary files:
+  - `codex-rs/analytics/src/analytics_client_tests.rs`
+  - `codex-rs/analytics/src/reducer.rs`
+  - `codex-rs/app-server-protocol/schema/json/`
+  - `codex-rs/app-server-protocol/schema/typescript/v2/ThreadItem.ts`
+  - `codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs`
+  - `codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs`
+  - `codex-rs/app-server-protocol/src/protocol/event_mapping.rs`
+  - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+  - `codex-rs/app-server-protocol/src/protocol/v2/tests.rs`
+  - `codex-rs/app-server/tests/suite/v2/turn_start.rs`
   - `codex-rs/core/src/agent/builtins/awaiter.toml`
   - `codex-rs/core/src/agent/builtins/terminal-babysitter.toml`
   - `codex-rs/core/src/agent/control.rs`
@@ -2097,8 +2179,13 @@ decisions.
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/list_agents.rs`
   - `codex-rs/core/src/tools/handlers/multi_agents_v2/message_tool.rs`
   - `codex-rs/protocol/src/items.rs`
+  - `codex-rs/protocol/src/legacy_events.rs`
   - `codex-rs/protocol/src/protocol.rs`
-  - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+  - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/tui/src/chatwidget/protocol.rs`
+  - `codex-rs/tui/src/chatwidget/replay.rs`
+  - `codex-rs/tui/src/chatwidget/tests/app_server.rs`
+  - `codex-rs/tui/src/chatwidget/tests/history_replay.rs`
   - `codex-rs/tui/src/multi_agents.rs`
   - `codex-rs/tui/src/app/agent_navigation.rs`
   - `codex-rs/tui/src/app/session_lifecycle.rs`
@@ -2123,6 +2210,9 @@ decisions.
   - `justfile`
   - `docs/config.md`
   - `docs/downstream-tool-surface-matrix.md`
+  - `sdk/python/scripts/update_sdk_artifacts.py`
+  - `sdk/python/src/openai_codex/generated/v2_all.py`
+  - `sdk/python/tests/test_client_rpc_methods.py`
 
 ### Dead-Cwd Absolute Path Handling
 

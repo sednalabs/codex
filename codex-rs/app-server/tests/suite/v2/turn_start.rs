@@ -3127,7 +3127,7 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
 }
 
 #[tokio::test]
-async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()> {
+async fn turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     const CHILD_PROMPT: &str = "child: do work";
@@ -3234,6 +3234,10 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
             prompt: Some(CHILD_PROMPT.to_string()),
             model: Some(REQUESTED_MODEL.to_string()),
             reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            requested_model: Some(REQUESTED_MODEL.to_string()),
+            requested_reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            effective_model: None,
+            effective_reasoning_effort: None,
             agents_states: HashMap::new(),
         }
     );
@@ -3259,6 +3263,10 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         prompt,
         model,
         reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        effective_model,
+        effective_reasoning_effort,
         agents_states,
     } = spawn_completed
     else {
@@ -3276,6 +3284,10 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(REQUESTED_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
+    assert_eq!(requested_model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(requested_reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
+    assert_eq!(effective_model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(effective_reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");
@@ -3458,7 +3470,8 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
 }
 
 #[tokio::test]
-async fn turn_start_emits_spawn_agent_item_with_effective_role_model_metadata_v2() -> Result<()> {
+async fn turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     const CHILD_PROMPT: &str = "child: do work";
@@ -3563,6 +3576,36 @@ config_file = "./custom-role.toml"
         })
         .await?;
 
+    let spawn_started = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
+            if let ThreadItem::CollabAgentToolCall { id, .. } = &started.item
+                && id == SPAWN_CALL_ID
+            {
+                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(
+        spawn_started,
+        ThreadItem::CollabAgentToolCall {
+            id: SPAWN_CALL_ID.to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: thread.id.clone(),
+            receiver_thread_ids: Vec::new(),
+            prompt: Some(CHILD_PROMPT.to_string()),
+            model: Some(REQUESTED_MODEL.to_string()),
+            reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            requested_model: Some(REQUESTED_MODEL.to_string()),
+            requested_reasoning_effort: Some(REQUESTED_REASONING_EFFORT),
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        }
+    );
+
     let spawn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let completed: ItemCompletedNotification =
@@ -3584,6 +3627,10 @@ config_file = "./custom-role.toml"
         prompt,
         model,
         reasoning_effort,
+        requested_model,
+        requested_reasoning_effort,
+        effective_model,
+        effective_reasoning_effort,
         agents_states,
     } = spawn_completed
     else {
@@ -3601,6 +3648,10 @@ config_file = "./custom-role.toml"
     assert_eq!(prompt, Some(CHILD_PROMPT.to_string()));
     assert_eq!(model, Some(ROLE_MODEL.to_string()));
     assert_eq!(reasoning_effort, Some(ROLE_REASONING_EFFORT));
+    assert_eq!(requested_model, Some(REQUESTED_MODEL.to_string()));
+    assert_eq!(requested_reasoning_effort, Some(REQUESTED_REASONING_EFFORT));
+    assert_eq!(effective_model, Some(ROLE_MODEL.to_string()));
+    assert_eq!(effective_reasoning_effort, Some(ROLE_REASONING_EFFORT));
     let agent_state = agents_states
         .get(&receiver_thread_id)
         .expect("spawn completion should include child agent state");

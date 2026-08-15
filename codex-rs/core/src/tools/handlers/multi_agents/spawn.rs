@@ -110,8 +110,14 @@ async fn handle_spawn_agent(
                 receiver_thread_ids: Vec::new(),
                 receiver_agents: Vec::new(),
                 prompt: Some(prompt.clone()),
-                model: Some(args.model.clone().unwrap_or_default()),
-                reasoning_effort: Some(args.reasoning_effort.clone().unwrap_or_default()),
+                // Start records own requested provenance only. The established
+                // model/reasoning aliases describe an observed terminal selection;
+                // the legacy serializer supplies its required empty/default
+                // compatibility fields without polluting the canonical item.
+                model: None,
+                reasoning_effort: None,
+                requested_model: args.model.clone(),
+                requested_reasoning_effort: args.reasoning_effort.clone(),
                 agents_states: Default::default(),
             }),
         )
@@ -171,12 +177,10 @@ async fn handle_spawn_agent(
         };
     let effective_model = agent_snapshot
         .as_ref()
-        .map(|snapshot| snapshot.model.clone())
-        .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        .map(|snapshot| snapshot.model.clone());
     let effective_reasoning_effort = agent_snapshot
         .as_ref()
-        .and_then(|snapshot| snapshot.reasoning_effort.clone())
-        .unwrap_or(args.reasoning_effort.unwrap_or_default());
+        .and_then(|snapshot| snapshot.reasoning_effort.clone());
     let nickname = new_agent_nickname.clone();
     let receiver_thread_ids = new_thread_id.into_iter().collect();
     let receiver_agents = new_thread_id
@@ -201,8 +205,10 @@ async fn handle_spawn_agent(
                 receiver_thread_ids,
                 receiver_agents,
                 prompt: Some(prompt),
-                model: Some(effective_model),
-                reasoning_effort: Some(effective_reasoning_effort),
+                model: effective_model,
+                reasoning_effort: effective_reasoning_effort,
+                requested_model: args.model.clone(),
+                requested_reasoning_effort: args.reasoning_effort.clone(),
                 agents_states,
             }),
         )

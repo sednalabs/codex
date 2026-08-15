@@ -505,6 +505,10 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -522,8 +526,12 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 sender_thread_id: sender_thread_id.to_string(),
                 receiver_thread_ids: vec![spawned_thread_id.to_string()],
                 prompt: Some("Explore the repo".to_string()),
-                model: None,
-                reasoning_effort: None,
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {
@@ -544,7 +552,9 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
         .join("\n");
 
     assert!(
-        rendered.contains("Spawned · primitive: spawn_agent · Robie [explorer] (gpt-5 high)"),
+        rendered.contains(
+            "Spawned · primitive: spawn_agent · Robie [explorer] (requested: gpt-5 high)"
+        ),
         "expected spawn line to include agent metadata and requested model, got {rendered:?}"
     );
 }
@@ -1001,6 +1011,10 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1024,6 +1038,10 @@ async fn live_app_server_collab_wait_items_render_history() {
                 prompt: None,
                 model: None,
                 reasoning_effort: None,
+                requested_model: None,
+                requested_reasoning_effort: None,
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::from([
                     (
                         receiver_thread_id.to_string(),
@@ -1075,6 +1093,10 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: None,
+                effective_reasoning_effort: None,
                 agents_states: HashMap::new(),
             },
         }),
@@ -1095,6 +1117,10 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 prompt: Some("Explore the repo".to_string()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-5".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: Some("gpt-5".to_string()),
+                effective_reasoning_effort: Some(ReasoningEffortConfig::High),
                 agents_states: HashMap::from([(
                     spawned_thread_id.to_string(),
                     AppServerCollabAgentState {
@@ -1115,6 +1141,88 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
     assert_chatwidget_snapshot!(
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
         combined
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+    let spawned_thread_id = ThreadId::new();
+    chat.set_collab_agent_identity(
+        spawned_thread_id,
+        crate::multi_agents::AgentMetadata {
+            agent_nickname: Some("Robie".to_string()),
+            model: Some("gpt-metadata".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::Low),
+            ..Default::default()
+        },
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-live-identity".to_string(),
+            turn_id: "turn-live-identity".to_string(),
+            started_at_ms: 0,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "spawn-live-identity".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: Vec::new(),
+                prompt: Some("Inspect the repository".to_string()),
+                model: Some("gpt-requested".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: None,
+                effective_reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-live-identity".to_string(),
+            turn_id: "turn-live-identity".to_string(),
+            completed_at_ms: 1,
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "spawn-live-identity".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![spawned_thread_id.to_string()],
+                prompt: Some("Inspect the repository".to_string()),
+                model: Some("gpt-requested".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                requested_model: Some("gpt-requested".to_string()),
+                requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+                effective_model: None,
+                effective_reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    spawned_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::PendingInit,
+                        message: None,
+                    },
+                )]),
+            },
+        }),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("requested: gpt-requested high"));
+    assert!(
+        !rendered.contains("effective:")
+            && !rendered.contains("gpt-metadata")
+            && !rendered.contains(" low"),
+        "live terminal rendering must not infer an effective identity from metadata: {rendered}"
     );
 }
 

@@ -76,6 +76,195 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn replayed_collab_spawn_terminal_uses_only_explicit_effective_identity() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+    let model_only_thread_id = ThreadId::new();
+    let effort_only_thread_id = ThreadId::new();
+
+    chat.set_collab_agent_identity(
+        model_only_thread_id,
+        crate::multi_agents::AgentMetadata {
+            model: Some("gpt-metadata-model".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+            ..Default::default()
+        },
+    );
+    chat.set_collab_agent_identity(
+        effort_only_thread_id,
+        crate::multi_agents::AgentMetadata {
+            model: Some("gpt-metadata-effort".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::Ultra),
+            ..Default::default()
+        },
+    );
+
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "model-only-spawn".to_string(),
+            tool: AppServerCollabAgentTool::SpawnAgent,
+            status: AppServerCollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![model_only_thread_id.to_string()],
+            prompt: None,
+            model: Some("gpt-requested-model".to_string()),
+            reasoning_effort: None,
+            requested_model: Some("gpt-requested-model".to_string()),
+            requested_reasoning_effort: None,
+            effective_model: Some("gpt-effective-model".to_string()),
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        },
+        "turn-replay".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "effort-only-spawn".to_string(),
+            tool: AppServerCollabAgentTool::SpawnAgent,
+            status: AppServerCollabAgentToolCallStatus::Completed,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![effort_only_thread_id.to_string()],
+            prompt: None,
+            model: None,
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+            requested_model: None,
+            requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+            effective_model: Some("gpt-effective-effort".to_string()),
+            effective_reasoning_effort: Some(ReasoningEffortConfig::Low),
+            agents_states: HashMap::new(),
+        },
+        "turn-replay".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("effective: gpt-effective-model"));
+    assert!(
+        !rendered.contains("effective: gpt-effective-model high"),
+        "a missing terminal effort must stay unknown: {rendered}"
+    );
+    assert!(rendered.contains("requested: gpt-requested-model"));
+    assert!(rendered.contains("effective: gpt-effective-effort low"));
+    assert!(rendered.contains("requested: high"));
+    assert!(
+        !rendered.contains("gpt-metadata-model")
+            && !rendered.contains("gpt-metadata-effort")
+            && !rendered.contains("ultra"),
+        "cached metadata must not fill a replayed terminal snapshot: {rendered}"
+    );
+    assert!(
+        !rendered.contains("requested: gpt-effective-effort"),
+        "the effort-only request must not be rendered as a model request: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn replayed_historic_terminal_collab_spawn_renders_legacy_identity_as_effective() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let receiver_thread_id = ThreadId::new();
+    let historic_terminal: AppServerThreadItem = serde_json::from_value(serde_json::json!({
+        "type": "collabAgentToolCall",
+        "id": "historic-terminal-spawn",
+        "tool": "spawnAgent",
+        "status": "completed",
+        "senderThreadId": ThreadId::new().to_string(),
+        "receiverThreadIds": [receiver_thread_id.to_string()],
+        "prompt": "Inspect the repository",
+        "model": "gpt-historic-effective",
+        "reasoningEffort": "medium",
+        "agentsStates": {},
+    }))
+    .expect("pre-additive completed payload remains replayable");
+
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        effective_model,
+        effective_reasoning_effort,
+        ..
+    } = &historic_terminal
+    else {
+        unreachable!("historic payload must decode as a collab item");
+    };
+    assert!(requested_model.is_none());
+    assert!(requested_reasoning_effort.is_none());
+    assert!(effective_model.is_none());
+    assert!(effective_reasoning_effort.is_none());
+
+    chat.replay_thread_item(
+        historic_terminal,
+        "turn-replay".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("effective: gpt-historic-effective medium"));
+    assert!(
+        !rendered.contains("requested:"),
+        "historic terminal aliases must not be presented as a request: {rendered}"
+    );
+}
+
+#[tokio::test]
+async fn replayed_failed_collab_spawn_without_receiver_keeps_requested_identity() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "failed-spawn".to_string(),
+            tool: AppServerCollabAgentTool::SpawnAgent,
+            status: AppServerCollabAgentToolCallStatus::Failed,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: Some("gpt-requested".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+            requested_model: Some("gpt-requested".to_string()),
+            requested_reasoning_effort: Some(ReasoningEffortConfig::High),
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+        },
+        "turn-replay".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(rendered.contains("Agent spawn failed"));
+    assert!(rendered.contains("requested: gpt-requested high"));
+    assert!(
+        !rendered.contains("effective:"),
+        "an unavailable effective identity must not be inferred from the request: {rendered}"
+    );
+    insta::assert_snapshot!(
+        rendered,
+        @"• Agent spawn failed · primitive: spawn_agent (requested: gpt-requested high)"
+    );
+}
+
+#[tokio::test]
 async fn restored_conversation_ultra_remains_selected_after_switching_to_plan() {
     let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
