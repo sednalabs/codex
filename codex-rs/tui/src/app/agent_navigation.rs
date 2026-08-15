@@ -306,6 +306,15 @@ impl AgentNavigationState {
         self.legacy_relation_fallback_checked = false;
     }
 
+    /// Starts a new persisted-picker pagination sequence without disturbing cached agent state.
+    ///
+    /// A freshly opened picker begins with `cursor = None`, so cursors observed by an earlier
+    /// open/load-more sequence must not consume this sequence's budget or look like cycles.
+    pub(crate) fn begin_picker_page_sequence(&mut self) {
+        self.next_picker_page_cursor = None;
+        self.seen_picker_page_cursors.clear();
+    }
+
     pub(crate) fn set_next_picker_page_cursor(&mut self, next_cursor: Option<String>) -> bool {
         let Some(next_cursor) = next_cursor else {
             self.next_picker_page_cursor = None;
