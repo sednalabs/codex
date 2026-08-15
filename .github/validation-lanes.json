@@ -1410,6 +1410,28 @@
       "needs_sccache": true
     },
     {
+      "lane_id": "codex.collab-spawn-identity-consumers-targeted",
+      "groups": [
+        "core"
+      ],
+      "lane_sets": [
+        "subagents"
+      ],
+      "explicit_only": true,
+      "setup_class": "rust_minimal",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/run-just-recipe.sh",
+      "script_args": [
+        "collab-spawn-identity-consumers-targeted"
+      ],
+      "needs_just": true,
+      "needs_node": false,
+      "needs_nextest": false,
+      "needs_linux_build_deps": false,
+      "needs_dotslash": false,
+      "needs_sccache": false
+    },
+    {
       "lane_id": "codex.app-server-thread-cwd-targeted",
       "groups": [
         "ui_protocol"
@@ -2323,9 +2345,11 @@
       "route_id": "collab-spawn-identity",
       "priority": 10,
       "lane_ids": [
+        "codex.core-subagent-model-pinning-targeted",
         "codex.app-server-protocol-test",
         "codex.app-server-collab-spawn-identity-targeted",
-        "codex.tui-collab-spawn-identity-targeted"
+        "codex.tui-collab-spawn-identity-targeted",
+        "codex.collab-spawn-identity-consumers-targeted"
       ],
       "allowed_paths": [
         ".github/scripts/test_ci_planners.py",
@@ -2403,6 +2427,8 @@
         "sdk/python/tests/test_client_rpc_methods.py"
       ],
       "required_any_paths": [
+        "codex-rs/analytics/src/analytics_client_tests.rs",
+        "codex-rs/analytics/src/reducer.rs",
         "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle.rs",
         "codex-rs/app-server-protocol/src/protocol/collab_agent_lifecycle_tests.rs",
         "codex-rs/app-server-protocol/src/protocol/event_mapping.rs",
@@ -2419,6 +2445,7 @@
         "codex-rs/tui/src/chatwidget/tests/app_server.rs",
         "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
         "codex-rs/tui/src/multi_agents.rs",
+        "codex-rs/state/src/runtime/usage.rs",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/src/openai_codex/client.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",

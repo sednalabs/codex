@@ -449,6 +449,11 @@ app-server-collab-spawn-identity-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::v2::turn_start::turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2 -- --exact --test-threads=1
 
+# Focused analytics and usage consumer slice for collab-spawn requested identity.
+collab-spawn-identity-consumers-targeted:
+    cargo test --locked -p codex-analytics analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event --lib -- --exact --test-threads=1
+    cargo test --locked -p codex-state runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity --lib -- --exact --test-threads=1
+
 # Focused app-server thread surface slice.
 app-server-thread-cwd-targeted:
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test --locked -p codex-app-server --test all suite::conversation_summary:: -- --test-threads=1

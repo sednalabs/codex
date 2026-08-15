@@ -1106,9 +1106,11 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertEqual(
             route["lane_ids"],
             [
+                "codex.core-subagent-model-pinning-targeted",
                 "codex.app-server-protocol-test",
                 "codex.app-server-collab-spawn-identity-targeted",
                 "codex.tui-collab-spawn-identity-targeted",
+                "codex.collab-spawn-identity-consumers-targeted",
             ],
         )
 
@@ -1117,6 +1119,24 @@ class RouteSelectionTests(unittest.TestCase):
             self.routes,
         )
         self.assertEqual(lanes, route["lane_ids"])
+
+    def test_collab_spawn_identity_consumer_sources_use_direct_consumer_lane(self) -> None:
+        expected = [
+            "codex.core-subagent-model-pinning-targeted",
+            "codex.app-server-protocol-test",
+            "codex.app-server-collab-spawn-identity-targeted",
+            "codex.tui-collab-spawn-identity-targeted",
+            "codex.collab-spawn-identity-consumers-targeted",
+        ]
+        for path in (
+            "codex-rs/analytics/src/analytics_client_tests.rs",
+            "codex-rs/state/src/runtime/usage.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
+                    expected,
+                )
 
     def test_followup_route_priority_fails_closed_on_equal_highest_match(self) -> None:
         routes = [
@@ -2455,9 +2475,11 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             payload["lane_ids"],
             [
+                "codex.core-subagent-model-pinning-targeted",
                 "codex.app-server-protocol-test",
                 "codex.app-server-collab-spawn-identity-targeted",
                 "codex.tui-collab-spawn-identity-targeted",
+                "codex.collab-spawn-identity-consumers-targeted",
             ],
         )
         self.assertTrue(payload["include_explicit_lanes"])
@@ -2665,6 +2687,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
                     "chatwidget::tests::history_replay::replayed_failed_collab_spawn_without_receiver_keeps_requested_identity",
                     "chatwidget::tests::app_server::live_app_server_collab_spawn_completed_renders_requested_model_and_effort",
                     "chatwidget::tests::app_server::live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata",
+                ],
+            ),
+            "codex.collab-spawn-identity-consumers-targeted": (
+                "collab-spawn-identity-consumers-targeted",
+                "rust_minimal",
+                [
+                    "analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event",
+                    "runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity",
                 ],
             ),
         }
@@ -5510,7 +5540,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["selected_rust_integration_lane_count"], 6)
         self.assertEqual(payload["selected_rust_integration_batch_count"], 13)
         self.assertEqual(payload["selected_release_lane_count"], 1)
-        self.assertEqual(payload["rust_minimal_max_parallel"], "27")
+        self.assertEqual(payload["rust_minimal_max_parallel"], "28")
         self.assertEqual(payload["rust_integration_max_parallel"], "26")
 
     def test_validation_lab_frontier_all_excludes_smoke_gate_lanes_by_metadata(self) -> None:

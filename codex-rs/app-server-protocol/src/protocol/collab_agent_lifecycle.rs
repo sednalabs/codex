@@ -91,6 +91,23 @@ pub(crate) fn merge_collab_agent_lifecycle(
                 // snapshot, including an explicit absence when that effect is
                 // unknown.
             }
+            if let (
+                ThreadItem::CollabAgentToolCall {
+                    tool: CollabAgentTool::Wait | CollabAgentTool::ResumeAgent,
+                    receiver_thread_ids: terminal_receiver_thread_ids,
+                    ..
+                },
+                ThreadItem::CollabAgentToolCall {
+                    receiver_thread_ids: started_receiver_thread_ids,
+                    ..
+                },
+            ) = (&mut terminal, &incoming)
+            {
+                *terminal_receiver_thread_ids = merge_receiver_thread_ids(
+                    started_receiver_thread_ids,
+                    terminal_receiver_thread_ids,
+                );
+            }
             return terminal;
         }
         return incoming;
@@ -160,18 +177,23 @@ pub(crate) fn merge_collab_agent_lifecycle(
             }
         }
         CollabAgentTool::Wait | CollabAgentTool::ResumeAgent => {
-            let mut merged_receiver_thread_ids = previous_receiver_thread_ids.clone();
-            for receiver_thread_id in receiver_thread_ids.drain(..) {
-                if !merged_receiver_thread_ids.contains(&receiver_thread_id) {
-                    merged_receiver_thread_ids.push(receiver_thread_id);
-                }
-            }
-            *receiver_thread_ids = merged_receiver_thread_ids;
+            *receiver_thread_ids =
+                merge_receiver_thread_ids(previous_receiver_thread_ids, receiver_thread_ids);
         }
         CollabAgentTool::SendInput | CollabAgentTool::CloseAgent => {}
     }
 
     incoming
+}
+
+fn merge_receiver_thread_ids(started: &[String], terminal: &[String]) -> Vec<String> {
+    let mut merged = started.to_vec();
+    for receiver_thread_id in terminal {
+        if !merged.contains(receiver_thread_id) {
+            merged.push(receiver_thread_id.clone());
+        }
+    }
+    merged
 }
 
 /// The identities observed across a spawn lifecycle boundary.

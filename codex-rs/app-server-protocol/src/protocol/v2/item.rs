@@ -1044,17 +1044,17 @@ impl From<CoreTurnItem> for ThreadItem {
                     // directly to model/reasoning_effort. Preserve that history without
                     // ever treating it as an observed terminal selection.
                     // V1's required legacy fields use an empty model and the default Medium
-                    // effort as the omitted-request sentinels. They are transport artifacts,
-                    // not canonical requested identity.
-                    let v1_legacy_identity_sentinels = call.model.as_deref() == Some("")
-                        && call.reasoning_effort.as_ref() == Some(&ReasoningEffort::Medium);
+                    // effort as field-wise omitted-request sentinels. They are transport
+                    // artifacts, not canonical requested identity. A markerless historic
+                    // Medium remains irreducibly ambiguous and follows the same absent
+                    // inference as CollabAgentSpawnBeginEvent.
                     let requested_model = call
                         .requested_model
                         .or_else(|| call.model.filter(|model| !model.is_empty()));
                     let requested_reasoning_effort =
                         call.requested_reasoning_effort.or_else(|| {
                             call.reasoning_effort
-                                .filter(|_| !v1_legacy_identity_sentinels)
+                                .filter(|effort| effort != &ReasoningEffort::Medium)
                         });
                     (
                         requested_model.clone(),

@@ -278,30 +278,35 @@ fn preserves_wait_and_resume_receivers_only_when_terminal_snapshot_omits_them() 
             .collect(),
         );
 
-        let ThreadItem::CollabAgentToolCall {
-            receiver_thread_ids,
-            agents_states,
-            ..
-        } = merge_collab_agent_lifecycle(&started, terminal)
-        else {
-            unreachable!("collab test helper must create a collab item");
-        };
-        assert_eq!(
-            receiver_thread_ids,
-            vec!["child-1".to_string(), "child-2".to_string()]
-        );
-        assert_eq!(
-            agents_states,
-            [(
-                "child-1".to_string(),
-                CollabAgentState {
-                    status: CollabAgentStatus::Completed,
-                    message: Some("finished".to_string()),
-                },
-            )]
-            .into_iter()
-            .collect()
-        );
+        for merged in [
+            merge_collab_agent_lifecycle(&started, terminal.clone()),
+            merge_collab_agent_lifecycle(&terminal, started.clone()),
+        ] {
+            let ThreadItem::CollabAgentToolCall {
+                receiver_thread_ids,
+                agents_states,
+                ..
+            } = merged
+            else {
+                unreachable!("collab test helper must create a collab item");
+            };
+            assert_eq!(
+                receiver_thread_ids,
+                vec!["child-1".to_string(), "child-2".to_string()]
+            );
+            assert_eq!(
+                agents_states,
+                [(
+                    "child-1".to_string(),
+                    CollabAgentState {
+                        status: CollabAgentStatus::Completed,
+                        message: Some("finished".to_string()),
+                    },
+                )]
+                .into_iter()
+                .collect()
+            );
+        }
     }
 }
 

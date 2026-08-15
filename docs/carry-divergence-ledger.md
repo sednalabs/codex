@@ -2026,6 +2026,9 @@ decisions.
   `codex.app-server-protocol-test`
   (`collab_spawn_identity_is_phase_compatible_across_current_and_historic_protocol_conversions`
   and `unknown_terminal_collab_spawn_serializes_all_identity_fields_as_null`),
+  `codex.collab-spawn-identity-consumers-targeted`
+  (`analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event`
+  and `runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity`),
   `codex.app-server-collab-spawn-identity-targeted`
   (`turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2`
   and `turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2`),
@@ -2039,9 +2042,12 @@ decisions.
   the safe priority-0 default. For a change confined to its enumerated
   protocol, lifecycle, core-spawn, replay/rendering, schema, SDK, and carry
   paths, an identity implementation or SDK path lets that route win generic
-  overlap and select `codex.app-server-protocol-test` plus both dedicated
-  identity lanes. Schema-only and docs/config-only changes do not trigger this
-  route; only equal highest-priority matches fail closed. The route includes
+  overlap and select `codex.core-subagent-model-pinning-targeted`,
+  `codex.app-server-protocol-test`, the two protocol/UI identity lanes, and the
+  direct analytics/usage consumer lane. Analytics and state usage changes are
+  explicitly required route inputs so those consumers receive direct hosted
+  coverage. Schema-only and docs/config-only changes do not trigger this route;
+  only equal highest-priority matches fail closed. The route includes
   explicit-only lanes intentionally; it is not a broad default selection for
   unrelated app-server or TUI changes.
 - Preserve the complete carry during future upstream syncs unless upstream
