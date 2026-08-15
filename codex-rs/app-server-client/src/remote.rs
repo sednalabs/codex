@@ -3494,10 +3494,12 @@ mod tests {
         assert!(terminal.is_none());
         assert!(pending_requests.is_empty());
         assert_eq!(lifecycle.load(Ordering::Acquire), REQUEST_COMPLETED);
-        let error = response_rx
+        let result = response_rx
             .await
-            .expect("oversized request ID should complete exactly once")
-            .expect_err("oversized request ID should be rejected");
+            .expect("oversized request ID should complete exactly once");
+        let Err(error) = result else {
+            panic!("oversized request ID should be rejected");
+        };
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
     }
 
