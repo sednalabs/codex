@@ -1733,31 +1733,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_duplicate_request_id_keeps_original_waiter() {
+    async fn remote_reused_local_request_id_gets_distinct_wire_ids() {
         let (first_request_seen_tx, first_request_seen_rx) = tokio::sync::oneshot::channel();
         let websocket_url = start_test_remote_server(|mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
-            let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
+            let JSONRPCMessage::Request(first_request) =
+                read_websocket_message(&mut websocket).await
             else {
-                panic!("expected account/read request");
+                panic!("expected first account/read request");
             };
-            assert_eq!(request.method, "account/read");
+            assert_eq!(first_request.method, "account/read");
             first_request_seen_tx
-                .send(request.id.clone())
+                .send(first_request.id.clone())
                 .expect("request id should send");
-            assert!(
-                timeout(
-                    Duration::from_millis(100),
-                    read_websocket_message(&mut websocket)
-                )
-                .await
-                .is_err(),
-                "duplicate request should not be forwarded to the server"
-            );
+
+            let JSONRPCMessage::Request(second_request) =
+                read_websocket_message(&mut websocket).await
+            else {
+                panic!("expected second account/read request");
+            };
+            assert_eq!(second_request.method, "account/read");
+            assert_eq!(first_request.id, RequestId::Integer(1));
+            assert_eq!(second_request.id, RequestId::Integer(2));
             write_websocket_message(
                 &mut websocket,
                 JSONRPCMessage::Response(JSONRPCResponse {
-                    id: request.id,
+                    id: first_request.id,
+                    result: serde_json::to_value(GetAccountResponse {
+                        account: None,
+                        requires_openai_auth: false,
+                    })
+                    .expect("response should serialize"),
+                }),
+            )
+            .await;
+            write_websocket_message(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id: second_request.id,
                     result: serde_json::to_value(GetAccountResponse {
                         account: None,
                         requires_openai_auth: false,
@@ -1791,7 +1804,7 @@ mod tests {
             .expect("server should observe the first request");
         assert_eq!(first_request_id, RequestId::Integer(1));
 
-        let second_err = second_request_handle
+        let second_response = second_request_handle
             .request_typed::<GetAccountResponse>(ClientRequest::GetAccount {
                 request_id: RequestId::Integer(1),
                 params: codex_app_server_protocol::GetAccountParams {
@@ -1799,10 +1812,13 @@ mod tests {
                 },
             })
             .await
-            .expect_err("duplicate request id should be rejected");
+            .expect("reused local request id should get a fresh wire id");
         assert_eq!(
-            second_err.to_string(),
-            "account/read transport error: duplicate remote app-server request id `1`"
+            second_response,
+            GetAccountResponse {
+                account: None,
+                requires_openai_auth: false,
+            }
         );
 
         let first_response = first_request
