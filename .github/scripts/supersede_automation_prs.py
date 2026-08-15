@@ -32,7 +32,10 @@ class DependabotVersion:
     prerelease: bool
 
 
-DEPENDABOT_TITLE = re.compile(r"^Bump (.+?) from .+? to .+?(?: in (/.+))?$", re.I)
+DEPENDABOT_TITLE = re.compile(
+    r"^(?:chore\(deps(?:-dev)?\):\s*)?Bump (.+?) from .+? to .+?(?: in (/.+))?$",
+    re.I,
+)
 DEPENDABOT_BODY = re.compile(r"Bumps? \[([^]]+)\]", re.I)
 DEPENDABOT_VERSION = re.compile(r"dependency-version:\s*(\S+)", re.I)
 STABLE_VERSION = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))*$")

@@ -4489,6 +4489,14 @@ class ValidationPlanScriptTests(unittest.TestCase):
         reconcile = ((payload.get("jobs") or {}).get("reconcile") or {})
 
         self.assertEqual(
+            payload.get("concurrency"),
+            {
+                "group": "${{ github.workflow }}-${{ inputs.mode || 'dependabot' }}",
+                "cancel-in-progress": "false",
+            },
+        )
+
+        self.assertEqual(
             reconcile.get("permissions"),
             {"contents": "read", "pull-requests": "write"},
         )

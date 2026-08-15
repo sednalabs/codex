@@ -25,11 +25,15 @@ def pull_request(
     head_ref: str | None = None,
     head_repo: str = "sednalabs/codex",
     author: str = "dependabot[bot]",
+    title_prefix: str = "",
+    include_version_metadata: bool = True,
 ) -> supersede.PullRequest:
-    body = f"Bumps [{dependency}]\n<!-- dependency-version: {version} -->" if version else f"Bumps [{dependency}]"
+    body = f"Bumps [{dependency}]"
+    if version and include_version_metadata:
+        body += f"\n<!-- dependency-version: {version} -->"
     return supersede.PullRequest(
         number=number,
-        title=f"Bump {dependency} from old to {version or 'new'}",
+        title=f"{title_prefix}Bump {dependency} from old to {version or 'new'}",
         body=body,
         head_ref=head_ref or f"dependabot/example/{dependency}-{number}",
         head_repo=head_repo,
@@ -55,6 +59,40 @@ class SupersessionPlanTest(unittest.TestCase):
             "newer stable": (
                 [pull_request(1, version="1.2.3"), pull_request(2, version="1.3.0")],
                 [action(1, 2)],
+            ),
+            "repository Dependabot title without metadata": (
+                [
+                    pull_request(
+                        13,
+                        version="4.37.3",
+                        title_prefix="chore(deps): ",
+                        include_version_metadata=False,
+                    ),
+                    pull_request(
+                        14,
+                        version="4.37.4",
+                        title_prefix="chore(deps): ",
+                        include_version_metadata=False,
+                    ),
+                ],
+                [action(13, 14)],
+            ),
+            "repository development Dependabot title without metadata": (
+                [
+                    pull_request(
+                        15,
+                        version="0.31.2",
+                        title_prefix="chore(deps-dev): ",
+                        include_version_metadata=False,
+                    ),
+                    pull_request(
+                        16,
+                        version="0.72.3",
+                        title_prefix="chore(deps-dev): ",
+                        include_version_metadata=False,
+                    ),
+                ],
+                [action(15, 16)],
             ),
             "stable supersedes prerelease of same release": (
                 [pull_request(3, version="2.0.0-rc.1"), pull_request(4, version="2.0.0")],
