@@ -992,6 +992,20 @@ class RouteSelectionTests(unittest.TestCase):
             ["codex.skill-loader-fixture-hermeticity-targeted"],
         )
 
+    def test_app_server_client_route_selects_focused_client_lane(self) -> None:
+        changed_files = [
+            "codex-rs/app-server-client/src/lib.rs",
+            "codex-rs/app-server-client/src/remote.rs",
+            "docs/carry-divergence-ledger.md",
+            "docs/divergences/index.yaml",
+            "docs/downstream-regression-matrix.md",
+        ]
+        lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
+            changed_files,
+            self.routes,
+        )
+        self.assertEqual(lanes, ["codex.app-server-client-targeted"])
+
     def test_skill_loader_fixture_lane_pins_both_hermeticity_tests(self) -> None:
         lane = next(
             lane

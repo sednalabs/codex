@@ -557,6 +557,12 @@ impl RemoteAppServerRequestHandle {
             .await
     }
 
+    /// Sends a JSON-RPC request using a connection-unique wire ID.
+    ///
+    /// The supplied ID is validated for bounded input compatibility but is not
+    /// placed on the wire. Remote JSON-RPC IDs are transport correlation keys;
+    /// assigning them here prevents a delayed duplicate response from ever
+    /// matching a later caller request that reused its local ID.
     pub async fn request_json_rpc(&self, request: JSONRPCRequest) -> IoResult<RequestResult> {
         let slot = Arc::clone(&self.request_slots)
             .acquire_owned()
@@ -616,6 +622,10 @@ struct RemoteEventBacklog {
     // The number of retained events that preceded the first skipped event.
     // The virtual Lagged event is emitted immediately after these entries.
     lagged_after: Option<usize>,
+    // Deferred lossless events that arrived before the first skipped event.
+    // They must be promoted ahead of the virtual Lagged boundary, while later
+    // deferred events must remain behind it.
+    deferred_before_lagged: usize,
     capacity: usize,
     byte_budget: Arc<RemoteEventByteBudget>,
     inbound_request_id_budget: Arc<InboundRequestIdBudget>,
@@ -936,6 +946,7 @@ impl RemoteEventBacklog {
             events: VecDeque::with_capacity(capacity),
             skipped_events: 0,
             lagged_after: None,
+            deferred_before_lagged: 0,
             capacity,
             byte_budget,
             inbound_request_id_budget: InboundRequestIdBudget::shared(capacity),
@@ -982,7 +993,12 @@ impl RemoteEventBacklog {
             }
         }
 
-        self.enqueue_claimed(event, server_request_id)
+        self.enqueue_claimed(
+            event,
+            server_request_id,
+            /*deferred_events*/ 0,
+            /*allow_direct*/ true,
+        )
     }
 
     fn claim_server_request_id(
@@ -1028,13 +1044,16 @@ impl RemoteEventBacklog {
         &mut self,
         event: AppServerEvent,
         server_request_id: Option<InboundRequestId>,
+        deferred_events: usize,
+        allow_direct: bool,
     ) -> Result<(), RequiredEventOverflow> {
         let required = remote_event_requires_delivery(&event);
         let reservation = self
             .byte_budget
             .try_reserve(remote_event_retained_bytes(&event));
 
-        if self.events.len() < self.capacity
+        if allow_direct
+            && self.events.len() < self.capacity
             && (server_request_id.is_none()
                 || self.direct_server_request_count() <= self.direct_server_request_capacity())
         {
@@ -1053,8 +1072,32 @@ impl RemoteEventBacklog {
                     event: None,
                 });
             }
-            self.record_best_effort_skip();
+            self.record_best_effort_skip(deferred_events);
             return Ok(());
+        }
+
+        // A pending virtual Lagged marker is an ordering barrier. Preserve the
+        // following event in the deferred FIFO even before that marker reaches
+        // the front, so later losses cannot be folded into the older boundary.
+        if !allow_direct {
+            if let Some(reservation) = reservation {
+                return Err(RequiredEventOverflow {
+                    server_request_id: server_request_id.clone(),
+                    event: Some(RetainedRemoteEvent::peer_with_server_request_id(
+                        event,
+                        reservation,
+                        server_request_id,
+                    )),
+                });
+            }
+            if !required {
+                return Err(RequiredEventOverflow {
+                    server_request_id: None,
+                    event: Some(RetainedRemoteEvent::local(AppServerEvent::Lagged {
+                        skipped: 1,
+                    })),
+                });
+            }
         }
 
         if required {
@@ -1071,16 +1114,22 @@ impl RemoteEventBacklog {
             });
         }
 
-        self.record_best_effort_skip();
+        self.record_best_effort_skip(deferred_events);
         Ok(())
     }
 
-    fn record_best_effort_skip(&mut self) {
+    fn record_best_effort_skip(&mut self, deferred_events: usize) {
         self.skipped_events = self.skipped_events.saturating_add(1);
-        self.lagged_after.get_or_insert(self.events.len());
+        if self.lagged_after.is_none() {
+            self.lagged_after = Some(self.events.len());
+            self.deferred_before_lagged = deferred_events;
+        }
     }
 
     fn can_accept_deferred(&self, event: &RetainedRemoteEvent) -> bool {
+        if self.lagged_after == Some(0) && self.deferred_before_lagged == 0 {
+            return false;
+        }
         match &event.event {
             AppServerEvent::ServerRequest(_)
                 if event.server_request_id.as_ref().is_some_and(|request_id| {
@@ -1111,8 +1160,12 @@ impl RemoteEventBacklog {
         !self.events.is_empty() || self.skipped_events > 0
     }
 
+    fn has_lag_boundary(&self) -> bool {
+        self.lagged_after.is_some()
+    }
+
     fn pop_next_for_public(&mut self) -> Option<RetainedRemoteEvent> {
-        if self.lagged_after == Some(0) {
+        if self.lagged_after == Some(0) && self.deferred_before_lagged == 0 {
             self.lagged_after = None;
             let skipped = std::mem::take(&mut self.skipped_events);
             return Some(RetainedRemoteEvent::local(AppServerEvent::Lagged {
@@ -1125,6 +1178,16 @@ impl RemoteEventBacklog {
             *remaining = remaining.saturating_sub(1);
         }
         Some(event)
+    }
+
+    fn note_deferred_promotion(&mut self) {
+        if self.deferred_before_lagged == 0 {
+            return;
+        }
+        self.deferred_before_lagged -= 1;
+        if let Some(remaining) = &mut self.lagged_after {
+            *remaining = remaining.saturating_add(1);
+        }
     }
 
     fn begin_server_request_response(&mut self, request_id: &InboundRequestId) -> bool {
@@ -1180,6 +1243,21 @@ impl RemoteEventBacklog {
         overflowed_events: impl IntoIterator<Item = RetainedRemoteEvent>,
     ) -> VecDeque<RetainedRemoteEvent> {
         let mut terminal_events = VecDeque::new();
+        let mut deferred_events = VecDeque::from_iter(deferred_events);
+        while self.deferred_before_lagged > 0 {
+            while self.lagged_after != Some(0) {
+                let Some(event) = self.pop_next_for_public() else {
+                    break;
+                };
+                terminal_events.push_back(event);
+            }
+            let Some(event) = deferred_events.pop_front() else {
+                debug_assert_eq!(self.deferred_before_lagged, 0);
+                break;
+            };
+            self.note_deferred_promotion();
+            self.events.push_back(event);
+        }
         while let Some(event) = self.pop_next_for_public() {
             terminal_events.push_back(event);
         }
@@ -1432,6 +1510,7 @@ where
 {
     let mut pending_requests = HashMap::<RequestId, PendingRemoteRequest>::new();
     let mut canceled_request_ids = RecentRemoteRequestIds::new(request_tombstone_capacity);
+    let mut next_wire_request_id = 1_i64;
     let mut deferred_events = VecDeque::<RetainedRemoteEvent>::new();
 
     while terminal.is_none() {
@@ -1480,6 +1559,7 @@ where
                             &endpoint,
                             &mut pending_requests,
                             &mut canceled_request_ids,
+                            &mut next_wire_request_id,
                             &mut backlog,
                         )
                         .await
@@ -1614,6 +1694,7 @@ async fn handle_remote_command<S>(
     endpoint: &str,
     pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
     canceled_request_ids: &mut RecentRemoteRequestIds,
+    next_wire_request_id: &mut i64,
     backlog: &mut RemoteEventBacklog,
 ) -> Option<RemoteTerminal>
 where
@@ -1621,16 +1702,16 @@ where
 {
     match command {
         RemoteClientCommand::Request {
-            request,
+            mut request,
             response_tx,
             lifecycle,
             _slot,
         } => {
-            let request_id = request.id.clone();
+            let caller_request_id = request.id.clone();
             if lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED {
                 return None;
             }
-            if matches!(&request_id, RequestId::String(value) if value.len() > MAX_OUTBOUND_REQUEST_ID_STRING_BYTES)
+            if matches!(&caller_request_id, RequestId::String(value) if value.len() > MAX_OUTBOUND_REQUEST_ID_STRING_BYTES)
             {
                 if lifecycle
                     .compare_exchange(
@@ -1650,6 +1731,29 @@ where
                 }
                 return None;
             }
+            let request_id = RequestId::Integer(*next_wire_request_id);
+            let Some(next_request_id) = next_wire_request_id.checked_add(1) else {
+                let terminal = RemoteTerminal::new(
+                    ErrorKind::WouldBlock,
+                    format!(
+                        "remote app server at `{endpoint}` exhausted connection-unique request IDs"
+                    ),
+                );
+                if lifecycle
+                    .compare_exchange(
+                        REQUEST_PENDING,
+                        REQUEST_COMPLETED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    let _ = response_tx.send(Err(terminal.io_error()));
+                }
+                return Some(terminal);
+            };
+            *next_wire_request_id = next_request_id;
+            request.id = request_id.clone();
             if pending_requests.contains_key(&request_id)
                 || canceled_request_ids.contains(&request_id)
             {
@@ -2049,7 +2153,37 @@ fn enqueue_remote_worker_event_claimed(
     let server_request_id_for_test = server_request_id
         .as_ref()
         .map(InboundRequestId::to_request_id);
-    match backlog.enqueue_claimed(event, server_request_id) {
+    if !deferred_events.is_empty() && !remote_event_requires_delivery(&event) {
+        if let Some(RetainedRemoteEvent {
+            event: AppServerEvent::Lagged { skipped },
+            _reservation: None,
+            ..
+        }) = deferred_events.back_mut()
+        {
+            *skipped = skipped.saturating_add(1);
+            return None;
+        }
+        if deferred_events.len() >= backlog.deferred_capacity() {
+            return Some(RemoteTerminal::new(
+                ErrorKind::WouldBlock,
+                format!(
+                    "remote app server at `{endpoint}` could not retain a deferred lag marker"
+                ),
+            ));
+        }
+        deferred_events.push_back(RetainedRemoteEvent::local(AppServerEvent::Lagged {
+            skipped: 1,
+        }));
+        return None;
+    }
+
+    let allow_direct = deferred_events.is_empty() && !backlog.has_lag_boundary();
+    match backlog.enqueue_claimed(
+        event,
+        server_request_id,
+        deferred_events.len(),
+        allow_direct,
+    ) {
         Ok(()) => {
             #[cfg(test)]
             if let Some(request_id) = server_request_id_for_test {
@@ -2112,6 +2246,7 @@ fn promote_deferred_event(
     if let Some(request_id) = &event.server_request_id {
         backlog.mark_server_request_promoted(request_id);
     }
+    backlog.note_deferred_promotion();
     backlog.events.push_back(event);
     None
 }
@@ -2160,7 +2295,12 @@ fn enqueue_remote_event_claimed(
     event: AppServerEvent,
     server_request_id: Option<InboundRequestId>,
 ) -> Option<RemoteTerminal> {
-    match backlog.enqueue_claimed(event, server_request_id) {
+    match backlog.enqueue_claimed(
+        event,
+        server_request_id,
+        /*deferred_events*/ 0,
+        /*allow_direct*/ true,
+    ) {
         Ok(()) => None,
         Err(overflow) => {
             let mut terminal =
@@ -3185,6 +3325,244 @@ mod tests {
     }
 
     #[test]
+    fn lagged_boundary_preserves_deferred_event_arrival_order() {
+        let terminal_events = |defer_before_skip: bool| {
+            let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+            backlog
+                .enqueue(AppServerEvent::Lagged { skipped: 10 })
+                .expect("first event should fit");
+            let mut deferred = VecDeque::new();
+
+            if defer_before_skip {
+                assert!(
+                    enqueue_remote_worker_event(
+                        &mut backlog,
+                        "test://lagged-order",
+                        server_request(/*id*/ 1),
+                        &mut deferred,
+                    )
+                    .is_none()
+                );
+            }
+            assert!(
+                enqueue_remote_worker_event(
+                    &mut backlog,
+                    "test://lagged-order",
+                    AppServerEvent::Lagged { skipped: 11 },
+                    &mut deferred,
+                )
+                .is_none()
+            );
+            if !defer_before_skip {
+                assert!(
+                    enqueue_remote_worker_event(
+                        &mut backlog,
+                        "test://lagged-order",
+                        server_request(/*id*/ 1),
+                        &mut deferred,
+                    )
+                    .is_none()
+                );
+            }
+
+            backlog.finalize(deferred, "terminal".to_string(), std::iter::empty())
+        };
+
+        let before = terminal_events(true);
+        assert!(matches!(
+            &before[0].event,
+            AppServerEvent::Lagged { skipped: 10 }
+        ));
+        assert!(matches!(&before[1].event, AppServerEvent::ServerRequest(_)));
+        assert!(matches!(
+            &before[2].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+
+        let after = terminal_events(false);
+        assert!(matches!(
+            &after[0].event,
+            AppServerEvent::Lagged { skipped: 10 }
+        ));
+        assert!(matches!(
+            &after[1].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+        assert!(matches!(&after[2].event, AppServerEvent::ServerRequest(_)));
+
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 2);
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 10 })
+            .expect("first event should fit");
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 20 })
+            .expect("second event should fit");
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 11 })
+            .expect("best-effort overflow should establish lag boundary");
+        let mut deferred = VecDeque::new();
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://lagged-barrier",
+                server_request(/*id*/ 1),
+                &mut deferred,
+            )
+            .is_none()
+        );
+        drop(
+            backlog
+                .pop_next_for_public()
+                .expect("first event should publish"),
+        );
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://lagged-barrier",
+                AppServerEvent::Lagged { skipped: 12 },
+                &mut deferred,
+            )
+            .is_none()
+        );
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://lagged-barrier",
+                server_request(/*id*/ 2),
+                &mut deferred,
+            )
+            .is_none()
+        );
+        assert_eq!(backlog.events.len(), 1);
+
+        let barrier = backlog.finalize(deferred, "terminal".to_string(), std::iter::empty());
+        assert!(matches!(
+            &barrier[0].event,
+            AppServerEvent::Lagged { skipped: 20 }
+        ));
+        assert!(matches!(
+            &barrier[1].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+        assert!(matches!(
+            &barrier[2].event,
+            AppServerEvent::ServerRequest(request)
+                if request.id() == &RequestId::Integer(1)
+        ));
+        assert!(matches!(
+            &barrier[3].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+        assert!(matches!(
+            &barrier[4].event,
+            AppServerEvent::ServerRequest(request)
+                if request.id() == &RequestId::Integer(2)
+        ));
+
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 10 })
+            .expect("first event should fit");
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 11 })
+            .expect("overflow should establish the first lag boundary");
+        drop(
+            backlog
+                .pop_next_for_public()
+                .expect("first event should publish"),
+        );
+        let mut deferred = VecDeque::new();
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://ready-lag-barrier",
+                AppServerEvent::Lagged { skipped: 12 },
+                &mut deferred,
+            )
+            .is_none()
+        );
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://ready-lag-barrier",
+                AppServerEvent::Lagged { skipped: 13 },
+                &mut deferred,
+            )
+            .is_none()
+        );
+
+        let ready_barrier =
+            backlog.finalize(deferred, "terminal".to_string(), std::iter::empty());
+        assert!(matches!(
+            &ready_barrier[0].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+        assert!(matches!(
+            &ready_barrier[1].event,
+            AppServerEvent::Lagged { skipped: 12 }
+        ));
+        assert!(matches!(
+            &ready_barrier[2].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 2);
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 10 })
+            .expect("first event should fit");
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 20 })
+            .expect("second event should fit");
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 11 })
+            .expect("overflow should establish a not-yet-ready lag boundary");
+        drop(
+            backlog
+                .pop_next_for_public()
+                .expect("first event should publish"),
+        );
+        let mut deferred = VecDeque::new();
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://pending-lag-barrier",
+                AppServerEvent::Lagged { skipped: 12 },
+                &mut deferred,
+            )
+            .is_none()
+        );
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://pending-lag-barrier",
+                AppServerEvent::Lagged { skipped: 13 },
+                &mut deferred,
+            )
+            .is_none()
+        );
+        assert_eq!(backlog.events.len(), 1);
+
+        let pending_barrier =
+            backlog.finalize(deferred, "terminal".to_string(), std::iter::empty());
+        assert!(matches!(
+            &pending_barrier[0].event,
+            AppServerEvent::Lagged { skipped: 20 }
+        ));
+        assert!(matches!(
+            &pending_barrier[1].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+        assert!(matches!(
+            &pending_barrier[2].event,
+            AppServerEvent::Lagged { skipped: 12 }
+        ));
+        assert!(matches!(
+            &pending_barrier[3].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+    }
+
+    #[test]
     fn initialization_backlog_uses_the_connection_capacity_for_all_required_events() {
         let mut backlog = RemoteEventBacklog::new(/*capacity*/ 128);
         for id in 0..33 {
@@ -3475,6 +3853,7 @@ mod tests {
         .await;
         let mut pending_requests = HashMap::new();
         let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut next_wire_request_id = 1;
         let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
             .enqueue(server_request(/*id*/ 1))
@@ -3491,6 +3870,7 @@ mod tests {
             "test://closed-peer",
             &mut pending_requests,
             &mut canceled_request_ids,
+            &mut next_wire_request_id,
             &mut backlog,
         )
         .await
@@ -3587,6 +3967,7 @@ mod tests {
         .await;
         let mut pending_requests = HashMap::new();
         let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut next_wire_request_id = 1;
         let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         let request_slots = Arc::new(Semaphore::new(1));
         let (response_tx, response_rx) = oneshot::channel();
@@ -3611,6 +3992,7 @@ mod tests {
             "test://outbound-request-id",
             &mut pending_requests,
             &mut canceled_request_ids,
+            &mut next_wire_request_id,
             &mut backlog,
         )
         .await;
@@ -3853,15 +4235,62 @@ mod tests {
 
         second.abort();
         let _ = second.await;
-        let duplicate = handle.request_json_rpc(client_request(/*id*/ 1));
-        let error = duplicate
+        let reused_local_id = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*local id*/ 1)).await
+            }
+        });
+        let third_message = timeout(Duration::from_secs(2), peer.next())
             .await
-            .expect_err("canceled request ID should remain tombstoned");
-        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+            .expect("reused local ID should receive a fresh wire ID")
+            .expect("peer should receive third request")
+            .expect("peer websocket should remain healthy");
+        let Message::Text(text) = third_message else {
+            panic!("peer should receive a text request");
+        };
+        let JSONRPCMessage::Request(third_request) =
+            serde_json::from_str(&text).expect("third request should be valid JSON-RPC")
+        else {
+            panic!("peer should receive a JSON-RPC request");
+        };
+        assert_eq!(third_request.id, RequestId::Integer(3));
+
+        write_jsonrpc_message(
+            &mut peer,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(1),
+                result: serde_json::json!({"stale": true}),
+            }),
+            "test://cancellation",
+        )
+        .await
+        .expect("stale response should be writable");
         assert!(
-            timeout(Duration::from_millis(50), peer.next())
+            timeout(Duration::from_millis(50), async {
+                while !reused_local_id.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
                 .await
                 .is_err()
+        );
+        write_jsonrpc_message(
+            &mut peer,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(3),
+                result: serde_json::json!({"fresh": true}),
+            }),
+            "test://cancellation",
+        )
+        .await
+        .expect("fresh response should be writable");
+        assert_eq!(
+            reused_local_id
+                .await
+                .expect("reused-ID task should join")
+                .expect("fresh wire ID should complete safely"),
+            Ok(serde_json::json!({"fresh": true}))
         );
 
         drop(handle);
@@ -3871,6 +4300,149 @@ mod tests {
         timeout(Duration::from_secs(2), worker)
             .await
             .expect("worker should terminate after cancellation test")
+            .expect("worker task should join")
+            .expect("worker should terminate cleanly");
+    }
+
+    #[tokio::test]
+    async fn reused_local_request_id_gets_unique_wire_id_and_rejects_stale_response() {
+        let (client_socket, peer_socket) = tokio::io::duplex(64 * 1024);
+        let stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut peer = WebSocketStream::from_raw_socket(
+            peer_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let (command_tx, command_rx) = mpsc::channel(/*capacity*/ 1);
+        let (event_tx, event_rx) = mpsc::channel(/*capacity*/ 1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let request_cancel_notify = Arc::new(Notify::new());
+        let worker = tokio::spawn(remote_worker(
+            stream,
+            "test://unique-wire-ids".to_string(),
+            command_rx,
+            event_tx,
+            shutdown_rx,
+            Arc::clone(&request_slots),
+            RemoteEventBacklog::new(/*capacity*/ 1),
+            /*terminal*/ None,
+            Arc::clone(&request_cancel_notify),
+            RemoteResponseByteBudget::shared(),
+            /*request_tombstone_capacity*/ 4,
+        ));
+        let handle = RemoteAppServerRequestHandle {
+            command_tx,
+            request_slots,
+            request_cancel_notify,
+        };
+
+        let first = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*local id*/ 7)).await
+            }
+        });
+        let first_wire_id = {
+            let message = timeout(Duration::from_secs(2), peer.next())
+                .await
+                .expect("first request should be admitted")
+                .expect("peer should receive first request")
+                .expect("peer websocket should remain healthy");
+            let Message::Text(text) = message else {
+                panic!("peer should receive a text request");
+            };
+            let JSONRPCMessage::Request(request) =
+                serde_json::from_str(&text).expect("first request should be valid JSON-RPC")
+            else {
+                panic!("peer should receive a JSON-RPC request");
+            };
+            request.id
+        };
+        assert_eq!(first_wire_id, RequestId::Integer(1));
+        write_jsonrpc_message(
+            &mut peer,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: first_wire_id.clone(),
+                result: serde_json::json!({"generation": 1}),
+            }),
+            "test://unique-wire-ids",
+        )
+        .await
+        .expect("first response should be writable");
+        first
+            .await
+            .expect("first request task should join")
+            .expect("first request should complete");
+
+        let second = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*same local id*/ 7)).await
+            }
+        });
+        let second_wire_id = {
+            let message = timeout(Duration::from_secs(2), peer.next())
+                .await
+                .expect("second request should be admitted")
+                .expect("peer should receive second request")
+                .expect("peer websocket should remain healthy");
+            let Message::Text(text) = message else {
+                panic!("peer should receive a text request");
+            };
+            let JSONRPCMessage::Request(request) =
+                serde_json::from_str(&text).expect("second request should be valid JSON-RPC")
+            else {
+                panic!("peer should receive a JSON-RPC request");
+            };
+            request.id
+        };
+        assert_eq!(second_wire_id, RequestId::Integer(2));
+
+        write_jsonrpc_message(
+            &mut peer,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: first_wire_id,
+                result: serde_json::json!({"stale": true}),
+            }),
+            "test://unique-wire-ids",
+        )
+        .await
+        .expect("stale response should be writable");
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished());
+
+        write_jsonrpc_message(
+            &mut peer,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: second_wire_id,
+                result: serde_json::json!({"generation": 2}),
+            }),
+            "test://unique-wire-ids",
+        )
+        .await
+        .expect("second response should be writable");
+        assert_eq!(
+            second
+                .await
+                .expect("second request task should join")
+                .expect("second request should complete"),
+            Ok(serde_json::json!({"generation": 2}))
+        );
+
+        drop(handle);
+        let _ = shutdown_tx.send(());
+        drop(event_rx);
+        drop(peer);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("worker should terminate after unique-ID test")
             .expect("worker task should join")
             .expect("worker should terminate cleanly");
     }
