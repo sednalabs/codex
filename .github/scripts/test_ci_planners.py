@@ -676,8 +676,10 @@ class RouteSelectionTests(unittest.TestCase):
 
     collab_spawn_identity_candidate_paths = [
         ".github/scripts/resolve_validation_plan.py",
+        ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/test_ci_planners.py",
         ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+        ".github/scripts/validation-lanes/sdk-python-targeted.sh",
         ".github/validation-lanes.json",
         ".github/workflows/sedna-heavy-tests.yml",
         "codex-rs/analytics/src/analytics_client_tests.rs",
@@ -1121,6 +1123,12 @@ class RouteSelectionTests(unittest.TestCase):
         )
         self.assertEqual(lanes, route["lane_ids"])
 
+        rust_ci_lanes = RESOLVE_RUST_CI_MODE.select_followup_lanes(
+            ["codex-rs/core/src/agent/control.rs"],
+            self.routes,
+        )
+        self.assertEqual(rust_ci_lanes, route["lane_ids"])
+
     def test_collab_spawn_identity_consumer_sources_use_direct_consumer_lane(self) -> None:
         expected = [
             "codex.core-subagent-model-pinning-targeted",
@@ -1193,6 +1201,10 @@ class RouteSelectionTests(unittest.TestCase):
 
         self.assertEqual(
             RESOLVE_VALIDATION_PLAN.select_followup_lanes(["identity/source.rs"], routes),
+            [],
+        )
+        self.assertEqual(
+            RESOLVE_RUST_CI_MODE.select_followup_lanes(["identity/source.rs"], routes),
             [],
         )
 

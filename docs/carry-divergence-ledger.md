@@ -2045,7 +2045,8 @@ decisions.
   `live_app_server_collab_spawn_completed_renders_requested_model_and_effort`,
   and `live_app_server_spawn_completion_does_not_fill_missing_effective_identity_from_metadata`).
 - `collab-spawn-identity` has priority 10, while unmarked follow-up routes use
-  the safe priority-0 default. For a change confined to its enumerated
+  the safe priority-0 default. Both the heavy-validation and light Rust CI
+  selectors apply the same unique-highest-priority rule. For a change confined to its enumerated
   protocol, lifecycle, core-spawn, replay/rendering, schema, SDK, and carry
   paths, an identity implementation or SDK path lets that route win generic
   overlap and select `codex.core-subagent-model-pinning-targeted`,
@@ -2053,8 +2054,8 @@ decisions.
   direct analytics/usage consumer lane, and `codex.sdk-python-targeted`.
   Core snapshot authority, protocol identity storage/conversion, analytics,
   state usage, and Python SDK changes are explicitly required route inputs so
-  those authorities and consumers receive direct hosted coverage. Schema-only and
-  docs/config-only changes do not trigger this route;
+  those authorities and consumers receive direct hosted coverage. Schema-only
+  and docs/config-only changes do not trigger this route;
   only equal highest-priority matches fail closed. The route includes
   explicit-only lanes intentionally; it is not a broad default selection for
   unrelated app-server or TUI changes.

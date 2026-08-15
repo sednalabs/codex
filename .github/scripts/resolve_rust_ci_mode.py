@@ -28,6 +28,7 @@ INITIAL_ROUTE_MAX_FILES = 12
 INITIAL_ROUTE_MAX_LINES = 400
 FOLLOWUP_ROUTE_MAX_FILES = 4
 FOLLOWUP_ROUTE_MAX_LINES = 80
+DEFAULT_FOLLOWUP_ROUTE_PRIORITY = 0
 
 RUST_BUNDLE_PATTERNS = [
     "codex-rs/**/*.rs",
@@ -180,6 +181,17 @@ def classify_files(files: list[str]) -> dict[str, bool]:
     }
 
 
+def followup_route_priority(route: dict) -> int:
+    """Return a validated route priority, defaulting safely for existing routes."""
+    priority = route.get("priority", DEFAULT_FOLLOWUP_ROUTE_PRIORITY)
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
+        route_id = str(route.get("route_id") or "<unknown>")
+        raise SystemExit(
+            f"follow-up route {route_id} must set priority to a non-negative integer"
+        )
+    return priority
+
+
 def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
     if not files:
         return []
@@ -198,9 +210,21 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
             continue
         matching_routes.append(route)
 
-    if len(matching_routes) != 1:
+    if not matching_routes:
         return []
-    return matching_routes[0].get("lane_ids", [])
+
+    routes_with_priority = [
+        (route, followup_route_priority(route)) for route in matching_routes
+    ]
+    highest_priority = max(priority for _, priority in routes_with_priority)
+    highest_priority_routes = [
+        route
+        for route, priority in routes_with_priority
+        if priority == highest_priority
+    ]
+    if len(highest_priority_routes) != 1:
+        return []
+    return list(highest_priority_routes[0].get("lane_ids", []))
 
 
 def route_lanes_are_light_workflow_only(lane_ids: list[str], catalog: dict) -> bool:

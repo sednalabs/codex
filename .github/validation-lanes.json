@@ -2354,8 +2354,10 @@
       ],
       "allowed_paths": [
         ".github/scripts/test_ci_planners.py",
+        ".github/scripts/resolve_rust_ci_mode.py",
         ".github/scripts/resolve_validation_plan.py",
         ".github/scripts/validation-lanes/app-server-protocol-test.sh",
+        ".github/scripts/validation-lanes/sdk-python-targeted.sh",
         ".github/validation-lanes.json",
         ".github/workflows/sedna-heavy-tests.yml",
         "codex-rs/analytics/src/analytics_client_tests.rs",
