@@ -289,6 +289,68 @@ impl AgentControl {
         }
         result
     }
+
+    pub(crate) async fn reconcile_dead_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
+        &self,
+        manager: &Arc<ThreadManagerState>,
+        expected_thread: &Arc<CodexThread>,
+        finalize: Finalize,
+    ) -> V2ThreadUnloadResult
+    where
+        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
+        FinalizeFuture: std::future::Future<Output = ()>,
+    {
+        if !is_resident_candidate(expected_thread.as_ref()) {
+            return V2ThreadUnloadResult::NotApplicable;
+        }
+        let thread_id = expected_thread.session.thread_id();
+        let Some(metadata) = self.state.agent_metadata_for_thread(thread_id) else {
+            return V2ThreadUnloadResult::NotApplicable;
+        };
+        let _reload = metadata.lifecycle.lock_reload().await;
+        let result = match manager.get_thread(thread_id).await {
+            Err(_) => {
+                if self
+                    .state
+                    .cold_status(thread_id, /*live_thread*/ None)
+                    .is_some()
+                {
+                    V2ThreadUnloadResult::Unloaded
+                } else {
+                    V2ThreadUnloadResult::Missing
+                }
+            }
+            Ok(current) if !Arc::ptr_eq(&current, expected_thread) => {
+                V2ThreadUnloadResult::Superseded
+            }
+            Ok(_) => {
+                let registry = Arc::clone(&self.state);
+                let removal = manager
+                    .remove_thread_if_same(&thread_id, expected_thread, || {
+                        if registry
+                            .cold_status(thread_id, Some(expected_thread))
+                            .is_none()
+                        {
+                            registry.release_spawned_thread(thread_id);
+                        }
+                    })
+                    .await;
+                if removal == RemoveThreadIfSameResult::Removed {
+                    self.forget_v2_residency(thread_id);
+                    V2ThreadUnloadResult::Unloaded
+                } else {
+                    V2ThreadUnloadResult::Superseded
+                }
+            }
+        };
+        if matches!(
+            result,
+            V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing
+        ) {
+            finalize(result).await;
+        }
+        result
+    }
 }
 
 impl V2Residency {

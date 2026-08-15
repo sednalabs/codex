@@ -309,7 +309,9 @@ pub(super) async fn ensure_listener_task_running(
                             tracing::warn!("thread.next_event() failed with: {err}");
                             pending_thread_unloads.lock().await.insert(conversation_id);
                             let result = thread_manager
-                                .unload_v2_thread_for_external_teardown(&conversation, |result| {
+                                .reconcile_dead_v2_thread_for_external_teardown(
+                                    &conversation,
+                                    |result| {
                                     let outgoing = outgoing_for_task.clone();
                                     let pending_thread_unloads = pending_thread_unloads.clone();
                                     let thread_state_manager = thread_state_manager.clone();
@@ -325,13 +327,38 @@ pub(super) async fn ensure_listener_task_running(
                                         )
                                         .await;
                                     }
-                                })
+                                },
+                                )
                                 .await;
-                            if !matches!(
-                                result,
-                                V2ThreadUnloadResult::Unloaded | V2ThreadUnloadResult::Missing
-                            ) {
-                                pending_thread_unloads.lock().await.remove(&conversation_id);
+                            match result {
+                                V2ThreadUnloadResult::Superseded => {
+                                    pending_thread_unloads.lock().await.remove(&conversation_id);
+                                    if let Ok(current) =
+                                        thread_manager.get_thread(conversation_id).await
+                                    {
+                                        let current_state =
+                                            thread_state_manager.thread_state(conversation_id).await;
+                                        if let Err(err) = Box::pin(ensure_listener_task_running(
+                                            restart_listener_task_context.clone(),
+                                            conversation_id,
+                                            current,
+                                            current_state,
+                                        ))
+                                        .await
+                                        {
+                                            warn!(
+                                                "failed to restart listener for superseding thread {conversation_id}: {}",
+                                                err.message
+                                            );
+                                        }
+                                    }
+                                }
+                                V2ThreadUnloadResult::NotApplicable
+                                | V2ThreadUnloadResult::Deferred => {
+                                    pending_thread_unloads.lock().await.remove(&conversation_id);
+                                }
+                                V2ThreadUnloadResult::Unloaded
+                                | V2ThreadUnloadResult::Missing => {}
                             }
                             break;
                         }

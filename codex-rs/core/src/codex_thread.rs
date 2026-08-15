@@ -264,6 +264,16 @@ impl CodexThread {
         self.submit_with_trace(op, /*trace*/ None).await
     }
 
+    /// Submits only while this exact runtime remains current in its thread manager, serialized
+    /// against residency teardown.
+    pub async fn submit_if_current(&self, op: Op) -> CodexResult<String> {
+        self.session
+            .services
+            .agent_control
+            .submit_to_current_thread(self, op)
+            .await
+    }
+
     pub(crate) async fn submit_with_residency_transition_held(
         &self,
         op: Op,

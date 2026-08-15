@@ -784,7 +784,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                         "failed to parse typed MCP elicitation schema"
                     );
                     if let Err(err) = conversation
-                        .submit(Op::ResolveElicitation {
+                        .submit_if_current(Op::ResolveElicitation {
                             server_name: request.server_name,
                             request_id: request.id,
                             decision: codex_protocol::approvals::ElicitationAction::Cancel,
@@ -1747,7 +1747,7 @@ async fn on_request_user_input_response(
                 answers: HashMap::new(),
             };
             if let Err(err) = conversation
-                .submit(Op::UserInputAnswer {
+                .submit_if_current(Op::UserInputAnswer {
                     id: event_turn_id,
                     response: empty,
                 })
@@ -1763,7 +1763,7 @@ async fn on_request_user_input_response(
                 answers: HashMap::new(),
             };
             if let Err(err) = conversation
-                .submit(Op::UserInputAnswer {
+                .submit_if_current(Op::UserInputAnswer {
                     id: event_turn_id,
                     response: empty,
                 })
@@ -1798,7 +1798,7 @@ async fn on_request_user_input_response(
     };
 
     if let Err(err) = conversation
-        .submit(Op::UserInputAnswer {
+        .submit_if_current(Op::UserInputAnswer {
             id: event_turn_id,
             response,
         })
@@ -1823,7 +1823,7 @@ async fn on_mcp_server_elicitation_response(
     let response = mcp_server_elicitation_response_from_client_result(response);
 
     if let Err(err) = conversation
-        .submit(Op::ResolveElicitation {
+        .submit_if_current(Op::ResolveElicitation {
             server_name,
             request_id,
             decision: response.action.to_core(),
@@ -1917,7 +1917,7 @@ async fn on_request_permissions_response(
                 &thread_state,
             )
             .await;
-            if let Err(err) = conversation.submit(Op::Interrupt).await {
+            if let Err(err) = conversation.submit_if_current(Op::Interrupt).await {
                 error!("failed to interrupt turn after invalid permission paths: {err}");
             }
             return;
@@ -1926,7 +1926,7 @@ async fn on_request_permissions_response(
     outgoing.track_effective_permissions_approval_response(pending_request_id, response.clone());
 
     if let Err(err) = conversation
-        .submit(Op::RequestPermissionsResponse {
+        .submit_if_current(Op::RequestPermissionsResponse {
             id: call_id,
             response,
         })
@@ -2051,7 +2051,7 @@ async fn on_file_change_request_approval_response(
     };
 
     if let Err(err) = codex
-        .submit(Op::PatchApproval {
+        .submit_if_current(Op::PatchApproval {
             id: item_id,
             decision,
         })
@@ -2179,7 +2179,7 @@ async fn on_command_execution_request_approval_response(
     }
 
     if let Err(err) = conversation
-        .submit(Op::ExecApproval {
+        .submit_if_current(Op::ExecApproval {
             id: approval_id.unwrap_or_else(|| item_id.clone()),
             turn_id: Some(event_turn_id),
             decision,

@@ -554,6 +554,22 @@ impl AgentControl {
             .await
     }
 
+    pub(crate) async fn submit_to_current_thread(
+        &self,
+        expected_thread: &CodexThread,
+        op: Op,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        state
+            .send_op_to_expected_thread_with_trace(
+                expected_thread.session.thread_id(),
+                expected_thread,
+                op,
+                /*trace*/ None,
+            )
+            .await
+    }
+
     async fn handle_thread_request_result(
         &self,
         agent_id: ThreadId,

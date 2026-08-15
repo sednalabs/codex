@@ -1071,6 +1071,25 @@ impl ThreadManager {
             .await
     }
 
+    /// Reconciles a V2 runtime whose event channel has closed, retaining the reload gate through
+    /// app-server finalization so a replacement cannot publish into stale listener state.
+    pub async fn reconcile_dead_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
+        &self,
+        expected_thread: &Arc<CodexThread>,
+        finalize: Finalize,
+    ) -> V2ThreadUnloadResult
+    where
+        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
+        FinalizeFuture: std::future::Future<Output = ()>,
+    {
+        expected_thread
+            .session
+            .services
+            .agent_control
+            .reconcile_dead_v2_thread_for_external_teardown(&self.state, expected_thread, finalize)
+            .await
+    }
+
     /// Submits only while the exact expected runtime remains current, serialized against V2
     /// residency teardown. This preserves app-server trace context without allowing an operation
     /// resolved before teardown to enqueue after shutdown begins.
