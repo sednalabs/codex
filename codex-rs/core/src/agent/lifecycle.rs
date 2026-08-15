@@ -49,6 +49,11 @@ impl AgentLifecycleState {
         self.terminal_idle_unload_generation == generation
     }
 
+    #[cfg(test)]
+    pub(super) fn terminal_idle_unload_generation(&self) -> u64 {
+        self.terminal_idle_unload_generation
+    }
+
     /// Replaces the terminal-idle watcher owner for this lifecycle. A reloaded runtime must not
     /// leave a prior runtime's watcher eligible to act after the replacement is published.
     pub(super) fn replace_terminal_idle_unload_watcher(&mut self) -> (u64, CancellationToken) {

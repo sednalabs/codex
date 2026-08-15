@@ -30,6 +30,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 use std::time::Duration;
@@ -99,21 +100,29 @@ async fn terminal_idle_unload_preserves_fifo_mail_and_reloads_cold_agent() {
         .await
         .expect("reloaded thread should be resident");
     let reloaded_history = reloaded.session.clone_history().await;
-    assert!(reloaded_history.raw_items().iter().any(|item| {
-        matches!(
-            item,
-            ResponseItem::Message {
-                role,
-                content,
-                ..
-            } if role == "assistant"
-                && matches!(
-                    content.as_slice(),
-                    [ContentItem::OutputText { text }]
-                        if text == "injected after idle unload"
+    assert_eq!(
+        reloaded_history
+            .raw_items()
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    ResponseItem::Message {
+                        role,
+                        content,
+                        ..
+                    } if role == "assistant"
+                        && matches!(
+                            content.as_slice(),
+                            [ContentItem::OutputText { text }]
+                                if text == "injected after idle unload"
+                        )
                 )
-        )
-    }));
+            })
+            .count(),
+        1,
+        "cold reload should persist the injected response item exactly once"
+    );
     assert_eq!(
         reloaded
             .session
@@ -211,7 +220,7 @@ async fn external_v2_unload_preserves_cold_delivery_and_releases_capacity() {
 
     assert_eq!(
         manager
-            .unload_v2_thread_for_external_teardown(&first.thread)
+            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
             .await,
         V2ThreadUnloadResult::Unloaded
     );
@@ -281,7 +290,7 @@ async fn external_v2_unload_defers_for_pending_finalizers_and_submissions() {
 
     assert_eq!(
         manager
-            .unload_v2_thread_for_external_teardown(&first.thread)
+            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
             .await,
         V2ThreadUnloadResult::Deferred
     );
@@ -291,7 +300,7 @@ async fn external_v2_unload_defers_for_pending_finalizers_and_submissions() {
     first.thread.session.input_queue.finish_terminal_finalizer();
     assert_eq!(
         manager
-            .unload_v2_thread_for_external_teardown(&first.thread)
+            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
             .await,
         V2ThreadUnloadResult::Deferred
     );
@@ -302,7 +311,7 @@ async fn external_v2_unload_defers_for_pending_finalizers_and_submissions() {
         .finish_residency_submission("external-unload");
     assert_eq!(
         manager
-            .unload_v2_thread_for_external_teardown(&first.thread)
+            .unload_v2_thread_for_external_teardown(&first.thread, |_| async {})
             .await,
         V2ThreadUnloadResult::Unloaded
     );
@@ -539,21 +548,23 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
         .get_thread(child_thread_id)
         .await
         .expect("fresh child should be resident");
-    assert!(
-        control
-            .state
-            .agent_metadata_for_thread(child_thread_id)
-            .is_some(),
-        "normal spawn should publish the child before its watcher observes terminal state"
-    );
+    let metadata = control
+        .state
+        .agent_metadata_for_thread(child_thread_id)
+        .expect("normal spawn should publish the child before its watcher observes terminal state");
     assert_eq!(control.v2_residency.resident_count(), 1);
+    let prior_generation = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
 
     mark_thread_status(
         child.as_ref(),
         AgentStatus::Completed(Some("child completed".to_string())),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_deadline_after(&metadata, prior_generation).await;
 
     advance(Duration::from_millis(99)).await;
     yield_now().await;
@@ -574,32 +585,60 @@ async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn terminal_idle_unload_rearms_after_deadline_invalidation() {
+async fn terminal_idle_unload_rearms_after_accepted_send_input_invalidates_deadline() {
     let (_home, _config, manager, control, first, metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
     .await;
+    let initial_generation = metadata
+        .lifecycle
+        .lock()
+        .await
+        .terminal_idle_unload_generation();
     mark_thread_status(
         first.thread.as_ref(),
         AgentStatus::Completed(Some("first turn complete".to_string())),
     )
     .await;
-    yield_now().await;
+    wait_for_terminal_idle_deadline_after(&metadata, initial_generation).await;
     advance(Duration::from_millis(50)).await;
 
-    metadata
+    let submission_id = control
+        .send_input(
+            first.thread_id,
+            vec![UserInput::Text {
+                text: "accepted work invalidates the idle deadline".to_string(),
+                text_elements: Vec::new(),
+            }],
+        )
+        .await
+        .expect("accepted send_input work should reach the resident agent");
+    assert!(
+        !submission_id.is_empty(),
+        "accepted send_input work should return a submission id"
+    );
+    let invalidated_generation = metadata
         .lifecycle
         .lock()
         .await
-        .invalidate_terminal_idle_unload();
+        .terminal_idle_unload_generation();
+
     advance(Duration::from_millis(50)).await;
     settle_terminal_idle_watcher().await;
 
     let resident = manager
         .get_thread(first.thread_id)
         .await
-        .expect("a stale deadline should preserve residency");
+        .expect("the pre-send deadline must not unload accepted work");
     assert!(Arc::ptr_eq(&resident, &first.thread));
+
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("replacement turn complete".to_string())),
+    )
+    .await;
+    wait_for_terminal_idle_deadline_after(&metadata, invalidated_generation).await;
+
     advance(Duration::from_millis(99)).await;
     settle_terminal_idle_watcher().await;
     assert!(
@@ -891,6 +930,24 @@ async fn settle_terminal_idle_watcher() {
     for _ in 0..SETTLE_YIELDS {
         yield_now().await;
     }
+}
+
+async fn wait_for_terminal_idle_deadline_after(
+    metadata: &AgentMetadata,
+    prior_generation: u64,
+) -> u64 {
+    for _ in 0..100 {
+        let generation = metadata
+            .lifecycle
+            .lock()
+            .await
+            .terminal_idle_unload_generation();
+        if generation != prior_generation {
+            return generation;
+        }
+        yield_now().await;
+    }
+    panic!("terminal idle watcher did not arm a replacement deadline");
 }
 
 async fn assert_thread_unloads_within_terminal_idle_intervals(

@@ -1054,15 +1054,20 @@ impl ThreadManager {
     ///
     /// Roots and V1 threads return [`V2ThreadUnloadResult::NotApplicable`] so their established
     /// app-server teardown path remains unchanged.
-    pub async fn unload_v2_thread_for_external_teardown(
+    pub async fn unload_v2_thread_for_external_teardown<Finalize, FinalizeFuture>(
         &self,
         expected_thread: &Arc<CodexThread>,
-    ) -> V2ThreadUnloadResult {
+        finalize: Finalize,
+    ) -> V2ThreadUnloadResult
+    where
+        Finalize: FnOnce(V2ThreadUnloadResult) -> FinalizeFuture,
+        FinalizeFuture: std::future::Future<Output = ()>,
+    {
         expected_thread
             .session
             .services
             .agent_control
-            .unload_v2_thread_for_external_teardown(&self.state, expected_thread)
+            .unload_v2_thread_for_external_teardown(&self.state, expected_thread, finalize)
             .await
     }
 
