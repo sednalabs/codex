@@ -2425,7 +2425,8 @@
         "sdk/python/src/openai_codex/client.py",
         "sdk/python/src/openai_codex/generated/v2_all.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
-        "sdk/python/tests/test_client_rpc_methods.py"
+        "sdk/python/tests/test_client_rpc_methods.py",
+        "sdk/python/tests/test_contract_generation.py"
       ],
       "required_any_paths": [
         "codex-rs/analytics/src/analytics_client_tests.rs",
@@ -2455,7 +2456,8 @@
         "sdk/python/src/openai_codex/client.py",
         "sdk/python/src/openai_codex/generated/v2_all.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
-        "sdk/python/tests/test_client_rpc_methods.py"
+        "sdk/python/tests/test_client_rpc_methods.py",
+        "sdk/python/tests/test_contract_generation.py"
       ]
     },
     {

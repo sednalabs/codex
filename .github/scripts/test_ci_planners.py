@@ -1168,6 +1168,7 @@ class RouteSelectionTests(unittest.TestCase):
             "sdk/python/src/openai_codex/client.py",
             "sdk/python/src/openai_codex/generated/v2_all.py",
             "sdk/python/tests/test_client_rpc_methods.py",
+            "sdk/python/tests/test_contract_generation.py",
         ):
             with self.subTest(path=path):
                 lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes)

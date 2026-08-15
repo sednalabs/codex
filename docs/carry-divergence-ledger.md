@@ -2030,7 +2030,8 @@ decisions.
   (`analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event`
   and `runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity`),
   `codex.sdk-python-targeted`
-  (`test_thread_read_response_normalizes_only_legacy_collab_identity`,
+  (`test_generated_files_are_up_to_date`,
+  `test_thread_read_response_normalizes_only_legacy_collab_identity`,
   `test_legacy_collab_normalization_does_not_touch_opaque_tool_arguments`,
   `test_collab_identity_transport_keeps_current_and_partial_shapes_strict`, and
   `test_generated_collab_spawn_identity_is_required_nullable`),
