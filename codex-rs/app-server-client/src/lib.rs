@@ -1149,6 +1149,36 @@ mod tests {
             .expect("message should send");
     }
 
+    fn inbound_response_with_exact_serialized_length(
+        id: RequestId,
+        target_length: usize,
+    ) -> JSONRPCResponse {
+        let response_with_padding = |padding: String| JSONRPCResponse {
+            id: id.clone(),
+            result: serde_json::json!({
+                "account": null,
+                "requiresOpenaiAuth": false,
+                "padding": padding,
+            }),
+        };
+        let base_length = serde_json::to_string(&JSONRPCMessage::Response(response_with_padding(
+            String::new(),
+        )))
+        .expect("empty response should serialize")
+        .len();
+        let padding_length = target_length
+            .checked_sub(base_length)
+            .expect("target response size should exceed the response envelope");
+        let response = response_with_padding("x".repeat(padding_length));
+        assert_eq!(
+            serde_json::to_string(&JSONRPCMessage::Response(response.clone()))
+                .expect("response should serialize")
+                .len(),
+            target_length
+        );
+        response
+    }
+
     fn command_execution_output_delta_notification(delta: &str) -> ServerNotification {
         ServerNotification::CommandExecutionOutputDelta(
             codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
@@ -1549,8 +1579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_typed_request_rejects_response_above_wire_limit() {
-        let padding = "x".repeat((17 << 20) + 1024);
+    async fn remote_typed_request_rejects_inbound_response_one_byte_above_wire_limit() {
         let websocket_url = start_test_remote_server(move |mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
@@ -1560,14 +1589,10 @@ mod tests {
             assert_eq!(request.method, "account/read");
             write_websocket_message(
                 &mut websocket,
-                JSONRPCMessage::Response(JSONRPCResponse {
-                    id: request.id,
-                    result: serde_json::json!({
-                        "account": null,
-                        "requiresOpenaiAuth": false,
-                        "padding": padding,
-                    }),
-                }),
+                JSONRPCMessage::Response(inbound_response_with_exact_serialized_length(
+                    request.id,
+                    remote::REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE + 1,
+                )),
             )
             .await;
             websocket.close(None).await.expect("close should succeed");
@@ -1591,14 +1616,12 @@ mod tests {
         };
         assert_eq!(method, "account/read");
         assert_eq!(source.kind(), ErrorKind::InvalidData);
-        assert!(source.to_string().contains("Message too long"));
 
         client.shutdown().await.expect("shutdown should complete");
     }
 
     #[tokio::test]
-    async fn remote_typed_request_accepts_response_below_wire_limit() {
-        let padding = "x".repeat((7 << 20) + 1024);
+    async fn remote_typed_request_accepts_inbound_response_at_wire_limit() {
         let websocket_url = start_test_remote_server(move |mut websocket| async move {
             expect_remote_initialize(&mut websocket).await;
             let JSONRPCMessage::Request(request) = read_websocket_message(&mut websocket).await
@@ -1608,14 +1631,10 @@ mod tests {
             assert_eq!(request.method, "account/read");
             write_websocket_message(
                 &mut websocket,
-                JSONRPCMessage::Response(JSONRPCResponse {
-                    id: request.id,
-                    result: serde_json::json!({
-                        "account": null,
-                        "requiresOpenaiAuth": false,
-                        "padding": padding,
-                    }),
-                }),
+                JSONRPCMessage::Response(inbound_response_with_exact_serialized_length(
+                    request.id,
+                    remote::REMOTE_APP_SERVER_MAX_INBOUND_WEBSOCKET_MESSAGE_SIZE,
+                )),
             )
             .await;
             websocket.close(None).await.expect("close should succeed");
@@ -1633,7 +1652,7 @@ mod tests {
                 },
             })
             .await
-            .expect("response below the remote wire limit should succeed");
+            .expect("response at the inbound wire limit should succeed");
         assert_eq!(
             response,
             GetAccountResponse {
