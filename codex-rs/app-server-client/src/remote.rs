@@ -507,6 +507,7 @@ impl RemoteAppServerClient {
         let Self {
             command_tx,
             request_slots: _request_slots,
+            request_cancel_notify: _request_cancel_notify,
             shutdown_tx,
             event_rx,
             server_version: _server_version,
