@@ -2012,13 +2012,13 @@ decisions.
   neither infer an effective identity from a request or metadata nor
   reclassify an observed terminal alias as a request.
 - The generated Python V2 model represents the current response contract: all
-  four identity keys are required even though each accepts `null`. Inbound SDK
-  response and notification parsing materializes `null` only for a
-  `collabAgentToolCall` mapping with all four additive wire keys absent; direct
-  model validation remains strict, partial shapes retain their validation
-  errors, and aliases are not rewritten. Rust serde conversion retains the
-  same historic shape for persisted input before the current contract is
-  projected.
+  four identity keys are required even though each accepts `null`. Its
+  `CollabAgentToolCallThreadItem` validator materializes `null` only when all
+  four additive wire keys are absent. Scoping compatibility to that model
+  leaves identically named objects inside opaque tool arguments unchanged;
+  partial shapes retain their validation errors, and aliases are not
+  rewritten. Rust serde conversion retains the same historic shape for
+  persisted input before the current contract is projected.
 - Hosted guardrails for this cross-surface contract are
   `codex.core-subagent-model-pinning-targeted`
   (`failed_spawn_keeps_requested_identity_separate_from_terminal_effective_identity`
@@ -2031,6 +2031,7 @@ decisions.
   and `runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity`),
   `codex.sdk-python-targeted`
   (`test_thread_read_response_normalizes_only_legacy_collab_identity`,
+  `test_legacy_collab_normalization_does_not_touch_opaque_tool_arguments`,
   `test_collab_identity_transport_keeps_current_and_partial_shapes_strict`, and
   `test_generated_collab_spawn_identity_is_required_nullable`),
   `codex.app-server-collab-spawn-identity-targeted`
@@ -2049,8 +2050,9 @@ decisions.
   overlap and select `codex.core-subagent-model-pinning-targeted`,
   `codex.app-server-protocol-test`, the two protocol/UI identity lanes, the
   direct analytics/usage consumer lane, and `codex.sdk-python-targeted`.
-  Analytics, state usage, and Python SDK changes are explicitly required route
-  inputs so those consumers receive direct hosted coverage. Schema-only and
+  Core snapshot authority, protocol identity storage/conversion, analytics,
+  state usage, and Python SDK changes are explicitly required route inputs so
+  those authorities and consumers receive direct hosted coverage. Schema-only and
   docs/config-only changes do not trigger this route;
   only equal highest-priority matches fail closed. The route includes
   explicit-only lanes intentionally; it is not a broad default selection for

@@ -538,6 +538,29 @@ def test_collab_spawn_identity_generator_keeps_current_fields_required_nullable(
     assert artifact.read_text().count("] = None") == 0
 
 
+def test_collab_spawn_identity_generator_scopes_legacy_normalization_to_model(
+    tmp_path: Path,
+) -> None:
+    script = _load_update_script_module()
+    artifact = tmp_path / "v2_all.py"
+    artifact.write_text(
+        """from pydantic import BaseModel, ConfigDict, Field, RootModel
+from typing import Annotated, Any, Literal
+from enum import Enum
+
+class CollabAgentToolCallThreadItem(BaseModel):
+    type: Literal["collabAgentToolCall"]
+"""
+    )
+
+    script._add_legacy_collab_spawn_identity_validator(artifact)
+
+    source = artifact.read_text()
+    assert "from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator" in source
+    assert "def _normalize_legacy_identity_fields" in source
+    assert "return {**value, **{wire_name: None" in source
+
+
 def test_generated_collab_spawn_identity_is_required_nullable() -> None:
     from openai_codex.generated.v2_all import CollabAgentToolCallThreadItem
 

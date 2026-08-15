@@ -2,9 +2,11 @@
 #   filename:  codex_app_server_protocol.v2.schemas.json
 
 from __future__ import annotations
-from pydantic import BaseModel, ConfigDict, Field, RootModel
-from typing import Annotated, Any, Literal
+
 from enum import Enum
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 
 class CodexAppServerProtocolV2(BaseModel):
@@ -7276,6 +7278,24 @@ class CollabAgentToolCallThreadItem(BaseModel):
     type: Annotated[
         Literal["collabAgentToolCall"], Field(title="CollabAgentToolCallThreadItemType")
     ]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_identity_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        identity_fields = (
+            ("requestedModel", "requested_model"),
+            ("requestedReasoningEffort", "requested_reasoning_effort"),
+            ("effectiveModel", "effective_model"),
+            ("effectiveReasoningEffort", "effective_reasoning_effort"),
+        )
+        if all(
+            wire_name not in value and python_name not in value
+            for wire_name, python_name in identity_fields
+        ):
+            return {**value, **{wire_name: None for wire_name, _ in identity_fields}}
+        return value
 
 
 class WebSearchThreadItem(BaseModel):

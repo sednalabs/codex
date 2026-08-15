@@ -165,27 +165,20 @@ def test_collab_spawn_identity_is_phase_compatible_and_uses_camel_case_wire_name
     assert unknown_terminal.effective_model is None
     assert unknown_terminal.effective_reasoning_effort is None
 
-    with pytest.raises(ValidationError) as exc_info:
-        CollabAgentToolCallThreadItem.model_validate(
-            {
-                "agentsStates": {},
-                "id": "historic-spawn",
-                "model": "gpt-effective",
-                "reasoningEffort": "medium",
-                "receiverThreadIds": [],
-                "senderThreadId": "parent",
-                "status": "completed",
-                "tool": "spawnAgent",
-                "type": "collabAgentToolCall",
-            }
-        )
-
-    assert {error["loc"][0] for error in exc_info.value.errors()} == {
-        "requestedModel",
-        "requestedReasoningEffort",
-        "effectiveModel",
-        "effectiveReasoningEffort",
-    }
+    historic = CollabAgentToolCallThreadItem.model_validate(
+        {
+            "agentsStates": {},
+            "id": "historic-spawn",
+            "model": "gpt-effective",
+            "reasoningEffort": "medium",
+            "receiverThreadIds": [],
+            "senderThreadId": "parent",
+            "status": "completed",
+            "tool": "spawnAgent",
+            "type": "collabAgentToolCall",
+        }
+    )
+    _assert_null_collab_identity(historic)
 
 
 def test_thread_read_response_normalizes_only_legacy_collab_identity(
@@ -237,6 +230,27 @@ def test_item_notification_normalizes_legacy_collab_identity_without_mutating_pa
             "effectiveReasoningEffort",
         )
     )
+
+
+def test_legacy_collab_normalization_does_not_touch_opaque_tool_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opaque_arguments = {"type": "collabAgentToolCall", "value": "opaque"}
+    response = _thread_read_result(
+        {
+            "arguments": opaque_arguments,
+            "id": "dynamic-1",
+            "status": "completed",
+            "tool": "example",
+            "type": "dynamicToolCall",
+        }
+    )
+    client = CodexClient()
+    monkeypatch.setattr(client, "_request_raw", lambda _method, _params: response)
+
+    parsed = client.request("thread/read", {}, response_model=ThreadReadResponse)
+
+    assert parsed.thread.turns[0].items[0].root.arguments == opaque_arguments
 
 
 def test_collab_identity_transport_keeps_current_and_partial_shapes_strict(

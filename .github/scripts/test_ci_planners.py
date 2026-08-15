@@ -1140,6 +1140,24 @@ class RouteSelectionTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_collab_spawn_identity_authority_sources_trigger_dedicated_route(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        for path in (
+            "codex-rs/core/src/agent/control.rs",
+            "codex-rs/protocol/src/items.rs",
+            "codex-rs/protocol/src/legacy_events.rs",
+            "codex-rs/protocol/src/protocol.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
+                    route["lane_ids"],
+                )
+
     def test_collab_spawn_identity_sdk_sources_include_python_sdk_lane(self) -> None:
         route = next(
             route

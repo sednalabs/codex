@@ -184,14 +184,14 @@ phase-less assistant message item.
 Use `turn(...)` when you need low-level turn control (`stream()`, `steer()`,
 `interrupt()`) before collecting the turn result.
 
-For inbound typed SDK responses and known notifications only, the SDK
-normalizes a pre-additive `collabAgentToolCall` mapping only when all four
-additive identity keys are absent, materializing `requestedModel`,
-`requestedReasoningEffort`, `effectiveModel`, and `effectiveReasoningEffort` as
-explicit `null` values before validation. This transport compatibility does not
-relax the public `CollabAgentToolCallThreadItem` model: all four fields remain
-required and nullable for direct validation, partial malformed shapes are not
-normalized and retain normal validation errors, and aliases are not rewritten.
+The `CollabAgentToolCallThreadItem` model normalizes a pre-additive legacy item
+only when all four additive identity keys are absent, materializing
+`requestedModel`, `requestedReasoningEffort`, `effectiveModel`, and
+`effectiveReasoningEffort` as explicit `null` values before validating that
+item. The validator is scoped to the collab item model, so identically named
+objects inside opaque tool arguments are untouched. All four fields remain
+required and nullable for current inputs; partial malformed shapes retain
+normal validation errors, and aliases are not rewritten.
 
 ## Sandbox
 

@@ -742,6 +742,7 @@ def generate_v2_all(schema_dir: Path) -> None:
     _preserve_reasoning_effort_enum(out_path)
     _preserve_thread_source_enum(out_path)
     _require_nullable_collab_spawn_identity_fields(out_path)
+    _add_legacy_collab_spawn_identity_validator(out_path)
     _preserve_collab_spawn_identity_contract(out_path)
     _normalize_generated_timestamps(out_path)
     _strip_redundant_model_config_passes(out_path)
@@ -834,6 +835,57 @@ def _require_nullable_collab_spawn_identity_fields(out_path: Path) -> None:
         )
 
     out_path.write_text(source[:class_start] + class_source + source[class_end:])
+
+
+def _add_legacy_collab_spawn_identity_validator(out_path: Path) -> None:
+    """Normalize legacy identity fields only while parsing the collab item itself."""
+    source = out_path.read_text()
+    import_block = """from pydantic import BaseModel, ConfigDict, Field, RootModel
+from typing import Annotated, Any, Literal
+from enum import Enum"""
+    if source.count(import_block) != 1:
+        raise RuntimeError("Generated SDK has an unexpected import block")
+    source = source.replace(
+        import_block,
+        """
+from enum import Enum
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator""",
+        1,
+    )
+
+    class_start = source.find("class CollabAgentToolCallThreadItem(BaseModel):")
+    if class_start == -1:
+        raise RuntimeError("Generated SDK is missing CollabAgentToolCallThreadItem")
+    class_end = source.find("\n\nclass ", class_start)
+    if class_end == -1:
+        class_end = len(source)
+
+    validator = """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_identity_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        identity_fields = (
+            ("requestedModel", "requested_model"),
+            ("requestedReasoningEffort", "requested_reasoning_effort"),
+            ("effectiveModel", "effective_model"),
+            ("effectiveReasoningEffort", "effective_reasoning_effort"),
+        )
+        if all(
+            wire_name not in value and python_name not in value
+            for wire_name, python_name in identity_fields
+        ):
+            return {**value, **{wire_name: None for wire_name, _ in identity_fields}}
+        return value
+"""
+    class_source = source[class_start:class_end]
+    if "_normalize_legacy_identity_fields" in class_source:
+        raise RuntimeError("Generated SDK already has the legacy collab identity validator")
+    out_path.write_text(source[:class_start] + class_source + validator + source[class_end:])
 
 
 def _preserve_reasoning_effort_enum(out_path: Path) -> None:
