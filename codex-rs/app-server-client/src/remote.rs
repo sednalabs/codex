@@ -19,6 +19,7 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -57,6 +58,7 @@ use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
+use tokio::sync::Notify;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -87,6 +89,10 @@ const REMOTE_EVENT_MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_EVENT_RETAINED_OVERHEAD_BYTES: usize = 256;
 const MAX_INBOUND_REQUEST_ID_STRING_BYTES: usize = 16 * 1024;
 const MAX_ACTIVE_INBOUND_REQUEST_IDS: usize = 512;
+const MAX_RECENT_REMOTE_REQUEST_IDS: usize = 512;
+const REQUEST_PENDING: u8 = 0;
+const REQUEST_COMPLETED: u8 = 1;
+const REQUEST_CANCELLED: u8 = 2;
 const INBOUND_REQUEST_ID_BUDGET_BYTES: usize = 9 * 1024 * 1024;
 const INBOUND_REQUEST_ID_ENTRY_OVERHEAD_BYTES: usize = 256;
 // Tungstenite still needs an HTTP request URI for the WebSocket handshake;
@@ -226,6 +232,7 @@ enum RemoteClientCommand {
     Request {
         request: Box<JSONRPCRequest>,
         response_tx: oneshot::Sender<IoResult<RequestResult>>,
+        lifecycle: Arc<AtomicU8>,
         _slot: OwnedSemaphorePermit,
     },
     Notify {
@@ -247,6 +254,7 @@ enum RemoteClientCommand {
 pub struct RemoteAppServerClient {
     command_tx: mpsc::Sender<RemoteClientCommand>,
     request_slots: Arc<Semaphore>,
+    request_cancel_notify: Arc<Notify>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     event_rx: mpsc::Receiver<RetainedRemoteEvent>,
     server_version: Option<String>,
@@ -258,6 +266,29 @@ pub struct RemoteAppServerClient {
 pub struct RemoteAppServerRequestHandle {
     command_tx: mpsc::Sender<RemoteClientCommand>,
     request_slots: Arc<Semaphore>,
+    request_cancel_notify: Arc<Notify>,
+}
+
+struct RemoteRequestCancellationGuard {
+    lifecycle: Arc<AtomicU8>,
+    notify: Arc<Notify>,
+}
+
+impl Drop for RemoteRequestCancellationGuard {
+    fn drop(&mut self) {
+        if self
+            .lifecycle
+            .compare_exchange(
+                REQUEST_PENDING,
+                REQUEST_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.notify.notify_one();
+        }
+    }
 }
 
 impl RemoteAppServerClient {
@@ -320,8 +351,10 @@ impl RemoteAppServerClient {
         let (command_tx, command_rx) = mpsc::channel::<RemoteClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<RetainedRemoteEvent>(channel_capacity);
         let request_slots = Arc::new(Semaphore::new(channel_capacity));
+        let request_cancel_notify = Arc::new(Notify::new());
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let worker_request_slots = Arc::clone(&request_slots);
+        let worker_request_cancel_notify = Arc::clone(&request_cancel_notify);
         let worker_handle = tokio::spawn(async move {
             remote_worker(
                 stream,
@@ -332,6 +365,10 @@ impl RemoteAppServerClient {
                 worker_request_slots,
                 backlog,
                 terminal,
+                worker_request_cancel_notify,
+                channel_capacity
+                    .saturating_mul(4)
+                    .min(MAX_RECENT_REMOTE_REQUEST_IDS),
             )
             .await
         });
@@ -339,6 +376,7 @@ impl RemoteAppServerClient {
         Ok(Self {
             command_tx,
             request_slots,
+            request_cancel_notify,
             shutdown_tx: Some(shutdown_tx),
             event_rx,
             server_version,
@@ -351,6 +389,7 @@ impl RemoteAppServerClient {
         RemoteAppServerRequestHandle {
             command_tx: self.command_tx.clone(),
             request_slots: Arc::clone(&self.request_slots),
+            request_cancel_notify: Arc::clone(&self.request_cancel_notify),
         }
     }
 
@@ -508,10 +547,16 @@ impl RemoteAppServerRequestHandle {
             .await
             .map_err(|_| remote_worker_closed())?;
         let (response_tx, response_rx) = oneshot::channel();
+        let lifecycle = Arc::new(AtomicU8::new(REQUEST_PENDING));
+        let _cancellation_guard = RemoteRequestCancellationGuard {
+            lifecycle: Arc::clone(&lifecycle),
+            notify: Arc::clone(&self.request_cancel_notify),
+        };
         self.command_tx
             .send(RemoteClientCommand::Request {
                 request: Box::new(request),
                 response_tx,
+                lifecycle,
                 _slot: slot,
             })
             .await
@@ -1139,7 +1184,40 @@ struct InitializedRemoteConnection {
 
 struct PendingRemoteRequest {
     response_tx: oneshot::Sender<IoResult<RequestResult>>,
+    lifecycle: Arc<AtomicU8>,
     _slot: OwnedSemaphorePermit,
+}
+
+struct RecentRemoteRequestIds {
+    ids: HashSet<RequestId>,
+    order: VecDeque<RequestId>,
+    capacity: usize,
+}
+
+impl RecentRemoteRequestIds {
+    fn new(capacity: usize) -> Self {
+        Self {
+            ids: HashSet::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn contains(&self, request_id: &RequestId) -> bool {
+        self.ids.contains(request_id)
+    }
+
+    fn remember(&mut self, request_id: RequestId) {
+        if self.capacity == 0 || !self.ids.insert(request_id.clone()) {
+            return;
+        }
+        self.order.push_back(request_id);
+        while self.order.len() > self.capacity {
+            if let Some(expired) = self.order.pop_front() {
+                self.ids.remove(&expired);
+            }
+        }
+    }
 }
 
 struct RemoteTerminal {
@@ -1220,11 +1298,14 @@ async fn remote_worker<S>(
     request_slots: Arc<Semaphore>,
     mut backlog: RemoteEventBacklog,
     mut terminal: Option<RemoteTerminal>,
+    request_cancel_notify: Arc<Notify>,
+    request_tombstone_capacity: usize,
 ) -> IoResult<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut pending_requests = HashMap::<RequestId, PendingRemoteRequest>::new();
+    let mut canceled_request_ids = RecentRemoteRequestIds::new(request_tombstone_capacity);
     let mut deferred_events = VecDeque::<RetainedRemoteEvent>::new();
 
     while terminal.is_none() {
@@ -1257,6 +1338,12 @@ where
                     format!("remote app server at `{endpoint}` is shutting down"),
                 ));
             }
+            _ = request_cancel_notify.notified() => {
+                cancel_pending_remote_requests(
+                    &mut pending_requests,
+                    &mut canceled_request_ids,
+                );
+            }
             command = command_rx.recv() => {
                 terminal = match command {
                     Some(command) => {
@@ -1265,6 +1352,7 @@ where
                             &mut stream,
                             &endpoint,
                             &mut pending_requests,
+                            &mut canceled_request_ids,
                             &mut backlog,
                         )
                         .await
@@ -1287,6 +1375,7 @@ where
                     &mut stream,
                     &endpoint,
                     &mut pending_requests,
+                    &mut canceled_request_ids,
                     &mut backlog,
                     &mut deferred_events,
                 )
@@ -1369,11 +1458,28 @@ where
     cleanup_result
 }
 
+fn cancel_pending_remote_requests(
+    pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
+    canceled_request_ids: &mut RecentRemoteRequestIds,
+) {
+    let canceled_ids: Vec<_> = pending_requests
+        .iter()
+        .filter(|(_, pending)| pending.lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED)
+        .map(|(request_id, _)| request_id.clone())
+        .collect();
+    for request_id in canceled_ids {
+        if pending_requests.remove(&request_id).is_some() {
+            canceled_request_ids.remember(request_id);
+        }
+    }
+}
+
 async fn handle_remote_command<S>(
     command: RemoteClientCommand,
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
     pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
+    canceled_request_ids: &mut RecentRemoteRequestIds,
     backlog: &mut RemoteEventBacklog,
 ) -> Option<RemoteTerminal>
 where
@@ -1383,18 +1489,41 @@ where
         RemoteClientCommand::Request {
             request,
             response_tx,
+            lifecycle,
             _slot,
         } => {
             let request_id = request.id.clone();
-            if pending_requests.contains_key(&request_id) {
-                let _ = response_tx.send(Err(IoError::new(
-                    ErrorKind::InvalidInput,
-                    format!("duplicate remote app-server request id `{request_id}`"),
-                )));
+            if lifecycle.load(Ordering::Acquire) == REQUEST_CANCELLED {
+                return None;
+            }
+            if pending_requests.contains_key(&request_id)
+                || canceled_request_ids.contains(&request_id)
+            {
+                if lifecycle
+                    .compare_exchange(
+                        REQUEST_PENDING,
+                        REQUEST_COMPLETED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    let _ = response_tx.send(Err(IoError::new(
+                        ErrorKind::InvalidInput,
+                        format!("duplicate remote app-server request id `{request_id}`"),
+                    )));
+                }
                 return None;
             }
 
-            pending_requests.insert(request_id, PendingRemoteRequest { response_tx, _slot });
+            pending_requests.insert(
+                request_id,
+                PendingRemoteRequest {
+                    response_tx,
+                    lifecycle,
+                    _slot,
+                },
+            );
             write_jsonrpc_message(stream, JSONRPCMessage::Request(*request), endpoint)
                 .await
                 .err()
@@ -1514,6 +1643,7 @@ async fn handle_remote_message<S>(
     stream: &mut WebSocketStream<S>,
     endpoint: &str,
     pending_requests: &mut HashMap<RequestId, PendingRemoteRequest>,
+    canceled_request_ids: &mut RecentRemoteRequestIds,
     backlog: &mut RemoteEventBacklog,
     deferred_events: &mut VecDeque<RetainedRemoteEvent>,
 ) -> Option<RemoteTerminal>
@@ -1524,13 +1654,47 @@ where
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<JSONRPCMessage>(&text) {
             Ok(JSONRPCMessage::Response(response)) => {
                 if let Some(pending) = pending_requests.remove(&response.id) {
-                    let _ = pending.response_tx.send(Ok(Ok(response.result)));
+                    if pending
+                        .lifecycle
+                        .compare_exchange(
+                            REQUEST_PENDING,
+                            REQUEST_COMPLETED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        let _ = pending.response_tx.send(Ok(Ok(response.result)));
+                    } else {
+                        canceled_request_ids.remember(response.id);
+                    }
+                } else if canceled_request_ids.contains(&response.id) {
+                    // A response racing caller cancellation belongs to the
+                    // canceled request and must not be routed to a reused ID.
+                    return None;
                 }
                 None
             }
             Ok(JSONRPCMessage::Error(error)) => {
                 if let Some(pending) = pending_requests.remove(&error.id) {
-                    let _ = pending.response_tx.send(Ok(Err(error.error)));
+                    if pending
+                        .lifecycle
+                        .compare_exchange(
+                            REQUEST_PENDING,
+                            REQUEST_COMPLETED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        let _ = pending.response_tx.send(Ok(Err(error.error)));
+                    } else {
+                        canceled_request_ids.remember(error.id);
+                    }
+                } else if canceled_request_ids.contains(&error.id) {
+                    // See the response branch: absorb late errors for
+                    // canceled requests without retaining their payload.
+                    return None;
                 }
                 None
             }
@@ -2368,6 +2532,15 @@ mod tests {
             .expect("integer request ID should be valid")
     }
 
+    fn client_request(id: i64) -> JSONRPCRequest {
+        JSONRPCRequest {
+            id: RequestId::Integer(id),
+            method: "account/read".to_string(),
+            params: None,
+            trace: None,
+        }
+    }
+
     #[test]
     fn initialization_backlog_counts_best_effort_loss_at_capacity_one() {
         let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
@@ -2690,6 +2863,7 @@ mod tests {
         )
         .await;
         let mut pending_requests = HashMap::new();
+        let mut canceled_request_ids = RecentRemoteRequestIds::new(/*capacity*/ 4);
         let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
         backlog
             .enqueue(server_request(/*id*/ 1))
@@ -2705,6 +2879,7 @@ mod tests {
             &mut stream,
             "test://closed-peer",
             &mut pending_requests,
+            &mut canceled_request_ids,
             &mut backlog,
         )
         .await
@@ -2766,6 +2941,7 @@ mod tests {
         let handle = RemoteAppServerRequestHandle {
             command_tx,
             request_slots: Arc::clone(&request_slots),
+            request_cancel_notify: Arc::new(Notify::new()),
         };
 
         let request = tokio::spawn(async move {
@@ -2789,6 +2965,137 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
     }
 
+    #[test]
+    fn canceled_request_tombstones_are_bounded() {
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        for id in 0..20 {
+            tombstones.remember(RequestId::Integer(id));
+        }
+
+        assert_eq!(tombstones.ids.len(), 4);
+        assert_eq!(tombstones.order.len(), 4);
+        assert!(!tombstones.contains(&RequestId::Integer(15)));
+        assert!(tombstones.contains(&RequestId::Integer(16)));
+        assert!(tombstones.contains(&RequestId::Integer(19)));
+    }
+
+    #[tokio::test]
+    async fn canceled_remote_request_releases_slot_and_absorbs_late_response() {
+        let (client_socket, peer_socket) = tokio::io::duplex(64 * 1024);
+        let stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut peer = WebSocketStream::from_raw_socket(
+            peer_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let (command_tx, command_rx) = mpsc::channel(/*capacity*/ 1);
+        let (event_tx, event_rx) = mpsc::channel(/*capacity*/ 1);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let request_slots = Arc::new(Semaphore::new(1));
+        let request_cancel_notify = Arc::new(Notify::new());
+        let worker = tokio::spawn(remote_worker(
+            stream,
+            "test://cancellation".to_string(),
+            command_rx,
+            event_tx,
+            shutdown_rx,
+            Arc::clone(&request_slots),
+            RemoteEventBacklog::new(/*capacity*/ 1),
+            None,
+            Arc::clone(&request_cancel_notify),
+            /*request_tombstone_capacity*/ 4,
+        ));
+        let handle = RemoteAppServerRequestHandle {
+            command_tx,
+            request_slots,
+            request_cancel_notify,
+        };
+
+        let first = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*id*/ 1)).await
+            }
+        });
+        let first_message = timeout(Duration::from_secs(2), peer.next())
+            .await
+            .expect("first request should be admitted")
+            .expect("peer should receive first request")
+            .expect("peer websocket should remain healthy");
+        let Message::Text(text) = first_message else {
+            panic!("peer should receive a text request");
+        };
+        let JSONRPCMessage::Request(first_request) =
+            serde_json::from_str(&text).expect("first request should be valid JSON-RPC")
+        else {
+            panic!("peer should receive a JSON-RPC request");
+        };
+        assert_eq!(first_request.id, RequestId::Integer(1));
+
+        first.abort();
+        let _ = first.await;
+        write_jsonrpc_message(
+            &mut peer,
+            JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(1),
+                result: serde_json::json!({"late": true}),
+            }),
+            "test://cancellation",
+        )
+        .await
+        .expect("late response should be writable");
+
+        let second = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle.request_json_rpc(client_request(/*id*/ 2)).await
+            }
+        });
+        let second_message = timeout(Duration::from_secs(2), peer.next())
+            .await
+            .expect("cancellation should release the request slot")
+            .expect("peer should receive second request")
+            .expect("peer websocket should remain healthy");
+        let Message::Text(text) = second_message else {
+            panic!("peer should receive a text request");
+        };
+        let JSONRPCMessage::Request(second_request) =
+            serde_json::from_str(&text).expect("second request should be valid JSON-RPC")
+        else {
+            panic!("peer should receive a JSON-RPC request");
+        };
+        assert_eq!(second_request.id, RequestId::Integer(2));
+
+        second.abort();
+        let _ = second.await;
+        let duplicate = handle.request_json_rpc(client_request(/*id*/ 1));
+        let error = duplicate
+            .await
+            .expect_err("canceled request ID should remain tombstoned");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(
+            timeout(Duration::from_millis(50), peer.next())
+                .await
+                .is_err()
+        );
+
+        drop(handle);
+        let _ = shutdown_tx.send(());
+        drop(event_rx);
+        drop(peer);
+        timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("worker should terminate after cancellation test")
+            .expect("worker task should join")
+            .expect("worker should terminate cleanly");
+    }
+
     #[tokio::test]
     async fn shutdown_control_bypasses_a_saturated_command_channel() {
         let (command_tx, _command_rx) = mpsc::channel(1);
@@ -2808,6 +3115,7 @@ mod tests {
         let client = RemoteAppServerClient {
             command_tx,
             request_slots: Arc::new(Semaphore::new(1)),
+            request_cancel_notify: Arc::new(Notify::new()),
             shutdown_tx: Some(shutdown_tx),
             event_rx,
             server_version: None,
@@ -2830,6 +3138,7 @@ mod tests {
         let client = RemoteAppServerClient {
             command_tx,
             request_slots: Arc::new(Semaphore::new(1)),
+            request_cancel_notify: Arc::new(Notify::new()),
             shutdown_tx: Some(shutdown_tx),
             event_rx,
             server_version: None,
@@ -2853,6 +3162,7 @@ mod tests {
         let client = RemoteAppServerClient {
             command_tx,
             request_slots: Arc::new(Semaphore::new(1)),
+            request_cancel_notify: Arc::new(Notify::new()),
             shutdown_tx: Some(shutdown_tx),
             event_rx,
             server_version: None,
@@ -2879,6 +3189,7 @@ mod tests {
         let client = RemoteAppServerClient {
             command_tx,
             request_slots: Arc::new(Semaphore::new(1)),
+            request_cancel_notify: Arc::new(Notify::new()),
             shutdown_tx: Some(shutdown_tx),
             event_rx,
             server_version: None,
