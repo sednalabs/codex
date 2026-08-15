@@ -40,6 +40,7 @@ on:
           - codex.tui-config-refresh-session-targeted
           - codex.tui-agent-picker-usage-targeted
           - codex.tui-agent-picker-targeted
+          - codex.tui-collab-spawn-identity-targeted
           - codex.tui-agent-picker-model-surface-targeted
           - codex.spawn-agent-tool-model-surface-targeted
           - codex.spawn-agent-description-model-surface-targeted
@@ -69,6 +70,8 @@ on:
           - codex.exec-native-computer-use-targeted
           - codex.native-computer-use-tool-registry-targeted
           - codex.native-computer-use-doctor-targeted
+          - codex.app-server-collab-spawn-identity-targeted
+          - codex.collab-spawn-identity-consumers-targeted
           - codex.app-server-thread-cwd-targeted
           - codex.app-server-v2-contract-targeted
           - codex.mcp-server-contract-targeted

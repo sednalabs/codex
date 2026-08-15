@@ -23,6 +23,9 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
+use codex_app_server_protocol::build_turns_from_rollout_items;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
@@ -67,6 +70,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
@@ -1913,6 +1917,106 @@ async fn multi_agent_v2_spawn_terminal_babysitter_uses_role_locked_model() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_without_snapshot_omits_unobserved_effective_identity() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: Option<String>,
+        requested_model: Option<String>,
+        requested_reasoning_effort: Option<ReasoningEffort>,
+        effective_model: Option<String>,
+        requested_model_honored: Option<bool>,
+        effective_reasoning_effort: Option<ReasoningEffort>,
+    }
+
+    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    set_turn_config(
+        Arc::get_mut(&mut turn).expect("test turn should not be shared yet"),
+        config.clone(),
+    );
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let control = manager.agent_control();
+    control.hide_next_agent_config_snapshot().await;
+    {
+        let session = Arc::get_mut(&mut session).expect("test session should not be shared yet");
+        session.services.agent_control = control;
+        session.thread_id = root.thread_id;
+    }
+
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "monitor this wait",
+                "task_name": "unobserved_identity",
+                "agent_type": "terminal-babysitter",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "high",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("spawn should succeed even when the post-spawn snapshot is unavailable");
+    let (content, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result.requested_model.as_deref(), Some("gpt-5.6-terra"));
+    assert_eq!(
+        result.requested_reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(result.effective_model, None);
+    assert_eq!(result.requested_model_honored, None);
+    assert_eq!(result.effective_reasoning_effort, None);
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical started activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical sub-agent activity completion");
+    };
+    let TurnItem::SubAgentActivity(activity) = completed.item else {
+        panic!("expected started sub-agent activity item");
+    };
+    assert_eq!(
+        activity.kind,
+        codex_protocol::protocol::SubAgentActivityKind::Started
+    );
+    assert_eq!(activity.model, None);
+    assert_eq!(activity.reasoning_effort, None);
+    let activity_agent_id = activity.agent_thread_id.to_string();
+    assert_eq!(result.agent_id.as_deref(), Some(activity_agent_id.as_str()));
+
+    let legacy_completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy started activity should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::SubAgentActivity(activity) = legacy_completed.msg else {
+        panic!("expected legacy started sub-agent activity");
+    };
+    assert_eq!(activity.model, None);
+    assert_eq!(activity.reasoning_effort, None);
+    assert_eq!(
+        activity.kind,
+        codex_protocol::protocol::SubAgentActivityKind::Started
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_inspect_agent_tree_receipt_includes_live_effective_identity() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -2083,13 +2187,17 @@ async fn multi_agent_v2_spawn_rejects_legacy_items_field() {
 }
 
 #[tokio::test]
-async fn spawn_agent_errors_when_manager_dropped() {
-    let (session, turn) = make_session_and_context().await;
+async fn failed_spawn_keeps_requested_identity_separate_from_terminal_effective_identity() {
+    let (session, turn, mut rx) = make_session_and_context_with_rx().await;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        session,
+        turn,
         "spawn_agent",
-        function_payload(json!({"message": "hello"})),
+        function_payload(json!({
+            "message": "hello",
+            "model": "gpt-5.4",
+            "reasoning_effort": "medium"
+        })),
     );
     let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
         panic!("spawn should fail without a manager");
@@ -2098,6 +2206,224 @@ async fn spawn_agent_errors_when_manager_dropped() {
         err,
         FunctionCallError::RespondToModel("collab manager unavailable".to_string())
     );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.model, None);
+    assert_eq!(started.reasoning_effort, None);
+    assert_eq!(started.requested_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        started.requested_reasoning_effort,
+        Some(ReasoningEffort::Medium)
+    );
+
+    let legacy_started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnBegin(legacy_started) = legacy_started.msg else {
+        panic!("expected legacy spawn start");
+    };
+    assert_eq!(
+        legacy_started.requested_reasoning_effort_present,
+        Some(true)
+    );
+    let serialized =
+        serde_json::to_value(&legacy_started).expect("current legacy spawn start should serialize");
+    assert_eq!(
+        serialized["requested_reasoning_effort_present"],
+        json!(true)
+    );
+    let replayed =
+        serde_json::from_value(serialized).expect("current legacy spawn start should deserialize");
+    let Some(ServerNotification::ItemStarted(mapped_started)) =
+        codex_app_server_protocol::item_event_to_server_notification(
+            EventMsg::CollabAgentSpawnBegin(replayed),
+            "thread-1",
+            "turn-1",
+        )
+    else {
+        panic!("legacy spawn start should map to a canonical item start");
+    };
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = mapped_started.item
+    else {
+        panic!("legacy spawn start should map to a collab tool item");
+    };
+    assert_eq!(requested_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(requested_reasoning_effort, Some(ReasoningEffort::Medium));
+
+    let completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical failed spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemCompleted(completed) = completed.msg else {
+        panic!("expected canonical failed spawn completion");
+    };
+    let TurnItem::CollabAgentToolCall(completed) = completed.item else {
+        panic!("expected collab failed spawn completion item");
+    };
+    assert_eq!(completed.status, CollabAgentToolCallStatus::Failed);
+    assert_eq!(completed.model, None);
+    assert_eq!(completed.reasoning_effort, None);
+    assert_eq!(completed.requested_model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        completed.requested_reasoning_effort,
+        Some(ReasoningEffort::Medium)
+    );
+
+    let legacy_completed = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy failed spawn completion should arrive")
+        .expect("spawn event channel should remain open");
+    assert!(matches!(
+        legacy_completed.msg,
+        EventMsg::CollabAgentSpawnEnd(_)
+    ));
+}
+
+#[tokio::test]
+async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent() {
+    let (session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let thread_id = session.thread_id;
+    let invocation = invocation(
+        session,
+        turn,
+        "spawn_agent",
+        function_payload(json!({
+            "message": "hello"
+        })),
+    );
+    let Err(err) = SpawnAgentHandler::default().handle(invocation).await else {
+        panic!("spawn should fail without a manager");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("collab manager unavailable".to_string())
+    );
+
+    let started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("canonical spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected canonical spawn start");
+    };
+    let TurnItem::CollabAgentToolCall(started) = started.item else {
+        panic!("expected collab spawn start item");
+    };
+    assert_eq!(started.requested_model, None);
+    assert_eq!(started.requested_reasoning_effort, None);
+
+    let legacy_started = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("legacy spawn start should arrive")
+        .expect("spawn event channel should remain open");
+    let EventMsg::CollabAgentSpawnBegin(legacy_started) = legacy_started.msg else {
+        panic!("expected legacy spawn start");
+    };
+    assert_eq!(legacy_started.model, "");
+    assert_eq!(legacy_started.reasoning_effort, ReasoningEffort::Medium);
+    assert_eq!(
+        legacy_started.requested_reasoning_effort_present,
+        Some(false)
+    );
+
+    let serialized = serde_json::to_value(&EventMsg::CollabAgentSpawnBegin(legacy_started.clone()))
+        .expect("current omitted legacy spawn start should serialize");
+    assert_eq!(
+        serialized["requested_reasoning_effort_present"],
+        json!(false)
+    );
+    let replayed: EventMsg = serde_json::from_value(serialized)
+        .expect("current omitted legacy spawn start should deserialize");
+    let Some(ServerNotification::ItemStarted(mapped_started)) =
+        codex_app_server_protocol::item_event_to_server_notification(
+            replayed.clone(),
+            "thread-1",
+            "turn-1",
+        )
+    else {
+        panic!("replayed legacy spawn start should map to a canonical item start");
+    };
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = mapped_started.item
+    else {
+        panic!("replayed legacy spawn start should map to a collab tool item");
+    };
+    assert_eq!(requested_model, None);
+    assert_eq!(requested_reasoning_effort, None);
+
+    let replay_turns = build_turns_from_rollout_items(&[
+        RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            trace_id: None,
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        })),
+        RolloutItem::EventMsg(replayed),
+    ]);
+    assert_eq!(replay_turns.len(), 1);
+    let [
+        AppServerThreadItem::CollabAgentToolCall {
+            sender_thread_id,
+            requested_model,
+            requested_reasoning_effort,
+            ..
+        },
+    ] = replay_turns[0].items.as_slice()
+    else {
+        panic!("replayed legacy spawn start should materialize one collab tool item");
+    };
+    assert_eq!(sender_thread_id, &thread_id.to_string());
+    assert_eq!(*requested_model, None);
+    assert_eq!(*requested_reasoning_effort, None);
+
+    let mut historic_markerless = legacy_started;
+    historic_markerless.requested_reasoning_effort_present = None;
+    let historic_json = serde_json::to_value(&EventMsg::CollabAgentSpawnBegin(historic_markerless))
+        .expect("historic markerless spawn start should serialize");
+    assert!(
+        historic_json
+            .get("requested_reasoning_effort_present")
+            .is_none()
+    );
+    let historic_replayed: EventMsg = serde_json::from_value(historic_json)
+        .expect("historic markerless spawn start should deserialize");
+    let Some(ServerNotification::ItemStarted(historic_started)) =
+        codex_app_server_protocol::item_event_to_server_notification(
+            historic_replayed,
+            "thread-1",
+            "turn-1",
+        )
+    else {
+        panic!("historic markerless spawn start should map to a canonical item start");
+    };
+    let AppServerThreadItem::CollabAgentToolCall {
+        requested_model,
+        requested_reasoning_effort,
+        ..
+    } = historic_started.item
+    else {
+        panic!("historic markerless spawn start should map to a collab tool item");
+    };
+    assert_eq!(requested_model, None);
+    assert_eq!(requested_reasoning_effort, None);
 }
 
 #[tokio::test]

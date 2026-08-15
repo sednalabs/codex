@@ -143,8 +143,14 @@ use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionG
 use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
 use sha1::Digest;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+
+// Late review completions need recent terminal tombstones so they cannot leak
+// into a reused item ID, but the long-lived reducer must not retain every turn.
+const TERMINAL_TURN_RETENTION_LIMIT: usize = 4_096;
 
 #[derive(Default)]
 pub(crate) struct AnalyticsReducer {
@@ -152,9 +158,11 @@ pub(crate) struct AnalyticsReducer {
     turns: HashMap<String, TurnState>,
     connections: HashMap<u64, ConnectionState>,
     threads: HashMap<String, ThreadAnalyticsState>,
-    tool_items_started_at_ms: HashMap<ToolItemKey, u64>,
+    tool_item_lifecycles: HashMap<ToolItemKey, ToolItemLifecycleState>,
     pending_reviews: HashMap<RequestId, PendingReviewState>,
     item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
+    terminal_turns: HashSet<(String, String)>,
+    terminal_turn_order: VecDeque<(String, String)>,
 }
 
 struct ConnectionState {
@@ -379,6 +387,16 @@ struct ToolItemKey {
     thread_id: String,
     turn_id: String,
     item_id: String,
+}
+
+struct ToolItemLifecycleState {
+    started_at_ms: u64,
+    collab_requested_identity: Option<CollabRequestedIdentity>,
+}
+
+struct CollabRequestedIdentity {
+    requested_model: Option<String>,
+    requested_reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 }
 
 #[derive(Default)]
@@ -1232,13 +1250,35 @@ impl AnalyticsReducer {
                 else {
                     return;
                 };
-                self.tool_items_started_at_ms.insert(
+                let collab_requested_identity = match &notification.item {
+                    ThreadItem::CollabAgentToolCall {
+                        model,
+                        reasoning_effort,
+                        requested_model,
+                        requested_reasoning_effort,
+                        ..
+                    } => Some(CollabRequestedIdentity {
+                        // ItemStarted is the only lifecycle phase where the
+                        // established model/effort aliases may be used as a
+                        // compatibility fallback for a caller request. Terminal
+                        // aliases are never reclassified here.
+                        requested_model: requested_model.clone().or_else(|| model.clone()),
+                        requested_reasoning_effort: requested_reasoning_effort
+                            .clone()
+                            .or_else(|| reasoning_effort.clone()),
+                    }),
+                    _ => None,
+                };
+                self.tool_item_lifecycles.insert(
                     ToolItemKey {
                         thread_id: notification.thread_id,
                         turn_id: notification.turn_id,
                         item_id: item_id.to_string(),
                     },
-                    started_at_ms,
+                    ToolItemLifecycleState {
+                        started_at_ms,
+                        collab_requested_identity,
+                    },
                 );
             }
             ServerNotification::ItemCompleted(notification) => {
@@ -1272,7 +1312,7 @@ impl AnalyticsReducer {
                     turn_id: notification.turn_id.clone(),
                     item_id: item_id.to_string(),
                 };
-                let Some(started_at_ms) = self.tool_items_started_at_ms.remove(&key) else {
+                let Some(lifecycle) = self.tool_item_lifecycles.remove(&key) else {
                     tracing::warn!(
                         thread_id = %notification.thread_id,
                         turn_id = %notification.turn_id,
@@ -1294,12 +1334,13 @@ impl AnalyticsReducer {
                     thread_id: &notification.thread_id,
                     turn_id: &notification.turn_id,
                     item: &notification.item,
-                    started_at_ms,
+                    started_at_ms: lifecycle.started_at_ms,
                     completed_at_ms,
                     connection_state,
                     thread_state,
                     thread_metadata,
                     review_summary: self.item_review_summaries.get(&key),
+                    requested_collab_identity: lifecycle.collab_requested_identity.as_ref(),
                 }) {
                     out.push(event);
                 }
@@ -1324,6 +1365,7 @@ impl AnalyticsReducer {
                 turn_state.latest_diff = Some(notification.diff);
             }
             ServerNotification::TurnCompleted(notification) => {
+                let thread_id = notification.thread_id;
                 let turn_state = self.turns.entry(notification.turn.id.clone()).or_default();
                 turn_state.completed = Some(CompletedTurnState {
                     status: analytics_turn_status(notification.turn.status),
@@ -1343,6 +1385,8 @@ impl AnalyticsReducer {
                 });
                 let turn_id = notification.turn.id;
                 self.maybe_emit_turn_event(&turn_id, out).await;
+                self.remember_terminal_turn(thread_id.clone(), turn_id.clone());
+                self.clear_terminal_turn_item_state(&thread_id, &turn_id);
             }
             _ => {}
         }
@@ -1559,7 +1603,14 @@ impl AnalyticsReducer {
         completed_at_ms: u64,
         out: &mut Vec<TrackEventRequest>,
     ) {
-        if let Some(item_key) = item_review_summary_key(&pending_review) {
+        if let Some(item_key) = item_review_summary_key(&pending_review)
+            && !self
+                .terminal_turns
+                .contains(&(item_key.thread_id.clone(), item_key.turn_id.clone()))
+        {
+            // A review may precede its item-start notification. Retain that
+            // summary unless the turn is already terminal; late reviews still
+            // emit their own event but cannot leak into a reused item ID.
             self.record_item_review_summary(
                 item_key,
                 reviewer,
@@ -1677,6 +1728,25 @@ impl AnalyticsReducer {
         self.turns.remove(turn_id);
     }
 
+    fn clear_terminal_turn_item_state(&mut self, thread_id: &str, turn_id: &str) {
+        self.tool_item_lifecycles
+            .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
+        self.item_review_summaries
+            .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
+    }
+
+    fn remember_terminal_turn(&mut self, thread_id: String, turn_id: String) {
+        let key = (thread_id, turn_id);
+        if self.terminal_turns.insert(key.clone()) {
+            self.terminal_turn_order.push_back(key);
+        }
+        while self.terminal_turn_order.len() > TERMINAL_TURN_RETENTION_LIMIT {
+            if let Some(expired) = self.terminal_turn_order.pop_front() {
+                self.terminal_turns.remove(&expired);
+            }
+        }
+    }
+
     fn thread_connection_or_warn(
         &self,
         drop_site: AnalyticsDropSite<'_>,
@@ -1787,6 +1857,7 @@ struct ToolItemEventInput<'a> {
     thread_state: &'a ThreadAnalyticsState,
     thread_metadata: &'a ThreadMetadataState,
     review_summary: Option<&'a ItemReviewSummary>,
+    requested_collab_identity: Option<&'a CollabRequestedIdentity>,
 }
 
 fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
@@ -1800,6 +1871,7 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
         thread_state,
         thread_metadata,
         review_summary,
+        requested_collab_identity,
     } = input;
     match item {
         ThreadItem::CommandExecution {
@@ -1993,12 +2065,20 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
             status,
             sender_thread_id,
             receiver_thread_ids,
-            model,
-            reasoning_effort,
+            requested_model: terminal_requested_model,
+            requested_reasoning_effort: terminal_requested_reasoning_effort,
             agents_states,
             ..
         } => {
             let (terminal_status, failure_kind) = collab_tool_call_outcome(status)?;
+            let requested_model = requested_collab_identity
+                .and_then(|identity| identity.requested_model.as_ref())
+                .cloned()
+                .or_else(|| terminal_requested_model.clone());
+            let requested_reasoning_effort = requested_collab_identity
+                .and_then(|identity| identity.requested_reasoning_effort.as_ref())
+                .or(terminal_requested_reasoning_effort.as_ref())
+                .and_then(serialize_enum_as_string);
             let base = tool_item_base(
                 thread_id,
                 turn_id,
@@ -2026,10 +2106,8 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
                         sender_thread_id: sender_thread_id.clone(),
                         receiver_thread_count: usize_to_u64(receiver_thread_ids.len()),
                         receiver_thread_ids: Some(receiver_thread_ids.clone()),
-                        requested_model: model.clone(),
-                        requested_reasoning_effort: reasoning_effort
-                            .as_ref()
-                            .and_then(serialize_enum_as_string),
+                        requested_model,
+                        requested_reasoning_effort,
                         agent_state_count: Some(usize_to_u64(agents_states.len())),
                         completed_agent_count: Some(usize_to_u64(
                             agents_states
@@ -2860,6 +2938,30 @@ mod tests {
     use codex_protocol::permissions::FileSystemSandboxPolicy;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn terminal_turn_tombstones_are_bounded_and_keep_the_newest_turns() {
+        let mut reducer = AnalyticsReducer::default();
+
+        for index in 0..=TERMINAL_TURN_RETENTION_LIMIT {
+            reducer.remember_terminal_turn("thread-1".to_string(), format!("turn-{index}"));
+        }
+
+        assert_eq!(reducer.terminal_turns.len(), TERMINAL_TURN_RETENTION_LIMIT);
+        assert_eq!(
+            reducer.terminal_turn_order.len(),
+            TERMINAL_TURN_RETENTION_LIMIT
+        );
+        assert!(
+            !reducer
+                .terminal_turns
+                .contains(&("thread-1".to_string(), "turn-0".to_string()))
+        );
+        assert!(reducer.terminal_turns.contains(&(
+            "thread-1".to_string(),
+            format!("turn-{TERMINAL_TURN_RETENTION_LIMIT}"),
+        )));
+    }
 
     #[test]
     fn managed_full_disk_with_restricted_network_reports_external_sandbox() {

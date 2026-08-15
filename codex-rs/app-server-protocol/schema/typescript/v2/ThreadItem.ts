@@ -115,13 +115,41 @@ receiverThreadIds: Array<string>,
  */
 prompt: string | null,
 /**
- * Model requested for the spawned agent, when applicable.
+ * Established model alias for a spawned-agent lifecycle item.
+ *
+ * On spawn start, this is the caller-requested model. On a terminal spawn item, this is the observed effective model. An unknown terminal effective model is null.
  */
 model: string | null,
 /**
- * Reasoning effort requested for the spawned agent, when applicable.
+ * Established reasoning-effort alias for a spawned-agent lifecycle item.
+ *
+ * On spawn start, this is the caller-requested effort. On a terminal spawn item, this is the observed effective effort. An unknown terminal effective effort is null.
  */
 reasoningEffort: ReasoningEffort | null,
+/**
+ * Additive explicit provenance for the requested model.
+ *
+ * This remains available on terminal spawn items even though the legacy `model` alias then represents the observed effective model. This required nullable field is null when request provenance is unavailable.
+ */
+requestedModel: string | null,
+/**
+ * Additive explicit provenance for the requested reasoning effort.
+ *
+ * This remains available on terminal spawn items even though the legacy `reasoningEffort` alias then represents the observed effective effort. This required nullable field is null when request provenance is unavailable.
+ */
+requestedReasoningEffort: ReasoningEffort | null,
+/**
+ * Effective model observed for a spawned agent at terminal lifecycle time.
+ *
+ * This required nullable field is null when unknown and must not be filled from thread metadata or a request.
+ */
+effectiveModel: string | null,
+/**
+ * Effective reasoning effort observed for a spawned agent at terminal lifecycle time.
+ *
+ * This required nullable field is null when unknown and must not be filled from thread metadata or a request.
+ */
+effectiveReasoningEffort: ReasoningEffort | null,
 /**
  * Last known status of the target agents, when available.
  */

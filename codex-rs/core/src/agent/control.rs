@@ -228,6 +228,8 @@ pub(crate) struct AgentControl {
     rollout_budget: Arc<RolloutBudget>,
     #[cfg(test)]
     spawn_test_hooks: Arc<SpawnTestHooks>,
+    #[cfg(test)]
+    hide_next_agent_config_snapshot: Arc<tokio::sync::Mutex<bool>>,
 }
 
 /// Deterministic race and failure controls for the post-creation spawn boundary.
@@ -451,6 +453,11 @@ impl AgentControl {
             .swap(false, Ordering::AcqRel)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn hide_next_agent_config_snapshot(&self) {
+        *self.hide_next_agent_config_snapshot.lock().await = true;
+    }
+
     /// Send rich user input items to an existing agent thread.
     pub(crate) async fn send_input(
         &self,
@@ -655,6 +662,10 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<ThreadConfigSnapshot> {
+        #[cfg(test)]
+        if std::mem::take(&mut *self.hide_next_agent_config_snapshot.lock().await) {
+            return None;
+        }
         let Ok(state) = self.upgrade() else {
             return None;
         };
