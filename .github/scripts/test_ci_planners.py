@@ -1208,7 +1208,7 @@ class RouteSelectionTests(unittest.TestCase):
             [],
         )
 
-    def test_rust_ci_route_priority_rejects_invalid_unrelated_route(self) -> None:
+    def test_route_priority_helpers_reject_invalid_unrelated_route(self) -> None:
         routes = [
             {
                 "route_id": "identity",
@@ -1224,14 +1224,22 @@ class RouteSelectionTests(unittest.TestCase):
             },
         ]
 
-        with self.assertRaisesRegex(
-            SystemExit,
-            "unrelated-invalid must set priority to a non-negative integer",
+        for selector in (
+            RESOLVE_VALIDATION_PLAN.select_followup_lanes,
+            RESOLVE_RUST_CI_MODE.select_followup_lanes,
         ):
-            RESOLVE_RUST_CI_MODE.select_followup_lanes(
-                ["identity/source.rs"],
-                routes,
-            )
+            with self.subTest(selector=selector.__module__, files=["identity/source.rs"]):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "unrelated-invalid must set priority to a non-negative integer",
+                ):
+                    selector(["identity/source.rs"], routes)
+            with self.subTest(selector=selector.__module__, files=[]):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "unrelated-invalid must set priority to a non-negative integer",
+                ):
+                    selector([], routes)
 
     def test_brokered_tool_replay_route_stays_tight(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
