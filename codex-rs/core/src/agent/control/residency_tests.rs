@@ -8,6 +8,8 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
+use crate::context::TerminalCompletionNotification;
+use crate::context::TerminalCompletionStatus;
 use crate::init_state_db;
 use crate::thread_manager::ThreadManagerState;
 use crate::thread_manager::V2ThreadUnloadResult;
@@ -495,7 +497,88 @@ async fn terminal_idle_unload_timeout_zero_disables_unload() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
+async fn spawned_v2_terminal_child_unloads_at_terminal_idle_deadline() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    config.multi_agent_v2.terminal_idle_unload_timeout_ms = 100;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start V2 root thread");
+    let control = manager.agent_control();
+    let child_thread_id = control
+        .spawn_agent(
+            config,
+            vec![UserInput::Text {
+                text: "complete and unload".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::root()
+                        .join("idle-worker")
+                        .expect("child agent path"),
+                ),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+            })),
+        )
+        .await
+        .expect("V2 child spawn should succeed");
+    let child = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("fresh child should be resident");
+    assert!(
+        control
+            .state
+            .agent_metadata_for_thread(child_thread_id)
+            .is_some(),
+        "normal spawn should publish the child before its watcher observes terminal state"
+    );
+    assert_eq!(control.v2_residency.resident_count(), 1);
+
+    mark_thread_status(
+        child.as_ref(),
+        AgentStatus::Completed(Some("child completed".to_string())),
+    )
+    .await;
+    yield_now().await;
+
+    advance(Duration::from_millis(99)).await;
+    yield_now().await;
+    let before_deadline = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("terminal child must remain resident before the idle deadline");
+    assert!(Arc::ptr_eq(&before_deadline, &child));
+    assert_eq!(control.v2_residency.resident_count(), 1);
+
+    advance(Duration::from_millis(1)).await;
+    for _ in 0..4 {
+        yield_now().await;
+    }
+    assert!(
+        manager.get_thread(child_thread_id).await.is_err(),
+        "the watcher registered by normal spawn must unload at the idle deadline"
+    );
+    assert_eq!(control.v2_residency.resident_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_is_invalidated_by_new_user_work_and_rearms() {
     let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
         /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
     )
@@ -526,6 +609,113 @@ async fn terminal_idle_unload_is_invalidated_by_new_user_work() {
         .await
         .expect("new user work should invalidate idle unload");
     assert!(Arc::ptr_eq(&resident, &first.thread));
+
+    mark_thread_status(
+        resident.as_ref(),
+        AgentStatus::Completed(Some("second turn complete".to_string())),
+    )
+    .await;
+    yield_now().await;
+    advance(Duration::from_millis(99)).await;
+    yield_now().await;
+    assert!(
+        manager.get_thread(first.thread_id).await.is_ok(),
+        "the rearmed terminal idle deadline must not unload early"
+    );
+
+    advance(Duration::from_millis(1)).await;
+    for _ in 0..4 {
+        yield_now().await;
+    }
+    assert!(
+        manager.get_thread(first.thread_id).await.is_err(),
+        "the watcher should retry after the subsequent terminal state"
+    );
+    assert_eq!(control.v2_residency.resident_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_defers_for_finalizer_then_retries() {
+    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
+    )
+    .await;
+    first
+        .thread
+        .session
+        .input_queue
+        .register_terminal_finalizer();
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("finalizer pending".to_string())),
+    )
+    .await;
+    yield_now().await;
+
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    assert!(
+        manager.get_thread(first.thread_id).await.is_ok(),
+        "a pending terminal finalizer must defer watcher-triggered unload"
+    );
+    assert_eq!(control.v2_residency.resident_count(), 1);
+
+    first.thread.session.input_queue.finish_terminal_finalizer();
+    for _ in 0..2 {
+        yield_now().await;
+    }
+    advance(Duration::from_millis(100)).await;
+    for _ in 0..4 {
+        yield_now().await;
+    }
+    assert!(
+        manager.get_thread(first.thread_id).await.is_err(),
+        "the watcher should retry after the terminal finalizer completes"
+    );
+    assert_eq!(control.v2_residency.resident_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_idle_unload_defers_for_pending_unified_exec_completion() {
+    let (_home, _config, manager, control, first, _metadata) = terminal_idle_test_agent(
+        /*timeout_ms*/ 100, /*ephemeral*/ false, /*sqlite*/ false,
+    )
+    .await;
+    first
+        .thread
+        .session
+        .input_queue
+        .enqueue_terminal_completion(TerminalCompletionNotification {
+            process_id: 7,
+            instance_id: uuid::Uuid::new_v4(),
+            status: TerminalCompletionStatus::Exited,
+            exit_code: Some(0),
+            coalesced_exited: 0,
+            coalesced_failed: 0,
+        })
+        .await;
+    mark_thread_status(
+        first.thread.as_ref(),
+        AgentStatus::Completed(Some("terminal completion pending".to_string())),
+    )
+    .await;
+    yield_now().await;
+
+    advance(Duration::from_millis(100)).await;
+    yield_now().await;
+    let resident = manager
+        .get_thread(first.thread_id)
+        .await
+        .expect("a pending unified-exec completion must defer unload");
+    assert!(Arc::ptr_eq(&resident, &first.thread));
+    assert!(
+        resident
+            .session
+            .input_queue
+            .has_pending_terminal_completions()
+            .await
+    );
+    assert_eq!(control.v2_residency.resident_count(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -565,6 +755,18 @@ async fn terminal_idle_unload_failure_preserves_trigger_mail_and_residency() {
             .drain_mailbox_communications()
             .await,
         queued
+    );
+
+    for _ in 0..2 {
+        yield_now().await;
+    }
+    advance(Duration::from_millis(100)).await;
+    for _ in 0..4 {
+        yield_now().await;
+    }
+    assert!(
+        manager.get_thread(first.thread_id).await.is_err(),
+        "the watcher should retry after trigger mail is drained"
     );
 }
 
