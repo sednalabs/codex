@@ -80,13 +80,18 @@ use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
-const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 128 << 20;
-// The websocket frame limit is intentionally much larger than the amount of
-// peer-controlled data that this client will retain.  This aggregate budget
-// covers the private backlog, deferred FIFO, and public channel together.
+const REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+// This aggregate event budget covers the private backlog, deferred FIFO, and
+// public channel together. Response custody is deliberately separate below.
 const REMOTE_EVENT_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 const REMOTE_EVENT_MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
 const REMOTE_EVENT_RETAINED_OVERHEAD_BYTES: usize = 256;
+// Responses are not part of the public event backlog. They can nevertheless
+// be retained by a caller that has stopped awaiting a request, so account for
+// that ownership independently from `RemoteEventByteBudget`.
+const REMOTE_RESPONSE_AGGREGATE_RETAINED_BYTES: usize = 32 * 1024 * 1024;
+const REMOTE_RESPONSE_MAX_WIRE_BYTES: usize = REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE;
+const REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES: usize = 256;
 const MAX_INBOUND_REQUEST_ID_STRING_BYTES: usize = 16 * 1024;
 const MAX_ACTIVE_INBOUND_REQUEST_IDS: usize = 512;
 const MAX_RECENT_REMOTE_REQUEST_IDS: usize = 512;
@@ -231,7 +236,7 @@ pub(crate) fn websocket_url_supports_auth_token(url: &Url) -> bool {
 enum RemoteClientCommand {
     Request {
         request: Box<JSONRPCRequest>,
-        response_tx: oneshot::Sender<IoResult<RequestResult>>,
+        response_tx: oneshot::Sender<IoResult<PendingRemoteResponse>>,
         lifecycle: Arc<AtomicU8>,
         _slot: OwnedSemaphorePermit,
     },
@@ -352,6 +357,7 @@ impl RemoteAppServerClient {
         let (event_tx, event_rx) = mpsc::channel::<RetainedRemoteEvent>(channel_capacity);
         let request_slots = Arc::new(Semaphore::new(channel_capacity));
         let request_cancel_notify = Arc::new(Notify::new());
+        let response_byte_budget = RemoteResponseByteBudget::shared();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let worker_request_slots = Arc::clone(&request_slots);
         let worker_request_cancel_notify = Arc::clone(&request_cancel_notify);
@@ -366,6 +372,7 @@ impl RemoteAppServerClient {
                 backlog,
                 terminal,
                 worker_request_cancel_notify,
+                response_byte_budget,
                 channel_capacity
                     .saturating_mul(4)
                     .min(MAX_RECENT_REMOTE_REQUEST_IDS),
@@ -562,7 +569,8 @@ impl RemoteAppServerRequestHandle {
             })
             .await
             .map_err(|_| remote_worker_closed())?;
-        response_rx.await.map_err(|_| remote_worker_closed())?
+        let response = response_rx.await.map_err(|_| remote_worker_closed())??;
+        Ok(response.result)
     }
 
     pub async fn request_typed<T>(&self, request: ClientRequest) -> Result<T, TypedRequestError>
@@ -1184,9 +1192,93 @@ struct InitializedRemoteConnection {
 }
 
 struct PendingRemoteRequest {
-    response_tx: oneshot::Sender<IoResult<RequestResult>>,
+    response_tx: oneshot::Sender<IoResult<PendingRemoteResponse>>,
     lifecycle: Arc<AtomicU8>,
     _slot: OwnedSemaphorePermit,
+}
+
+// Keep the peer-controlled response charge alive until the caller receives
+// (or drops) this private envelope. `RequestResult` remains the public API.
+struct PendingRemoteResponse {
+    result: RequestResult,
+    _bytes: RemoteResponseReservation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteResponseBudgetError {
+    OversizedWireMessage,
+    AggregateExhausted,
+}
+
+#[derive(Debug)]
+struct RemoteResponseByteBudget {
+    used: AtomicUsize,
+}
+
+impl RemoteResponseByteBudget {
+    fn shared() -> Arc<Self> {
+        Arc::new(Self {
+            used: AtomicUsize::new(0),
+        })
+    }
+
+    fn try_reserve(
+        self: &Arc<Self>,
+        wire_bytes: usize,
+    ) -> Result<RemoteResponseReservation, RemoteResponseBudgetError> {
+        if wire_bytes > REMOTE_RESPONSE_MAX_WIRE_BYTES {
+            return Err(RemoteResponseBudgetError::OversizedWireMessage);
+        }
+        let bytes = wire_bytes.saturating_add(REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES);
+        let mut current = self.used.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_add(bytes) else {
+                return Err(RemoteResponseBudgetError::AggregateExhausted);
+            };
+            if next > REMOTE_RESPONSE_AGGREGATE_RETAINED_BYTES {
+                return Err(RemoteResponseBudgetError::AggregateExhausted);
+            }
+            match self.used.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(RemoteResponseReservation {
+                        byte_budget: Arc::clone(self),
+                        bytes,
+                    });
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn used(&self) -> usize {
+        self.used.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug)]
+struct RemoteResponseReservation {
+    byte_budget: Arc<RemoteResponseByteBudget>,
+    bytes: usize,
+}
+
+impl Drop for RemoteResponseReservation {
+    fn drop(&mut self) {
+        assert!(
+            self.byte_budget
+                .used
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                    used.checked_sub(self.bytes)
+                })
+                .is_ok(),
+            "remote response byte budget reservation must not underflow"
+        );
+    }
 }
 
 struct RecentRemoteRequestIds {
@@ -1263,6 +1355,24 @@ impl RemoteTerminal {
         )
     }
 
+    fn oversized_response_message(endpoint: &str, length: usize) -> Self {
+        Self::new(
+            ErrorKind::InvalidData,
+            format!(
+                "remote app server at `{endpoint}` sent a response message longer than {REMOTE_RESPONSE_MAX_WIRE_BYTES} bytes (received {length} bytes)"
+            ),
+        )
+    }
+
+    fn response_budget_exhausted(endpoint: &str) -> Self {
+        Self::new(
+            ErrorKind::WouldBlock,
+            format!(
+                "remote app server at `{endpoint}` exceeded the bounded pending response byte budget"
+            ),
+        )
+    }
+
     fn required_event_overflow(
         endpoint: &str,
         server_request_id: Option<InboundRequestId>,
@@ -1300,6 +1410,7 @@ async fn remote_worker<S>(
     mut backlog: RemoteEventBacklog,
     mut terminal: Option<RemoteTerminal>,
     request_cancel_notify: Arc<Notify>,
+    response_byte_budget: Arc<RemoteResponseByteBudget>,
     request_tombstone_capacity: usize,
 ) -> IoResult<()>
 where
@@ -1379,6 +1490,7 @@ where
                     &mut canceled_request_ids,
                     &mut backlog,
                     &mut deferred_events,
+                    &response_byte_budget,
                 )
                 .await;
             }
@@ -1647,12 +1759,23 @@ async fn handle_remote_message<S>(
     canceled_request_ids: &mut RecentRemoteRequestIds,
     backlog: &mut RemoteEventBacklog,
     deferred_events: &mut VecDeque<RetainedRemoteEvent>,
+    response_byte_budget: &Arc<RemoteResponseByteBudget>,
 ) -> Option<RemoteTerminal>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     match message {
-        Some(Ok(Message::Text(text))) => match serde_json::from_str::<JSONRPCMessage>(&text) {
+        Some(Ok(Message::Text(text))) => {
+            let reservation = match response_byte_budget.try_reserve(text.len()) {
+                Ok(reservation) => reservation,
+                Err(RemoteResponseBudgetError::OversizedWireMessage) => {
+                    return Some(RemoteTerminal::oversized_response_message(endpoint, text.len()));
+                }
+                Err(RemoteResponseBudgetError::AggregateExhausted) => {
+                    return Some(RemoteTerminal::response_budget_exhausted(endpoint));
+                }
+            };
+            match serde_json::from_str::<JSONRPCMessage>(&text) {
             Ok(JSONRPCMessage::Response(response)) => {
                 if let Some(pending) = pending_requests.remove(&response.id) {
                     if pending
@@ -1665,7 +1788,10 @@ where
                         )
                         .is_ok()
                     {
-                        let _ = pending.response_tx.send(Ok(Ok(response.result)));
+                        let _ = pending.response_tx.send(Ok(PendingRemoteResponse {
+                            result: Ok(response.result),
+                            _bytes: reservation,
+                        }));
                     } else {
                         canceled_request_ids.remember(response.id);
                     }
@@ -1688,7 +1814,10 @@ where
                         )
                         .is_ok()
                     {
-                        let _ = pending.response_tx.send(Ok(Err(error.error)));
+                        let _ = pending.response_tx.send(Ok(PendingRemoteResponse {
+                            result: Err(error.error),
+                            _bytes: reservation,
+                        }));
                     } else {
                         canceled_request_ids.remember(error.id);
                     }
@@ -1776,7 +1905,8 @@ where
                 ErrorKind::InvalidData,
                 format!("remote app server at `{endpoint}` sent invalid JSON-RPC: {err}"),
             )),
-        },
+            }
+        }
         Some(Ok(Message::Close(frame))) => {
             let reason = frame
                 .as_ref()
@@ -2542,6 +2672,307 @@ mod tests {
         }
     }
 
+    fn text_message(message: JSONRPCMessage) -> Message {
+        Message::Text(
+            serde_json::to_string(&message)
+                .expect("test JSON-RPC message should serialize")
+                .into(),
+        )
+    }
+
+    #[test]
+    fn remote_websocket_config_and_response_wire_limit_are_locked_to_eight_mib() {
+        let config = remote_websocket_config();
+
+        assert_eq!(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE, 8 * 1024 * 1024);
+        assert_eq!(REMOTE_RESPONSE_MAX_WIRE_BYTES, 8 * 1024 * 1024);
+        assert_eq!(
+            config.max_frame_size,
+            Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
+        );
+        assert_eq!(
+            config.max_message_size,
+            Some(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE)
+        );
+    }
+
+    #[test]
+    fn response_byte_budget_rejects_oversize_and_fourth_max_charge_then_releases() {
+        let budget = RemoteResponseByteBudget::shared();
+        let charge = REMOTE_RESPONSE_MAX_WIRE_BYTES + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES;
+        let held: Vec<_> = (0..3)
+            .map(|_| {
+                budget
+                    .try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES)
+                    .expect("each of the first three maximum response charges should fit")
+            })
+            .collect();
+
+        assert_eq!(budget.used(), charge * 3);
+        assert_eq!(
+            budget.try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES),
+            Err(RemoteResponseBudgetError::AggregateExhausted)
+        );
+        assert_eq!(
+            budget.try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES + 1),
+            Err(RemoteResponseBudgetError::OversizedWireMessage)
+        );
+        drop(held);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn response_custody_transfers_to_the_receiver_and_releases_on_receive_or_send_failure() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let request_slots = Arc::new(Semaphore::new(2));
+        let mut pending_requests = HashMap::new();
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+
+        let (response_tx, response_rx) = oneshot::channel();
+        pending_requests.insert(
+            RequestId::Integer(1),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                _slot: Arc::clone(&request_slots)
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+        let large_error_data = serde_json::json!("x".repeat(4 * 1024 * 1024));
+        let message = JSONRPCMessage::Error(JSONRPCError {
+            id: RequestId::Integer(1),
+            error: JSONRPCErrorError {
+                code: -32000,
+                message: "large remote error payload".to_string(),
+                data: Some(large_error_data.clone()),
+            },
+        });
+        let wire_bytes = serde_json::to_string(&message)
+            .expect("large error message should serialize")
+            .len();
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(message))),
+                &mut stream,
+                "test://response-custody",
+                &mut pending_requests,
+                &mut tombstones,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        assert_eq!(
+            budget.used(),
+            wire_bytes + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES
+        );
+        let delivered = response_rx
+            .await
+            .expect("matched response should reach the receiver")
+            .expect("matched response should not be a transport error");
+        assert!(matches!(
+            &delivered.result,
+            Err(error) if error.data.as_ref() == Some(&large_error_data)
+        ));
+        drop(delivered);
+        assert_eq!(budget.used(), 0);
+
+        let (response_tx, response_rx) = oneshot::channel();
+        drop(response_rx);
+        pending_requests.insert(
+            RequestId::Integer(2),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                _slot: request_slots
+                    .acquire_owned()
+                    .await
+                    .expect("second test request slot should be available"),
+            },
+        );
+        assert!(
+            handle_remote_message(
+                Some(Ok(text_message(JSONRPCMessage::Response(JSONRPCResponse {
+                    id: RequestId::Integer(2),
+                    result: serde_json::json!({"dropped": true}),
+                })))),
+                &mut stream,
+                "test://response-custody",
+                &mut pending_requests,
+                &mut tombstones,
+                &mut backlog,
+                &mut deferred_events,
+                &budget,
+            )
+            .await
+            .is_none()
+        );
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn response_budget_rejections_terminalize_before_json_parsing() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let mut pending_requests = HashMap::new();
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+        let budget = RemoteResponseByteBudget::shared();
+
+        let terminal = handle_remote_message(
+            Some(Ok(Message::Text(
+                "x".repeat(REMOTE_RESPONSE_MAX_WIRE_BYTES + 1).into(),
+            ))),
+            &mut stream,
+            "test://response-budget",
+            &mut pending_requests,
+            &mut tombstones,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("oversized wire text must terminalize before JSON parsing");
+        assert_eq!(terminal.error_kind, ErrorKind::InvalidData);
+        assert_eq!(budget.used(), 0);
+
+        let held: Vec<_> = (0..3)
+            .map(|_| {
+                budget
+                    .try_reserve(REMOTE_RESPONSE_MAX_WIRE_BYTES)
+                    .expect("three maximum retained responses should fit")
+            })
+            .collect();
+        let terminal = handle_remote_message(
+            Some(Ok(Message::Text(
+                "x".repeat(REMOTE_RESPONSE_MAX_WIRE_BYTES).into(),
+            ))),
+            &mut stream,
+            "test://response-budget",
+            &mut pending_requests,
+            &mut tombstones,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("aggregate exhaustion must terminalize before JSON parsing");
+        assert_eq!(terminal.error_kind, ErrorKind::WouldBlock);
+        assert_eq!(
+            budget.used(),
+            3 * (REMOTE_RESPONSE_MAX_WIRE_BYTES + REMOTE_RESPONSE_RETAINED_OVERHEAD_BYTES)
+        );
+        drop(held);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[tokio::test]
+    async fn nonretained_text_paths_release_response_provisional_custody() {
+        let (client_socket, _peer_socket) = tokio::io::duplex(64 * 1024);
+        let mut stream = WebSocketStream::from_raw_socket(
+            client_socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let budget = RemoteResponseByteBudget::shared();
+        let mut pending_requests = HashMap::new();
+        let mut tombstones = RecentRemoteRequestIds::new(/*capacity*/ 4);
+        tombstones.remember(RequestId::Integer(4));
+        let request_slots = Arc::new(Semaphore::new(1));
+        let (response_tx, response_rx) = oneshot::channel();
+        drop(response_rx);
+        pending_requests.insert(
+            RequestId::Integer(3),
+            PendingRemoteRequest {
+                response_tx,
+                lifecycle: Arc::new(AtomicU8::new(REQUEST_PENDING)),
+                _slot: Arc::clone(&request_slots)
+                    .acquire_owned()
+                    .await
+                    .expect("test request slot should be available"),
+            },
+        );
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        let mut deferred_events = VecDeque::new();
+
+        let messages = [
+            text_message(JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(2),
+                result: serde_json::json!({"unmatched": true}),
+            })),
+            text_message(JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(3),
+                result: serde_json::json!({"matched": true}),
+            })),
+            text_message(JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(3),
+                result: serde_json::json!({"duplicate": true}),
+            })),
+            text_message(JSONRPCMessage::Response(JSONRPCResponse {
+                id: RequestId::Integer(4),
+                result: serde_json::json!({"late": true}),
+            })),
+            text_message(JSONRPCMessage::Notification(
+                jsonrpc_notification_from_client_notification(ClientNotification::Initialized),
+            )),
+            text_message(JSONRPCMessage::Request(client_request(/*id*/ 5))),
+        ];
+
+        for message in messages {
+            assert!(
+                handle_remote_message(
+                    Some(Ok(message)),
+                    &mut stream,
+                    "test://nonretained-response-custody",
+                    &mut pending_requests,
+                    &mut tombstones,
+                    &mut backlog,
+                    &mut deferred_events,
+                    &budget,
+                )
+                .await
+                .is_none()
+            );
+            assert_eq!(budget.used(), 0);
+        }
+
+        let malformed = Message::Text("{malformed JSON-RPC".into());
+        let terminal = handle_remote_message(
+            Some(Ok(malformed)),
+            &mut stream,
+            "test://nonretained-response-custody",
+            &mut pending_requests,
+            &mut tombstones,
+            &mut backlog,
+            &mut deferred_events,
+            &budget,
+        )
+        .await
+        .expect("malformed JSON-RPC should terminalize the worker");
+        assert_eq!(terminal.error_kind, ErrorKind::InvalidData);
+        assert_eq!(budget.used(), 0);
+    }
+
     #[test]
     fn initialization_backlog_counts_best_effort_loss_at_capacity_one() {
         let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
@@ -3010,6 +3441,7 @@ mod tests {
             RemoteEventBacklog::new(/*capacity*/ 1),
             /*terminal*/ None,
             Arc::clone(&request_cancel_notify),
+            RemoteResponseByteBudget::shared(),
             /*request_tombstone_capacity*/ 4,
         ));
         let handle = RemoteAppServerRequestHandle {
