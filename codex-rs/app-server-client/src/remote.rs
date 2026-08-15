@@ -4303,7 +4303,7 @@ mod tests {
             let handle = handle.clone();
             async move {
                 handle
-                    .request_json_rpc(client_request(/*local id*/ 1))
+                    .request_json_rpc(client_request(/*id*/ 1))
                     .await
             }
         });
@@ -4413,7 +4413,7 @@ mod tests {
             let handle = handle.clone();
             async move {
                 handle
-                    .request_json_rpc(client_request(/*local id*/ 7))
+                    .request_json_rpc(client_request(/*id*/ 7))
                     .await
             }
         });
@@ -4444,16 +4444,19 @@ mod tests {
         )
         .await
         .expect("first response should be writable");
-        first
-            .await
-            .expect("first request task should join")
-            .expect("first request should complete");
+        assert_eq!(
+            first
+                .await
+                .expect("first request task should join")
+                .expect("first request should complete"),
+            Ok(serde_json::json!({"generation": 1}))
+        );
 
         let second = tokio::spawn({
             let handle = handle.clone();
             async move {
                 handle
-                    .request_json_rpc(client_request(/*same local id*/ 7))
+                    .request_json_rpc(client_request(/*id*/ 7))
                     .await
             }
         });
