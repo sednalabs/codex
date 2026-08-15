@@ -1,4 +1,7 @@
+use super::super::session_lifecycle::AGENT_PICKER_ANCESTRY_DEPTH_BUDGET;
+use super::super::session_lifecycle::AGENT_PICKER_ANCESTRY_READ_BUDGET;
 use super::super::session_lifecycle::AGENT_PICKER_CURSOR_BUDGET;
+use super::super::session_lifecycle::AGENT_PICKER_MAX_PAGE_ROWS;
 use super::super::session_lifecycle::AGENT_PICKER_PAGE_SIZE;
 use super::super::session_lifecycle::LEGACY_AGENT_PICKER_MAX_PAGES;
 use super::super::session_lifecycle::LEGACY_AGENT_PICKER_MAX_THREADS;
@@ -55,7 +58,7 @@ async fn start_recording_app_server(
     start_recording_app_server_with_options(config, RecordingAppServerOptions::default()).await
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct RecordingAppServerOptions {
     ignore_ancestor_filter: bool,
     broaden_source_filter: bool,
@@ -65,6 +68,29 @@ struct RecordingAppServerOptions {
     legacy_unique_cursors: bool,
     legacy_oversized_page: bool,
     empty_picker_pages: bool,
+    modern_oversized_page: bool,
+    invalid_thread_list_request: Option<usize>,
+    invalid_cursor_thread_list_request: Option<usize>,
+    fail_thread_read_with_turns: bool,
+    paginated_replay: Option<PaginatedReplay>,
+    modern_thread_ids: Option<Vec<String>>,
+    modern_lineage_fault: Option<ModernLineageFault>,
+    non_spawn_thread_read_id: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum ModernLineageFault {
+    ParentMismatch,
+    NonSpawn,
+}
+
+#[derive(Clone, Copy)]
+enum PaginatedReplay {
+    TwoPages,
+    OversizedPage,
+    RepeatedCursor,
+    UniqueCursors,
+    RepeatedTurn,
 }
 
 #[derive(Clone, Copy)]
@@ -156,6 +182,35 @@ fn create_non_spawn_subagent_rollout(
     Ok(ThreadId::from_string(&thread_id)?)
 }
 
+fn create_spawn_chain(
+    codex_home: &std::path::Path,
+    model_provider: &str,
+    root_thread_id: ThreadId,
+    branch: &str,
+    depth: usize,
+) -> Result<Vec<ThreadId>> {
+    let mut parent_thread_id = root_thread_id;
+    let mut thread_ids = Vec::with_capacity(depth);
+    for index in 0..depth {
+        let hour = index / 3_600;
+        let minute = index / 60 % 60;
+        let second = index % 60;
+        let thread_id = create_spawn_rollout(
+            codex_home,
+            model_provider,
+            &format!("2026-02-01T{hour:02}-{minute:02}-{second:02}"),
+            &format!("2026-02-01T{hour:02}:{minute:02}:{second:02}Z"),
+            &format!("{branch} chain node {index}"),
+            parent_thread_id,
+            root_thread_id,
+            &format!("/root/{branch}_{index}"),
+        )?;
+        thread_ids.push(thread_id);
+        parent_thread_id = thread_id;
+    }
+    Ok(thread_ids)
+}
+
 async fn start_recording_app_server_with_options(
     config: &Config,
     options: RecordingAppServerOptions,
@@ -191,6 +246,8 @@ async fn start_recording_app_server_with_options(
         let mut thread_list_request_count = 0;
         let mut picker_page_request_count = 0;
         let mut legacy_page_request_count = 0;
+        let mut replay_page_request_count = 0;
+        let mut replay_turn_template = None;
         while let Some(frame) = websocket.next().await {
             let Message::Text(text) = frame? else {
                 continue;
@@ -288,6 +345,62 @@ async fn start_recording_app_server_with_options(
                             .await?;
                         continue;
                     }
+                    if options.invalid_thread_list_request == Some(thread_list_request_count)
+                        && method == "thread/list"
+                    {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Error(JSONRPCError {
+                                    id: request_id,
+                                    error: JSONRPCErrorError {
+                                        code: -32602,
+                                        message: "ancestorThreadId is not supported".to_string(),
+                                        data: None,
+                                    },
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
+                    if options.invalid_cursor_thread_list_request == Some(thread_list_request_count)
+                        && method == "thread/list"
+                    {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Error(JSONRPCError {
+                                    id: request_id,
+                                    error: JSONRPCErrorError {
+                                        code: -32602,
+                                        message: "invalid cursor: injected picker cursor"
+                                            .to_string(),
+                                        data: None,
+                                    },
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
+                    if options.fail_thread_read_with_turns
+                        && method == "thread/read"
+                        && request["params"]["includeTurns"] == serde_json::json!(true)
+                    {
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Error(JSONRPCError {
+                                    id: request_id,
+                                    error: JSONRPCErrorError {
+                                        code: -32603,
+                                        message: "injected saved-history read failure".to_string(),
+                                        data: None,
+                                    },
+                                }))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
                     if options.ignore_ancestor_filter && method == "thread/list" {
                         request
                             .get_mut("params")
@@ -319,6 +432,56 @@ async fn start_recording_app_server_with_options(
                             .and_then(serde_json::Value::as_object_mut)
                             .map(|params| params.remove("cursor"));
                     }
+                    if method == "thread/turns/list"
+                        && let Some(replay) = options.paginated_replay
+                    {
+                        replay_page_request_count += 1;
+                        let template = replay_turn_template
+                            .clone()
+                            .expect("metadata read must seed a replay turn template");
+                        let mut turn_for_page = |index: usize| {
+                            let mut turn = template.clone();
+                            turn["id"] = serde_json::json!(format!("replay-turn-{index}"));
+                            turn
+                        };
+                        let (data, next_cursor) = match replay {
+                            PaginatedReplay::TwoPages => (
+                                vec![turn_for_page(replay_page_request_count)],
+                                (replay_page_request_count == 1).then(|| "replay-next".to_string()),
+                            ),
+                            PaginatedReplay::OversizedPage => {
+                                ((0..=50).map(&mut turn_for_page).collect(), None)
+                            }
+                            PaginatedReplay::RepeatedCursor => (
+                                vec![turn_for_page(replay_page_request_count)],
+                                Some("replay-repeat".to_string()),
+                            ),
+                            PaginatedReplay::UniqueCursors => (
+                                vec![turn_for_page(replay_page_request_count)],
+                                Some(format!("replay-{replay_page_request_count}")),
+                            ),
+                            PaginatedReplay::RepeatedTurn => (
+                                vec![template],
+                                (replay_page_request_count == 1).then(|| "replay-next".to_string()),
+                            ),
+                        };
+                        websocket
+                            .send(Message::Text(
+                                serde_json::to_string(&JSONRPCMessage::Response(
+                                    JSONRPCResponse {
+                                        id: request_id,
+                                        result: serde_json::json!({
+                                            "data": data,
+                                            "nextCursor": next_cursor,
+                                        }),
+                                    },
+                                ))?
+                                .into(),
+                            ))
+                            .await?;
+                        continue;
+                    }
+                    let replay_seed_request = request.clone();
                     let request = serde_json::from_value::<ClientRequest>(request)?;
                     let mut response = match embedded.request(request).await? {
                         Ok(result) => JSONRPCMessage::Response(JSONRPCResponse {
@@ -330,6 +493,16 @@ async fn start_recording_app_server_with_options(
                             error,
                         }),
                     };
+                    if method == "thread/read"
+                        && options.non_spawn_thread_read_id.as_deref()
+                            == replay_seed_request["params"]["threadId"].as_str()
+                        && let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) =
+                            &mut response
+                    {
+                        result["source"] = serde_json::json!({
+                            "subAgent": "review"
+                        });
+                    }
                     if let (
                         Some(cursor_fault),
                         true,
@@ -342,6 +515,80 @@ async fn start_recording_app_server_with_options(
                         result["nextCursor"] = serde_json::json!(
                             cursor_fault.cursor_for_page(picker_page_request_count)
                         );
+                    }
+                    if options.modern_oversized_page
+                        && is_picker_page_request
+                        && let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) =
+                            &mut response
+                        && let Some(thread) =
+                            result["data"].as_array().and_then(|data| data.first())
+                    {
+                        result["data"] = serde_json::Value::Array(vec![
+                            thread.clone();
+                            AGENT_PICKER_MAX_PAGE_ROWS
+                                + 1
+                        ]);
+                    }
+                    if is_picker_page_request
+                        && let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) =
+                            &mut response
+                    {
+                        if let Some(thread_ids) = &options.modern_thread_ids {
+                            result["data"] = serde_json::Value::Array(
+                                result["data"]
+                                    .as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter(|thread| {
+                                        thread["id"].as_str().is_some_and(|id| {
+                                            thread_ids.iter().any(|want| want == id)
+                                        })
+                                    })
+                                    .cloned()
+                                    .collect(),
+                            );
+                            result["nextCursor"] = serde_json::Value::Null;
+                        }
+                        if let Some(fault) = options.modern_lineage_fault
+                            && let Some(thread) = result["data"]
+                                .as_array_mut()
+                                .and_then(|data| data.first_mut())
+                        {
+                            match fault {
+                                ModernLineageFault::ParentMismatch => {
+                                    thread["parentThreadId"] =
+                                        serde_json::json!(ThreadId::new().to_string());
+                                }
+                                ModernLineageFault::NonSpawn => {
+                                    thread["source"] = serde_json::json!({
+                                        "subAgent": "review"
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    if options.paginated_replay.is_some()
+                        && method == "thread/read"
+                        && replay_seed_request["params"]["includeTurns"] != serde_json::json!(true)
+                    {
+                        let mut full_request = replay_seed_request;
+                        full_request["params"]["includeTurns"] = serde_json::json!(true);
+                        if let Ok(result) = embedded
+                            .request(serde_json::from_value::<ClientRequest>(full_request)?)
+                            .await?
+                            && let Some(turn) = result["turns"]
+                                .as_array()
+                                .and_then(|turns| turns.first())
+                                .cloned()
+                        {
+                            replay_turn_template = Some(turn);
+                        }
+                        if let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) =
+                            &mut response
+                        {
+                            result["historyMode"] = serde_json::json!("paginated");
+                            result["turns"] = serde_json::json!([]);
+                        }
                     }
                     if is_legacy_page_request
                         && let JSONRPCMessage::Response(JSONRPCResponse { result, .. }) =
@@ -822,16 +1069,23 @@ async fn assert_picker_cursor_fault_fails_closed(
         )
         .map_err(test_support_error)?,
     )?;
-    create_spawn_rollout(
-        codex_home.path(),
-        app.config.model_provider_id.as_str(),
-        "2026-01-09T01-00-01",
-        "2026-01-09T01:00:01Z",
-        "Cursor-boundary child",
-        root_thread_id,
-        root_thread_id,
-        "/root/cursor_child",
-    )?;
+    let child_count = if preseed_after_first_page == 0 {
+        1
+    } else {
+        AGENT_PICKER_PAGE_SIZE as usize + 1
+    };
+    for index in 0..child_count {
+        create_spawn_rollout(
+            codex_home.path(),
+            app.config.model_provider_id.as_str(),
+            &format!("2026-01-09T01-00-{:02}", index + 1),
+            &format!("2026-01-09T01:00:{:02}Z", index + 1),
+            &format!("Cursor-boundary child {index}"),
+            root_thread_id,
+            root_thread_id,
+            &format!("/root/cursor_child_{index}"),
+        )?;
+    }
     let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
         &app.config,
         RecordingAppServerOptions {
@@ -914,6 +1168,16 @@ async fn assert_picker_cursor_fault_fails_closed(
 
     app_server.shutdown().await?;
     proxy.await??;
+    if preseed_after_first_page > 0 {
+        let (mut app_server, _requests, proxy) = start_recording_app_server(&app.config).await?;
+        let reopened = app.backfill_loaded_subagent_threads(&mut app_server).await;
+        assert!(reopened.completed);
+        assert!(app.agent_navigation.next_picker_page_cursor().is_some());
+        Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
+        assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+        app_server.shutdown().await?;
+        proxy.await??;
+    }
     Ok(())
 }
 
@@ -1050,8 +1314,14 @@ fn agent_picker_rejects_non_spawn_descendants_when_server_broadens_source_filter
                 app.enqueue_primary_thread_session(root.session, root.turns)
                     .await?;
                 let completed = app.backfill_loaded_subagent_threads(&mut app_server).await;
-                assert!(completed.completed);
-                assert!(app.agent_navigation.get(&valid_thread_id).is_some());
+                assert!(
+                    !completed.completed,
+                    "one source-invalid row must reject the modern page atomically"
+                );
+                assert!(
+                    app.agent_navigation.get(&valid_thread_id).is_none(),
+                    "a valid row must not be partially admitted from a rejected page"
+                );
                 for unsafe_thread_id in unsafe_thread_ids {
                     assert!(
                         app.agent_navigation.get(&unsafe_thread_id).is_none(),
@@ -1475,4 +1745,604 @@ fn agent_picker_rejects_mixed_roots_when_server_ignores_ancestor_filter() -> Res
         })?
         .join()
         .expect("mixed-root isolation test thread")
+}
+
+async fn assert_modern_verification_page(
+    chain_depths: &[usize],
+    direct_children: usize,
+    oversized: bool,
+    expected_completed: bool,
+    expected_ancestry_reads: Option<usize>,
+) -> Result<()> {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-02-01T00-00-00",
+            "2026-02-01T00:00:00Z",
+            "Budget root",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(test_support_error)?,
+    )?;
+    let mut page_thread_ids = Vec::new();
+    for index in 0..direct_children {
+        page_thread_ids.push(create_spawn_rollout(
+            codex_home.path(),
+            app.config.model_provider_id.as_str(),
+            &format!("2026-02-01T00-01-{index:02}"),
+            &format!("2026-02-01T00:01:{index:02}Z"),
+            &format!("Boundary child {index}"),
+            root_thread_id,
+            root_thread_id,
+            &format!("/root/boundary_{index}"),
+        )?);
+    }
+    for (index, depth) in chain_depths.iter().copied().enumerate() {
+        let chain = create_spawn_chain(
+            codex_home.path(),
+            app.config.model_provider_id.as_str(),
+            root_thread_id,
+            &format!("budget_chain_{index}"),
+            depth,
+        )?;
+        page_thread_ids.push(*chain.last().expect("nonempty budget chain"));
+    }
+    let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+        &app.config,
+        RecordingAppServerOptions {
+            empty_loaded_threads: true,
+            modern_oversized_page: oversized,
+            modern_thread_ids: Some(page_thread_ids.iter().map(ToString::to_string).collect()),
+            ..RecordingAppServerOptions::default()
+        },
+    )
+    .await?;
+    app.agent_navigation.mark_legacy_relation_fallback_checked();
+    let root = app_server
+        .resume_thread(
+            app.config.clone(),
+            root_thread_id,
+            app.resume_model_settings(),
+        )
+        .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
+        .await?;
+    requests.lock().expect("request recorder lock").clear();
+    let result = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    assert_eq!(result.completed, expected_completed);
+    for thread_id in page_thread_ids {
+        assert_eq!(
+            app.agent_navigation.get(&thread_id).is_some(),
+            expected_completed,
+            "page admission must be atomic"
+        );
+    }
+    if let Some(expected_reads) = expected_ancestry_reads {
+        assert_eq!(
+            requests
+                .lock()
+                .expect("request recorder lock")
+                .iter()
+                .filter(|request| request.method == "thread/read")
+                .count(),
+            expected_reads
+        );
+    }
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[test]
+fn agent_picker_page_and_ancestry_budgets_are_exact_and_atomic() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-exact-verification-budgets".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                assert_modern_verification_page(
+                    &[],
+                    AGENT_PICKER_MAX_PAGE_ROWS,
+                    false,
+                    true,
+                    Some(0),
+                )
+                .await?;
+                assert_modern_verification_page(&[], 1, true, false, Some(0)).await?;
+                assert_modern_verification_page(
+                    &[AGENT_PICKER_ANCESTRY_DEPTH_BUDGET],
+                    0,
+                    false,
+                    true,
+                    Some(AGENT_PICKER_ANCESTRY_DEPTH_BUDGET - 1),
+                )
+                .await?;
+                assert_modern_verification_page(
+                    &[AGENT_PICKER_ANCESTRY_DEPTH_BUDGET + 1],
+                    0,
+                    false,
+                    false,
+                    None,
+                )
+                .await?;
+                let read_boundary_depth = AGENT_PICKER_ANCESTRY_READ_BUDGET / 2 + 1;
+                assert_modern_verification_page(
+                    &[read_boundary_depth, read_boundary_depth],
+                    0,
+                    false,
+                    true,
+                    Some(AGENT_PICKER_ANCESTRY_READ_BUDGET),
+                )
+                .await?;
+                assert_modern_verification_page(
+                    &[read_boundary_depth + 1, read_boundary_depth + 1],
+                    0,
+                    false,
+                    false,
+                    None,
+                )
+                .await
+            })
+        })?
+        .join()
+        .expect("agent picker verification budget test thread")
+}
+
+async fn assert_modern_spawn_lineage(
+    page_fault: Option<ModernLineageFault>,
+    break_intermediate: bool,
+    expected_completed: bool,
+) -> Result<()> {
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-02-02T00-00-00",
+            "2026-02-02T00:00:00Z",
+            "Lineage root",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(test_support_error)?,
+    )?;
+    let nested = create_spawn_chain(
+        codex_home.path(),
+        app.config.model_provider_id.as_str(),
+        root_thread_id,
+        "nested",
+        3,
+    )?;
+    let nested_leaf = *nested.last().expect("nested leaf");
+    let (mut app_server, _requests, proxy) = start_recording_app_server_with_options(
+        &app.config,
+        RecordingAppServerOptions {
+            empty_loaded_threads: true,
+            modern_thread_ids: Some(vec![nested_leaf.to_string()]),
+            modern_lineage_fault: page_fault,
+            non_spawn_thread_read_id: break_intermediate.then(|| nested[1].to_string()),
+            ..RecordingAppServerOptions::default()
+        },
+    )
+    .await?;
+    app.agent_navigation.mark_legacy_relation_fallback_checked();
+    let root = app_server
+        .resume_thread(
+            app.config.clone(),
+            root_thread_id,
+            app.resume_model_settings(),
+        )
+        .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
+        .await?;
+    let result = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    assert_eq!(result.completed, expected_completed);
+    assert_eq!(
+        app.agent_navigation.get(&nested_leaf).is_some(),
+        expected_completed,
+        "spawn lineage verification must admit or reject the page atomically"
+    );
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[test]
+fn agent_picker_requires_consistent_spawn_lineage_for_every_page_row() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-spawn-lineage-contract".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                assert_modern_spawn_lineage(None, false, true).await?;
+                assert_modern_spawn_lineage(Some(ModernLineageFault::ParentMismatch), false, false)
+                    .await?;
+                assert_modern_spawn_lineage(None, true, false).await?;
+                assert_modern_spawn_lineage(Some(ModernLineageFault::NonSpawn), false, false).await
+            })
+        })?
+        .join()
+        .expect("agent picker spawn lineage test thread")
+}
+
+async fn assert_page_discovered_closed_replay(
+    paginated_replay: Option<PaginatedReplay>,
+    fail_legacy_read: bool,
+    expected_success: bool,
+    expected_turn_page_requests: usize,
+) -> Result<()> {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-02-03T00-00-00",
+            "2026-02-03T00:00:00Z",
+            "Replay root",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(test_support_error)?,
+    )?;
+    let child_thread_id = create_spawn_rollout(
+        codex_home.path(),
+        app.config.model_provider_id.as_str(),
+        "2026-02-03T00-00-01",
+        "2026-02-03T00:00:01Z",
+        "Saved child transcript",
+        root_thread_id,
+        root_thread_id,
+        "/root/saved_child",
+    )?;
+    let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+        &app.config,
+        RecordingAppServerOptions {
+            fail_thread_read_with_turns: fail_legacy_read,
+            paginated_replay,
+            ..RecordingAppServerOptions::default()
+        },
+    )
+    .await?;
+    app.agent_navigation.mark_legacy_relation_fallback_checked();
+    let root = app_server
+        .resume_thread(
+            app.config.clone(),
+            root_thread_id,
+            app.resume_model_settings(),
+        )
+        .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
+        .await?;
+    requests.lock().expect("request recorder lock").clear();
+
+    let page = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    assert!(page.completed);
+    assert!(
+        app.agent_navigation
+            .get(&child_thread_id)
+            .is_some_and(|entry| entry.is_closed),
+        "the persisted page must discover the NotLoaded child as closed"
+    );
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agent_thread(&mut tui, &mut app_server, child_thread_id)
+        .await?;
+
+    let recorded = requests.lock().expect("request recorder lock").clone();
+    assert!(
+        recorded
+            .iter()
+            .all(|request| request.method != "thread/resume"),
+        "closed replay must never resume or subscribe to the saved thread"
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .filter(|request| request.method == "thread/turns/list")
+            .count(),
+        expected_turn_page_requests
+    );
+    if expected_success {
+        assert_eq!(app.active_thread_id, Some(child_thread_id));
+        assert_eq!(
+            app.thread_event_channels
+                .get(&child_thread_id)
+                .expect("successful replay channel")
+                .attachment(),
+            ThreadEventAttachment::ReplayOnly
+        );
+        assert!(app.agent_navigation.is_parent_owned(child_thread_id));
+        while app_event_rx.try_recv().is_ok() {}
+        app.chat_widget
+            .restore_user_message_to_composer("replay must stay view-only".into());
+        let draft = app.chat_widget.composer_text_with_pending();
+        app.chat_widget
+            .handle_key_event(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                KeyModifiers::NONE,
+            ));
+        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+        assert!(
+            !std::iter::from_fn(|| app_event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CodexOp(Op::UserTurn { .. }))),
+            "replay-only direct input must remain blocked"
+        );
+    } else {
+        assert_eq!(
+            app.active_thread_id,
+            Some(root_thread_id),
+            "failed replay must preserve the active thread"
+        );
+        assert!(
+            !app.thread_event_channels.contains_key(&child_thread_id),
+            "failed replay must not publish a partial channel"
+        );
+    }
+
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[test]
+fn page_discovered_closed_threads_replay_read_only_with_bounded_faults() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-saved-replay-contract".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                assert_page_discovered_closed_replay(None, false, true, 0).await?;
+                assert_page_discovered_closed_replay(
+                    Some(PaginatedReplay::TwoPages),
+                    false,
+                    true,
+                    2,
+                )
+                .await?;
+                assert_page_discovered_closed_replay(None, true, false, 0).await?;
+                assert_page_discovered_closed_replay(
+                    Some(PaginatedReplay::OversizedPage),
+                    false,
+                    false,
+                    1,
+                )
+                .await?;
+                assert_page_discovered_closed_replay(
+                    Some(PaginatedReplay::RepeatedCursor),
+                    false,
+                    false,
+                    2,
+                )
+                .await?;
+                assert_page_discovered_closed_replay(
+                    Some(PaginatedReplay::RepeatedTurn),
+                    false,
+                    false,
+                    2,
+                )
+                .await?;
+                assert_page_discovered_closed_replay(
+                    Some(PaginatedReplay::UniqueCursors),
+                    false,
+                    false,
+                    128,
+                )
+                .await
+            })
+        })?
+        .join()
+        .expect("agent picker saved replay contract test thread")
+}
+
+async fn assert_continuation_failure_contract(invalid_cursor: bool) -> Result<()> {
+    const CHILD_COUNT: usize = AGENT_PICKER_PAGE_SIZE as usize + 1;
+
+    let mut app = make_test_app().await;
+    let codex_home = tempdir()?;
+    app.config.codex_home = codex_home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+    let root_thread_id = ThreadId::from_string(
+        &create_fake_rollout(
+            codex_home.path(),
+            "2026-02-04T00-00-00",
+            "2026-02-04T00:00:00Z",
+            "Continuation root",
+            Some(app.config.model_provider_id.as_str()),
+            /*git_info*/ None,
+        )
+        .map_err(test_support_error)?,
+    )?;
+    for index in 0..CHILD_COUNT {
+        create_spawn_rollout(
+            codex_home.path(),
+            app.config.model_provider_id.as_str(),
+            &format!("2026-02-04T00-00-{index:02}"),
+            &format!("2026-02-04T00:00:{index:02}Z"),
+            &format!("Continuation child {index}"),
+            root_thread_id,
+            root_thread_id,
+            &format!("/root/continuation_{index}"),
+        )?;
+    }
+    let options = if invalid_cursor {
+        RecordingAppServerOptions {
+            invalid_cursor_thread_list_request: Some(3),
+            ..RecordingAppServerOptions::default()
+        }
+    } else {
+        RecordingAppServerOptions {
+            fail_thread_list_request: Some(3),
+            ..RecordingAppServerOptions::default()
+        }
+    };
+    let (mut app_server, requests, proxy) =
+        start_recording_app_server_with_options(&app.config, options).await?;
+    app.agent_navigation.mark_legacy_relation_fallback_checked();
+    let root = app_server
+        .resume_thread(
+            app.config.clone(),
+            root_thread_id,
+            app.resume_model_settings(),
+        )
+        .await?;
+    app.enqueue_primary_thread_session(root.session, root.turns)
+        .await?;
+    requests.lock().expect("request recorder lock").clear();
+    assert!(
+        app.backfill_loaded_subagent_threads(&mut app_server)
+            .await
+            .completed
+    );
+    let original_cursor = app
+        .agent_navigation
+        .next_picker_page_cursor()
+        .expect("first page cursor");
+    Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
+    if invalid_cursor {
+        assert_eq!(
+            app.agent_navigation.next_picker_page_cursor(),
+            None,
+            "an explicitly invalid continuation cursor must be cleared"
+        );
+    } else {
+        assert_eq!(
+            app.agent_navigation.next_picker_page_cursor(),
+            Some(original_cursor),
+            "a general continuation failure must remain retryable at the same cursor"
+        );
+    }
+    assert!(
+        requests
+            .lock()
+            .expect("request recorder lock")
+            .iter()
+            .all(|request| {
+                request.method != "thread/list" || request.params["ancestorThreadId"].is_string()
+            }),
+        "continuation failures must never broaden into legacy fallback"
+    );
+    app_server.shutdown().await?;
+    proxy.await??;
+
+    let (mut app_server, _requests, proxy) = start_recording_app_server(&app.config).await?;
+    let reopened = app.backfill_loaded_subagent_threads(&mut app_server).await;
+    assert!(
+        reopened.completed,
+        "a fresh picker sequence must remain reusable"
+    );
+    assert!(
+        app.agent_navigation.next_picker_page_cursor().is_some(),
+        "fresh reopen must publish its first continuation again"
+    );
+    Box::pin(app.load_more_agent_picker_page(&mut app_server)).await;
+    assert_eq!(app.agent_navigation.next_picker_page_cursor(), None);
+    app_server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[test]
+fn picker_initial_and_continuation_failures_keep_retry_and_fallback_boundaries() -> Result<()> {
+    const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+    std::thread::Builder::new()
+        .name("tui-agent-picker-fallback-boundaries".to_string())
+        .stack_size(TEST_STACK_SIZE_BYTES)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async {
+                let mut app = make_test_app().await;
+                let codex_home = tempdir()?;
+                app.config.codex_home = codex_home.path().to_path_buf().abs();
+                app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
+                let root_thread_id = ThreadId::from_string(
+                    &create_fake_rollout(
+                        codex_home.path(),
+                        "2026-02-05T00-00-00",
+                        "2026-02-05T00:00:00Z",
+                        "Legacy recovery root",
+                        Some(app.config.model_provider_id.as_str()),
+                        /*git_info*/ None,
+                    )
+                    .map_err(test_support_error)?,
+                )?;
+                let child_thread_id = create_spawn_rollout(
+                    codex_home.path(),
+                    app.config.model_provider_id.as_str(),
+                    "2026-02-05T00-00-01",
+                    "2026-02-05T00:00:01Z",
+                    "Legacy recovery child",
+                    root_thread_id,
+                    root_thread_id,
+                    "/root/legacy_recovery",
+                )?;
+                let (mut app_server, requests, proxy) = start_recording_app_server_with_options(
+                    &app.config,
+                    RecordingAppServerOptions {
+                        invalid_thread_list_request: Some(1),
+                        ..RecordingAppServerOptions::default()
+                    },
+                )
+                .await?;
+                let root = app_server
+                    .resume_thread(
+                        app.config.clone(),
+                        root_thread_id,
+                        app.resume_model_settings(),
+                    )
+                    .await?;
+                app.enqueue_primary_thread_session(root.session, root.turns)
+                    .await?;
+                requests.lock().expect("request recorder lock").clear();
+                let recovered = app.backfill_loaded_subagent_threads(&mut app_server).await;
+                assert!(recovered.completed);
+                assert!(app.agent_navigation.get(&child_thread_id).is_some());
+                assert!(
+                    !app.agent_navigation.needs_legacy_relation_fallback_check(),
+                    "bounded legacy exhaustion must complete the compatibility fallback"
+                );
+                let thread_lists = requests
+                    .lock()
+                    .expect("request recorder lock")
+                    .iter()
+                    .filter(|request| request.method == "thread/list")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_eq!(thread_lists.len(), 2);
+                assert!(thread_lists[0].params["ancestorThreadId"].is_string());
+                assert!(!thread_lists[1].params["ancestorThreadId"].is_string());
+                app_server.shutdown().await?;
+                proxy.await??;
+
+                assert_continuation_failure_contract(/*invalid_cursor*/ false).await?;
+                assert_continuation_failure_contract(/*invalid_cursor*/ true).await
+            })
+        })?
+        .join()
+        .expect("agent picker fallback boundary test thread")
 }
