@@ -1111,6 +1111,7 @@ class RouteSelectionTests(unittest.TestCase):
                 "codex.app-server-collab-spawn-identity-targeted",
                 "codex.tui-collab-spawn-identity-targeted",
                 "codex.collab-spawn-identity-consumers-targeted",
+                "codex.sdk-python-targeted",
             ],
         )
 
@@ -1127,6 +1128,7 @@ class RouteSelectionTests(unittest.TestCase):
             "codex.app-server-collab-spawn-identity-targeted",
             "codex.tui-collab-spawn-identity-targeted",
             "codex.collab-spawn-identity-consumers-targeted",
+            "codex.sdk-python-targeted",
         ]
         for path in (
             "codex-rs/analytics/src/analytics_client_tests.rs",
@@ -1137,6 +1139,22 @@ class RouteSelectionTests(unittest.TestCase):
                     RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes),
                     expected,
                 )
+
+    def test_collab_spawn_identity_sdk_sources_include_python_sdk_lane(self) -> None:
+        route = next(
+            route
+            for route in self.routes
+            if route["route_id"] == "collab-spawn-identity"
+        )
+        for path in (
+            "sdk/python/src/openai_codex/client.py",
+            "sdk/python/src/openai_codex/generated/v2_all.py",
+            "sdk/python/tests/test_client_rpc_methods.py",
+        ):
+            with self.subTest(path=path):
+                lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes([path], self.routes)
+                self.assertEqual(lanes, route["lane_ids"])
+                self.assertIn("codex.sdk-python-targeted", lanes)
 
     def test_followup_route_priority_fails_closed_on_equal_highest_match(self) -> None:
         routes = [
@@ -2480,6 +2498,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 "codex.app-server-collab-spawn-identity-targeted",
                 "codex.tui-collab-spawn-identity-targeted",
                 "codex.collab-spawn-identity-consumers-targeted",
+                "codex.sdk-python-targeted",
             ],
         )
         self.assertTrue(payload["include_explicit_lanes"])

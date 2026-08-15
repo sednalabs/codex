@@ -144,8 +144,13 @@ use codex_protocol::request_permissions::RequestPermissionsResponse as CoreReque
 use sha1::Digest;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
+
+// Late review completions need recent terminal tombstones so they cannot leak
+// into a reused item ID, but the long-lived reducer must not retain every turn.
+const TERMINAL_TURN_RETENTION_LIMIT: usize = 4_096;
 
 #[derive(Default)]
 pub(crate) struct AnalyticsReducer {
@@ -157,6 +162,7 @@ pub(crate) struct AnalyticsReducer {
     pending_reviews: HashMap<RequestId, PendingReviewState>,
     item_review_summaries: HashMap<ToolItemKey, ItemReviewSummary>,
     terminal_turns: HashSet<(String, String)>,
+    terminal_turn_order: VecDeque<(String, String)>,
 }
 
 struct ConnectionState {
@@ -1379,8 +1385,7 @@ impl AnalyticsReducer {
                 });
                 let turn_id = notification.turn.id;
                 self.maybe_emit_turn_event(&turn_id, out).await;
-                self.terminal_turns
-                    .insert((thread_id.clone(), turn_id.clone()));
+                self.remember_terminal_turn(thread_id.clone(), turn_id.clone());
                 self.clear_terminal_turn_item_state(&thread_id, &turn_id);
             }
             _ => {}
@@ -1728,6 +1733,18 @@ impl AnalyticsReducer {
             .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
         self.item_review_summaries
             .retain(|key, _| key.thread_id != thread_id || key.turn_id != turn_id);
+    }
+
+    fn remember_terminal_turn(&mut self, thread_id: String, turn_id: String) {
+        let key = (thread_id, turn_id);
+        if self.terminal_turns.insert(key.clone()) {
+            self.terminal_turn_order.push_back(key);
+        }
+        while self.terminal_turn_order.len() > TERMINAL_TURN_RETENTION_LIMIT {
+            if let Some(expired) = self.terminal_turn_order.pop_front() {
+                self.terminal_turns.remove(&expired);
+            }
+        }
     }
 
     fn thread_connection_or_warn(
@@ -2921,6 +2938,30 @@ mod tests {
     use codex_protocol::permissions::FileSystemSandboxPolicy;
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn terminal_turn_tombstones_are_bounded_and_keep_the_newest_turns() {
+        let mut reducer = AnalyticsReducer::default();
+
+        for index in 0..=TERMINAL_TURN_RETENTION_LIMIT {
+            reducer.remember_terminal_turn("thread-1".to_string(), format!("turn-{index}"));
+        }
+
+        assert_eq!(reducer.terminal_turns.len(), TERMINAL_TURN_RETENTION_LIMIT);
+        assert_eq!(
+            reducer.terminal_turn_order.len(),
+            TERMINAL_TURN_RETENTION_LIMIT
+        );
+        assert!(
+            !reducer
+                .terminal_turns
+                .contains(&("thread-1".to_string(), "turn-0".to_string()))
+        );
+        assert!(reducer.terminal_turns.contains(&(
+            "thread-1".to_string(),
+            format!("turn-{TERMINAL_TURN_RETENTION_LIMIT}"),
+        )));
+    }
 
     #[test]
     fn managed_full_disk_with_restricted_network_reports_external_sandbox() {

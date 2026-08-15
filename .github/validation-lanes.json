@@ -2349,7 +2349,8 @@
         "codex.app-server-protocol-test",
         "codex.app-server-collab-spawn-identity-targeted",
         "codex.tui-collab-spawn-identity-targeted",
-        "codex.collab-spawn-identity-consumers-targeted"
+        "codex.collab-spawn-identity-consumers-targeted",
+        "codex.sdk-python-targeted"
       ],
       "allowed_paths": [
         ".github/scripts/test_ci_planners.py",
@@ -2448,6 +2449,7 @@
         "codex-rs/state/src/runtime/usage.rs",
         "sdk/python/scripts/update_sdk_artifacts.py",
         "sdk/python/src/openai_codex/client.py",
+        "sdk/python/src/openai_codex/generated/v2_all.py",
         "sdk/python/tests/test_artifact_workflow_and_binaries.py",
         "sdk/python/tests/test_client_rpc_methods.py"
       ]

@@ -2029,6 +2029,10 @@ decisions.
   `codex.collab-spawn-identity-consumers-targeted`
   (`analytics_client_tests::collab_tool_item_analytics_keeps_requested_identity_from_the_started_event`
   and `runtime::usage::tests::usage_logger_preserves_optional_spawn_request_identity`),
+  `codex.sdk-python-targeted`
+  (`test_thread_read_response_normalizes_only_legacy_collab_identity`,
+  `test_collab_identity_transport_keeps_current_and_partial_shapes_strict`, and
+  `test_generated_collab_spawn_identity_is_required_nullable`),
   `codex.app-server-collab-spawn-identity-targeted`
   (`turn_start_emits_multi_agent_v1_spawn_requested_and_effective_identity_v2`
   and `turn_start_emits_multi_agent_v1_role_spawn_requested_and_effective_identity_v2`),
@@ -2043,10 +2047,11 @@ decisions.
   protocol, lifecycle, core-spawn, replay/rendering, schema, SDK, and carry
   paths, an identity implementation or SDK path lets that route win generic
   overlap and select `codex.core-subagent-model-pinning-targeted`,
-  `codex.app-server-protocol-test`, the two protocol/UI identity lanes, and the
-  direct analytics/usage consumer lane. Analytics and state usage changes are
-  explicitly required route inputs so those consumers receive direct hosted
-  coverage. Schema-only and docs/config-only changes do not trigger this route;
+  `codex.app-server-protocol-test`, the two protocol/UI identity lanes, the
+  direct analytics/usage consumer lane, and `codex.sdk-python-targeted`.
+  Analytics, state usage, and Python SDK changes are explicitly required route
+  inputs so those consumers receive direct hosted coverage. Schema-only and
+  docs/config-only changes do not trigger this route;
   only equal highest-priority matches fail closed. The route includes
   explicit-only lanes intentionally; it is not a broad default selection for
   unrelated app-server or TUI changes.
