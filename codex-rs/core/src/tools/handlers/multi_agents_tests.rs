@@ -1928,7 +1928,7 @@ async fn multi_agent_v2_spawn_without_snapshot_omits_unobserved_effective_identi
         effective_reasoning_effort: Option<ReasoningEffort>,
     }
 
-    let (mut session, mut turn, mut rx) = make_session_and_context_with_rx().await;
+    let (mut session, mut turn, rx) = make_session_and_context_with_rx().await;
     let mut config = (*turn.config).clone();
     config
         .features
@@ -2188,7 +2188,7 @@ async fn multi_agent_v2_spawn_rejects_legacy_items_field() {
 
 #[tokio::test]
 async fn failed_spawn_keeps_requested_identity_separate_from_terminal_effective_identity() {
-    let (session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let (session, turn, rx) = make_session_and_context_with_rx().await;
     let invocation = invocation(
         session,
         turn,
@@ -2295,7 +2295,7 @@ async fn failed_spawn_keeps_requested_identity_separate_from_terminal_effective_
 
 #[tokio::test]
 async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent() {
-    let (session, turn, mut rx) = make_session_and_context_with_rx().await;
+    let (session, turn, rx) = make_session_and_context_with_rx().await;
     let thread_id = session.thread_id;
     let invocation = invocation(
         session,
@@ -2340,7 +2340,7 @@ async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent(
         Some(false)
     );
 
-    let serialized = serde_json::to_value(&EventMsg::CollabAgentSpawnBegin(legacy_started.clone()))
+    let serialized = serde_json::to_value(EventMsg::CollabAgentSpawnBegin(legacy_started.clone()))
         .expect("current omitted legacy spawn start should serialize");
     assert_eq!(
         serialized["requested_reasoning_effort_present"],
@@ -2396,7 +2396,7 @@ async fn v1_spawn_without_requested_identity_replays_legacy_sentinels_as_absent(
 
     let mut historic_markerless = legacy_started;
     historic_markerless.requested_reasoning_effort_present = None;
-    let historic_json = serde_json::to_value(&EventMsg::CollabAgentSpawnBegin(historic_markerless))
+    let historic_json = serde_json::to_value(EventMsg::CollabAgentSpawnBegin(historic_markerless))
         .expect("historic markerless spawn start should serialize");
     assert!(
         historic_json
