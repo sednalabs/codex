@@ -24,9 +24,16 @@ use std::collections::HashSet;
 
 pub(super) const AGENT_PICKER_PAGE_SIZE: u32 = 50;
 pub(super) const AGENT_PICKER_CURSOR_BUDGET: usize = 128;
+pub(super) const AGENT_PICKER_MAX_PAGE_ROWS: usize = AGENT_PICKER_PAGE_SIZE as usize;
+pub(super) const AGENT_PICKER_ANCESTRY_READ_BUDGET: usize = 128;
+pub(super) const AGENT_PICKER_ANCESTRY_DEPTH_BUDGET: usize = 128;
 pub(super) const LEGACY_AGENT_PICKER_MAX_PAGES: usize = AGENT_PICKER_CURSOR_BUDGET;
 pub(super) const LEGACY_AGENT_PICKER_MAX_THREADS: usize =
     LEGACY_AGENT_PICKER_MAX_PAGES * AGENT_PICKER_PAGE_SIZE as usize;
+const AGENT_PICKER_REPLAY_PAGE_SIZE: u32 = 50;
+const AGENT_PICKER_REPLAY_MAX_PAGES: usize = 128;
+const AGENT_PICKER_REPLAY_MAX_TURNS: usize =
+    AGENT_PICKER_REPLAY_MAX_PAGES * AGENT_PICKER_REPLAY_PAGE_SIZE as usize;
 const AGENT_PICKER_VIEW_ID: &str = "agent-picker";
 
 #[derive(Clone, Copy)]
@@ -574,6 +581,128 @@ impl App {
         Ok(live_attached)
     }
 
+    /// Hydrates a persisted closed thread into an isolated replay-only channel.
+    ///
+    /// Closed history must never be resumed or subscribed. Legacy histories are available through
+    /// `thread/read(includeTurns=true)`; paginated histories use the read-only turns endpoint with
+    /// independent page, cursor, and raw-turn budgets.
+    async fn load_closed_thread_for_replay(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        if self.thread_event_channels.contains_key(&thread_id) {
+            return Ok(());
+        }
+
+        let metadata = app_server
+            .thread_read(thread_id, /*include_turns*/ false)
+            .await?;
+        if !matches!(
+            metadata.status,
+            codex_app_server_protocol::ThreadStatus::NotLoaded
+        ) {
+            return Err(color_eyre::eyre::eyre!(
+                "Agent thread {thread_id} is no longer closed history."
+            ));
+        }
+
+        let turns = match metadata.history_mode {
+            codex_app_server_protocol::ThreadHistoryMode::Legacy => {
+                let thread = app_server
+                    .thread_read(thread_id, /*include_turns*/ true)
+                    .await?;
+                if !matches!(
+                    thread.status,
+                    codex_app_server_protocol::ThreadStatus::NotLoaded
+                ) {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Agent thread {thread_id} changed state while loading saved history."
+                    ));
+                }
+                if thread.turns.len() > AGENT_PICKER_REPLAY_MAX_TURNS
+                    || thread.turns.iter().any(|turn| {
+                        turn.items_view != codex_app_server_protocol::TurnItemsView::Full
+                    })
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Agent thread {thread_id} returned incomplete or over-budget saved history."
+                    ));
+                }
+                thread.turns
+            }
+            codex_app_server_protocol::ThreadHistoryMode::Paginated => {
+                let mut cursor = None;
+                let mut seen_cursors = HashSet::new();
+                let mut seen_turn_ids = HashSet::new();
+                let mut turns = Vec::new();
+                for _ in 0..AGENT_PICKER_REPLAY_MAX_PAGES {
+                    let response = app_server
+                        .thread_turns_list(thread_id, cursor, AGENT_PICKER_REPLAY_PAGE_SIZE)
+                        .await?;
+                    if response.data.len() > AGENT_PICKER_REPLAY_PAGE_SIZE as usize {
+                        return Err(color_eyre::eyre::eyre!(
+                            "Agent thread {thread_id} returned an oversized saved-history page."
+                        ));
+                    }
+                    if response.data.iter().any(|turn| {
+                        turn.items_view != codex_app_server_protocol::TurnItemsView::Full
+                            || !seen_turn_ids.insert(turn.id.clone())
+                    }) {
+                        return Err(color_eyre::eyre::eyre!(
+                            "Agent thread {thread_id} returned incomplete or repeated saved turns."
+                        ));
+                    }
+                    let Some(next_turn_count) = turns.len().checked_add(response.data.len()) else {
+                        return Err(color_eyre::eyre::eyre!(
+                            "Agent thread {thread_id} saved-history size overflowed."
+                        ));
+                    };
+                    if next_turn_count > AGENT_PICKER_REPLAY_MAX_TURNS {
+                        return Err(color_eyre::eyre::eyre!(
+                            "Agent thread {thread_id} exceeded the saved-history replay budget."
+                        ));
+                    }
+                    turns.extend(response.data);
+                    let Some(next_cursor) = response.next_cursor else {
+                        cursor = None;
+                        break;
+                    };
+                    if !seen_cursors.insert(next_cursor.clone()) {
+                        return Err(color_eyre::eyre::eyre!(
+                            "Agent thread {thread_id} returned a repeated saved-history cursor."
+                        ));
+                    }
+                    cursor = Some(next_cursor);
+                }
+                if cursor.is_some() {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Agent thread {thread_id} exceeded the saved-history page budget."
+                    ));
+                }
+                turns
+            }
+        };
+        if turns.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "Agent thread {thread_id} has no saved transcript to replay."
+            ));
+        }
+
+        // Replay-only history has no live recipient for a new turn. This is independent of the
+        // V1/V2 live-thread capability rule: pathless live V1 children remain writable, while a
+        // persisted closed row is always view-only.
+        self.agent_navigation.mark_parent_owned(thread_id);
+        let mut session = self
+            .session_state_for_thread_read(thread_id, &metadata)
+            .await;
+        session.model.clear();
+        let channel = self.ensure_thread_channel(thread_id);
+        channel.mark_replay_only();
+        channel.store.lock().await.set_session(session, turns);
+        Ok(())
+    }
+
     /// Replaces the chat widget and re-seeds the new widget's collab metadata from the navigation
     /// cache.
     ///
@@ -652,9 +781,15 @@ impl App {
                 }
             }
         } else if !self.thread_event_channels.contains_key(&thread_id) && is_replay_only {
-            self.chat_widget
-                .add_error_message(format!("Agent thread {thread_id} is no longer available."));
-            return Ok(());
+            if let Err(err) = self
+                .load_closed_thread_for_replay(app_server, thread_id)
+                .await
+            {
+                self.chat_widget.add_error_message(format!(
+                    "Failed to load saved agent thread {thread_id}: {err}"
+                ));
+                return Ok(());
+            }
         }
         let previous_thread_id = self.active_thread_id;
         self.store_active_thread_receiver().await;
@@ -941,6 +1076,9 @@ impl App {
         };
 
         let is_continuation = cursor.is_some();
+        if !is_continuation {
+            self.agent_navigation.begin_picker_page_sequence();
+        }
         let mut refreshed_thread_ids = HashSet::new();
         let loaded_priority_completed = if is_continuation {
             true
@@ -978,6 +1116,46 @@ impl App {
                 if is_continuation && Self::is_invalid_thread_list_cursor_error(&err) {
                     let _ = self.agent_navigation.set_next_picker_page_cursor(None);
                 }
+                let legacy_fallback_completed = if !is_continuation
+                    && self.agent_navigation.needs_legacy_relation_fallback_check()
+                {
+                    let completed = self
+                        .backfill_loaded_legacy_subagent_threads(
+                            app_server,
+                            primary_thread_id,
+                            &mut refreshed_thread_ids,
+                        )
+                        .await;
+                    if loaded_priority_completed && completed {
+                        self.agent_navigation
+                            .mark_legacy_relation_fallback_checked();
+                    }
+                    completed
+                } else {
+                    false
+                };
+                self.sync_active_agent_label();
+                return LoadedSubagentBackfill {
+                    completed: loaded_priority_completed && legacy_fallback_completed,
+                    refreshed_thread_ids,
+                };
+            }
+        };
+
+        let response_next_cursor = response.next_cursor;
+        let scoped_threads = match Self::locally_verify_descendant_page(
+            app_server,
+            primary_thread_id,
+            response.data,
+        )
+        .await
+        {
+            Ok(threads) => threads,
+            Err(()) => {
+                tracing::warn!(
+                    "discarding persisted descendant page because its lineage could not be proven within budget"
+                );
+                let _ = self.agent_navigation.set_next_picker_page_cursor(None);
                 self.sync_active_agent_label();
                 return LoadedSubagentBackfill {
                     completed: false,
@@ -985,31 +1163,26 @@ impl App {
                 };
             }
         };
-
-        let response_next_cursor = response.next_cursor;
-        let (scoped_threads, page_scope_proven) =
-            Self::locally_verify_descendant_page(app_server, primary_thread_id, response.data)
-                .await;
-        let cursor_scope_proven = if page_scope_proven && response_next_cursor.is_some() {
+        let cursor_scope_proven = if response_next_cursor.is_some() {
             Self::server_honors_ancestor_filter(app_server).await
         } else {
-            page_scope_proven
+            true
         };
         let next_cursor = cursor_scope_proven
             .then_some(response_next_cursor)
             .flatten();
-        if is_continuation
-            || next_cursor.is_none()
-            || self.agent_navigation.next_picker_page_cursor().is_none()
+        if !self
+            .agent_navigation
+            .set_next_picker_page_cursor(next_cursor)
         {
-            if !self
-                .agent_navigation
-                .set_next_picker_page_cursor(next_cursor)
-            {
-                tracing::warn!(
-                    "discarding agent picker continuation because its cursor repeated or exceeded the bounded page limit"
-                );
-            }
+            tracing::warn!(
+                "discarding agent picker continuation because its cursor repeated or exceeded the bounded page limit"
+            );
+            self.sync_active_agent_label();
+            return LoadedSubagentBackfill {
+                completed: false,
+                refreshed_thread_ids,
+            };
         }
         for thread in scoped_threads {
             self.register_agent_picker_thread_from_backend(
@@ -1045,104 +1218,81 @@ impl App {
     }
 
     /// Older app servers may ignore the experimental ancestor filter. Prove every returned row's
-    /// parent chain locally before exposing it, and report whether the whole page was scoped so an
-    /// opaque continuation cursor from an unscoped response is never retained.
+    /// canonical spawn-parent chain locally before exposing any row from the page. The page is
+    /// rejected atomically if a row is malformed, outside the active tree, or exceeds a budget.
     async fn locally_verify_descendant_page(
         app_server: &mut AppServerSession,
         primary_thread_id: ThreadId,
         threads: Vec<Thread>,
-    ) -> (Vec<Thread>, bool) {
+    ) -> Result<Vec<Thread>, ()> {
+        if threads.len() > AGENT_PICKER_MAX_PAGE_ROWS {
+            tracing::warn!(
+                row_count = threads.len(),
+                max_rows = AGENT_PICKER_MAX_PAGE_ROWS,
+                "discarding oversized persisted descendant page"
+            );
+            return Err(());
+        }
         let mut parent_by_thread_id = HashMap::new();
-        let mut malformed_thread_ids = HashSet::new();
         for thread in &threads {
-            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
-                continue;
-            };
-            match Self::thread_parent_id(thread) {
-                Ok(parent_thread_id) => {
-                    parent_by_thread_id.insert(thread_id, parent_thread_id);
-                }
-                Err(()) => {
-                    malformed_thread_ids.insert(thread_id);
-                }
+            let thread_id = ThreadId::from_string(&thread.id).map_err(|_| ())?;
+            let parent_thread_id = Self::validated_spawn_parent(thread)?;
+            if parent_by_thread_id
+                .insert(thread_id, parent_thread_id)
+                .is_some_and(|existing| existing != parent_thread_id)
+            {
+                return Err(());
             }
         }
 
-        let mut scoped_thread_ids = HashSet::new();
-        let mut page_scope_proven = true;
+        let mut ancestry_read_count = 0usize;
         for thread in &threads {
-            if !Self::is_thread_spawn_source(thread) {
-                page_scope_proven = false;
-                tracing::warn!(
-                    thread_id = %thread.id,
-                    "discarding persisted descendant with a non-spawn source"
-                );
-                continue;
-            }
-            let Ok(thread_id) = ThreadId::from_string(&thread.id) else {
-                page_scope_proven = false;
-                continue;
-            };
+            let thread_id = ThreadId::from_string(&thread.id).map_err(|_| ())?;
             let mut current_thread_id = thread_id;
             let mut visited = HashSet::new();
-            let scoped = loop {
+            let mut depth = 0usize;
+            loop {
                 if current_thread_id == primary_thread_id {
-                    break thread_id != primary_thread_id;
+                    if thread_id == primary_thread_id {
+                        return Err(());
+                    }
+                    break;
                 }
-                if !visited.insert(current_thread_id)
-                    || malformed_thread_ids.contains(&current_thread_id)
-                {
-                    break false;
+                if !visited.insert(current_thread_id) {
+                    return Err(());
+                }
+                depth = depth.checked_add(1).ok_or(())?;
+                if depth > AGENT_PICKER_ANCESTRY_DEPTH_BUDGET {
+                    return Err(());
                 }
                 if !parent_by_thread_id.contains_key(&current_thread_id) {
-                    let Ok(parent_thread) = app_server
+                    ancestry_read_count = ancestry_read_count.checked_add(1).ok_or(())?;
+                    if ancestry_read_count > AGENT_PICKER_ANCESTRY_READ_BUDGET {
+                        return Err(());
+                    }
+                    let parent_thread = app_server
                         .thread_read(current_thread_id, /*include_turns*/ false)
                         .await
-                    else {
-                        break false;
-                    };
+                        .map_err(|_| ())?;
                     if parent_thread.id != current_thread_id.to_string() {
-                        break false;
+                        return Err(());
                     }
-                    match Self::thread_parent_id(&parent_thread) {
-                        Ok(parent_thread_id) => {
-                            parent_by_thread_id.insert(current_thread_id, parent_thread_id);
-                        }
-                        Err(()) => {
-                            malformed_thread_ids.insert(current_thread_id);
-                            break false;
-                        }
+                    let parent_thread_id = Self::validated_spawn_parent(&parent_thread)?;
+                    if parent_by_thread_id
+                        .insert(current_thread_id, parent_thread_id)
+                        .is_some_and(|existing| existing != parent_thread_id)
+                    {
+                        return Err(());
                     }
                 }
-                let Some(parent_thread_id) = parent_by_thread_id
+                let parent_thread_id = parent_by_thread_id
                     .get(&current_thread_id)
                     .copied()
-                    .flatten()
-                else {
-                    break false;
-                };
+                    .ok_or(())?;
                 current_thread_id = parent_thread_id;
-            };
-            if scoped {
-                scoped_thread_ids.insert(thread_id);
-            } else {
-                page_scope_proven = false;
-                tracing::warn!(
-                    thread_id = %thread_id,
-                    primary_thread_id = %primary_thread_id,
-                    "discarding persisted subagent outside the active thread tree"
-                );
             }
         }
-
-        let scoped_threads = threads
-            .into_iter()
-            .filter(|thread| {
-                ThreadId::from_string(&thread.id)
-                    .is_ok_and(|thread_id| scoped_thread_ids.contains(&thread_id))
-            })
-            .collect();
-        (scoped_threads, page_scope_proven)
+        Ok(threads)
     }
 
     /// `ThreadListResponse` does not acknowledge experimental filters. Before retaining an opaque
@@ -1187,20 +1337,22 @@ impl App {
         }
     }
 
-    fn thread_parent_id(thread: &Thread) -> Result<Option<ThreadId>, ()> {
-        thread
+    fn validated_spawn_parent(thread: &Thread) -> Result<ThreadId, ()> {
+        let top_level_parent = thread
             .parent_thread_id
             .as_deref()
-            .map(ThreadId::from_string)
-            .transpose()
-            .map_err(|_| ())
-    }
-
-    fn is_thread_spawn_source(thread: &Thread) -> bool {
-        matches!(
-            &thread.source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        )
+            .ok_or(())
+            .and_then(|parent| ThreadId::from_string(parent).map_err(|_| ()))?;
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: source_parent,
+            ..
+        }) = &thread.source
+        else {
+            return Err(());
+        };
+        (*source_parent == top_level_parent)
+            .then_some(top_level_parent)
+            .ok_or(())
     }
 
     fn register_agent_picker_thread_from_backend(
@@ -1209,10 +1361,10 @@ impl App {
         thread: Thread,
         refreshed_thread_ids: &mut HashSet<ThreadId>,
     ) {
-        if !Self::is_thread_spawn_source(&thread) {
+        if Self::validated_spawn_parent(&thread).is_err() {
             tracing::warn!(
                 thread_id = %thread.id,
-                "ignoring persisted descendant with a non-spawn source during subagent backfill"
+                "ignoring persisted descendant with invalid spawn lineage during subagent backfill"
             );
             return;
         }
@@ -1316,6 +1468,7 @@ impl App {
             }
         }
 
+        threads.retain(|thread| Self::validated_spawn_parent(thread).is_ok());
         let descendants =
             find_loaded_subagent_threads_for_primary(threads.clone(), primary_thread_id)
                 .into_iter()
@@ -1398,7 +1551,7 @@ impl App {
                 response
                     .data
                     .into_iter()
-                    .filter(Self::is_thread_spawn_source),
+                    .filter(|thread| Self::validated_spawn_parent(thread).is_ok()),
             );
             let Some(next_cursor) = response.next_cursor else {
                 break;
