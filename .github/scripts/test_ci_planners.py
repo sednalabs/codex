@@ -4491,7 +4491,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(
             payload.get("concurrency"),
             {
-                "group": "${{ github.workflow }}-${{ inputs.mode || 'dependabot' }}",
+                "group": "${{ github.workflow }}",
                 "cancel-in-progress": "false",
             },
         )
@@ -4512,6 +4512,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 script = (step.get("with") or {}).get("script") or ""
                 self.assertIn("github.paginate(", script)
                 self.assertIn("github.rest.issues.listComments", script)
+                self.assertIn("comment.user?.login?.toLowerCase() === 'github-actions[bot]'", script)
                 self.assertIn("comment.body === action.message", script)
                 self.assertIn("github.rest.issues.createComment", script)
                 self.assertIn("github.rest.pulls.update", script)
