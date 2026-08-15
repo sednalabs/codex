@@ -171,6 +171,18 @@ async fn manager_injection_into_loaded_v2_root_does_not_require_agent_metadata()
         .expect("loaded V2 root injection should not require subagent metadata");
 
     wait_for_history_item(root.thread.as_ref(), &injected_item).await;
+    assert_eq!(
+        root.thread
+            .session
+            .clone_history()
+            .await
+            .raw_items()
+            .iter()
+            .filter(|item| *item == &injected_item)
+            .count(),
+        1,
+        "taskless root injection should be recorded exactly once"
+    );
 }
 
 #[tokio::test]
