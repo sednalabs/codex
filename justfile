@@ -211,6 +211,10 @@ tui-agent-picker-targeted:
     cargo test -p codex-tui app::tests::session_lifecycle_requests::legacy_agent_picker_scan_enforces_page_and_thread_budgets --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_rejects_non_spawn_descendants_when_server_broadens_source_filter --lib -- --exact --test-threads=1
     cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_rejects_mixed_roots_when_server_ignores_ancestor_filter --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_page_and_ancestry_budgets_are_exact_and_atomic --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::agent_picker_requires_consistent_spawn_lineage_for_every_page_row --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::page_discovered_closed_threads_replay_read_only_with_bounded_faults --lib -- --exact --test-threads=1
+    cargo test -p codex-tui app::tests::session_lifecycle_requests::picker_initial_and_continuation_failures_keep_retry_and_fallback_boundaries --lib -- --exact --test-threads=1
 
 # Focused shared picker-model tool-description slice for upgradeable legacy
 
