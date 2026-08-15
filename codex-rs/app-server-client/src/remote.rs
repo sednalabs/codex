@@ -1158,9 +1158,7 @@ impl RemoteEventBacklog {
 
     fn take_deferred_lag_marker(&mut self) -> Option<RetainedRemoteEvent> {
         let skipped = std::mem::take(&mut self.deferred_skipped_events);
-        (skipped > 0).then(|| {
-            RetainedRemoteEvent::local(AppServerEvent::Lagged { skipped })
-        })
+        (skipped > 0).then(|| RetainedRemoteEvent::local(AppServerEvent::Lagged { skipped }))
     }
 
     fn mark_server_request_deferred(&mut self, request_id: &InboundRequestId) {
@@ -3177,9 +3175,9 @@ mod tests {
             let envelope_bytes = serde_json::to_string(&response_with_padding(String::new()))
                 .expect("empty initialize response should serialize")
                 .len();
-            let response = serde_json::to_string(&response_with_padding("x".repeat(
-                REMOTE_RESPONSE_MAX_WIRE_BYTES - envelope_bytes,
-            )))
+            let response = serde_json::to_string(&response_with_padding(
+                "x".repeat(REMOTE_RESPONSE_MAX_WIRE_BYTES - envelope_bytes),
+            ))
             .expect("large initialize response should serialize");
             assert_eq!(response.len(), REMOTE_RESPONSE_MAX_WIRE_BYTES);
             peer.send(Message::Text(response.into()))
@@ -3510,8 +3508,7 @@ mod tests {
             .is_none()
         );
 
-        let ready_barrier =
-            backlog.finalize(deferred, "terminal".to_string(), std::iter::empty());
+        let ready_barrier = backlog.finalize(deferred, "terminal".to_string(), std::iter::empty());
         assert!(matches!(
             &ready_barrier[0].event,
             AppServerEvent::Lagged { skipped: 1 }
@@ -4305,7 +4302,9 @@ mod tests {
         let reused_local_id = tokio::spawn({
             let handle = handle.clone();
             async move {
-                handle.request_json_rpc(client_request(/*local id*/ 1)).await
+                handle
+                    .request_json_rpc(client_request(/*local id*/ 1))
+                    .await
             }
         });
         let third_message = timeout(Duration::from_secs(2), peer.next())
@@ -4339,8 +4338,8 @@ mod tests {
                     tokio::task::yield_now().await;
                 }
             })
-                .await
-                .is_err()
+            .await
+            .is_err()
         );
         write_jsonrpc_message(
             &mut peer,
@@ -4413,7 +4412,9 @@ mod tests {
         let first = tokio::spawn({
             let handle = handle.clone();
             async move {
-                handle.request_json_rpc(client_request(/*local id*/ 7)).await
+                handle
+                    .request_json_rpc(client_request(/*local id*/ 7))
+                    .await
             }
         });
         let first_wire_id = {
@@ -4451,7 +4452,9 @@ mod tests {
         let second = tokio::spawn({
             let handle = handle.clone();
             async move {
-                handle.request_json_rpc(client_request(/*same local id*/ 7)).await
+                handle
+                    .request_json_rpc(client_request(/*same local id*/ 7))
+                    .await
             }
         });
         let second_wire_id = {

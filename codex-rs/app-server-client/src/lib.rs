@@ -2919,7 +2919,8 @@ mod tests {
             })
             .await;
             let error =
-                match RemoteAppServerClient::connect(test_remote_connect_args(websocket_url)).await {
+                match RemoteAppServerClient::connect(test_remote_connect_args(websocket_url)).await
+                {
                     Ok(_) => panic!("oversized initialize metadata should fail connection"),
                     Err(error) => error,
                 };
