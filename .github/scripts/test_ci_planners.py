@@ -1208,6 +1208,31 @@ class RouteSelectionTests(unittest.TestCase):
             [],
         )
 
+    def test_rust_ci_route_priority_rejects_invalid_unrelated_route(self) -> None:
+        routes = [
+            {
+                "route_id": "identity",
+                "priority": 10,
+                "lane_ids": ["codex.identity"],
+                "allowed_paths": ["identity/**"],
+            },
+            {
+                "route_id": "unrelated-invalid",
+                "priority": False,
+                "lane_ids": ["codex.unrelated"],
+                "allowed_paths": ["unrelated/**"],
+            },
+        ]
+
+        with self.assertRaisesRegex(
+            SystemExit,
+            "unrelated-invalid must set priority to a non-negative integer",
+        ):
+            RESOLVE_RUST_CI_MODE.select_followup_lanes(
+                ["identity/source.rs"],
+                routes,
+            )
+
     def test_brokered_tool_replay_route_stays_tight(self) -> None:
         lanes = RESOLVE_VALIDATION_PLAN.select_followup_lanes(
             ["codex-rs/tui/src/app/app_server_adapter.rs"],

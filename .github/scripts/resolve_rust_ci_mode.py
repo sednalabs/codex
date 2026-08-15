@@ -193,11 +193,14 @@ def followup_route_priority(route: dict) -> int:
 
 
 def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
+    routes_with_priority = [
+        (route, followup_route_priority(route)) for route in routes
+    ]
     if not files:
         return []
 
-    matching_routes = []
-    for route in routes:
+    matching_routes: list[tuple[dict, int]] = []
+    for route, priority in routes_with_priority:
         allowed_paths = route.get("allowed_paths", [])
         required_any_paths = route.get("required_any_paths", [])
         if not allowed_paths:
@@ -208,18 +211,15 @@ def select_followup_lanes(files: list[str], routes: list[dict]) -> list[str]:
             any(path_matches(path, pattern) for pattern in required_any_paths) for path in files
         ):
             continue
-        matching_routes.append(route)
+        matching_routes.append((route, priority))
 
     if not matching_routes:
         return []
 
-    routes_with_priority = [
-        (route, followup_route_priority(route)) for route in matching_routes
-    ]
-    highest_priority = max(priority for _, priority in routes_with_priority)
+    highest_priority = max(priority for _, priority in matching_routes)
     highest_priority_routes = [
         route
-        for route, priority in routes_with_priority
+        for route, priority in matching_routes
         if priority == highest_priority
     ]
     if len(highest_priority_routes) != 1:
