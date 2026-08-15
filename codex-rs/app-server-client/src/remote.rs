@@ -1769,142 +1769,145 @@ where
             let reservation = match response_byte_budget.try_reserve(text.len()) {
                 Ok(reservation) => reservation,
                 Err(RemoteResponseBudgetError::OversizedWireMessage) => {
-                    return Some(RemoteTerminal::oversized_response_message(endpoint, text.len()));
+                    return Some(RemoteTerminal::oversized_response_message(
+                        endpoint,
+                        text.len(),
+                    ));
                 }
                 Err(RemoteResponseBudgetError::AggregateExhausted) => {
                     return Some(RemoteTerminal::response_budget_exhausted(endpoint));
                 }
             };
             match serde_json::from_str::<JSONRPCMessage>(&text) {
-            Ok(JSONRPCMessage::Response(response)) => {
-                if let Some(pending) = pending_requests.remove(&response.id) {
-                    if pending
-                        .lifecycle
-                        .compare_exchange(
-                            REQUEST_PENDING,
-                            REQUEST_COMPLETED,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
-                    {
-                        let _ = pending.response_tx.send(Ok(PendingRemoteResponse {
-                            result: Ok(response.result),
-                            _bytes: reservation,
-                        }));
-                    } else {
-                        canceled_request_ids.remember(response.id);
-                    }
-                } else if canceled_request_ids.contains(&response.id) {
-                    // A response racing caller cancellation belongs to the
-                    // canceled request and must not be routed to a reused ID.
-                    return None;
-                }
-                None
-            }
-            Ok(JSONRPCMessage::Error(error)) => {
-                if let Some(pending) = pending_requests.remove(&error.id) {
-                    if pending
-                        .lifecycle
-                        .compare_exchange(
-                            REQUEST_PENDING,
-                            REQUEST_COMPLETED,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
-                    {
-                        let _ = pending.response_tx.send(Ok(PendingRemoteResponse {
-                            result: Err(error.error),
-                            _bytes: reservation,
-                        }));
-                    } else {
-                        canceled_request_ids.remember(error.id);
-                    }
-                } else if canceled_request_ids.contains(&error.id) {
-                    // See the response branch: absorb late errors for
-                    // canceled requests without retaining their payload.
-                    return None;
-                }
-                None
-            }
-            Ok(JSONRPCMessage::Notification(notification)) => {
-                app_server_event_from_notification(notification).and_then(|event| {
-                    enqueue_remote_worker_event(backlog, endpoint, event, deferred_events)
-                })
-            }
-            Ok(JSONRPCMessage::Request(request)) => {
-                let inbound_request_id = match InboundRequestId::from_request_id(&request.id) {
-                    Ok(request_id) => request_id,
-                    Err(length) => {
-                        return Some(RemoteTerminal::oversized_inbound_request_id(
-                            endpoint, length,
-                        ));
-                    }
-                };
-                let method = request.method.clone();
-                match backlog
-                    .claim_server_request_id(&inbound_request_id, /*allow_deferred*/ true)
-                {
-                    Ok(false) => {
-                        warn!(%inbound_request_id, "ignoring duplicate remote app-server server request");
-                        #[cfg(test)]
-                        record_remote_worker_test_event(
-                            endpoint,
-                            RemoteWorkerTestEvent::ServerRequestDuplicateIgnored(
-                                inbound_request_id.to_request_id(),
-                            ),
-                        );
+                Ok(JSONRPCMessage::Response(response)) => {
+                    if let Some(pending) = pending_requests.remove(&response.id) {
+                        if pending
+                            .lifecycle
+                            .compare_exchange(
+                                REQUEST_PENDING,
+                                REQUEST_COMPLETED,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            let _ = pending.response_tx.send(Ok(PendingRemoteResponse {
+                                result: Ok(response.result),
+                                _bytes: reservation,
+                            }));
+                        } else {
+                            canceled_request_ids.remember(response.id);
+                        }
+                    } else if canceled_request_ids.contains(&response.id) {
+                        // A response racing caller cancellation belongs to the
+                        // canceled request and must not be routed to a reused ID.
                         return None;
                     }
-                    Err(()) => {
-                        return Some(RemoteTerminal::required_event_overflow(
-                            endpoint,
-                            Some(inbound_request_id),
-                        ));
-                    }
-                    Ok(true) => {}
+                    None
                 }
-                match ServerRequest::try_from(request) {
-                    Ok(request) => enqueue_remote_worker_event_claimed(
-                        backlog,
-                        endpoint,
-                        AppServerEvent::ServerRequest(request),
-                        Some(inbound_request_id),
-                        deferred_events,
-                    ),
-                    Err(err) => {
-                        warn!(%err, method, "rejecting unknown remote app-server request");
-                        let _ = backlog.begin_server_request_response(&inbound_request_id);
-                        let response_result = write_jsonrpc_message(
-                            stream,
-                            JSONRPCMessage::Error(JSONRPCError {
-                                error: JSONRPCErrorError {
-                                    code: -32601,
-                                    message: format!(
-                                        "unsupported remote app-server request `{method}`"
-                                    ),
-                                    data: None,
-                                },
-                                id: inbound_request_id.to_request_id(),
-                            }),
+                Ok(JSONRPCMessage::Error(error)) => {
+                    if let Some(pending) = pending_requests.remove(&error.id) {
+                        if pending
+                            .lifecycle
+                            .compare_exchange(
+                                REQUEST_PENDING,
+                                REQUEST_COMPLETED,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            let _ = pending.response_tx.send(Ok(PendingRemoteResponse {
+                                result: Err(error.error),
+                                _bytes: reservation,
+                            }));
+                        } else {
+                            canceled_request_ids.remember(error.id);
+                        }
+                    } else if canceled_request_ids.contains(&error.id) {
+                        // See the response branch: absorb late errors for
+                        // canceled requests without retaining their payload.
+                        return None;
+                    }
+                    None
+                }
+                Ok(JSONRPCMessage::Notification(notification)) => {
+                    app_server_event_from_notification(notification).and_then(|event| {
+                        enqueue_remote_worker_event(backlog, endpoint, event, deferred_events)
+                    })
+                }
+                Ok(JSONRPCMessage::Request(request)) => {
+                    let inbound_request_id = match InboundRequestId::from_request_id(&request.id) {
+                        Ok(request_id) => request_id,
+                        Err(length) => {
+                            return Some(RemoteTerminal::oversized_inbound_request_id(
+                                endpoint, length,
+                            ));
+                        }
+                    };
+                    let method = request.method.clone();
+                    match backlog
+                        .claim_server_request_id(&inbound_request_id, /*allow_deferred*/ true)
+                    {
+                        Ok(false) => {
+                            warn!(%inbound_request_id, "ignoring duplicate remote app-server server request");
+                            #[cfg(test)]
+                            record_remote_worker_test_event(
+                                endpoint,
+                                RemoteWorkerTestEvent::ServerRequestDuplicateIgnored(
+                                    inbound_request_id.to_request_id(),
+                                ),
+                            );
+                            return None;
+                        }
+                        Err(()) => {
+                            return Some(RemoteTerminal::required_event_overflow(
+                                endpoint,
+                                Some(inbound_request_id),
+                            ));
+                        }
+                        Ok(true) => {}
+                    }
+                    match ServerRequest::try_from(request) {
+                        Ok(request) => enqueue_remote_worker_event_claimed(
+                            backlog,
                             endpoint,
-                        )
-                        .await;
-                        match response_result {
-                            Ok(()) => {
-                                backlog.complete_server_request(&inbound_request_id);
-                                None
+                            AppServerEvent::ServerRequest(request),
+                            Some(inbound_request_id),
+                            deferred_events,
+                        ),
+                        Err(err) => {
+                            warn!(%err, method, "rejecting unknown remote app-server request");
+                            let _ = backlog.begin_server_request_response(&inbound_request_id);
+                            let response_result = write_jsonrpc_message(
+                                stream,
+                                JSONRPCMessage::Error(JSONRPCError {
+                                    error: JSONRPCErrorError {
+                                        code: -32601,
+                                        message: format!(
+                                            "unsupported remote app-server request `{method}`"
+                                        ),
+                                        data: None,
+                                    },
+                                    id: inbound_request_id.to_request_id(),
+                                }),
+                                endpoint,
+                            )
+                            .await;
+                            match response_result {
+                                Ok(()) => {
+                                    backlog.complete_server_request(&inbound_request_id);
+                                    None
+                                }
+                                Err(err) => Some(RemoteTerminal::write_failed(endpoint, err)),
                             }
-                            Err(err) => Some(RemoteTerminal::write_failed(endpoint, err)),
                         }
                     }
                 }
-            }
-            Err(err) => Some(RemoteTerminal::new(
-                ErrorKind::InvalidData,
-                format!("remote app server at `{endpoint}` sent invalid JSON-RPC: {err}"),
-            )),
+                Err(err) => Some(RemoteTerminal::new(
+                    ErrorKind::InvalidData,
+                    format!("remote app server at `{endpoint}` sent invalid JSON-RPC: {err}"),
+                )),
             }
         }
         Some(Ok(Message::Close(frame))) => {
@@ -2684,7 +2687,10 @@ mod tests {
     fn remote_websocket_config_and_response_wire_limit_are_locked_to_eight_mib() {
         let config = remote_websocket_config();
 
-        assert_eq!(REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE, 8 * 1024 * 1024);
+        assert_eq!(
+            REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE,
+            8 * 1024 * 1024
+        );
         assert_eq!(REMOTE_RESPONSE_MAX_WIRE_BYTES, 8 * 1024 * 1024);
         assert_eq!(
             config.max_frame_size,
@@ -2805,10 +2811,12 @@ mod tests {
         );
         assert!(
             handle_remote_message(
-                Some(Ok(text_message(JSONRPCMessage::Response(JSONRPCResponse {
-                    id: RequestId::Integer(2),
-                    result: serde_json::json!({"dropped": true}),
-                })))),
+                Some(Ok(text_message(JSONRPCMessage::Response(
+                    JSONRPCResponse {
+                        id: RequestId::Integer(2),
+                        result: serde_json::json!({"dropped": true}),
+                    }
+                )))),
                 &mut stream,
                 "test://response-custody",
                 &mut pending_requests,
