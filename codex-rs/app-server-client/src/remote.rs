@@ -632,6 +632,9 @@ struct RemoteEventBacklog {
     server_request_dispositions: HashMap<InboundRequestId, TrackedServerRequest>,
     server_request_order: VecDeque<InboundRequestId>,
     deferred_server_request_ids: HashSet<InboundRequestId>,
+    // Best-effort losses that occurred after a full deferred FIFO. This
+    // bounded scalar becomes one deferred Lagged marker once space opens.
+    deferred_skipped_events: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -965,6 +968,7 @@ impl RemoteEventBacklog {
                     .saturating_mul(2)
                     .min(MAX_ACTIVE_INBOUND_REQUEST_IDS),
             ),
+            deferred_skipped_events: 0,
         }
     }
 
@@ -1148,6 +1152,17 @@ impl RemoteEventBacklog {
         self.capacity.saturating_mul(2).max(1)
     }
 
+    fn record_deferred_skip(&mut self) {
+        self.deferred_skipped_events = self.deferred_skipped_events.saturating_add(1);
+    }
+
+    fn take_deferred_lag_marker(&mut self) -> Option<RetainedRemoteEvent> {
+        let skipped = std::mem::take(&mut self.deferred_skipped_events);
+        (skipped > 0).then(|| {
+            RetainedRemoteEvent::local(AppServerEvent::Lagged { skipped })
+        })
+    }
+
     fn mark_server_request_deferred(&mut self, request_id: &InboundRequestId) {
         self.deferred_server_request_ids.insert(request_id.clone());
     }
@@ -1244,6 +1259,9 @@ impl RemoteEventBacklog {
     ) -> VecDeque<RetainedRemoteEvent> {
         let mut terminal_events = VecDeque::new();
         let mut deferred_events = VecDeque::from_iter(deferred_events);
+        if let Some(lagged) = self.take_deferred_lag_marker() {
+            deferred_events.push_back(lagged);
+        }
         while self.deferred_before_lagged > 0 {
             while self.lagged_after != Some(0) {
                 let Some(event) = self.pop_next_for_public() else {
@@ -1525,6 +1543,11 @@ where
             if terminal.is_some() {
                 continue;
             }
+        }
+        if deferred_events.len() < backlog.deferred_capacity()
+            && let Some(lagged) = backlog.take_deferred_lag_marker()
+        {
+            deferred_events.push_back(lagged);
         }
 
         // This intentionally uses Tokio's fair (non-biased) selection. Each
@@ -2164,12 +2187,8 @@ fn enqueue_remote_worker_event_claimed(
             return None;
         }
         if deferred_events.len() >= backlog.deferred_capacity() {
-            return Some(RemoteTerminal::new(
-                ErrorKind::WouldBlock,
-                format!(
-                    "remote app server at `{endpoint}` could not retain a deferred lag marker"
-                ),
-            ));
+            backlog.record_deferred_skip();
+            return None;
         }
         deferred_events.push_back(RetainedRemoteEvent::local(AppServerEvent::Lagged {
             skipped: 1,
@@ -3559,6 +3578,54 @@ mod tests {
         assert!(matches!(
             &pending_barrier[3].event,
             AppServerEvent::Lagged { skipped: 1 }
+        ));
+    }
+
+    #[test]
+    fn full_deferred_fifo_accounts_best_effort_loss_without_terminalizing() {
+        let mut backlog = RemoteEventBacklog::new(/*capacity*/ 1);
+        backlog
+            .enqueue(AppServerEvent::Lagged { skipped: 10 })
+            .expect("public backlog should be full");
+        let mut deferred = VecDeque::new();
+        for id in [1, 2] {
+            assert!(
+                enqueue_remote_worker_event(
+                    &mut backlog,
+                    "test://full-deferred-lag",
+                    server_request(id),
+                    &mut deferred,
+                )
+                .is_none()
+            );
+        }
+        assert_eq!(deferred.len(), backlog.deferred_capacity());
+
+        assert!(
+            enqueue_remote_worker_event(
+                &mut backlog,
+                "test://full-deferred-lag",
+                AppServerEvent::Lagged { skipped: 11 },
+                &mut deferred,
+            )
+            .is_none()
+        );
+        assert_eq!(deferred.len(), backlog.deferred_capacity());
+
+        let events = backlog.finalize(deferred, "terminal".to_string(), std::iter::empty());
+        assert!(matches!(
+            &events[0].event,
+            AppServerEvent::Lagged { skipped: 10 }
+        ));
+        assert!(matches!(&events[1].event, AppServerEvent::ServerRequest(_)));
+        assert!(matches!(&events[2].event, AppServerEvent::ServerRequest(_)));
+        assert!(matches!(
+            &events[3].event,
+            AppServerEvent::Lagged { skipped: 1 }
+        ));
+        assert!(matches!(
+            &events[4].event,
+            AppServerEvent::Disconnected { .. }
         ));
     }
 
