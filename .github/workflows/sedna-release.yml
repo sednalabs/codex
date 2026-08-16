@@ -337,22 +337,39 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
   release-linux:
-    name: Build Linux release artifacts
+    name: Build Linux release artifacts (${{ matrix.target }})
     needs: resolve
     if: ${{ needs.resolve.outputs.release_requested == 'true' && needs.resolve.outputs.release_build_required == 'true' }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact_name: sedna-release-linux-x86_64-unknown-linux-gnu
+            checksum_name: SHA256SUMS.txt
+            metadata_json_name: RELEASE-METADATA.json
+            metadata_text_name: RELEASE-METADATA.txt
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: sedna-release-linux-aarch64-unknown-linux-gnu
+            checksum_name: SHA256SUMS-aarch64-unknown-linux-gnu.txt
+            metadata_json_name: RELEASE-METADATA-aarch64-unknown-linux-gnu.json
+            metadata_text_name: RELEASE-METADATA-aarch64-unknown-linux-gnu.txt
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     concurrency:
-      group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}
+      group: ${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}-${{ matrix.target }}
       cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+      attestations: write
     env:
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: 2G
       SCCACHE_IDLE_TIMEOUT: "0"
-      TARGET: x86_64-unknown-linux-gnu
+      TARGET: ${{ matrix.target }}
 
     steps:
       - name: Check for existing release
@@ -410,7 +427,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Install sccache
         uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
@@ -439,10 +456,10 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
           restore-keys: |
-            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
-            sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-
+            sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-
+            sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-
 
       - name: Build release binaries
         id: build_release
@@ -504,7 +521,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: cargo-home-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
+          key: cargo-home-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}
 
       - name: Save sccache cache (fallback)
         if: ${{ always() && !cancelled() && steps.build_release.outcome == 'success' && steps.sccache_backend.outputs.backend == 'fallback' && steps.sccache_backend.outputs.policy == 'write-fallback' && steps.disk_guard.outputs.skip_cache_save != 'true' }}
@@ -512,7 +529,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.sccache/
-          key: sccache-linux-rust-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
+          key: sccache-linux-rust-${{ matrix.target }}-${{ steps.lockhash.outputs.hash }}-${{ steps.lockhash.outputs.toolchain_hash }}-${{ github.run_id }}
 
       - name: sccache stats
         if: ${{ always() && steps.sccache_backend.outputs.backend != 'off' }}
@@ -557,11 +574,14 @@ jobs:
           UPSTREAM_TRACK: ${{ needs.resolve.outputs.upstream_track }}
           VERSION_DISPLAY: ${{ needs.resolve.outputs.version_display }}
           VERSION_POLICY: ${{ needs.resolve.outputs.version_policy }}
+          CHECKSUM_NAME: ${{ matrix.checksum_name }}
+          METADATA_JSON_NAME: ${{ matrix.metadata_json_name }}
+          METADATA_TEXT_NAME: ${{ matrix.metadata_text_name }}
         run: |
           set -euo pipefail
 
           dist_dir="${GITHUB_WORKSPACE}/dist"
-          stage_dir="${RUNNER_TEMP}/sedna-release/${TARGET}"
+          stage_dir="${GITHUB_WORKSPACE}/codex-rs/stage/${TARGET}"
           archive_base="codex-sedna-${RELEASE_VERSION}-${TARGET}"
 
           rm -rf "${stage_dir}"
@@ -575,7 +595,7 @@ jobs:
 
           tar -C "${stage_dir}" -czf "${dist_dir}/${archive_base}.tar.gz" .
 
-          cat > "${dist_dir}/RELEASE-METADATA.txt" <<EOF
+          cat > "${dist_dir}/${METADATA_TEXT_NAME}" <<EOF
           release_tag=${RELEASE_TAG}
           release_version=${RELEASE_VERSION}
           version_policy=${VERSION_POLICY}
@@ -596,7 +616,7 @@ jobs:
           git_describe=$(git describe --tags --always)
           EOF
 
-          python3 - <<'PY' > "${dist_dir}/RELEASE-METADATA.json"
+          python3 - <<'PY' > "${dist_dir}/${METADATA_JSON_NAME}"
           import json
           import os
 
@@ -627,15 +647,45 @@ jobs:
           os.sys.stdout.write("\n")
           PY
 
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: codex-rs/stage/${{ matrix.target }}
+          format: spdx-json
+          output-file: codex-rs/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Attest Linux archive and SBOM provenance
+        id: attest_linux
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            codex-rs/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.tar.gz
+            codex-rs/dist/codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}.spdx.json
+
+      - name: Stage provenance bundle and checksums
+        shell: bash
+        working-directory: codex-rs
+        env:
+          ARCHIVE_BASE: codex-sedna-${{ needs.resolve.outputs.release_version }}-${{ matrix.target }}
+          ATTESTATION_BUNDLE: ${{ steps.attest_linux.outputs.bundle-path }}
+          CHECKSUM_NAME: ${{ matrix.checksum_name }}
+        run: |
+          set -euo pipefail
+          cp "${ATTESTATION_BUNDLE}" "dist/${ARCHIVE_BASE}.intoto.jsonl"
           (
-            cd "${dist_dir}"
-            sha256sum ./* > SHA256SUMS.txt
+            cd dist
+            find . -maxdepth 1 -type f ! -name "${CHECKSUM_NAME}" -printf '%f\0' \
+              | sort -z \
+              | xargs -0 sha256sum > "${CHECKSUM_NAME}"
           )
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: sedna-release-linux
+          name: ${{ matrix.artifact_name }}
           path: ${{ github.workspace }}/dist/*
           retention-days: 3
 
@@ -1362,10 +1412,16 @@ jobs:
     permissions:
       actions: read
     steps:
-      - name: Download Linux release artifacts
+      - name: Download Linux x86-64 release artifacts
         uses: actions/download-artifact@v8
         with:
-          name: sedna-release-linux
+          name: sedna-release-linux-x86_64-unknown-linux-gnu
+          path: dist
+
+      - name: Download Linux Arm64 release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: sedna-release-linux-aarch64-unknown-linux-gnu
           path: dist
 
       - name: Download Intel macOS release artifacts

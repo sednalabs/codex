@@ -3496,7 +3496,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).get("inputs") or {}
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("options"),
-            ["linux-x86_64", "macos"],
+            ["linux-x86_64", "linux-aarch64", "macos"],
         )
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("default"),
@@ -3522,7 +3522,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('branch_name="${DISPLAY_REF}"', run_script)
         self.assertNotIn("checkout_ref='${{", run_script)
 
-        build_job = (payload.get("jobs") or {}).get("build") or {}
+        build_job = (payload.get("jobs") or {}).get("build-linux-x86_64") or {}
         self.assertEqual(
             (build_job.get("with") or {}).get("display_ref"),
             "${{ needs.metadata.outputs.display_ref }}",
@@ -3531,6 +3531,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('os.environ["DISPLAY_REF"]', run_command)
         self.assertIn("json.dump(payload, sys.stdout, indent=2)", run_command)
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", run_command)
+
+        arm_job = (payload.get("jobs") or {}).get("build-linux-aarch64") or {}
+        self.assertEqual(arm_job.get("if"), "${{ inputs.platform == 'linux-aarch64' }}")
+        self.assertEqual((arm_job.get("with") or {}).get("runner"), "ubuntu-24.04-arm")
+        self.assertEqual(
+            (arm_job.get("with") or {}).get("target"),
+            "aarch64-unknown-linux-gnu",
+        )
+        self.assertIn(
+            "-aarch64-unknown-linux-gnu",
+            (arm_job.get("with") or {}).get("artifact_name") or "",
+        )
+        self.assertIn(
+            "--target aarch64-unknown-linux-gnu",
+            (arm_job.get("with") or {}).get("run_command") or "",
+        )
 
         macos_job = (payload.get("jobs") or {}).get("build-macos") or {}
         self.assertEqual(macos_job.get("if"), "${{ inputs.platform == 'macos' }}")
@@ -7230,7 +7246,10 @@ class HelperScriptTests(unittest.TestCase):
             "--missing-marker error",
             resolve_named_steps["Resolve release metadata"].get("run") or "",
         )
-        self.assertEqual(release_job.get("name"), "Build Linux release artifacts")
+        self.assertEqual(
+            release_job.get("name"),
+            "Build Linux release artifacts (${{ matrix.target }})",
+        )
         self.assertEqual(release_job.get("needs"), "resolve")
         self.assertIn(
             "needs.resolve.outputs.release_requested == 'true'",
@@ -7239,13 +7258,34 @@ class HelperScriptTests(unittest.TestCase):
         self.assertEqual(
             release_job.get("concurrency"),
             {
-                "group": "${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}",
+                "group": "${{ github.workflow }}-${{ needs.resolve.outputs.release_tag }}-${{ matrix.target }}",
                 "cancel-in-progress": "false",
             },
         )
         self.assertEqual(
             release_job.get("permissions"),
-            {"contents": "read", "id-token": "write"},
+            {"contents": "read", "id-token": "write", "attestations": "write"},
+        )
+        self.assertEqual(
+            ((release_job.get("strategy") or {}).get("matrix") or {}).get("include"),
+            [
+                {
+                    "runner": "ubuntu-24.04",
+                    "target": "x86_64-unknown-linux-gnu",
+                    "artifact_name": "sedna-release-linux-x86_64-unknown-linux-gnu",
+                    "checksum_name": "SHA256SUMS.txt",
+                    "metadata_json_name": "RELEASE-METADATA.json",
+                    "metadata_text_name": "RELEASE-METADATA.txt",
+                },
+                {
+                    "runner": "ubuntu-24.04-arm",
+                    "target": "aarch64-unknown-linux-gnu",
+                    "artifact_name": "sedna-release-linux-aarch64-unknown-linux-gnu",
+                    "checksum_name": "SHA256SUMS-aarch64-unknown-linux-gnu.txt",
+                    "metadata_json_name": "RELEASE-METADATA-aarch64-unknown-linux-gnu.json",
+                    "metadata_text_name": "RELEASE-METADATA-aarch64-unknown-linux-gnu.txt",
+                },
+            ],
         )
         self.assertNotIn("environment", release_job)
         self.assertEqual(publish_job.get("name"), "Publish GitHub release")
@@ -7284,12 +7324,24 @@ class HelperScriptTests(unittest.TestCase):
 
         self.assertIn("Upload workflow artifacts", release_named_steps)
         self.assertEqual(
-            named_steps["Download Linux release artifacts"].get("uses"),
+            release_named_steps["Generate SPDX SBOM"].get("uses"),
+            "anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610",
+        )
+        self.assertEqual(
+            release_named_steps["Attest Linux archive and SBOM provenance"].get("uses"),
+            "actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a",
+        )
+        self.assertEqual(
+            named_steps["Download Linux x86-64 release artifacts"].get("uses"),
             "actions/download-artifact@v8",
         )
         self.assertEqual(
-            named_steps["Download Linux release artifacts"].get("with") or {},
-            {"name": "sedna-release-linux", "path": "dist"},
+            named_steps["Download Linux x86-64 release artifacts"].get("with") or {},
+            {"name": "sedna-release-linux-x86_64-unknown-linux-gnu", "path": "dist"},
+        )
+        self.assertEqual(
+            named_steps["Download Linux Arm64 release artifacts"].get("with") or {},
+            {"name": "sedna-release-linux-aarch64-unknown-linux-gnu", "path": "dist"},
         )
         self.assertEqual(
             named_steps["Download Intel macOS release artifacts"].get("with") or {},
@@ -7521,14 +7573,19 @@ class HelperScriptTests(unittest.TestCase):
             "runner": "ubuntu-24.04",
             "target": "x86_64-unknown-linux-gnu",
         }
+        linux_arm = {
+            "platform": "Linux Arm64",
+            "runner": "ubuntu-24.04-arm",
+            "target": "aarch64-unknown-linux-gnu",
+        }
         macos = {
             "platform": "Intel macOS x64",
             "runner": "macos-15-intel",
             "target": "x86_64-apple-darwin",
         }
-        self.assertEqual(resolve_matrix("off"), [linux])
-        self.assertEqual(resolve_matrix("preview"), [linux, macos])
-        self.assertEqual(resolve_matrix("notarized"), [linux, macos])
+        self.assertEqual(resolve_matrix("off"), [linux, linux_arm])
+        self.assertEqual(resolve_matrix("preview"), [linux, linux_arm, macos])
+        self.assertEqual(resolve_matrix("notarized"), [linux, linux_arm, macos])
         self.assertEqual(plan.get("runs-on"), "ubuntu-slim")
         self.assertEqual(install.get("needs"), "plan")
         self.assertEqual(
@@ -7539,10 +7596,15 @@ class HelperScriptTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Darwin/x86_64", installer)
+        self.assertIn("Linux/aarch64", installer)
+        self.assertIn("aarch64-unknown-linux-gnu", installer)
         self.assertIn("x86_64-apple-darwin", installer)
         self.assertIn("codesign --verify --strict", installer)
         self.assertIn("--macos-preview", installer)
         self.assertIn("UNNOTARIZED-PREVIEW", installer)
+        self.assertIn("cosign verify-blob", installer)
+        self.assertIn("gh attestation verify", installer)
+        self.assertIn("SPDX-2.3", installer)
 
     def test_sedna_release_verifier_tag_grammar_matches_resolver_shape(self) -> None:
         install_workflow = (

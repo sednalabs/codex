@@ -49,7 +49,7 @@ jobs:
           MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
         run: |
           set -euo pipefail
-          matrix='[{"platform":"Linux x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]'
+          matrix='[{"platform":"Linux x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"platform":"Linux Arm64","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}]'
           if [[ "${MACOS_RELEASE_MODE}" != "off" ]]; then
             matrix="$(
               jq -cn \
@@ -109,6 +109,10 @@ jobs:
             echo "allow_prerelease=${allow_prerelease}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Install Cosign
+        if: ${{ runner.os == 'Linux' }}
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
       - name: Verify release assets
         shell: bash
         env:
@@ -117,6 +121,7 @@ jobs:
           DRY_RUN: ${{ steps.request.outputs.dry_run }}
           ALLOW_PRERELEASE: ${{ steps.request.outputs.allow_prerelease }}
           MACOS_RELEASE_MODE: ${{ inputs.macos_release_mode }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
 
@@ -130,11 +135,17 @@ jobs:
             macos_preview_arg+=(--macos-preview)
           fi
 
+          attestation_arg=()
+          if [[ "${TARGET}" == *-unknown-linux-gnu ]]; then
+            attestation_arg+=(--verify-attestation)
+          fi
+
           scripts/install_sedna_release_asset \
             --repository "${GITHUB_REPOSITORY}" \
             --release-tag "${RELEASE_TAG}" \
             --dry-run \
             "${allow_prerelease_arg[@]}" \
+            "${attestation_arg[@]}" \
             "${macos_preview_arg[@]}"
 
       - name: Summarize

@@ -1909,15 +1909,15 @@ decisions.
   source is available only when those values remain `openai/codex` and
   `rust-v`; custom downstream origins always resolve and download through their
   configured GitHub repository.
-- The manual branch-build workflow keeps Linux `x86_64` as its default and
-  offers an explicit macOS preview mode. That mode builds one Intel x64
+- The manual branch-build workflow keeps Linux `x86_64` as its default, adds an explicit native
+  Linux Arm64 preview mode, and offers an explicit macOS preview mode. The macOS mode builds one Intel x64
   artifact, applies ad hoc signatures for local execution, records that the
   artifact is not notarized, and reuses Cargo-home and compiler-cache entries
   without changing the release optimization profile. It remains a disposable
-  preview and does not publish a GitHub Release. The official release contract
-  independently supports native Linux x64 and Intel macOS x64 archives with
-  target-bound metadata, checksums, and native-runner verification; Apple
-  Silicon remains unsupported.
+  preview and does not publish a GitHub Release. The official release contract independently
+  supports native Linux x64, Linux Arm64, and Intel macOS x64 archives with target-bound metadata,
+  checksums, and native-runner verification. Linux assets also carry keyless Sigstore bundles,
+  SPDX SBOMs, and GitHub build-provenance attestations; Apple Silicon remains unsupported.
 - Primary files:
   - `.github/workflows/sedna-branch-build.yml`
   - `.github/scripts/test_ci_planners.py`

@@ -101,7 +101,7 @@ artifacts.
   - scopes: `protocol`, `tui`, `cli`, `core`, `workspace`
 - `sedna-release`
   - trigger: Sedna release tags or manual dispatch
-  - purpose: official public Linux `x86_64` and Intel macOS `x86_64` release artifacts
+  - purpose: official public Linux `x86_64`, Linux Arm64, and Intel macOS `x86_64` release artifacts
   - release visibility: the only lane that may publish a GitHub Release
   - public boundary: builds, signs, publishes, and verifies public release assets only; host-local
     installation is intentionally left to external deployment automation
@@ -168,8 +168,8 @@ artifacts.
 
 ## Current downstream platform policy
 
-- Officially supported downstream release platforms: Linux `x86_64` and Intel macOS `x86_64`.
-- Parked and unsupported for official releases: Apple Silicon, Windows, Linux arm64, and other
+- Officially supported downstream release platforms: Linux `x86_64`, Linux Arm64, and Intel macOS `x86_64`.
+- Parked and unsupported for official releases: Apple Silicon, Windows, and other
   historical upstream targets.
 - The opt-in Intel macOS branch-build lane remains preview-only. Its artifacts are disposable and
   are not substitutes for the target-specific assets published and verified by `sedna-release`.

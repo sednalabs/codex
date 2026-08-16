@@ -29,10 +29,10 @@ from upstream OpenAI releases.
   `upstream_base_commit`, `upstream_base_tag`, `upstream_base_tag_exact`,
   `upstream_distance_from_tag`, `upstream_position`, `downstream_commit`, `target_commit`, and
   the compact `build_provenance` / `version_display` strings
-- Linux `x86_64` (`x86_64-unknown-linux-gnu`) and Intel macOS `x86_64`
-  (`x86_64-apple-darwin`) are the officially supported Sedna release targets. Apple Silicon,
-  Windows, Linux arm64, and other upstream targets remain outside the current downstream release
-  contract.
+- Linux `x86_64` (`x86_64-unknown-linux-gnu`), Linux Arm64
+  (`aarch64-unknown-linux-gnu`), and Intel macOS `x86_64` (`x86_64-apple-darwin`) are the officially
+  supported Sedna release targets. Apple Silicon, Windows, and other upstream targets remain
+  outside the current downstream release contract.
 
 The upstream track is resolved from the target commit's merge-base with `origin/upstream-main`.
 That merge-base is the upstream reference point for the release, even if `origin/upstream-main`
@@ -91,15 +91,16 @@ Use the `sedna-release` workflow for fork-owned GitHub releases.
 
 Current workflow characteristics:
 
-- Native GitHub-hosted Linux `x86_64` release builds, with Intel macOS `x86_64` assets selected
+- Native GitHub-hosted Linux `x86_64` and Arm64 release builds, with Intel macOS `x86_64` assets selected
   explicitly as `off`, `preview`, or `notarized`
 - Release builds and GitHub Release publication are separate jobs: the build job keeps a read-only
   repository token while the small publication job owns the release environment and write-scoped
   publishing permissions.
 - Cargo home and `sccache` restore/save around the official release build to reduce duplicate
   compilation when prior release smoke runs warmed matching caches
-- Keyless Sigstore signing for Linux binaries; ad-hoc code-signing checks for Intel macOS previews;
-  and an optional Developer ID signing and notarization path
+- Keyless Sigstore signing for Linux binaries, SPDX 2.3 SBOMs, and GitHub build-provenance
+  attestations for each Linux archive and SBOM; ad-hoc code-signing checks for Intel macOS
+  previews; and an optional Developer ID signing and notarization path
 - GitHub Release publication through a dedicated GitHub App installation token instead of the
   default workflow integration token
 - GitHub Release assets named with the Sedna release identity
@@ -186,7 +187,8 @@ changes can be detected explicitly instead of inferred from tag shape alone.
   `sedna-release` still performs the authoritative build, signing, metadata, checksum, and
   publication steps itself
 - `sedna-branch-build` produces disposable preview binaries only when manually
-  dispatched. Its default remains Linux `x86_64`; `platform=macos` produces
+  dispatched. Its default remains Linux `x86_64`; `platform=linux-aarch64` uses a native
+  GitHub-hosted Arm64 runner, while `platform=macos` produces
   one ad hoc signed, non-notarized Intel x64 artifact for preview use without
   publishing a GitHub Release. Cargo-home and `sccache` reuse reduce repeat-build
   cost without changing the canonical release optimization profile.
@@ -227,9 +229,10 @@ runner. It intentionally does not perform host-local installation from the publi
   release publisher token.
 - Manual `workflow_dispatch` runs require `dry_run=true`
 - Prerelease installs require `allow_prerelease=true` on `workflow_dispatch`
-- The verifier checks both supported targets on native Linux and Intel macOS runners, including
-  tag shape, target-bound release metadata, checksums, safe archive membership, and executable
-  payloads
+- The verifier checks all supported targets on native x86-64 Linux, Arm64 Linux, and Intel macOS
+  runners, including tag shape, target-bound release metadata, checksums, safe archive membership,
+  and executable payloads. Linux verification also checks keyless Sigstore identity, native ELF
+  architecture, SPDX structure, and GitHub build attestations for the archive and SBOM.
 - Host-local installs should be performed by external deployment automation outside the public
   Actions log surface
 - Drafts are not installed, and prereleases are refused unless an explicit dispatch allows them

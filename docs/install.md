@@ -8,7 +8,7 @@
 | Git (optional, recommended) | 2.23+ for built-in PR helpers                         |
 | RAM                         | 4-GB minimum (8-GB recommended)                       |
 
-The supported downstream install and release target is Linux `x86_64` only at the moment. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
+The supported downstream Linux install and release targets are `x86_64` and Arm64 GNU. Intel macOS `x86_64` is also supported by the release contract. Other upstream platform paths remain in the repository for future re-enablement, but Sedna does not currently publish or validate them as supported targets.
 
 ### DotSlash
 
