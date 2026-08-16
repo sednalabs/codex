@@ -8148,7 +8148,8 @@ fi
         self.assertEqual(CHECK_WORKFLOW_POLICY.collect_violations(REPO_ROOT), [])
 
     def test_sedna_release_manual_dispatch_defaults_to_auto_channel(self) -> None:
-        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/sedna-release.yml")
+        workflow_path = REPO_ROOT / ".github/workflows/sedna-release.yml"
+        payload = load_workflow_payload(workflow_path)
         inputs = (
             ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs")
             or {}
@@ -8176,6 +8177,38 @@ fi
                 "options": ["off", "preview", "notarized"],
             },
         )
+
+        self.assertEqual(
+            yaml.safe_load("default: off\noptions:\n  - off\n"),
+            {"default": False, "options": [False]},
+        )
+        for provider_workflow in (
+            workflow_path,
+            REPO_ROOT / ".github/workflows/sedna-release-install.yml",
+        ):
+            with self.subTest(workflow=provider_workflow.name):
+                provider_payload = yaml.safe_load(
+                    provider_workflow.read_text(encoding="utf-8")
+                )
+                provider_on = (
+                    provider_payload.get("on") or provider_payload.get(True) or {}
+                )
+                provider_inputs = (
+                    (provider_on.get("workflow_dispatch") or {}).get("inputs") or {}
+                )
+                provider_macos_input = (
+                    provider_inputs.get("macos_release_mode") or {}
+                )
+                self.assertEqual(
+                    {
+                        "default": provider_macos_input.get("default"),
+                        "options": provider_macos_input.get("options"),
+                    },
+                    {
+                        "default": "off",
+                        "options": ["off", "preview", "notarized"],
+                    },
+                )
 
     def test_sedna_release_main_pushes_are_routed_before_publisher(self) -> None:
         release_payload = load_workflow_payload(
