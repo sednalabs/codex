@@ -370,6 +370,26 @@ jobs:
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
 
+  installer_activation_macos:
+    name: Installer activation - Intel macOS
+    runs-on: macos-15-intel
+    needs: changed
+    if: ${{ needs.changed.outputs.workflows == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - name: Install planner fixture dependency
+        run: python3 -m pip install PyYAML==6.0.3
+      - name: Prove macOS activation and locking
+        run: |
+          python3 .github/scripts/test_ci_planners.py \
+            HelperScriptTests.test_sedna_release_installer_links_all_visible_executables \
+            HelperScriptTests.test_sedna_release_installer_backs_up_previous_visible_binaries \
+            HelperScriptTests.test_sedna_release_installer_serializes_activation \
+            HelperScriptTests.test_sedna_release_installer_revalidates_after_lock
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   # --- Fast Cargo-native PR checks -------------------------------------------
   general:
     name: Format / etc
@@ -526,6 +546,7 @@ jobs:
         matrix_plan,
         incremental_validation,
         planner_fixtures,
+        installer_activation_macos,
         general,
         cargo_shear,
         argument_comment_lint_package,
@@ -544,6 +565,7 @@ jobs:
           echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
           echo "planner: ${{ needs.planner_fixtures.result }}"
+          echo "mac-inst: ${{ needs.installer_activation_macos.result }}"
           echo "general: ${{ needs.general.result }}"
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "incr   : ${{ needs.incremental_validation.result }}"
@@ -552,6 +574,7 @@ jobs:
           [[ '${{ needs.matrix_plan.result }}' == 'success' ]] || { echo 'matrix_plan failed'; exit 1; }
           if [[ "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == 'true' ]]; then
             [[ '${{ needs.planner_fixtures.result }}' == 'success' ]] || { echo 'planner_fixtures failed'; exit 1; }
+            [[ '${{ needs.installer_activation_macos.result }}' == 'success' ]] || { echo 'installer_activation_macos failed'; exit 1; }
           fi
 
           if [[ '${{ needs.changed.outputs.scheduled_duplicate_skip }}' == 'true' ]]; then

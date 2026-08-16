@@ -843,6 +843,30 @@ def ensure_real_directory(path: Path) -> None:
         return
     path.mkdir()
 
+
+def replace_with_regular(source: Path, visible: Path) -> None:
+    restore_dir = Path(
+        tempfile.mkdtemp(prefix=f".{visible.name}.rollback.", dir=visible.parent)
+    )
+    try:
+        restore = restore_dir / visible.name
+        shutil.copy2(source, restore)
+        os.replace(restore, visible)
+    finally:
+        shutil.rmtree(restore_dir)
+
+
+def replace_with_symlink(target: str, visible: Path) -> None:
+    restore_dir = Path(
+        tempfile.mkdtemp(prefix=f".{visible.name}.rollback.", dir=visible.parent)
+    )
+    try:
+        restore = restore_dir / visible.name
+        restore.symlink_to(target)
+        os.replace(restore, visible)
+    finally:
+        shutil.rmtree(restore_dir)
+
 test_fault = os.environ.get("SEDNA_INSTALLER_TEST_FAULT")
 test_pause_marker = os.environ.get("SEDNA_INSTALLER_TEST_PAUSE_MARKER")
 test_pause_release = os.environ.get("SEDNA_INSTALLER_TEST_PAUSE_RELEASE")
@@ -886,9 +910,13 @@ for stale_transaction in sorted(install_root.glob(".activation.*")):
         and not format_path.is_symlink()
         and format_path.read_text(encoding="utf-8") == f"{transaction_format}\n"
     )
-    if not format_is_current and stale_saved.exists() and any(stale_saved.iterdir()):
+    saved_has_entries = stale_saved.exists() and any(stale_saved.iterdir())
+    candidate_has_entries = stale_candidate.exists() and any(
+        stale_candidate.iterdir()
+    )
+    if not format_is_current and (saved_has_entries or candidate_has_entries):
         raise RuntimeError(
-            f"refusing unmarked stale transaction with predecessor data: "
+            f"refusing unmarked stale transaction with custody data: "
             f"{stale_transaction}"
         )
     if stale_saved.exists():
@@ -1050,23 +1078,17 @@ except BaseException as activation_error:
             backup = backup_entries.get(executable)
             saved = saved_entries.get(executable)
             if saved is not None and os.path.lexists(saved):
-                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
-                shutil.copy2(saved, restore)
-                os.replace(restore, visible)
+                replace_with_regular(saved, visible)
             elif (
                 backup is not None
                 and backup.is_file()
                 and not backup.is_symlink()
             ):
                 source = backup
-                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
-                shutil.copy2(source, restore)
-                os.replace(restore, visible)
+                replace_with_regular(source, visible)
                 source.unlink()
             elif executable in saved_symlinks:
-                restore = bin_dir / f".{executable}.rollback.{os.getpid()}"
-                restore.symlink_to(saved_symlinks[executable])
-                os.replace(restore, visible)
+                replace_with_symlink(saved_symlinks[executable], visible)
             elif os.path.lexists(visible):
                 visible.unlink()
         except BaseException as error:
