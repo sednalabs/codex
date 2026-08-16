@@ -56,10 +56,10 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          arm_asset="$({
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
-              --jq '.assets[].name'
-          } | grep -- '-aarch64-unknown-linux-gnu' || true)"
+          asset_names="${RUNNER_TEMP}/sedna-release-asset-names.txt"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '.assets[].name' > "${asset_names}"
+          arm_asset="$(grep -- '-aarch64-unknown-linux-gnu' "${asset_names}" || true)"
           if [[ -n "${arm_asset}" ]]; then
             echo "require_linux_arm64=false is only valid for historical releases without Arm64 assets; found ${arm_asset}."
             exit 1

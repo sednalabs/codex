@@ -7806,6 +7806,14 @@ fi
         self.assertEqual(compatibility_step.get("if"), "${{ !inputs.require_linux_arm64 }}")
         self.assertIn("releases/tags/${RELEASE_TAG}", compatibility_step.get("run") or "")
         self.assertIn("-aarch64-unknown-linux-gnu", compatibility_step.get("run") or "")
+        self.assertIn('> "${asset_names}"', compatibility_step.get("run") or "")
+        gh_api_lines = [
+            line
+            for line in (compatibility_step.get("run") or "").splitlines()
+            if "gh api" in line
+        ]
+        self.assertEqual(len(gh_api_lines), 1)
+        self.assertNotIn("|| true", gh_api_lines[0])
         self.assertEqual(install.get("needs"), "plan")
         self.assertEqual(
             ((install.get("strategy") or {}).get("matrix") or {}).get("include"),
