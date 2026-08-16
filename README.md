@@ -2,9 +2,9 @@
 
 **A maintained downstream of OpenAI Codex for long-running, observable agent work.**
 
-[Releases](https://github.com/sednalabs/codex/releases) ·
-[Downstream notes](./docs/downstream.md) ·
-[Native computer use](./docs/native-computer-use.md) ·
+[Releases](https://github.com/sednalabs/codex/releases) |
+[Downstream notes](./docs/downstream.md) |
+[Native computer use](./docs/native-computer-use.md) |
 [Build from source](./docs/install.md)
 
 **Codex Sedna** is the [Sedna Labs](https://github.com/sednalabs) downstream distribution of [OpenAI Codex CLI](https://github.com/openai/codex).
@@ -238,12 +238,12 @@ The public branches have distinct roles:
 
 ```text
 openai/codex main
-        │
-        ▼
+        |
+        v
 sednalabs/codex upstream-main
-        │
-        │ merge
-        ▼
+        |
+        | merge
+        v
 sednalabs/codex main
 ```
 
