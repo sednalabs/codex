@@ -20,7 +20,7 @@ That includes richer agent lifecycle and orchestration, child model and reasonin
 
 ## Why this fork exists
 
-Codex Sedna grew out of Sedna Labs' internal work on control planes for agent tasks whose logical lifetime extends beyond one interactive session.
+Codex Sedna grew out of Sedna Labs' internal work on control planes for agent tasks that can continue across sessions, processes, machines, and individual agents.
 
 That work treats the task as durable while individual agents, processes, and execution environments are replaceable. It exposed runtime requirements around continuity, coordination, recovery, model selection, runtime evidence, and computer use.
 
@@ -28,7 +28,7 @@ Codex Sedna contains the Codex-side changes we maintain in response to those req
 
 Here, long-running describes the logical task. It may span days or weeks across multiple turns, context windows, agents, and processes. It does not mean one `codex` process or model call remains alive throughout.
 
-The higher-level software remains internal to Sedna Labs and is not required to use this fork.
+Sedna Labs also uses this fork beneath internal orchestration and control-plane software for longer-running workloads. That software is not part of this repository and is not required to use Codex Sedna.
 
 ## Should I use Sedna?
 
@@ -86,7 +86,7 @@ To build from source, see [Installing and building](./docs/install.md).
 
 ### Long-running and multi-agent execution
 
-Sedna builds on upstream Codex's multi-agent runtime rather than replacing it. Its downstream carry concentrates on stronger routing guarantees, lifecycle durability, observability, blocking orchestration contracts, and behaviour that remains useful when child runtimes are not continuously resident.
+Sedna builds on upstream Codex's multi-agent runtime rather than replacing it. Its downstream changes concentrate on stricter child routing, durable agent lifecycle state, runtime inspection, blocking waits and joins, and behaviour that remains useful when child runtimes are not continuously resident.
 
 That includes stronger support around:
 
@@ -100,7 +100,7 @@ That includes stronger support around:
 - background terminal completion;
 - resumed sessions and agent history.
 
-Upstream Codex provides the underlying per-child model and reasoning-selection pipeline. Sedna extends that pipeline for long-running orchestration with stricter routing and substantially richer identity evidence.
+Upstream Codex provides the underlying per-child model and reasoning-selection pipeline. Sedna extends that pipeline with post-resolution routing assertions and requested-versus-effective identity evidence.
 
 Orchestrators can request child model and reasoning settings and, where exact routing matters, assert the model and reasoning effort that must remain after role, profile, service-tier, and runtime resolution. A mismatch can be rejected before the child is created or receives its initial task.
 
@@ -130,7 +130,7 @@ Where the runtime cannot establish that recovery is safe, it stops rather than g
 
 ### Usage, lineage, and cost
 
-Sedna treats resource consumption as runtime evidence rather than only as an invoice received after the work is finished.
+Sedna records resource consumption during execution so operators can inspect usage and cost while work is running, rather than relying only on later billing data.
 
 The fork maintains a first-party local usage ledger in downstream-owned storage.
 
@@ -153,7 +153,7 @@ This matters because the cost of an orchestration strategy is rarely visible fro
 
 One task might be completed by a single strong model. Another might use a coordinating model, several specialist children, lighter waiting agents, and parallel review. Retries, compaction, rejected attempts, and replacement execution can change the economics again.
 
-Sedna therefore focuses on the **cost of meeting a fixed acceptance bar**.
+The useful comparison is therefore the cost of producing an acceptable result, not simply the cost of an individual model call.
 
 A cheaper execution strategy that creates more failures, more review work, or an unacceptable implementation is not necessarily cheaper. A stronger model used for work a smaller model can reliably perform is unnecessary expense.
 
