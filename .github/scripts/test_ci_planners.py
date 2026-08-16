@@ -6906,15 +6906,25 @@ class RustCiModeScriptTests(unittest.TestCase):
 
 class HelperScriptTests(unittest.TestCase):
     def run_sedna_installer_fixture(
-        self, failure: str | None = None
+        self, failure: str | None = None, *, arch: str = "x86_64"
     ) -> subprocess.CompletedProcess[str]:
         release_tag = "v0.146.0-alpha.8-sedna.99+upstream.3"
         release_version = release_tag.removeprefix("v")
-        target = "x86_64-unknown-linux-gnu"
+        target = (
+            "aarch64-unknown-linux-gnu"
+            if arch == "aarch64"
+            else "x86_64-unknown-linux-gnu"
+        )
         archive_name = f"codex-sedna-{release_version}-{target}.tar.gz"
         archive_base = archive_name.removesuffix(".tar.gz")
-        metadata_name = "RELEASE-METADATA.json"
-        checksum_name = "SHA256SUMS.txt"
+        metadata_name = (
+            f"RELEASE-METADATA-{target}.json"
+            if arch == "aarch64"
+            else "RELEASE-METADATA.json"
+        )
+        checksum_name = (
+            f"SHA256SUMS-{target}.txt" if arch == "aarch64" else "SHA256SUMS.txt"
+        )
         sbom_name = f"{archive_base}.spdx.json"
         attestation_name = f"{archive_base}.intoto.jsonl"
         codex_sigstore_name = f"{archive_base}-codex.sigstore"
@@ -6951,7 +6961,11 @@ class HelperScriptTests(unittest.TestCase):
                 "release_tag": release_tag,
                 "release_version": release_version,
                 "target": (
-                    "aarch64-unknown-linux-gnu"
+                    (
+                        "x86_64-unknown-linux-gnu"
+                        if arch == "aarch64"
+                        else "aarch64-unknown-linux-gnu"
+                    )
                     if failure == "malformed_metadata"
                     else target
                 ),
@@ -6999,7 +7013,7 @@ class HelperScriptTests(unittest.TestCase):
                 codex_sigstore_name,
                 proxy_sigstore_name,
             ]
-            if failure == "missing_sbom":
+            if failure in ("missing_sbom", "arm_missing_sbom"):
                 all_asset_names.remove(sbom_name)
             release_assets = []
             for asset_id, name in enumerate(all_asset_names, start=1):
@@ -7044,12 +7058,18 @@ fi
                 'echo "${FAKE_FILE_OUTPUT:-ELF 64-bit LSB pie executable, x86-64}"\n',
                 encoding="utf-8",
             )
+            fake_uname = fake_bin / "uname"
+            fake_uname.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ${1:-} == -s ]]; then echo Linux; else echo \"${FAKE_UNAME_ARCH}\"; fi\n",
+                encoding="utf-8",
+            )
             for name in ("cosign", "gh", "readelf"):
                 helper = fake_bin / name
                 helper.write_text(
                     "#!/usr/bin/env bash\n"
                     + (
-                        "echo 'Requesting program interpreter: /lib64/ld-linux-x86-64.so.2'\n"
+                        "echo \"Requesting program interpreter: ${FAKE_ELF_INTERPRETER}\"\n"
                         if name == "readelf"
                         else "exit 0\n"
                     ),
@@ -7058,19 +7078,29 @@ fi
                 helper.chmod(0o755)
             fake_curl.chmod(0o755)
             fake_file.chmod(0o755)
+            fake_uname.chmod(0o755)
 
             env = {
                 **os.environ,
                 "ASSET_FIXTURE_DIR": str(root),
                 "FAKE_FILE_OUTPUT": (
                     "ELF 64-bit LSB pie executable, ARM aarch64"
-                    if failure == "wrong_elf"
+                    if arch == "aarch64" or failure == "wrong_elf"
                     else "ELF 64-bit LSB pie executable, x86-64"
                 ),
+                "FAKE_ELF_INTERPRETER": (
+                    "/lib/ld-linux-aarch64.so.1"
+                    if arch == "aarch64"
+                    else "/lib64/ld-linux-x86-64.so.2"
+                ),
+                "FAKE_UNAME_ARCH": arch,
                 "GITHUB_TOKEN": "fixture-token",
                 "HOME": str(root / "home"),
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
             }
+            verification_args = (
+                [] if arch == "aarch64" else ["--verify-attestation"]
+            )
             return subprocess.run(
                 [
                     str(REPO_ROOT / "scripts/install_sedna_release_asset"),
@@ -7079,7 +7109,7 @@ fi
                     "--release-tag",
                     release_tag,
                     "--allow-prerelease",
-                    "--verify-attestation",
+                    *verification_args,
                     "--dry-run",
                 ],
                 check=False,
@@ -7089,9 +7119,15 @@ fi
             )
 
     def test_sedna_release_installer_executes_hardened_linux_fixture(self) -> None:
-        proc = self.run_sedna_installer_fixture()
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("dry-run: verified", proc.stdout)
+        for arch, target in (
+            ("x86_64", "x86_64-unknown-linux-gnu"),
+            ("aarch64", "aarch64-unknown-linux-gnu"),
+        ):
+            with self.subTest(arch=arch):
+                proc = self.run_sedna_installer_fixture(arch=arch)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn(f"dry-run: verified sednalabs/codex@", proc.stdout)
+                self.assertIn(f"for {target}", proc.stdout)
 
     def test_sedna_release_installer_rejects_invalid_release_assets(self) -> None:
         cases = {
@@ -7107,6 +7143,12 @@ fi
                 proc = self.run_sedna_installer_fixture(failure)
                 self.assertNotEqual(proc.returncode, 0)
                 self.assertIn(expected, proc.stderr)
+
+        arm_proc = self.run_sedna_installer_fixture(
+            "arm_missing_sbom", arch="aarch64"
+        )
+        self.assertNotEqual(arm_proc.returncode, 0)
+        self.assertIn("missing required assets", arm_proc.stderr)
 
     def test_duplicate_workflow_finder_matches_same_branch_sha_success(self) -> None:
         runs = [
